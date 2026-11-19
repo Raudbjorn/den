@@ -1,5 +1,6 @@
 //! Shared helpers for den's integration tests.
 //!
+//! - `branch_graphql`: a scripted GitHub for the Branch fetcher's queries.
 //! - `build`: builders for Observations and facts (one file per Work Item kind).
 //! - `fakes`: fake ports (GitHub source, Workspace, Launcher, Clock) and a
 //!   scripted GraphQL transport for the GitHub adapter.
@@ -9,6 +10,7 @@
 // Each test binary uses a different subset of these helpers.
 #![allow(dead_code, unused_imports)]
 
+pub mod branch_graphql;
 pub mod build;
 pub mod fakes;
 pub mod harness;

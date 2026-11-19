@@ -27,6 +27,7 @@ use den::{
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 use support::{
+    branch_graphql::only_default_branches,
     build::{now, repo_id},
     fakes::{ScriptedGraphQl, data, operation},
 };
@@ -129,6 +130,7 @@ fn octo(prs: Vec<Value>, details: Box<DetailsAnswer>) -> ScriptedGraphQl {
             "nodes": [{ "name": "app", "pullRequests": { "pageInfo": page_info(false), "nodes": *prs } }]
         }}}))),
         "PullRequestDetails" => details(request),
+        "BranchRefs" => only_default_branches(request).expect("a BranchRefs answer"),
         "OwnerIssueCounts" => Ok(data(json!({ "repositoryOwner": { "repositories": {
             "pageInfo": page_info(false), "nodes": []
         }}}))),

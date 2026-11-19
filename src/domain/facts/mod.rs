@@ -7,7 +7,7 @@ pub mod issue;
 pub mod pull_request;
 pub mod run;
 
-pub use branch::Branch;
+pub use branch::{Branch, ComparisonBranch};
 pub use issue::{Issue, IssueLink, LinkKind, LinkedPrState};
 pub use pull_request::{
     Check, CheckOutcome, Listed, Mergeability, PrDetails, PullRequest, Review, ReviewDecision,
