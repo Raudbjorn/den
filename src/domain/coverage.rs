@@ -69,6 +69,9 @@ pub enum Incompleteness {
     RateLimited { resets_at: Option<Timestamp> },
     /// Pagination stopped before the last page (den's page bound, or a failed page).
     PaginationStopped { pages_read: u32, reason: String },
+    /// The list was read, but a follow-up query for some of its items' facts
+    /// was lost (for example a PR's checks and reviews).
+    FollowUpLost { what: String, reason: String },
 }
 
 impl Incompleteness {
@@ -91,6 +94,7 @@ impl Incompleteness {
             Self::PaginationStopped { pages_read, reason } => {
                 format!("stopped after {pages_read} page(s): {reason}")
             }
+            Self::FollowUpLost { what, reason } => format!("{what} could not be read: {reason}"),
         }
     }
 }
