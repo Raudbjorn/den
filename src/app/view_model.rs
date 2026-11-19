@@ -94,6 +94,8 @@ pub struct DetailContent {
     pub unknowns: Vec<String>,
     /// Coverage of this item's sources that was not complete.
     pub coverage: Vec<String>,
+    /// When the facts were observed, e.g. "12:00 UTC, 4 min ago".
+    pub observed: String,
 }
 
 /// Sheets drawn over the screen. None exist yet: the detail sheet (#10) and the

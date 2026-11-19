@@ -51,6 +51,8 @@ pub struct Decision {
     pub explanation: Explanation,
     /// Coverage of the sources this item's facts came from.
     pub coverage: Vec<CoverageEntry>,
+    /// When the facts behind this Decision were observed.
+    pub observed_at: Timestamp,
 }
 
 impl Decision {
@@ -71,6 +73,7 @@ impl Decision {
             unattributed: attribution.unattributed,
             explanation,
             coverage,
+            observed_at: ctx.observation.observed_at,
         }
     }
 }
