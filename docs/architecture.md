@@ -44,6 +44,11 @@ responsive while `gh` runs; `den --dump COLSxROWS` and the tests use
 
 - Coverage is honest: a source not read is `NotYetFetched`, never "empty".
   GraphQL errors next to data are `Partial`, never success. No invented counts.
+  `Coverage::record` keeps one cross-kind rule: an Owner's Work Item kinds are
+  never more complete than its Repo list (`Incompleteness::RepoListIncomplete`),
+  so fetchers needn't pass the Repos state around. Sidebar markers and narrowed
+  empty states use `app/view/coverage::scope_complete`; All Owners is
+  `cache::survey_complete`, the only gate for "Nothing needs you".
 - Facts are what GitHub said; Decisions are what den concluded. Don't put rules
   in fetchers or facts in the ViewModel builders.
 - Tests go through the two seams (plus thin adapter checks in
