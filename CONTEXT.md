@@ -58,7 +58,7 @@ Each Work Item has at most one. An Issue with a linked open Pull Request has non
 
 - **Finish draft**: a draft Pull Request needs completing.
 - **Resolve conflicts**: a Pull Request cannot merge because of conflicts.
-- **Fix CI**: checks are failing on a Pull Request, or the latest Run on a default branch failed.
+- **Fix CI**: checks are failing on a Pull Request, or the latest Run of a workflow on a default branch failed. Each workflow is judged on its own latest Run (latest attempt), so a passing workflow never hides a failing one.
 - **Address review**: a Pull Request has requested changes or unresolved review threads.
 - **Review**: a Pull Request is waiting for a requested review.
 - **Merge**: a Pull Request is approved, passing and mergeable.
