@@ -129,6 +129,9 @@ fn octo(prs: Vec<Value>, details: Box<DetailsAnswer>) -> ScriptedGraphQl {
             "nodes": [{ "name": "app", "pullRequests": { "pageInfo": page_info(false), "nodes": *prs } }]
         }}}))),
         "PullRequestDetails" => details(request),
+        "OwnerIssueCounts" => Ok(data(json!({ "repositoryOwner": { "repositories": {
+            "pageInfo": page_info(false), "nodes": []
+        }}}))),
         other => panic!("unexpected {other}"),
     })
 }

@@ -1,0 +1,14 @@
+# One page of an Owner's own Repos with how many open Issues each has (cheap:
+# no Issue is read). Only Repos with open Issues get issues_repo.graphql.
+query OwnerIssueCounts($owner: String!, $after: String) {
+  rateLimit { remaining resetAt }
+  repositoryOwner(login: $owner) {
+    repositories(first: 100, after: $after, ownerAffiliations: [OWNER], orderBy: {field: NAME, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        name
+        issues(states: [OPEN]) { totalCount }
+      }
+    }
+  }
+}

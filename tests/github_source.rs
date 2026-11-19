@@ -142,6 +142,9 @@ fn paginated_octo(request: &GraphQlRequest) -> Result<GraphQlResponse, Transport
         ("RepoPullRequests", Some("b3")) => Ok(data(json!({ "repository": { "pullRequests": {
             "pageInfo": page_info(None), "nodes": [pr_node(4, true)]
         }}}))),
+        ("OwnerIssueCounts", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
+            "pageInfo": page_info(None), "nodes": []
+        }}}))),
         other => panic!("unexpected request {other:?}: {request:?}"),
     }
 }
@@ -206,7 +209,11 @@ fn open_prs_are_paginated_to_completion_and_qualified_by_owner_and_repo() {
             "{source:?}"
         );
     }
-    for kind in [SourceKind::Issues, SourceKind::Branches, SourceKind::Runs] {
+    assert_eq!(
+        state(&observation, owner_source(SourceKind::Issues)),
+        SourceState::Complete
+    );
+    for kind in [SourceKind::Branches, SourceKind::Runs] {
         assert_eq!(
             state(&observation, owner_source(kind)),
             SourceState::NotYetFetched
@@ -229,6 +236,9 @@ fn octo_prs_answer(
                 "pageInfo": page_info(None), "nodes": [repo_node("app")]
             }}}))),
             "OwnerPullRequests" => answer(),
+            "OwnerIssueCounts" => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": []
+            }}}))),
             other => panic!("unexpected {other}"),
         }
     })
@@ -324,6 +334,9 @@ fn a_page_lost_mid_pagination_makes_the_list_partial() {
             ("OwnerPullRequests", Some("p2")) => Err(TransportError::TimedOut {
                 after: Duration::from_secs(30),
             }),
+            ("OwnerIssueCounts", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": []
+            }}}))),
             other => panic!("unexpected {other:?}"),
         }
     });

@@ -1,0 +1,10 @@
+# One page of one Repo's open Issues, most recently updated first.
+query RepoIssues($owner: String!, $name: String!, $after: String) {
+  rateLimit { remaining resetAt }
+  repository(owner: $owner, name: $name) {
+    issues(states: [OPEN], first: 50, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes { ...IssueFacts }
+    }
+  }
+}
