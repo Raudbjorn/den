@@ -1,7 +1,7 @@
 //! The header's Scope: a sentence saying what the list covers, and the
 //! segmented Scope control.
 
-use super::State;
+use super::{State, coverage};
 use crate::{
     app::view_model::{EmptyState, ScopeSegment},
     ordering::{Scope, same_repo},
@@ -68,7 +68,7 @@ pub fn empty_in_scope(state: &State<'_>) -> Option<EmptyState> {
         return None;
     }
     let elsewhere = state.all_decisions.len();
-    let title = if observation.coverage.is_complete() {
+    let title = if coverage::scope_complete(observation, current) {
         format!("Nothing in {current}.")
     } else {
         format!("No Work Items found in {current}, but the picture is incomplete.")

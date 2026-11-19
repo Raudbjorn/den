@@ -2,7 +2,7 @@
 //! count of Work Items that have a Next Step, and whether it is a fork or
 //! archived. Each row is a Scope the user can switch to.
 
-use super::State;
+use super::{State, coverage};
 use crate::{
     app::{
         Focus,
@@ -51,6 +51,9 @@ fn row(state: &State<'_>, scope: &Scope) -> SidebarRow {
         fork: repo.is_some_and(|r| r.is_fork),
         archived: repo.is_some_and(|r| r.is_archived),
         current: &state.scope.scope == scope,
-        incomplete: false,
+        // No Observation yet is not "incomplete coverage": nothing was read.
+        incomplete: state
+            .observation
+            .is_some_and(|observation| !coverage::scope_complete(observation, scope)),
     }
 }

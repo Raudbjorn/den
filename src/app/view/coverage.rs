@@ -1,11 +1,13 @@
 //! Coverage in words, shared by the header, the list's empty state, the detail
-//! pane and (from #9) the sidebar: what was not read completely, the age of any
-//! data kept for it, and when a rate limit resets. Never a count of unseen items.
+//! pane and the sidebar: what was not read completely, the age of any data kept
+//! for it, and when a rate limit resets. Never a count of unseen items.
 
 use super::{State, format};
 use crate::{
     app::view_model::RepoCoverage,
-    domain::{CoverageEntry, Incompleteness, Observation, Repo, Source, SourceState},
+    cache::{self, source_owner},
+    domain::{CoverageEntry, Incompleteness, Observation, RepoId, Source, SourceState},
+    ordering::{Scope, same_repo},
 };
 use jiff::Timestamp;
 
@@ -18,6 +20,20 @@ pub fn carried_note(state: &State<'_>, source: &Source) -> Option<String> {
         format::clock_time(since),
         format::ago(state.now, since)
     ))
+}
+
+/// When the data shown for an item was observed: the oldest age of data kept
+/// for any of its sources, else when the Observation was made.
+pub fn item_observed_at(
+    state: &State<'_>,
+    sources: &[CoverageEntry],
+    fresh: Timestamp,
+) -> Timestamp {
+    sources
+        .iter()
+        .filter_map(|entry| carried_since(state, &entry.source))
+        .min()
+        .map_or(fresh, |kept| kept.min(fresh))
 }
 
 fn carried_since(state: &State<'_>, source: &Source) -> Option<Timestamp> {
@@ -64,18 +80,52 @@ pub fn rate_limit_note(observation: &Observation) -> Option<String> {
     })
 }
 
-/// How completely one Repo was read: its Owner's sources and its own.
-pub fn for_repo(state: &State<'_>, observation: &Observation, repo: &Repo) -> RepoCoverage {
-    let applicable: Vec<&CoverageEntry> = observation
+/// True when everything behind `scope` was read completely: the viewer (for
+/// Waiting On) and every source of the Owner or Repo the Scope covers. All
+/// Owners is the whole survey, so it is [`cache::survey_complete`], the only gate
+/// for "Nothing needs you".
+pub fn scope_complete(observation: &Observation, scope: &Scope) -> bool {
+    let viewer_complete = observation
+        .coverage
+        .get(&Source::Viewer)
+        .is_some_and(SourceState::is_complete);
+    match scope {
+        Scope::AllOwners => cache::survey_complete(observation),
+        Scope::Owner(owner) => {
+            let entries: Vec<&CoverageEntry> = observation
+                .coverage
+                .entries()
+                .iter()
+                .filter(|e| source_owner(&e.source).is_some_and(|o| o.eq_ignore_ascii_case(owner)))
+                .collect();
+            viewer_complete && !entries.is_empty() && entries.iter().all(|e| e.state.is_complete())
+        }
+        Scope::Repo(repo) => {
+            let applicable = applicable_to_repo(observation, repo);
+            viewer_complete
+                && !applicable.is_empty()
+                && applicable.iter().all(|e| e.state.is_complete())
+        }
+    }
+}
+
+/// The sources behind one Repo's Work Items: its Owner's and its own.
+fn applicable_to_repo<'o>(observation: &'o Observation, repo: &RepoId) -> Vec<&'o CoverageEntry> {
+    observation
         .coverage
         .entries()
         .iter()
         .filter(|e| match &e.source {
-            Source::Owner { owner, .. } => owner.eq_ignore_ascii_case(&repo.id.owner),
-            Source::Repo { repo: r, .. } => r == &repo.id,
+            Source::Owner { owner, .. } => owner.eq_ignore_ascii_case(&repo.owner),
+            Source::Repo { repo: r, .. } => same_repo(r, repo),
             Source::Viewer => false,
         })
-        .collect();
+        .collect()
+}
+
+/// How completely one Repo was read: its Owner's sources and its own.
+pub fn for_repo(state: &State<'_>, observation: &Observation, repo: &RepoId) -> RepoCoverage {
+    let applicable = applicable_to_repo(observation, repo);
     let incomplete: Vec<&CoverageEntry> = applicable
         .iter()
         .copied()
@@ -100,7 +150,7 @@ pub fn for_repo(state: &State<'_>, observation: &Observation, repo: &Repo) -> Re
         format!("incomplete: {}", short_summary(&incomplete))
     };
     RepoCoverage {
-        repo: repo.id.to_string(),
+        repo: repo.to_string(),
         complete,
         summary,
         problems,
@@ -113,7 +163,7 @@ pub fn by_repo(state: &State<'_>) -> Vec<RepoCoverage> {
         observation
             .repos
             .iter()
-            .map(|repo| for_repo(state, observation, repo))
+            .map(|repo| for_repo(state, observation, &repo.id))
             .collect()
     })
 }

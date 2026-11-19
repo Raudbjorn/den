@@ -88,8 +88,8 @@ pub struct SidebarRow {
     pub archived: bool,
     /// This row is the current Scope.
     pub current: bool,
-    /// Coverage marker slot: some source behind this row was not read
-    /// completely. Filled by the coverage ticket (#8); `false` until then.
+    /// Some source behind this row's Scope was not read completely (the
+    /// viewer, or a source of its Owner or Repo); drawn as a glyph.
     pub incomplete: bool,
 }
 
