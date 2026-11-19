@@ -1,0 +1,5 @@
+# Who is looking. Waiting On "me" means this login.
+query Viewer {
+  rateLimit { remaining resetAt }
+  viewer { login }
+}

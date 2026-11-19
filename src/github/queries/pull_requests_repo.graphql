@@ -1,0 +1,10 @@
+# The next page of one Repo's open PRs.
+query RepoPullRequests($owner: String!, $name: String!, $after: String) {
+  rateLimit { remaining resetAt }
+  repository(owner: $owner, name: $name) {
+    pullRequests(states: [OPEN], first: 100, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes { ...PullRequestFacts }
+    }
+  }
+}

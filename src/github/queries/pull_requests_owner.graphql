@@ -1,0 +1,17 @@
+# One page of an Owner's own Repos, each with its first page of open PRs.
+# Repos with more open PRs continue with pull_requests_repo.graphql.
+query OwnerPullRequests($owner: String!, $after: String) {
+  rateLimit { remaining resetAt }
+  repositoryOwner(login: $owner) {
+    repositories(first: 50, after: $after, ownerAffiliations: [OWNER], orderBy: {field: NAME, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        name
+        pullRequests(states: [OPEN], first: 50, orderBy: {field: UPDATED_AT, direction: DESC}) {
+          pageInfo { hasNextPage endCursor }
+          nodes { ...PullRequestFacts }
+        }
+      }
+    }
+  }
+}

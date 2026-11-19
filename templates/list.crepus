@@ -1,0 +1,73 @@
+den's Next Step list (spec, "Look and layout"): two lines per Work Item, a rust
+tick and the selected fill on the current row, Waiting On someone else dimmed.
+Rust windows the rows to the plate's height (crepus squeezes overflow to zero).
+
+Sentinels as in frame.crepus. Meaning never rides on colour alone: the tick is a
+glyph, Waiting On and "unattributed" are words, incomplete data has a glyph.
+
+--- List
+div w-full h-full flex-col bg-[#aa0000] pt-1
+  div h-[1] flex-row px-2 text-[#aa000a]
+    span flex-1 "{list_label}"
+    span w-[16] text-[#aa0008] "{position}"
+  div h-[1]
+  for item in rows
+    if {selected}
+      div h-[2] flex-col bg-[#aa0017]
+        div h-[1] flex-row
+          span w-[2] text-[#aa000b] "{tick}"
+          span w-[20] font-bold text-[#aa0009] "{step}"
+          span w-[2] text-[#aa000f] "{flag}"
+          span flex-1 text-[#aa000a] "{repo} {reference}"
+          span w-[5] text-[#aa0008] "{age}"
+        div h-[1] flex-row
+          span w-[2] text-[#aa000b] "{tick}"
+          span w-[2] " "
+          span flex-1 text-[#aa0006] "{title}"
+          span w-[14] text-[#aa0007] "{waiting}"
+    else if {dimmed}
+      div h-[2] flex-col text-[#aa0008]
+        div h-[1] flex-row
+          span w-[2] " "
+          span w-[20] "{step}"
+          span w-[2] "{flag}"
+          span flex-1 "{repo} {reference}"
+          span w-[5] "{age}"
+        div h-[1] flex-row
+          span w-[4] " "
+          span flex-1 "{title}"
+          span w-[14] "{waiting}"
+    else if {has_step}
+      div h-[2] flex-col
+        div h-[1] flex-row
+          span w-[2] " "
+          span w-[20] text-[#aa0009] "{step}"
+          span w-[2] text-[#aa000f] "{flag}"
+          span flex-1 text-[#aa000a] "{repo} {reference}"
+          span w-[5] text-[#aa0008] "{age}"
+        div h-[1] flex-row
+          span w-[4] " "
+          span flex-1 text-[#aa0005] "{title}"
+          span w-[14] text-[#aa0007] "{waiting}"
+    else
+      div h-[2] flex-col
+        div h-[1] flex-row
+          span w-[2] " "
+          span w-[20] text-[#aa0008] "{step}"
+          span w-[2] text-[#aa000f] "{flag}"
+          span flex-1 text-[#aa000a] "{repo} {reference}"
+          span w-[5] text-[#aa0008] "{age}"
+        div h-[1] flex-row
+          span w-[4] " "
+          span flex-1 text-[#aa0005] "{title}"
+          span w-[14] text-[#aa0007] "{waiting}"
+  div flex-1
+
+--- Empty
+div w-full h-full flex-col bg-[#aa0000] pt-1
+  div h-[1] px-2 text-[#aa000a] "{list_label}"
+  div flex-1
+  div h-[1] text-center font-bold text-[#aa0006] "{empty_title}"
+  for item in lines
+    div h-[1] text-center text-[#aa0008] "{text}"
+  div flex-1

@@ -1,7 +1,15 @@
 //! Rendering: den's templates on the vendored engine, painted in IRONMAW Oxide.
+//! It draws a [`ViewModel`](crate::app::ViewModel) and holds no logic about GitHub.
+//! One module per plate (header, list, detail, footer); `frame` lays them out.
 
+mod detail;
+mod footer;
 pub mod frame;
+mod glyphs;
+mod header;
+pub mod list;
 pub mod templates;
+mod text;
 
 use crate::palette::oxide_for;
 use crepuscularity_tui::TemplateContext;
