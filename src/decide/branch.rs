@@ -1,32 +1,127 @@
-//! Branch rules. Owned by the Branches ticket (#6); not implemented yet.
+//! Branch rules (spec, "Rule table" and "Waiting On rules").
 //!
-//! The Observation's `branches` slot is empty until #6 fetches it, so this
-//! produces nothing in practice. Should facts arrive first, each item is kept
-//! visible with no Next Step rather than dropped.
+//! A Branch is a Work Item only when it is not its Repo's default branch, was
+//! never the head of any PR (open, merged or closed), and has commits that are
+//! not on its comparison branch. Then: last commit within
+//! [`STALE_BRANCH_AGE_DAYS`] → Open PR; older (a Stale Branch) → Prune or
+//! revive. Both are Waiting On the author of the last commit; an author GitHub
+//! could not match to a login leaves the item Waiting On nobody, unattributed.
 
 use super::{Attribution, Context, Decision, Explanation, WorkItem};
+use crate::domain::{NextStep, facts::Branch};
+use jiff::{SignedDuration, Timestamp};
+
+/// A Branch whose last commit is more than this many days old is a Stale Branch.
+pub const STALE_BRANCH_AGE_DAYS: i64 = 30;
+const SECONDS_PER_DAY: i64 = 24 * 60 * 60;
+
+const AUTHOR_ROLE: &str = "the author of the Branch's last commit";
+const NOT_PROOF: &str = "this is a decision, not proof the work is unshipped: squash and rebase merges leave Branches like this behind";
 
 pub fn decide_all(ctx: &Context<'_>) -> Vec<Decision> {
     ctx.observation
         .branches
         .iter()
-        .map(|branch| {
-            let item = WorkItem {
-                id: branch.id(),
-                title: branch.name.clone(),
-                url: branch.url.clone(),
-                updated_at: branch.last_commit_at,
-            };
-            Decision::new(
-                ctx,
-                item,
-                None,
-                Attribution::nobody("no Next Step"),
-                Explanation {
-                    unknowns: vec!["Branch rules are not implemented yet".to_owned()],
-                    ..Explanation::default()
-                },
-            )
-        })
+        .filter(|branch| is_candidate(ctx, branch))
+        .map(|branch| decide(ctx, branch))
         .collect()
+}
+
+/// False for what is never a Work Item: the default branch, a Branch that was
+/// ever a PR head, and one with nothing that is not on its comparison branch.
+fn is_candidate(ctx: &Context<'_>, branch: &Branch) -> bool {
+    let is_default = ctx
+        .observation
+        .repo(&branch.repo)
+        .and_then(|repo| repo.default_branch.as_deref())
+        .is_some_and(|default| default == branch.name);
+    let is_its_own_comparison =
+        branch.comparison.repo == branch.repo && branch.comparison.name == branch.name;
+    !is_default && !is_its_own_comparison && !branch.ever_had_pr && branch.commits_ahead != Some(0)
+}
+
+fn decide(ctx: &Context<'_>, branch: &Branch) -> Decision {
+    let item = WorkItem {
+        id: branch.id(),
+        title: if branch.last_commit_headline.is_empty() {
+            branch.name.clone()
+        } else {
+            branch.last_commit_headline.clone()
+        },
+        url: branch.url.clone(),
+        updated_at: branch.last_commit_at,
+    };
+    let base = branch.comparison.describe(&branch.repo);
+    let Some(ahead) = branch.commits_ahead else {
+        return Decision::new(
+            ctx,
+            item,
+            None,
+            Attribution::nobody("no Next Step"),
+            Explanation {
+                no_step_reason: Some(format!(
+                    "den could not establish whether it has commits not on {base}"
+                )),
+                unknowns: vec![format!("commits ahead of {base}")],
+                ..Explanation::default()
+            },
+        );
+    };
+    let age = age(ctx.now, branch.last_commit_at);
+    let days = age.as_secs() / SECONDS_PER_DAY;
+    let evidence = format!(
+        "{ahead} commit{} not on {base}, never the head of a PR, last commit {days} day{} ago",
+        plural(i64::from(ahead)),
+        plural(days),
+    );
+    let stale = age > SignedDuration::from_secs(STALE_BRANCH_AGE_DAYS * SECONDS_PER_DAY);
+    let (step, winning_rule, other_conditions) = if stale {
+        (
+            NextStep::PruneOrRevive,
+            format!(
+                "a Stale Branch ({evidence}, more than {STALE_BRANCH_AGE_DAYS}): decide whether to prune it or revive it"
+            ),
+            vec![NOT_PROOF.to_owned()],
+        )
+    } else {
+        (
+            NextStep::OpenPr,
+            format!("unproposed work ({evidence}, within {STALE_BRANCH_AGE_DAYS})"),
+            Vec::new(),
+        )
+    };
+    let attribution = Attribution::person(
+        ctx.viewer,
+        branch.last_commit_author.as_deref(),
+        AUTHOR_ROLE,
+    );
+    let unknowns = if attribution.unattributed {
+        vec![
+            "the last commit's author is not matched to a GitHub login, so who owes this is unattributed"
+                .to_owned(),
+        ]
+    } else {
+        Vec::new()
+    };
+    Decision::new(
+        ctx,
+        item,
+        Some(step),
+        attribution,
+        Explanation {
+            winning_rule: Some(winning_rule),
+            no_step_reason: None,
+            other_conditions,
+            unknowns,
+        },
+    )
+}
+
+/// How old the last commit is; a commit dated in the future counts as new.
+fn age(now: Timestamp, last_commit_at: Timestamp) -> SignedDuration {
+    now.duration_since(last_commit_at).max(SignedDuration::ZERO)
+}
+
+fn plural(count: i64) -> &'static str {
+    if count == 1 { "" } else { "s" }
 }
