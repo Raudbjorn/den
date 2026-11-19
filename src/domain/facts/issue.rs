@@ -1,4 +1,4 @@
-//! Issue facts. Not fetched yet: the Issues ticket (#5) adds the query.
+//! Issue facts: what GitHub said about an open Issue and the PRs linked to it.
 
 use crate::domain::ids::{RepoId, WorkItemId};
 use jiff::Timestamp;
@@ -13,23 +13,63 @@ pub struct Issue {
     pub labels: Vec<String>,
     pub assignees: Vec<String>,
     pub updated_at: Timestamp,
-    /// PRs linked by a closing reference or a manual link. Mentions are not links.
+    /// PRs linked by a closing reference or a manual link, in any Repo, open or
+    /// not. Mentions in a title, body or branch name are not links.
     pub linked_prs: Vec<IssueLink>,
+    /// False when GitHub reported more linked PRs than den read, so an open one
+    /// may be missing from `linked_prs`.
+    pub linked_prs_complete: bool,
 }
 
 /// How an Issue and a PR are linked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum LinkKind {
+    /// The PR says it closes the Issue ("Fixes #12" and the like).
     ClosingReference,
+    /// Someone linked the PR to the Issue by hand (the Development sidebar).
     ManualLink,
+}
+
+impl LinkKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ClosingReference => "closing reference",
+            Self::ManualLink => "manual link",
+        }
+    }
+}
+
+/// A linked PR's state, as GitHub reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum LinkedPrState {
+    Open,
+    Closed,
+    Merged,
+}
+
+impl LinkedPrState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Closed => "closed",
+            Self::Merged => "merged",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IssueLink {
     pub kind: LinkKind,
+    /// The Repo the PR lives in; may be outside the watched Owners.
     pub repo: RepoId,
     pub number: u64,
-    pub is_open: bool,
+    pub state: LinkedPrState,
+}
+
+impl IssueLink {
+    pub fn is_open(&self) -> bool {
+        self.state == LinkedPrState::Open
+    }
 }
 
 impl Issue {
