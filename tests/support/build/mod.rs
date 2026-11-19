@@ -4,8 +4,10 @@
 //! tickets add `issue.rs`, `branch.rs` and `run.rs` beside it, plus a slot method
 //! on [`ObservationBuilder`].
 
+pub mod issue;
 pub mod pull_request;
 
+pub use issue::{IssueBuilder, issue};
 pub use pull_request::{PrBuilder, pr};
 
 use den::domain::{Observation, Repo, RepoId, Source, SourceKind, SourceState, TeamRef, Viewer};
@@ -113,6 +115,11 @@ impl ObservationBuilder {
 
     pub fn pull_request(mut self, pr: PrBuilder) -> Self {
         self.observation.pull_requests.push(pr.build());
+        self
+    }
+
+    pub fn issue(mut self, issue: IssueBuilder) -> Self {
+        self.observation.issues.push(issue.build());
         self
     }
 
