@@ -86,6 +86,14 @@ fn plates_are_told_apart_by_tone_in_truecolor() {
         OXIDE_TRUECOLOR.mark_bg
     );
     assert_eq!(bg_at(regions.list.x, regions.list.y), OXIDE_TRUECOLOR.bg);
+    assert_eq!(
+        bg_at(regions.sidebar.x, regions.sidebar.y),
+        OXIDE_TRUECOLOR.surface_1
+    );
+    assert_eq!(
+        buffer[(regions.sidebar_suture.x, regions.sidebar_suture.y)].symbol(),
+        "┊"
+    );
     let inside_detail = (regions.detail.x + 1, regions.detail.y + 1);
     assert_eq!(
         bg_at(inside_detail.0, inside_detail.1),
@@ -155,4 +163,92 @@ fn a_long_list_keeps_the_selection_in_view() {
         "selected {reference} not drawn\n{text}"
     );
     assert!(text.contains("40 of 40"), "{text}");
+}
+
+/// Many Repos under two Owners, one a fork and one archived, with Work Items.
+fn many_repos() -> Harness {
+    let mut builder = ObservationBuilder::new()
+        .owner("octo")
+        .owner("beta")
+        .fork("octo/a-fork", Some("up/a-fork"))
+        .archived_repo("octo/b-old");
+    for n in 0..60 {
+        builder = builder.repo(&format!("octo/repo-{n:02}"));
+    }
+    builder = builder
+        .repo("beta/zeta")
+        .pull_request(pr("octo/a-fork", 1).draft().author(ME))
+        .pull_request(pr("octo/b-old", 2).draft().author("alice"))
+        .pull_request(pr("beta/zeta", 3).draft().author(ME));
+    let mut harness = Harness::with_owners(&["octo", "beta"]);
+    harness.answer(Ok(builder.build()));
+    harness.start();
+    harness
+}
+
+#[test]
+fn the_sidebar_shows_repos_with_counts_and_glyphs_and_the_header_its_segments() {
+    let harness = many_repos();
+    for (glyphs, fork, archived, scope_mark) in [
+        (GlyphProfile::Unicode, "⑂", "▣", "●"),
+        (GlyphProfile::Ascii, "Y", "#", "*"),
+    ] {
+        let theme = Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
+        let (cols, rows) = DESIGN_SIZE;
+        let text =
+            frame::buffer_text(&frame::render(&theme, &harness.view, cols, rows).expect("renders"));
+        for expected in [
+            "R E P O S",
+            &format!("{scope_mark}All Owners"),
+            "  a-fork",
+            fork,
+            archived,
+            "beta",
+        ] {
+            assert!(
+                text.contains(expected),
+                "{glyphs:?}: missing {expected:?}\n{text}"
+            );
+        }
+        assert!(text.contains("octo, beta"), "the Scope sentence\n{text}");
+        assert!(text.contains(" octo "), "segments drawn\n{text}");
+    }
+}
+
+#[test]
+fn a_long_sidebar_keeps_its_cursor_in_view() {
+    let mut harness = many_repos();
+    harness.key(den::app::Key::Tab);
+    // Down to beta/zeta, the last row.
+    for _ in 0..80 {
+        harness.key(den::app::Key::Down);
+    }
+    let theme = Theme::new(TerminalProfile::new(
+        ColorProfile::Mono,
+        GlyphProfile::Ascii,
+    ))
+    .expect("theme");
+    let (cols, rows) = DESIGN_SIZE;
+    let text =
+        frame::buffer_text(&frame::render(&theme, &harness.view, cols, rows).expect("renders"));
+    assert!(text.contains(">   zeta"), "cursor row drawn\n{text}");
+    assert!(!text.contains("repo-00"), "scrolled past the top\n{text}");
+}
+
+#[test]
+fn the_sidebar_gives_way_to_the_list_at_the_minimum_size() {
+    let harness = many_repos();
+    let theme = Theme::new(TerminalProfile::new(
+        ColorProfile::Mono,
+        GlyphProfile::Unicode,
+    ))
+    .expect("theme");
+    let (cols, rows) = MINIMUM_SIZE;
+    let buffer = frame::render(&theme, &harness.view, cols, rows).expect("renders");
+    assert!(frame::regions(buffer.area).sidebar.is_empty());
+    let text = frame::buffer_text(&buffer);
+    assert!(
+        text.contains("Owners"),
+        "the header still names the Scope\n{text}"
+    );
 }
