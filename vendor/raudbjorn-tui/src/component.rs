@@ -1,157 +1,41 @@
-use crate::profile::{TerminalProfile, apply_profile_area};
-use crate::theme::TerminalPalette;
+use crate::profile::{ColorProfile, TerminalProfile, apply_profile_area};
+use crate::theme::{TerminalPalette, mono_cue};
 use crepuscularity_core::{eval::eval_expr, parser::ComponentDef};
 use crepuscularity_tui::{
     CrepusError, TemplateContext, TemplateValue, parse_component_file, render_nodes,
 };
 use ratatui::{Frame, layout::Rect};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
+// den patch: the upstream `ComponentId` (the 28 gallery components), the closed
+// four-variant `TemplateFile` enum, `load_embedded` and the per-section
+// `normalize_*` helpers are gone. Callers register their own template files
+// under names of their choosing (an open namespace), and section names carry no
+// hidden behaviour.
+
+/// Directory under which every registered template file is visible to
+/// `include` directives, as `templates/<name>.crepus`.
+pub const TEMPLATE_DIR: &str = "templates";
+
+/// One registered `.crepus` file, addressed by a caller-chosen name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ComponentId {
-    Text,
-    Heading,
-    Button,
-    Link,
-    Badge,
-    Icon,
-    Kbd,
-    Avatar,
-    Stack,
-    Card,
-    CodeBlock,
-    NavBar,
-    StatCard,
-    Input,
-    Select,
-    Checkbox,
-    Radio,
-    Switch,
-    Alert,
-    Tooltip,
-    Spinner,
-    Progress,
-    Tabs,
-    Table,
-    Timeline,
-    Breadcrumb,
-    Modal,
-    Sheet,
-}
-
-impl ComponentId {
-    pub const ALL: [Self; 28] = [
-        Self::Text,
-        Self::Heading,
-        Self::Button,
-        Self::Link,
-        Self::Badge,
-        Self::Icon,
-        Self::Kbd,
-        Self::Avatar,
-        Self::Stack,
-        Self::Card,
-        Self::CodeBlock,
-        Self::NavBar,
-        Self::StatCard,
-        Self::Input,
-        Self::Select,
-        Self::Checkbox,
-        Self::Radio,
-        Self::Switch,
-        Self::Alert,
-        Self::Tooltip,
-        Self::Spinner,
-        Self::Progress,
-        Self::Tabs,
-        Self::Table,
-        Self::Timeline,
-        Self::Breadcrumb,
-        Self::Modal,
-        Self::Sheet,
-    ];
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Text => "Text",
-            Self::Heading => "Heading",
-            Self::Button => "Button",
-            Self::Link => "Link",
-            Self::Badge => "Badge",
-            Self::Icon => "Icon",
-            Self::Kbd => "Kbd",
-            Self::Avatar => "Avatar",
-            Self::Stack => "Stack",
-            Self::Card => "Card",
-            Self::CodeBlock => "CodeBlock",
-            Self::NavBar => "NavBar",
-            Self::StatCard => "StatCard",
-            Self::Input => "Input",
-            Self::Select => "Select",
-            Self::Checkbox => "Checkbox",
-            Self::Radio => "Radio",
-            Self::Switch => "Switch",
-            Self::Alert => "Alert",
-            Self::Tooltip => "Tooltip",
-            Self::Spinner => "Spinner",
-            Self::Progress => "Progress",
-            Self::Tabs => "Tabs",
-            Self::Table => "Table",
-            Self::Timeline => "Timeline",
-            Self::Breadcrumb => "Breadcrumb",
-            Self::Modal => "Modal",
-            Self::Sheet => "Sheet",
-        }
-    }
-
-    pub const fn template_ref(self) -> TemplateRef {
-        let (file, section) = match self {
-            Self::Text
-            | Self::Heading
-            | Self::Icon
-            | Self::Kbd
-            | Self::Badge
-            | Self::Avatar
-            | Self::Spinner
-            | Self::Progress => (TemplateFile::Atoms, self.as_str()),
-            Self::Stack | Self::Card | Self::NavBar | Self::Breadcrumb | Self::Tabs => {
-                (TemplateFile::Layout, self.as_str())
-            }
-            Self::Button
-            | Self::Link
-            | Self::StatCard
-            | Self::Input
-            | Self::Select
-            | Self::Checkbox
-            | Self::Radio
-            | Self::Switch
-            | Self::Alert
-            | Self::Tooltip
-            | Self::Table
-            | Self::Timeline
-            | Self::CodeBlock => (TemplateFile::Molecules, self.as_str()),
-            Self::Modal | Self::Sheet => (TemplateFile::Views, self.as_str()),
-        };
-        TemplateRef { file, section }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TemplateFile {
-    Atoms,
-    Layout,
-    Molecules,
-    Views,
-}
+pub struct TemplateFile(&'static str);
 
 impl TemplateFile {
-    pub const fn path(self) -> &'static str {
-        match self {
-            Self::Atoms => "templates/atoms.crepus",
-            Self::Layout => "templates/layout.crepus",
-            Self::Molecules => "templates/molecules.crepus",
-            Self::Views => "templates/views.crepus",
-        }
+    pub const fn new(name: &'static str) -> Self {
+        Self(name)
+    }
+
+    pub const fn name(self) -> &'static str {
+        self.0
+    }
+
+    /// The virtual path the file is registered under, for `include`.
+    pub fn path(self) -> String {
+        format!("{TEMPLATE_DIR}/{}.crepus", self.0)
     }
 }
 
@@ -159,6 +43,13 @@ impl TemplateFile {
 pub struct TemplateRef {
     pub file: TemplateFile,
     pub section: &'static str,
+}
+
+/// A template file's source, as handed to [`TemplateStore::from_sources`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TemplateSource {
+    pub file: TemplateFile,
+    pub content: &'static str,
 }
 
 pub struct ComponentFileEntry {
@@ -178,7 +69,7 @@ pub struct TemplateIssue {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ComponentError {
-    #[error("invalid embedded templates")]
+    #[error("invalid templates: {}", describe_issues(.0))]
     InvalidTemplates(Vec<TemplateIssue>),
     #[error("missing component {section} in {file:?}")]
     MissingComponent {
@@ -194,39 +85,56 @@ pub enum ComponentError {
     },
 }
 
+fn describe_issues(issues: &[TemplateIssue]) -> String {
+    issues
+        .iter()
+        .map(|issue| format!("{}: {}", issue.file.path(), issue.message))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn name_problem(name: &str) -> Option<&'static str> {
+    if name.is_empty() {
+        return Some("template file name is empty");
+    }
+    if name.contains(['/', '\\']) || name.contains("..") {
+        return Some("template file name must not contain path separators or `..`");
+    }
+    None
+}
+
 impl TemplateStore {
-    pub fn load_embedded() -> Result<Self, ComponentError> {
+    /// Parses every source up front. All problems (bad names, duplicate names,
+    /// parse errors) are collected and returned together.
+    pub fn from_sources(
+        sources: impl IntoIterator<Item = TemplateSource>,
+    ) -> Result<Self, ComponentError> {
         let mut files = HashMap::new();
         let mut virtual_files = HashMap::new();
+        let mut seen = HashSet::new();
         let mut issues = Vec::new();
 
-        let entries = [
-            (
-                TemplateFile::Atoms,
-                include_str!("../templates/atoms.crepus"),
-            ),
-            (
-                TemplateFile::Layout,
-                include_str!("../templates/layout.crepus"),
-            ),
-            (
-                TemplateFile::Molecules,
-                include_str!("../templates/molecules.crepus"),
-            ),
-            (
-                TemplateFile::Views,
-                include_str!("../templates/views.crepus"),
-            ),
-        ];
-
-        for (file_enum, content) in entries {
-            let path = file_enum.path();
-            virtual_files.insert(path.to_string(), content.to_string());
+        for TemplateSource { file, content } in sources {
+            if let Some(problem) = name_problem(file.name()) {
+                issues.push(TemplateIssue {
+                    file,
+                    message: problem.to_owned(),
+                });
+                continue;
+            }
+            if !seen.insert(file) {
+                issues.push(TemplateIssue {
+                    file,
+                    message: "registered more than once".to_owned(),
+                });
+                continue;
+            }
+            virtual_files.insert(file.path(), content.to_owned());
 
             match parse_component_file(content) {
                 Ok(comp_file) => {
                     files.insert(
-                        file_enum,
+                        file,
                         ComponentFileEntry {
                             components: comp_file.components,
                         },
@@ -234,7 +142,7 @@ impl TemplateStore {
                 }
                 Err(e) => {
                     issues.push(TemplateIssue {
-                        file: file_enum,
+                        file,
                         message: e.to_string(),
                     });
                 }
@@ -283,8 +191,16 @@ impl ComponentRenderer {
         Self { store }
     }
 
-    /// Renders from the embedded `templates/` namespace. A caller-provided
-    /// `base_dir` is intentionally ignored in the cloned render context.
+    /// Renders a registered section into `area`.
+    ///
+    /// Order matters: sentinel colours are replaced with `palette` roles first,
+    /// then the colour/glyph profile is applied. Pass a palette already meant
+    /// for the profile when nearest-colour quantisation would merge roles.
+    ///
+    /// den patch: a template can no longer be overridden at render time through
+    /// `ctx.virtual_files` (upstream re-parsed it on every render and silently
+    /// fell back to the store on a parse error). Extra virtual files in `ctx`
+    /// remain visible to `include`. A caller-provided `base_dir` is ignored.
     pub fn render(
         &self,
         template: TemplateRef,
@@ -294,21 +210,12 @@ impl ComponentRenderer {
         frame: &mut Frame,
         area: Rect,
     ) -> Result<(), ComponentError> {
-        let overridden = ctx
-            .virtual_files
-            .get(template.file.path())
-            .and_then(|content| parse_component_file(content).ok())
-            .and_then(|file| file.components.get(template.section).cloned());
-        let component = match &overridden {
-            Some(component) => component,
-            None => self.store.parsed_component(template)?,
-        };
+        let component = self.store.parsed_component(template)?;
         if area.is_empty() {
             return Ok(());
         }
 
         let mut render_ctx = ctx.clone();
-        normalize_render_context(template, &mut render_ctx);
         let mut virtual_files = (*self.store.virtual_files()).clone();
         virtual_files.extend(
             render_ctx
@@ -317,7 +224,7 @@ impl ComponentRenderer {
                 .map(|(path, content)| (path.clone(), content.clone())),
         );
         render_ctx.virtual_files = Arc::new(virtual_files);
-        render_ctx.base_dir = Some("templates".into());
+        render_ctx.base_dir = Some(TEMPLATE_DIR.into());
 
         render_ctx.set("w", area.width as i64);
         render_ctx.set("h", area.height as i64);
@@ -336,10 +243,15 @@ impl ComponentRenderer {
             }
         })?;
 
+        let colourless = matches!(profile.color, ColorProfile::Mono | ColorProfile::NoColor);
         let buf = frame.buffer_mut();
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
                 if let Some(cell) = buf.cell_mut((x, y)) {
+                    if colourless {
+                        let cue = mono_cue(cell.fg) | mono_cue(cell.bg);
+                        cell.modifier.insert(cue);
+                    }
                     cell.fg = palette.get_semantic_color(cell.fg);
                     cell.bg = palette.get_semantic_color(cell.bg);
                     cell.underline_color = palette.get_semantic_color(cell.underline_color);
@@ -350,157 +262,4 @@ impl ComponentRenderer {
         apply_profile_area(buf, area, profile);
         Ok(())
     }
-}
-
-pub fn normalize_render_context(template: TemplateRef, ctx: &mut TemplateContext) {
-    // Injection: force-set viewport dimensions before any other normalization
-    // We use the area values from the component renderer if possible, but here
-    // we rely on the context already having them set.
-
-    match template.section {
-        "Checkbox" => normalize_checkbox(ctx),
-        "Progress" => normalize_progress(ctx),
-        "Radio" => normalize_indexed_label(ctx, "options", "selected_index", "label"),
-        "Select" => normalize_select(ctx),
-        "Table" => normalize_table(ctx),
-        "Tabs" => normalize_tabs(ctx),
-        _ => {}
-    }
-}
-
-fn normalize_progress(ctx: &mut TemplateContext) {
-    let value = match ctx.get("value") {
-        Some(TemplateValue::Int(value)) => Some(*value as f64),
-        Some(TemplateValue::Float(value)) => Some(*value),
-        Some(TemplateValue::Str(value)) => value.parse().ok(),
-        _ => None,
-    };
-    let Some(value) = value.filter(|value| value.is_finite()) else {
-        ctx.set("value", "Unavailable")
-            .set("bar", "----------")
-            .set("state", "Unavailable");
-        return;
-    };
-
-    let value = value.clamp(0.0, 100.0);
-    if value.fract() == 0.0 {
-        ctx.set("value", value as i64);
-    } else {
-        ctx.set("value", value);
-    }
-    let filled = (value / 10.0).floor() as usize;
-    let bar = format!("{}{}", "█".repeat(filled), "░".repeat(10 - filled));
-    ctx.set("bar", bar);
-}
-pub fn normalize_select(ctx: &mut TemplateContext) {
-    let has_options = !ctx.get_str("options").trim().is_empty();
-    let count = match ctx.get("option_count") {
-        Some(TemplateValue::Int(value)) if has_options => (*value).max(0),
-        _ => 0,
-    };
-    if count == 0 {
-        ctx.set("selected", "No options")
-            .set("options", "No options")
-            .set("selected_index", -1_i64);
-        return;
-    }
-
-    let selected = match ctx.get("selected_index") {
-        Some(TemplateValue::Int(value)) => *value,
-        _ => -1,
-    };
-    if !(0..count).contains(&selected) {
-        ctx.set("selected", "None").set("selected_index", -1_i64);
-        return;
-    }
-
-    let value_source = if ctx.get_str("option_values").trim().is_empty() {
-        "options"
-    } else {
-        "option_values"
-    };
-    if let Some(option) = indexed_label(ctx, value_source, selected) {
-        ctx.set("selected", option);
-    } else {
-        ctx.set("selected", "None").set("selected_index", -1_i64);
-    }
-}
-
-pub fn normalize_tabs(ctx: &mut TemplateContext) {
-    let declared = match ctx.get("tab_count") {
-        Some(TemplateValue::Int(value)) => (*value).max(0),
-        _ => 0,
-    };
-    if declared == 0 {
-        return;
-    }
-    // `tab_count` is caller-supplied and can drift from the actual number of
-    // comma-separated labels in `tabs`; bound against the parsed length too
-    // so `active` never indexes past what `indexed_label` can resolve.
-    let parsed = ctx.get_str("tabs").split(',').count() as i64;
-    let count = declared.min(parsed.max(1));
-
-    let active = match ctx.get("active_index") {
-        Some(TemplateValue::Int(value)) => (*value).clamp(0, count - 1),
-        _ => 0,
-    };
-    ctx.set("active_index", active);
-    if let Some(label) = indexed_label(ctx, "tabs", active) {
-        ctx.set("tab", label);
-    }
-}
-
-fn normalize_checkbox(ctx: &mut TemplateContext) {
-    let marker = if ctx.get_bool("checked") {
-        "[x]"
-    } else {
-        "[ ]"
-    };
-    ctx.set("check", marker);
-}
-
-fn normalize_indexed_label(
-    ctx: &mut TemplateContext,
-    values_key: &str,
-    index_key: &str,
-    output_key: &str,
-) {
-    let index = match ctx.get(index_key) {
-        Some(TemplateValue::Int(value)) => *value,
-        _ => return,
-    };
-    if let Some(label) = indexed_label(ctx, values_key, index) {
-        ctx.set(output_key, label);
-    }
-}
-
-fn normalize_table(ctx: &mut TemplateContext) {
-    let row_count = match ctx.get("row_count") {
-        Some(TemplateValue::Int(value)) => (*value).max(0),
-        _ => 0,
-    };
-    if row_count == 0 {
-        return;
-    }
-
-    let selected_row = match ctx.get("selected_row") {
-        Some(TemplateValue::Int(value)) => *value,
-        _ => -1,
-    };
-    if let Some(label) = indexed_label(ctx, "row_labels", selected_row) {
-        ctx.set("rows", label);
-    }
-}
-
-fn indexed_label(ctx: &TemplateContext, values_key: &str, index: i64) -> Option<String> {
-    let TemplateValue::Str(values) = ctx.get(values_key)? else {
-        return None;
-    };
-    let index = usize::try_from(index).ok()?;
-    values
-        .split(',')
-        .nth(index)
-        .map(str::trim)
-        .filter(|label| !label.is_empty())
-        .map(str::to_owned)
 }

@@ -137,6 +137,10 @@ pub fn resolve_palette(palette: TerminalPalette, profile: ColorProfile) -> Termi
         syn_func: quantize_color(palette.syn_func, profile),
         syn_comment: quantize_color(palette.syn_comment, profile),
         syn_number: quantize_color(palette.syn_number, profile),
+        selected: quantize_color(palette.selected, profile),
+        mark_bg: quantize_color(palette.mark_bg, profile),
+        border_strong: quantize_color(palette.border_strong, profile),
+        action_hover: quantize_color(palette.action_hover, profile),
     }
 }
 
@@ -394,7 +398,38 @@ mod tests {
 
     #[test]
     fn profile_resolves_every_palette_field() {
-        let resolved = resolve_palette(crate::theme::DARK, ColorProfile::NoColor);
+        // den patch: upstream used its generated DARK theme, which den does not vendor.
+        let grey = Color::Rgb(90, 90, 90);
+        let palette = TerminalPalette {
+            bg: grey,
+            surface_1: grey,
+            surface_2: grey,
+            surface_3: grey,
+            border: grey,
+            text: grey,
+            text_strong: grey,
+            text_muted: grey,
+            text_faint: grey,
+            accent: grey,
+            accent_2: grey,
+            accent_rust: grey,
+            mix_target: grey,
+            success: grey,
+            error: grey,
+            warning: grey,
+            info: grey,
+            syn_keyword: grey,
+            syn_string: grey,
+            syn_var: grey,
+            syn_func: grey,
+            syn_comment: grey,
+            syn_number: grey,
+            selected: grey,
+            mark_bg: grey,
+            border_strong: grey,
+            action_hover: grey,
+        };
+        let resolved = resolve_palette(palette, ColorProfile::NoColor);
         assert!(
             [
                 resolved.bg,
@@ -420,6 +455,10 @@ mod tests {
                 resolved.syn_func,
                 resolved.syn_comment,
                 resolved.syn_number,
+                resolved.selected,
+                resolved.mark_bg,
+                resolved.border_strong,
+                resolved.action_hover,
             ]
             .into_iter()
             .all(|color| color == Color::Reset)
