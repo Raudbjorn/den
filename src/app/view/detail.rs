@@ -1,6 +1,6 @@
 //! The detail pane: the selected item's Next Step, Waiting On and Explanation.
 
-use super::State;
+use super::{State, coverage};
 use crate::app::view_model::{Detail, DetailContent};
 
 const LABEL: &str = "D E T A I L";
@@ -38,7 +38,7 @@ pub fn build(state: &State<'_>) -> Detail {
                     .coverage
                     .iter()
                     .filter(|c| !c.state.is_complete())
-                    .map(|c| format!("{}: {}", c.source.label(), c.state.describe()))
+                    .map(|c| coverage::entry_line(state, c))
                     .collect(),
             }
         });

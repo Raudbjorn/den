@@ -1,7 +1,7 @@
 //! Effects: what the App asks the ports to do. The App never does I/O itself.
 
 use super::event::SurveyId;
-use crate::ports::SurveyRequest;
+use crate::{cache::CachedObservation, ports::SurveyRequest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
@@ -23,6 +23,11 @@ pub enum Effect {
         id: SurveyId,
         request: SurveyRequest,
     },
+    /// Read the cache; answered by `Event::CacheLoaded`. Emitted before the
+    /// startup survey, so cached data shows before any network call completes.
+    LoadCache,
+    /// Write what den shows to the cache; answered by `Event::CacheStored`.
+    StoreCache { cached: Box<CachedObservation> },
     /// Leave den.
     Quit,
     /// Write to den's structured log.

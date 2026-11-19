@@ -8,6 +8,9 @@ pub fn build(state: &State<'_>) -> Footer {
     if !state.decisions.is_empty() {
         hints.push(hint("↑↓", "select"));
     }
+    if state.config.is_ok() {
+        hints.push(hint("r", "refresh"));
+    }
     hints.push(hint("q", "quit"));
     Footer { hints }
 }
