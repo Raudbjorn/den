@@ -118,7 +118,7 @@ fn plates_are_told_apart_by_tone_in_truecolor() {
         OXIDE_TRUECOLOR.surface_1
     );
     assert_eq!(
-        buffer[(regions.rail_suture.x, regions.rail_suture.y)].symbol(),
+        buffer[(regions.sidebar_suture.x, regions.sidebar_suture.y)].symbol(),
         "┊"
     );
     let inside_detail = (regions.detail.x + 1, regions.detail.y + 1);

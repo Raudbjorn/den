@@ -57,7 +57,7 @@ pub struct FrameRegions {
     pub header: Rect,
     pub sidebar: Rect,
     /// Between the sidebar and the list.
-    pub rail_suture: Rect,
+    pub sidebar_suture: Rect,
     pub list: Rect,
     /// Between the list and the detail pane; empty when there is no pane.
     pub suture: Rect,
@@ -77,7 +77,7 @@ pub fn regions(area: Rect, layout: &Layout) -> FrameRegions {
     .areas(area);
     let detail_cols = layout.detail_pane_cols.unwrap_or(0);
     let detail_suture_cols = if detail_cols > 0 { SUTURE_COLS } else { 0 };
-    let [sidebar, rail_suture, list, suture, detail] = Split::horizontal([
+    let [sidebar, sidebar_suture, list, suture, detail] = Split::horizontal([
         Constraint::Length(layout.rail_cols),
         Constraint::Length(SUTURE_COLS),
         Constraint::Fill(1),
@@ -88,7 +88,7 @@ pub fn regions(area: Rect, layout: &Layout) -> FrameRegions {
     FrameRegions {
         header,
         sidebar,
-        rail_suture,
+        sidebar_suture,
         list,
         suture,
         detail,
@@ -143,8 +143,10 @@ pub fn draw(
         r.header,
     )?;
     header::draw(frame, theme, &view.header, header_text)?;
-    draw_sidebar(frame, theme, view, r.sidebar)?;
-    draw_suture(frame, theme, r.rail_suture)?;
+    if !r.sidebar.is_empty() {
+        draw_sidebar(frame, theme, view, r.sidebar)?;
+        draw_suture(frame, theme, r.sidebar_suture)?;
+    }
     list::draw(frame, theme, &view.list, r.list)?;
     if !r.detail.is_empty() {
         draw_suture(frame, theme, r.suture)?;
