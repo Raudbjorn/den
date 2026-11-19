@@ -1,0 +1,38 @@
+[package]
+name = "den"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+publish = false
+description = "A terminal workspace for GitHub Next Steps and Claude Code Jobs"
+build = "build.rs"
+
+[[bin]]
+name = "den"
+path = "src/main.rs"
+
+[dependencies]
+# The rendering engine, vendored from design-system@464835c (ADR-0001, vendor/raudbjorn-tui/UPSTREAM.md).
+raudbjorn-tui = { path = "vendor/raudbjorn-tui" }
+crepuscularity-tui = "=0.4.22"
+ratatui = "=0.30.2"
+crossterm = "=0.29.0"
+thiserror = "2"
+
+[build-dependencies]
+# build.rs generates the Oxide palette from assets/tokens/oxide.tokens.json.
+serde_json = "1"
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[workspace]
+members = [".", "vendor/raudbjorn-tui"]
+default-members = [".", "vendor/raudbjorn-tui"]
+resolver = "3"
