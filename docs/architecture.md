@@ -15,7 +15,9 @@ config.toml ─► config ─► App::new
                            │                                                 │
                            └───────────── Event::SurveyFinished ◄── GitHubSource::survey
                                                                      (github: gh api graphql)
-App, on SurveyFinished:  decide::decide(Observation, viewer, now) ─► ordering::order ─► view
+App, on Started:         Effect::LoadCache (before Effect::Survey) ─► Event::CacheLoaded ─► shown with its age
+App, on SurveyFinished:  cache::merge(shown, Observation) ─► decide::decide ─► ordering::order ─► view
+                         ─► Effect::StoreCache
 ```
 
 `main` only wires: XDG paths, log, config, ports, and the terminal loop. The
@@ -32,8 +34,9 @@ responsive while `gh` runs; `den --dump COLSxROWS` and the tests use
 | `decide/` | **Seam 1.** `decide(&Observation, &Viewer, now) -> Vec<Decision>`. Pure. `mod.rs` defines Decision (Next Step, Waiting On + reason, `unattributed`, Explanation {winning rule, no-step reason, other conditions, unknowns}, applicable coverage) and dispatches to one module per kind: `pull_request.rs`, `issue.rs`, `branch.rs`, `run.rs`. `attribution.rs` resolves people/teams to me / someone else / nobody (+unattributed). |
 | `ordering.rs` | Pure sort (and later Scope filter) of Decisions. |
 | `app/` | **Seam 2.** `App::handle(Event) -> (ViewModel, Vec<Effect>)`. No I/O, no clock (time arrives in events). `view_model.rs` has one type per screen section; `view/` has one builder per section (`header`, `sidebar`, `list`, `detail`, `footer`). |
-| `ports/` | Traits: `GitHubSource` (read-only), `Workspace`, `Launcher` (empty until #11/#12), `Clock`. `Ports` bundles them; `perform(&Effect, &Ports) -> Vec<Event>`. `SurveyFailure` = no Observation at all (gh missing, logged out, viewer unreadable). |
-| `github/` | The real `GitHubSource`. `graphql.rs`: `GraphQl` transport trait and `GhCli` (`gh api graphql --input -`, `GH_TIMEOUT_SECS`, error classification). `session.rs`: query → `SourceState`, `Pager` (bounded by `MAX_PAGES`), rate-limit reset memo. One fetcher per source: `viewer`, `repos`, `pull_requests`, `issues`, `branches`, `runs`; queries in `queries/*.graphql`. `mod.rs::survey` runs the viewer, then each Owner on its own thread, merged in config order. |
+| `cache/` | The last Observation per viewer. `CachedObservation` = Observation + `carried` (per source, the age of data kept from an earlier survey). `merge.rs` (pure, generic over sources): a source read completely is replaced, any other keeps the earlier facts, marked with their own age; never merged across viewers. `file.rs`: `FileCache`, `$XDG_STATE_HOME/den/cache/<login>.json` + `last-viewer`, versioned (`CACHE_FORMAT`), size-bounded, atomic, 0600; unreadable = error value, logged, fresh survey. `survey_complete` gates "Nothing needs you". |
+| `ports/` | Traits: `GitHubSource` (read-only), `ObservationCache` (#8), `Workspace`, `Launcher` (empty until #11/#12), `Clock`. `Ports` bundles them; `perform(&Effect, &Ports) -> Vec<Event>`. `SurveyFailure` = no Observation at all (gh missing, logged out, viewer unreadable). |
+| `github/` | The real `GitHubSource`. `graphql.rs`: `GraphQl` transport trait and `GhCli` (`gh api graphql --input -`, `GH_TIMEOUT_SECS`, error classification). `session.rs`: query → `SourceState`, `Pager` (bounded by `MAX_PAGES`), rate-limit memo (once the limit is hit the survey stops fetching; the reset time comes from responses or one `gh api rate_limit`). One fetcher per source: `viewer`, `repos`, `pull_requests`, `issues`, `branches`, `runs`; queries in `queries/*.graphql`. `mod.rs::survey` runs the viewer, then each Owner on its own thread, merged in config order. |
 | `ui/` | Draws a ViewModel, nothing else. `frame.rs` lays out plates; `header`, `list` (windowed), `detail`, `footer` each draw one; templates in `templates/{frame,list,detail}.crepus`. |
 | `config.rs`, `paths.rs`, `logging.rs`, `process.rs` | Config with file+line errors; XDG paths; JSON log in the state dir; external commands with a timeout. |
 

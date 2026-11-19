@@ -3,7 +3,7 @@
 
 use super::{
     build::now,
-    fakes::{self, FakeGitHub},
+    fakes::{self, FakeCache, FakeGitHub},
 };
 use den::{
     app::{App, Effect, Event, Key, ViewModel},
@@ -17,6 +17,7 @@ use std::{collections::BTreeMap, sync::Arc};
 pub struct Harness {
     pub app: App,
     pub github: Arc<FakeGitHub>,
+    pub cache: Arc<FakeCache>,
     ports: Ports,
     /// Every Effect the App emitted, in order.
     pub effects: Vec<Effect>,
@@ -33,13 +34,20 @@ pub fn config(owners: &[&str]) -> Config {
 
 impl Harness {
     pub fn new(config: Result<Config, ConfigError>) -> Self {
+        Self::with_cache(config, FakeCache::default())
+    }
+
+    /// A harness whose cache starts as `cache`.
+    pub fn with_cache(config: Result<Config, ConfigError>, cache: FakeCache) -> Self {
         let github = Arc::new(FakeGitHub::default());
+        let cache = Arc::new(cache);
         let app = App::new(config);
         let view = app.view();
         Self {
-            ports: fakes::ports(github.clone(), now()),
+            ports: fakes::ports_with_cache(github.clone(), cache.clone(), now()),
             app,
             github,
+            cache,
             effects: Vec::new(),
             view,
         }
@@ -74,6 +82,16 @@ impl Harness {
     /// den starts, surveys, and the answer arrives.
     pub fn start(&mut self) -> &ViewModel {
         self.settle(Event::Started { now: now() })
+    }
+
+    /// Performs one Effect through the fake ports and handles the Events it
+    /// produces. Their Effects are returned (and recorded), not performed.
+    pub fn perform(&mut self, effect: &Effect) -> Vec<Effect> {
+        let mut follow_ups = Vec::new();
+        for event in den::ports::perform(effect, &self.ports) {
+            follow_ups.extend(self.send(event));
+        }
+        follow_ups
     }
 
     pub fn key(&mut self, key: Key) -> Vec<Effect> {

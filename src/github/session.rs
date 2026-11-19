@@ -42,22 +42,64 @@ impl<T> Default for KindFetch<T> {
     }
 }
 
-/// The latest rate-limit reset time GitHub reported in any response of a
-/// survey, so a later RATE_LIMITED error (which carries none) can say when the
-/// limit resets. Shared by the survey's parallel Owner sessions.
+/// A survey's rate-limit state, shared by its parallel Owner sessions: the
+/// latest reset time GitHub reported in any response (so a later RATE_LIMITED
+/// error, which carries none, can say when the limit resets), and whether the
+/// limit was hit. Once it was, the survey stops fetching: every later query is
+/// recorded as rate limited without being sent.
 #[derive(Debug, Default)]
-pub struct RateLimitMemo(Mutex<Option<Timestamp>>);
+pub struct RateLimitMemo(Mutex<RateLimitState>);
+
+#[derive(Debug, Default, Clone, Copy)]
+struct RateLimitState {
+    resets_at: Option<Timestamp>,
+    hit: bool,
+    /// den already asked GitHub when the limit resets.
+    asked: bool,
+}
 
 impl RateLimitMemo {
-    fn get(&self) -> Option<Timestamp> {
+    fn state(&self) -> RateLimitState {
         // A poisoned lock only means another thread panicked mid-write of a Copy value.
-        self.0.lock().map_or(None, |guard| *guard)
+        self.0
+            .lock()
+            .map_or_else(|_| RateLimitState::default(), |guard| *guard)
+    }
+
+    fn update(&self, change: impl FnOnce(&mut RateLimitState)) {
+        if let Ok(mut guard) = self.0.lock() {
+            change(&mut guard);
+        }
+    }
+
+    fn get(&self) -> Option<Timestamp> {
+        self.state().resets_at
     }
 
     fn set(&self, at: Timestamp) {
-        if let Ok(mut guard) = self.0.lock() {
-            *guard = Some(at);
+        self.update(|s| s.resets_at = Some(at));
+    }
+
+    /// Records that the limit was hit. If no response said when it resets, asks
+    /// GitHub once (that question does not count against the limit).
+    fn hit(&self, gql: &dyn GraphQl) {
+        let before = self.state();
+        self.update(|s| {
+            s.hit = true;
+            s.asked = true;
+        });
+        if before.resets_at.is_none()
+            && !before.asked
+            && let Some(at) = gql.rate_limit_reset()
+        {
+            self.set(at);
         }
+    }
+
+    fn limited(&self) -> SourceState {
+        SourceState::Partial(Incompleteness::RateLimited {
+            resets_at: self.get(),
+        })
     }
 }
 
@@ -86,6 +128,9 @@ impl<'a> Session<'a> {
         query: &str,
         variables: Value,
     ) -> Result<Fetched<T>, SurveyFailure> {
+        if self.rate_limit_reset.state().hit {
+            return Ok(Fetched::Lost(self.rate_limit_reset.limited()));
+        }
         let request = GraphQlRequest {
             query: query.to_owned(),
             variables,
@@ -96,11 +141,10 @@ impl<'a> Session<'a> {
             Err(TransportError::NotLoggedIn { detail }) => {
                 Err(SurveyFailure::NotLoggedIn { detail })
             }
-            Err(TransportError::RateLimited { .. }) => Ok(Fetched::Lost(SourceState::Partial(
-                Incompleteness::RateLimited {
-                    resets_at: self.rate_limit_reset.get(),
-                },
-            ))),
+            Err(TransportError::RateLimited { .. }) => {
+                self.rate_limit_reset.hit(self.gql);
+                Ok(Fetched::Lost(self.rate_limit_reset.limited()))
+            }
             Err(other) => Ok(Fetched::Lost(SourceState::Failed {
                 error: other.to_string(),
             })),
@@ -118,11 +162,12 @@ impl<'a> Session<'a> {
             self.rate_limit_reset.set(reset);
         }
         let rate_limited = response.errors.iter().any(|e| e.is_rate_limit());
+        if rate_limited {
+            self.rate_limit_reset.hit(self.gql);
+        }
         let messages: Vec<String> = response.errors.iter().map(|e| e.message.clone()).collect();
         let error_state = if rate_limited {
-            SourceState::Partial(Incompleteness::RateLimited {
-                resets_at: self.rate_limit_reset.get(),
-            })
+            self.rate_limit_reset.limited()
         } else {
             SourceState::Partial(Incompleteness::ErrorsAlongsideData {
                 errors: messages.clone(),

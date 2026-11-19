@@ -1,6 +1,7 @@
 //! The Next Step list and its empty states.
 
 use super::{State, format, header};
+use crate::cache;
 use crate::{
     app::view_model::{EmptyState, List, Row},
     decide::Decision,
@@ -57,7 +58,7 @@ fn empty_state(state: &State<'_>) -> EmptyState {
     }
     if let Some(failure) = state.failure {
         return EmptyState {
-            title: failure.headline().to_owned(),
+            title: header::failure_text(failure),
             detail: failure.to_string(),
         };
     }
@@ -70,13 +71,16 @@ fn empty_state(state: &State<'_>) -> EmptyState {
             title: "No survey yet.".to_owned(),
             detail: "den has not looked at any Owners.".to_owned(),
         },
-        Some(observation) if observation.coverage.is_complete() => EmptyState {
+        Some(observation) if cache::survey_complete(observation) => EmptyState {
             title: "Nothing needs you.".to_owned(),
-            detail: "Every source was read completely.".to_owned(),
+            detail: format!(
+                "Every source was read completely, {}.",
+                format::ago(state.now, observation.observed_at)
+            ),
         },
-        Some(observation) => EmptyState {
+        Some(_) => EmptyState {
             title: "No Work Items found, but the picture is incomplete.".to_owned(),
-            detail: header::summarise(&observation.coverage),
+            detail: header::summarise(state),
         },
     }
 }

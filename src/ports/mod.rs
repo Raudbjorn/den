@@ -7,7 +7,10 @@ mod perform;
 
 pub use perform::perform;
 
-use crate::domain::Observation;
+use crate::{
+    cache::{CacheError, CachedObservation},
+    domain::Observation,
+};
 use jiff::Timestamp;
 use std::sync::Arc;
 
@@ -31,6 +34,16 @@ pub enum SurveyFailure {
     ViewerUnavailable { detail: String },
     #[error("the survey stopped before it finished: {detail}")]
     Interrupted { detail: String },
+    /// GitHub's rate limit was hit before den knew who you are.
+    #[error("GitHub's rate limit was hit {}", reset_text(.resets_at))]
+    RateLimited { resets_at: Option<Timestamp> },
+}
+
+fn reset_text(resets_at: &Option<Timestamp>) -> String {
+    match resets_at {
+        Some(at) => format!("until {}", at.strftime("%H:%M UTC")),
+        None => "(GitHub did not say when it resets)".to_owned(),
+    }
 }
 
 impl SurveyFailure {
@@ -41,6 +54,7 @@ impl SurveyFailure {
             Self::NotLoggedIn { .. } => "gh is not logged in",
             Self::ViewerUnavailable { .. } => "GitHub could not be read",
             Self::Interrupted { .. } => "The survey stopped",
+            Self::RateLimited { .. } => "GitHub's rate limit was hit",
         }
     }
 }
@@ -48,6 +62,15 @@ impl SurveyFailure {
 /// Reads GitHub. Read-only by construction (ADR-0002): there is no write method.
 pub trait GitHubSource: Send + Sync {
     fn survey(&self, request: &SurveyRequest) -> Result<Observation, SurveyFailure>;
+}
+
+/// den's own on-disk cache of the last Observation, per viewer. Read-only
+/// against GitHub like everything else; it writes only den's own files.
+pub trait ObservationCache: Send + Sync {
+    /// The last viewer's cached Observation; `Ok(None)` when there is none yet.
+    fn load(&self) -> Result<Option<CachedObservation>, CacheError>;
+    /// Replaces the viewer's cached Observation.
+    fn store(&self, cached: &CachedObservation) -> Result<(), CacheError>;
 }
 
 /// git and the filesystem: Main Clones, worktrees, refs. Methods arrive with the
@@ -82,6 +105,7 @@ impl Launcher for Unimplemented {}
 #[derive(Clone)]
 pub struct Ports {
     pub github: Arc<dyn GitHubSource>,
+    pub cache: Arc<dyn ObservationCache>,
     pub workspace: Arc<dyn Workspace>,
     pub launcher: Arc<dyn Launcher>,
     pub clock: Arc<dyn Clock>,

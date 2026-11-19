@@ -3,9 +3,13 @@
 //! as the port traits grow.
 
 use den::{
+    cache::{CacheError, CachedObservation},
     domain::Observation,
     github::graphql::{GraphQl, GraphQlRequest, GraphQlResponse, TransportError},
-    ports::{Clock, GitHubSource, Launcher, Ports, SurveyFailure, SurveyRequest, Workspace},
+    ports::{
+        Clock, GitHubSource, Launcher, ObservationCache, Ports, SurveyFailure, SurveyRequest,
+        Workspace,
+    },
 };
 use jiff::Timestamp;
 use std::{
@@ -71,9 +75,57 @@ impl Clock for FixedClock {
     }
 }
 
+/// An in-memory cache: `load` answers with what was last stored (or a scripted
+/// answer), `store` records every write.
+#[derive(Default)]
+pub struct FakeCache {
+    held: Mutex<Option<CachedObservation>>,
+    load_answer: Mutex<Option<Result<Option<CachedObservation>, CacheError>>>,
+    stored: Mutex<Vec<CachedObservation>>,
+}
+
+impl FakeCache {
+    /// A cache already holding `cached`.
+    pub fn holding(cached: CachedObservation) -> Self {
+        let cache = Self::default();
+        *cache.held.lock().expect("lock") = Some(cached);
+        cache
+    }
+
+    /// The next `load` answers with `answer` instead of what is held.
+    pub fn answer_load(&self, answer: Result<Option<CachedObservation>, CacheError>) {
+        *self.load_answer.lock().expect("lock") = Some(answer);
+    }
+
+    /// Every Observation stored, in order.
+    pub fn stored(&self) -> Vec<CachedObservation> {
+        self.stored.lock().expect("lock").clone()
+    }
+}
+
+impl ObservationCache for FakeCache {
+    fn load(&self) -> Result<Option<CachedObservation>, CacheError> {
+        match self.load_answer.lock().expect("lock").take() {
+            Some(answer) => answer,
+            None => Ok(self.held.lock().expect("lock").clone()),
+        }
+    }
+
+    fn store(&self, cached: &CachedObservation) -> Result<(), CacheError> {
+        self.stored.lock().expect("lock").push(cached.clone());
+        *self.held.lock().expect("lock") = Some(cached.clone());
+        Ok(())
+    }
+}
+
 pub fn ports(github: Arc<FakeGitHub>, now: Timestamp) -> Ports {
+    ports_with_cache(github, Arc::new(FakeCache::default()), now)
+}
+
+pub fn ports_with_cache(github: Arc<FakeGitHub>, cache: Arc<FakeCache>, now: Timestamp) -> Ports {
     Ports {
         github,
+        cache,
         workspace: Arc::new(FakeWorkspace),
         launcher: Arc::new(FakeLauncher),
         clock: Arc::new(FixedClock(now)),

@@ -1,6 +1,9 @@
 //! `den`: surveys the watched Owners and shows their Work Items; `q` quits and
 //! restores the terminal.
 //!
+//! The last Observation is cached per viewer in `$XDG_STATE_HOME/den/cache/`
+//! and shown at startup while the first survey runs.
+//!
 //! `den --dump COLSxROWS` runs one survey and prints the frame as plain text
 //! instead (a debugging aid).
 //!
@@ -10,6 +13,7 @@
 use crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use den::{
     app::{App, Effect, Event, Key, ViewModel},
+    cache::FileCache,
     config,
     github::{GhSource, graphql::GhCli},
     logging::{self, LoggingError},
@@ -191,6 +195,7 @@ fn run(args: &[String]) -> Result<(), DenError> {
     let mut app = App::new(config);
     let ports = Ports {
         github: Arc::new(GhSource::new(GhCli::new())),
+        cache: Arc::new(FileCache::in_state_dir(&paths.state_dir)),
         workspace: Arc::new(Unimplemented),
         launcher: Arc::new(Unimplemented),
         clock: Arc::new(SystemClock),

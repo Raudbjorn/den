@@ -1,7 +1,7 @@
 //! Where den reads its config and writes its state (XDG Base Directory spec).
 //!
 //! - config: `$XDG_CONFIG_HOME/den/config.toml`, else `~/.config/den/config.toml`
-//! - state (log, later cache and Job records): `$XDG_STATE_HOME/den/`, else `~/.local/state/den/`
+//! - state (log, cache in `cache/`, later Job records): `$XDG_STATE_HOME/den/`, else `~/.local/state/den/`
 //!
 //! Relative XDG values are ignored, as the spec requires.
 

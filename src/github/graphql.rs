@@ -7,6 +7,7 @@
 
 use super::rest::Rest;
 use crate::process::{self, ProcessError};
+use jiff::Timestamp;
 use serde::Deserialize;
 use serde_json::Value;
 use std::{
@@ -78,6 +79,12 @@ pub trait GraphQl: Send + Sync {
     fn rest(&self) -> Option<&dyn Rest> {
         None
     }
+
+    /// When GitHub's GraphQL rate limit resets, asked after a rate-limited
+    /// response that did not say. `None` when unknown (the default).
+    fn rate_limit_reset(&self) -> Option<Timestamp> {
+        None
+    }
 }
 
 /// `gh api graphql --input -`, with the request body on stdin.
@@ -145,6 +152,37 @@ impl GraphQl for GhCli {
 
     fn rest(&self) -> Option<&dyn Rest> {
         Some(self)
+    }
+
+    fn rate_limit_reset(&self) -> Option<Timestamp> {
+        match self.graphql_reset() {
+            Ok(at) => {
+                tracing::info!(resets_at = %at, "gh api rate_limit");
+                Some(at)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not ask GitHub when the rate limit resets");
+                None
+            }
+        }
+    }
+}
+
+impl GhCli {
+    /// `gh api rate_limit`: GitHub's REST rate-limit status, which does not count
+    /// against the limit. Reads `resources.graphql.reset` (Unix seconds).
+    fn graphql_reset(&self) -> Result<Timestamp, String> {
+        let output = process::run(&self.program, &["api", "rate_limit"], &[], self.timeout)
+            .map_err(|e| e.to_string())?;
+        if !output.status.success() {
+            return Err(quote(&String::from_utf8_lossy(&output.stderr)));
+        }
+        let body: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+        let seconds = body
+            .pointer("/resources/graphql/reset")
+            .and_then(Value::as_i64)
+            .ok_or("no resources.graphql.reset in the answer")?;
+        Timestamp::from_second(seconds).map_err(|e| e.to_string())
     }
 }
 
