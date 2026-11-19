@@ -4,6 +4,10 @@
 //! `den --dump COLSxROWS` runs one survey and prints the frame as plain text
 //! instead (a debugging aid).
 //!
+//! The bear is drawn with the kitty graphics protocol when the terminal answers
+//! to it, half-blocks otherwise; `DEN_GRAPHICS=kitty|halfblocks|off` overrides
+//! the detection.
+//!
 //! This file only wires things together: paths, log, config, ports, and the
 //! terminal loop that feeds the App events and performs its Effects.
 
@@ -17,7 +21,11 @@ use den::{
     ports::{Ports, SystemClock, Unimplemented},
     runtime::{self, Worker},
     terminal::TerminalSession,
-    ui::{Theme, UiError, frame},
+    ui::{
+        Theme, UiError,
+        bear::{BearArt, BearError, GRAPHICS_ENV, Graphics},
+        frame,
+    },
 };
 use jiff::Timestamp;
 use raudbjorn_tui::profile::{ProfileError, TerminalProfile};
@@ -50,6 +58,8 @@ enum DenError {
     Paths(#[from] PathsError),
     #[error(transparent)]
     Logging(#[from] LoggingError),
+    #[error(transparent)]
+    Graphics(#[from] BearError),
 }
 
 enum Mode {
@@ -116,10 +126,17 @@ fn dispatch(effects: Vec<Effect>, worker: &Worker) -> Flow {
     flow
 }
 
-fn run_interactive(theme: &Theme, mut app: App, ports: Ports) -> Result<(), DenError> {
+fn run_interactive(
+    theme: &Theme,
+    mut app: App,
+    ports: Ports,
+    graphics: Option<Graphics>,
+) -> Result<(), DenError> {
     let worker = Worker::start(ports);
     let mut session = TerminalSession::start()?;
-    let outcome = event_loop(&mut session, theme, &mut app, &worker);
+    // Before any input is read: the terminal answers the query on stdin.
+    let mut bear = BearArt::detect(theme.profile(), graphics);
+    let outcome = event_loop(&mut session, theme, &mut app, &worker, &mut bear);
     let restored = session.finish();
     outcome?;
     restored?;
@@ -131,7 +148,13 @@ fn event_loop(
     theme: &Theme,
     app: &mut App,
     worker: &Worker,
+    bear: &mut BearArt,
 ) -> Result<(), DenError> {
+    let size = session.terminal().size()?;
+    app.handle(Event::Resized {
+        cols: size.width,
+        rows: size.height,
+    });
     let (mut view, effects) = app.handle(Event::Started {
         now: Timestamp::now(),
     });
@@ -142,7 +165,7 @@ fn event_loop(
     let mut last_tick = Instant::now();
     loop {
         if dirty {
-            draw(session, theme, &view)?;
+            draw(session, theme, &view, bear)?;
             dirty = false;
         }
         let mut incoming: Vec<Event> = worker.finished().collect();
@@ -155,7 +178,7 @@ fn event_loop(
         if event::poll(Duration::from_millis(INPUT_POLL_MS))? {
             match event::read()? {
                 TermEvent::Key(key) => incoming.extend(translate_key(&key).map(Event::Key)),
-                TermEvent::Resize(..) => dirty = true,
+                TermEvent::Resize(cols, rows) => incoming.push(Event::Resized { cols, rows }),
                 _ => {}
             }
         }
@@ -170,11 +193,16 @@ fn event_loop(
     }
 }
 
-fn draw(session: &mut TerminalSession, theme: &Theme, view: &ViewModel) -> Result<(), DenError> {
+fn draw(
+    session: &mut TerminalSession,
+    theme: &Theme,
+    view: &ViewModel,
+    bear: &mut BearArt,
+) -> Result<(), DenError> {
     let mut drawn = Ok(());
     session
         .terminal()
-        .draw(|f| drawn = frame::draw(f, theme, view))?;
+        .draw(|f| drawn = frame::draw(f, theme, view, bear))?;
     Ok(drawn?)
 }
 
@@ -184,6 +212,7 @@ fn run(args: &[String]) -> Result<(), DenError> {
     logging::init(&paths.log_file())?;
     tracing::info!(config = %paths.config_file.display(), "den starting");
     let theme = Theme::new(TerminalProfile::from_env()?)?;
+    let graphics = requested_graphics()?;
     let config = config::load(&paths.config_file);
     if let Err(error) = &config {
         tracing::error!(%error, "config");
@@ -196,8 +225,9 @@ fn run(args: &[String]) -> Result<(), DenError> {
         clock: Arc::new(SystemClock),
     };
     match mode {
-        Mode::Interactive => run_interactive(&theme, app, ports),
+        Mode::Interactive => run_interactive(&theme, app, ports, graphics),
         Mode::Dump { cols, rows } => {
+            app.handle(Event::Resized { cols, rows });
             let started = Event::Started {
                 now: Timestamp::now(),
             };
@@ -205,6 +235,17 @@ fn run(args: &[String]) -> Result<(), DenError> {
             let buffer = frame::render(&theme, &view, cols, rows)?;
             println!("{}", frame::buffer_text(&buffer));
             Ok(())
+        }
+    }
+}
+
+/// The bear's graphics mode from `DEN_GRAPHICS`, when set (unset or empty: detect).
+fn requested_graphics() -> Result<Option<Graphics>, DenError> {
+    match std::env::var(GRAPHICS_ENV) {
+        Ok(value) if !value.trim().is_empty() => Ok(Some(Graphics::parse(&value)?)),
+        Ok(_) | Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(value)) => {
+            Err(BearError::Env(value.to_string_lossy().into_owned()).into())
         }
     }
 }

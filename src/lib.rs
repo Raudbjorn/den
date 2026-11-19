@@ -9,6 +9,7 @@
 //! - [`github`]: the real GitHub source over `gh api graphql`.
 //! - [`runtime`]: performing Effects (background worker, or synchronously).
 //! - [`ordering`], [`config`], [`paths`], [`logging`], [`process`].
+//! - [`layout`]: the responsive layout (plate widths, narrow terminals).
 //! - [`palette`], [`ui`], [`terminal`]: IRONMAW Oxide rendering of the ViewModel.
 
 pub mod app;
@@ -16,6 +17,7 @@ pub mod config;
 pub mod decide;
 pub mod domain;
 pub mod github;
+pub mod layout;
 pub mod logging;
 pub mod ordering;
 pub mod palette;

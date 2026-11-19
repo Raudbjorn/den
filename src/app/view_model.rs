@@ -3,7 +3,10 @@
 //! touching the others (header and empty states: #8; sidebar: #9; layout and
 //! detail sheet: #10; launch sheet: #11).
 
-use crate::domain::{NextStep, WaitingOn, WorkItemId, WorkItemKind};
+use crate::{
+    domain::{NextStep, WaitingOn, WorkItemId, WorkItemKind},
+    layout::Layout,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewModel {
@@ -13,6 +16,11 @@ pub struct ViewModel {
     pub detail: Detail,
     pub overlay: Option<Overlay>,
     pub footer: Footer,
+    /// Which plates exist at the terminal's size, and their widths (#10).
+    pub layout: Layout,
+    /// The first survey is under way and nothing has been observed yet: the
+    /// screen is the splash (large bear, `header.status`), not the plates.
+    pub splash: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,10 +104,14 @@ pub struct DetailContent {
     pub coverage: Vec<String>,
 }
 
-/// Sheets drawn over the screen. None exist yet: the detail sheet (#10) and the
-/// launch sheet (#11) add variants.
+/// Sheets drawn over the screen; at most one at a time. The launch sheet (#11)
+/// adds a variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Overlay {}
+pub enum Overlay {
+    /// The selected Work Item's detail (`ViewModel::detail`) as a sheet, for
+    /// terminals too narrow for the detail pane (`Enter` opens it, `Esc` closes).
+    DetailSheet,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Footer {

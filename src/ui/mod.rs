@@ -1,7 +1,9 @@
 //! Rendering: den's templates on the vendored engine, painted in IRONMAW Oxide.
 //! It draws a [`ViewModel`](crate::app::ViewModel) and holds no logic about GitHub.
-//! One module per plate (header, list, detail, footer); `frame` lays them out.
+//! One module per plate (header, list, detail, footer); `frame` lays them out
+//! for the ViewModel's layout; `bear` draws the bear.
 
+pub mod bear;
 mod detail;
 mod footer;
 pub mod frame;

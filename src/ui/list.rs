@@ -19,11 +19,8 @@ const EMPTY_PADDING_COLS: u16 = 4;
 pub fn draw(frame: &mut Frame, theme: &Theme, list: &List, area: Rect) -> Result<(), UiError> {
     match &list.empty {
         Some(empty) if list.rows.is_empty() => {
-            let width = usize::from(area.width.saturating_sub(2 * EMPTY_PADDING_COLS));
-            let max_lines = usize::from(area.height.saturating_sub(CHROME_LINES + 1));
-            let lines = text::wrap(&empty.detail, width)
+            let lines = empty_detail_lines(&empty.detail, area)
                 .into_iter()
-                .take(max_lines)
                 .map(|line| text::line_context(&line, LineStyle::Muted));
             let mut ctx = TemplateContext::default();
             ctx.set("list_label", list.label.as_str())
@@ -33,6 +30,29 @@ pub fn draw(frame: &mut Frame, theme: &Theme, list: &List, area: Rect) -> Result
         }
         _ => draw_rows(frame, theme, list, area),
     }
+}
+
+/// The empty state's detail, wrapped to the plate and cut to what fits.
+fn empty_detail_lines(detail: &str, area: Rect) -> Vec<String> {
+    let width = usize::from(area.width.saturating_sub(2 * EMPTY_PADDING_COLS));
+    let max_lines = usize::from(area.height.saturating_sub(CHROME_LINES + 1));
+    text::wrap(detail, width)
+        .into_iter()
+        .take(max_lines)
+        .collect()
+}
+
+/// Where the empty-state text block (title and detail lines) starts, when the
+/// empty state is shown: the `Empty` template centres it below the label. The
+/// frame puts the large bear in the space above it (#10).
+pub(super) fn empty_text_top(list: &List, area: Rect) -> Option<u16> {
+    let empty = list.empty.as_ref().filter(|_| list.rows.is_empty())?;
+    let block = u16::try_from(empty_detail_lines(&empty.detail, area).len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(1);
+    let label_rows = CHROME_LINES - 1;
+    let free = area.height.saturating_sub(label_rows).saturating_sub(block);
+    Some(area.y + label_rows + free / 2)
 }
 
 /// Which rows fit, keeping `selected` in view: `start..start + count`.
