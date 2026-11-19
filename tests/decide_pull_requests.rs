@@ -360,10 +360,82 @@ fn pr_rule_deck() -> Vec<(&'static str, PrBuilder, Expect)> {
             ready(1).author(ME).queued(),
             expect(None, Nobody, "already in the merge queue", "no Next Step"),
         ),
+        // ── Merge without approval where no review is required ───────────
         (
-            "not approved: no rule holds",
-            pr("o/r", 1).author(ME).passing("build"),
-            expect(None, Nobody, "not approved", "no Next Step"),
+            "no review decision, green and mergeable: Merge via no review required",
+            pr("o/r", 1)
+                .author(ME)
+                .no_review_required()
+                .passing("build"),
+            expect(
+                Some(Merge),
+                Me,
+                "no review required and no changes requested, checks passing and mergeable into main",
+                "PR author",
+            ),
+        ),
+        (
+            "no review decision, changes requested in a latest review: Address review",
+            pr("o/r", 1)
+                .author(ME)
+                .passing("build")
+                .reviewed("bob", ReviewVerdict::ChangesRequested),
+            expect(
+                Some(AddressReview),
+                Me,
+                "changes requested by bob",
+                "PR author",
+            ),
+        ),
+        (
+            "no review decision, an unresolved thread: Address review, not Merge",
+            pr("o/r", 1)
+                .author(ME)
+                .no_review_required()
+                .passing("build")
+                .unresolved_threads(1),
+            expect(
+                Some(AddressReview),
+                Me,
+                "1 unresolved review thread",
+                "PR author",
+            ),
+        ),
+        (
+            "no review decision, threads not all read: no Merge",
+            pr("o/r", 1)
+                .author(ME)
+                .no_review_required()
+                .passing("build")
+                .threads_truncated(),
+            expect(
+                None,
+                Nobody,
+                "not every review thread was read",
+                "no Next Step",
+            )
+            .unknown(&["not every review thread was read"]),
+        ),
+        (
+            "no review decision, a pending check: no Merge",
+            pr("o/r", 1)
+                .author(ME)
+                .no_review_required()
+                .pending("build"),
+            expect(None, Nobody, "checks running", "no Next Step"),
+        ),
+        (
+            "review required by GitHub, green and mergeable: no Merge",
+            pr("o/r", 1)
+                .author(ME)
+                .decision(ReviewDecision::ReviewRequired)
+                .passing("build"),
+            expect(
+                None,
+                Nobody,
+                "not approved: a review is required",
+                "no Next Step",
+            ),
         ),
         (
             "a review required by GitHub but nobody requested",
@@ -418,7 +490,10 @@ fn pr_rule_deck() -> Vec<(&'static str, PrBuilder, Expect)> {
         ),
         (
             "checks and reviews unread, no decision: approval unknown",
-            pr("o/r", 1).author(ME).details_unread(),
+            pr("o/r", 1)
+                .author(ME)
+                .no_review_required()
+                .details_unread(),
             expect(
                 None,
                 Nobody,
