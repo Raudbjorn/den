@@ -11,6 +11,7 @@ pub mod graphql;
 pub mod issues;
 pub mod pull_requests;
 pub mod repos;
+pub mod rest;
 pub mod runs;
 pub mod session;
 pub mod viewer;
