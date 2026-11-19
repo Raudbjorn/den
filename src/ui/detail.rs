@@ -52,6 +52,8 @@ pub fn draw(frame: &mut Frame, theme: &Theme, detail: &Detail, area: Rect) -> Re
                     push(&format!("? {unknown}"), LineStyle::Muted);
                 }
             }
+            push("OBSERVED", LineStyle::Label);
+            push(&content.observed, LineStyle::Muted);
             push(" ", LineStyle::Plain);
             push(&content.url, LineStyle::Muted);
         }
