@@ -79,7 +79,7 @@ pub fn draw(frame: &mut Frame, theme: &Theme, view: &ViewModel) -> Result<(), Ui
     let r = regions(frame.area());
     header::draw(frame, theme, &view.header, r.header)?;
     if !r.sidebar.is_empty() {
-        sidebar::draw(frame, theme, &view.sidebar, r.sidebar)?;
+        draw_sidebar(frame, theme, view, r.sidebar)?;
         draw_suture(frame, theme, r.sidebar_suture)?;
     }
     list::draw(frame, theme, &view.list, r.list)?;
@@ -135,4 +135,14 @@ pub fn buffer_text(buffer: &Buffer) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The sidebar plate (#9 owns its contents; #10 owns where it sits).
+fn draw_sidebar(
+    frame: &mut Frame,
+    theme: &Theme,
+    view: &ViewModel,
+    area: Rect,
+) -> Result<(), UiError> {
+    sidebar::draw(frame, theme, &view.sidebar, area)
 }
