@@ -5,7 +5,9 @@
 //! 3. any failing check (required or advisory) → Fix CI
 //! 4. changes requested, or unresolved review threads → Address review
 //! 5. review requested → Review
-//! 6. approved, every check passing, known mergeable, not queued → Merge
+//! 6. approved (or, where the base branch requires no review, nobody asked
+//!    for changes), no unresolved threads, every check passing, known
+//!    mergeable, not queued → Merge
 //!
 //! A rule whose facts den could not establish neither holds nor is ruled out:
 //! later rules may still win, and the Explanation says which earlier rule
@@ -51,6 +53,11 @@ enum Finding {
 /// Whether the PR is approved, as far as den can tell.
 enum Approval {
     Approved,
+    /// GitHub reports no review decision (the base branch requires no review),
+    /// nobody's latest review approves or requests changes, and every latest
+    /// review was read. Enough for Merge (an orchestrator decision; the spec
+    /// says "approved").
+    NoReviewRequired,
     NotApproved(&'static str),
     Unknown,
 }
@@ -70,7 +77,7 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         (NextStep::FixCi, fix_ci(pr.details.as_ref())),
         (NextStep::AddressReview, address_review(pr)),
         (NextStep::Review, review(pr.details.as_ref(), ctx.viewer)),
-        (NextStep::Merge, merge(pr, &merge_blockers)),
+        (NextStep::Merge, merge(pr, &approval, &merge_blockers)),
     ];
     let winner = rules
         .iter()
@@ -264,18 +271,22 @@ fn review(details: Option<&PrDetails>, viewer: &Viewer) -> Finding {
     Finding::Holds(format!("review requested from {}", names.join(", ")))
 }
 
-fn merge(pr: &PullRequest, blockers: &[String]) -> Finding {
-    if blockers.is_empty() {
-        Finding::Holds(format!(
-            "approved, checks passing and mergeable into {}",
-            pr.base_ref
-        ))
-    } else {
-        Finding::No
+fn merge(pr: &PullRequest, approval: &Approval, blockers: &[String]) -> Finding {
+    if !blockers.is_empty() {
+        return Finding::No;
     }
+    let review = match approval {
+        Approval::NoReviewRequired => "no review required and no changes requested",
+        _ => "approved",
+    };
+    Finding::Holds(format!(
+        "{review}, checks passing and mergeable into {}",
+        pr.base_ref
+    ))
 }
 
-/// Everything that stops Merge. Empty means Merge holds: approved, every
+/// Everything that stops Merge. Empty means Merge holds: approved (or no
+/// review required), no unresolved review threads and all threads read, every
 /// check (required or advisory) passing and all read, known mergeable, not a
 /// draft, not in a merge queue.
 fn merge_blockers(pr: &PullRequest, approval: &Approval) -> Vec<String> {
@@ -284,13 +295,18 @@ fn merge_blockers(pr: &PullRequest, approval: &Approval) -> Vec<String> {
         blockers.push("the PR is a draft".to_owned());
     }
     match approval {
-        Approval::Approved => {}
+        Approval::Approved | Approval::NoReviewRequired => {}
         Approval::NotApproved(why) => blockers.push((*why).to_owned()),
         Approval::Unknown => blockers.push("approval could not be established".to_owned()),
     }
     match &pr.details {
         None => blockers.push("checks could not be read".to_owned()),
         Some(details) => {
+            if details.unresolved_threads > 0 {
+                blockers.push("unresolved review threads".to_owned());
+            } else if !details.threads_complete {
+                blockers.push("not every review thread was read".to_owned());
+            }
             let checks = &details.checks.items;
             if checks.iter().any(|c| c.outcome == CheckOutcome::Failing) {
                 blockers.push("checks failing".to_owned());
@@ -391,7 +407,7 @@ fn approval(pr: &PullRequest) -> Approval {
             } else if verdicts().any(|v| v == ReviewVerdict::Approved) {
                 Approval::Approved
             } else {
-                Approval::NotApproved("not approved: nobody has approved it")
+                Approval::NoReviewRequired
             }
         }
     }

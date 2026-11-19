@@ -13,8 +13,8 @@ use den::domain::{
 const DEFAULT_UPDATED: &str = "2026-11-18T12:00:00Z";
 
 /// A ready, non-draft PR in `repo` ("owner/name"), authored by "someone":
-/// mergeable, no checks, no reviews, no review requests, not queued, details
-/// read. No rule holds for it (it is not approved).
+/// mergeable, review required by GitHub but none given, no checks, no review
+/// requests, not queued, details read. No rule holds for it (it is not approved).
 pub fn pr(repo: &str, number: u64) -> PrBuilder {
     let repo = repo_id(repo);
     PrBuilder {
@@ -32,7 +32,7 @@ pub fn pr(repo: &str, number: u64) -> PrBuilder {
             created_at: ts(DEFAULT_UPDATED),
             updated_at: ts(DEFAULT_UPDATED),
             mergeability: Mergeability::Mergeable,
-            review_decision: None,
+            review_decision: Some(ReviewDecision::ReviewRequired),
             in_merge_queue: false,
             details: Some(PrDetails::default()),
         },
@@ -83,6 +83,12 @@ impl PrBuilder {
 
     pub fn decision(mut self, decision: ReviewDecision) -> Self {
         self.pr.review_decision = Some(decision);
+        self
+    }
+
+    /// GitHub reports no review decision: the base branch requires no review.
+    pub fn no_review_required(mut self) -> Self {
+        self.pr.review_decision = None;
         self
     }
 
@@ -138,6 +144,12 @@ impl PrBuilder {
         self
     }
 
+    /// GitHub listed more review threads than den read.
+    pub fn threads_truncated(mut self) -> Self {
+        self.details().threads_complete = false;
+        self
+    }
+
     pub fn unresolved_threads(mut self, count: u32) -> Self {
         self.details().unresolved_threads = count;
         self
@@ -162,9 +174,10 @@ impl PrBuilder {
         self
     }
 
-    /// A latest review by `login` (GitHub's decision unset, as on Repos that
-    /// require no review).
+    /// A latest review by `login`, on a Repo that requires no review (so
+    /// GitHub reports no decision and den reads the reviews itself).
     pub fn reviewed(mut self, login: &str, verdict: ReviewVerdict) -> Self {
+        self.pr.review_decision = None;
         self.details().latest_reviews.items.push(Review {
             author: Some(login.to_owned()),
             verdict,
