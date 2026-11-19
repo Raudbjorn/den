@@ -5,6 +5,7 @@
 
 mod effect;
 mod event;
+mod overlay;
 mod scope;
 mod view;
 pub mod view_model;
@@ -19,11 +20,13 @@ use crate::{
     config::{Config, ConfigError},
     decide::{self, Decision},
     domain::{Observation, SourceState, WorkItemId},
+    layout::{Layout, TerminalSize},
     ordering,
     ports::{SurveyFailure, SurveyRequest},
 };
 use jiff::Timestamp;
 use scope::ScopeState;
+use view_model::Overlay;
 
 pub struct App {
     config: Result<Config, ConfigError>,
@@ -45,6 +48,10 @@ pub struct App {
     failure: Option<SurveyFailure>,
     selected: Option<WorkItemId>,
     now: Option<Timestamp>,
+    /// The terminal's size, as last reported (`Event::Resized`).
+    size: TerminalSize,
+    /// The sheet drawn over the screen, if any.
+    overlay: Option<Overlay>,
 }
 
 impl App {
@@ -61,6 +68,8 @@ impl App {
             failure: None,
             selected: None,
             now: None,
+            size: TerminalSize::DESIGN,
+            overlay: None,
         }
     }
 
@@ -75,6 +84,7 @@ impl App {
                 Vec::new()
             }
             Event::Key(key) => self.key(key),
+            Event::Resized { cols, rows } => self.resized(TerminalSize { cols, rows }),
             Event::SurveyFinished { id, outcome, now } => {
                 self.now = Some(now);
                 self.survey_finished(id, outcome, now)
@@ -101,6 +111,8 @@ impl App {
             failure: self.failure.as_ref(),
             selected: self.selected_index(),
             now: self.now,
+            layout: Layout::for_size(self.size),
+            overlay: self.overlay.as_ref(),
         })
     }
 
@@ -138,6 +150,12 @@ impl App {
     }
 
     fn key(&mut self, key: Key) -> Vec<Effect> {
+        // An open sheet claims its keys before anything else.
+        if self.overlay.is_some()
+            && let Some(effects) = self.overlay_key(key)
+        {
+            return effects;
+        }
         let entries = self.sidebar_entries();
         let owners = self.owners().to_vec();
         match self.scope.key(key, &owners, &entries) {
@@ -147,6 +165,10 @@ impl App {
                 self.apply_scope();
                 return Vec::new();
             }
+        }
+        // `Enter` in the list opens the detail sheet when there is no pane.
+        if let Some(effects) = self.overlay_key(key) {
+            return effects;
         }
         match key {
             Key::Char('q') | Key::Interrupt => vec![Effect::Quit],

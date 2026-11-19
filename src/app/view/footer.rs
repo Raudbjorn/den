@@ -3,7 +3,7 @@
 use super::State;
 use crate::app::{
     Focus,
-    view_model::{Footer, KeyHint},
+    view_model::{Footer, KeyHint, Overlay},
 };
 
 pub fn build(state: &State<'_>) -> Footer {
@@ -14,6 +14,16 @@ pub fn build(state: &State<'_>) -> Footer {
         hints.push(hint("esc", "back"));
     } else if !state.decisions.is_empty() {
         hints.push(hint("↑↓", "select"));
+    }
+    match state.overlay {
+        Some(Overlay::DetailSheet) => hints.push(hint("esc", "close")),
+        None if state.scope.focus == Focus::List
+            && !state.layout.has_detail_pane()
+            && state.selected.is_some() =>
+        {
+            hints.push(hint("⏎", "detail"));
+        }
+        _ => {}
     }
     if !state.owners.is_empty() {
         hints.push(hint("←→", "scope"));

@@ -28,7 +28,10 @@ fn den_templates_register_only_their_own_files() {
             "templates/sidebar.crepus"
         ]
     );
-    for section in templates::ALL_SECTIONS {
+    for section in templates::ALL_SECTIONS
+        .into_iter()
+        .chain(templates::LAYOUT_SECTIONS)
+    {
         assert!(store.component(section).is_ok(), "{section:?} missing");
     }
 }
