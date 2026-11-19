@@ -1,6 +1,6 @@
 //! The Next Step list and its empty states.
 
-use super::{State, format, header};
+use super::{State, format, header, scope};
 use crate::cache;
 use crate::{
     app::view_model::{EmptyState, List, Row},
@@ -55,6 +55,9 @@ fn empty_state(state: &State<'_>) -> EmptyState {
             title: "den has no usable config".to_owned(),
             detail: error.to_string(),
         };
+    }
+    if let Some(narrowed) = scope::empty_in_scope(state) {
+        return narrowed;
     }
     if let Some(failure) = state.failure {
         return EmptyState {

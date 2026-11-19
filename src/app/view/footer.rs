@@ -1,12 +1,23 @@
 //! Key hints.
 
 use super::State;
-use crate::app::view_model::{Footer, KeyHint};
+use crate::app::{
+    Focus,
+    view_model::{Footer, KeyHint},
+};
 
 pub fn build(state: &State<'_>) -> Footer {
     let mut hints = Vec::new();
-    if !state.decisions.is_empty() {
+    if state.scope.focus == Focus::Sidebar {
+        hints.push(hint("↑↓", "move"));
+        hints.push(hint("↵", "scope to"));
+        hints.push(hint("esc", "back"));
+    } else if !state.decisions.is_empty() {
         hints.push(hint("↑↓", "select"));
+    }
+    if !state.owners.is_empty() {
+        hints.push(hint("←→", "scope"));
+        hints.push(hint("tab", "repos"));
     }
     if state.config.is_ok() {
         hints.push(hint("r", "refresh"));

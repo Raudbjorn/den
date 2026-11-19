@@ -90,6 +90,9 @@ fn translate_key(key: &KeyEvent) -> Option<Key> {
     match key.code {
         KeyCode::Up => Some(Key::Up),
         KeyCode::Down => Some(Key::Down),
+        KeyCode::Left => Some(Key::Left),
+        KeyCode::Right => Some(Key::Right),
+        KeyCode::Tab => Some(Key::Tab),
         KeyCode::Enter => Some(Key::Enter),
         KeyCode::Esc => Some(Key::Esc),
         KeyCode::Char(c) => Some(Key::Char(c)),

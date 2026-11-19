@@ -3,7 +3,10 @@
 //! touching the others (header and empty states: #8; sidebar: #9; layout and
 //! detail sheet: #10; launch sheet: #11).
 
-use crate::domain::{NextStep, WaitingOn, WorkItemId, WorkItemKind};
+use crate::{
+    domain::{NextStep, WaitingOn, WorkItemId, WorkItemKind},
+    ordering::Scope,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewModel {
@@ -19,6 +22,9 @@ pub struct ViewModel {
 pub struct Header {
     /// What the list covers, e.g. "All Owners · Raudbjorn, massif-network".
     pub scope: String,
+    /// The segmented Scope control: All Owners, each Owner, and the Repo when
+    /// the Scope is one. Exactly one segment is active.
+    pub scopes: Vec<ScopeSegment>,
     /// Survey status and freshness, e.g. "observed 23:01 UTC, 2 min ago".
     pub status: String,
     /// How complete the picture is, in words.
@@ -45,10 +51,46 @@ pub struct RepoCoverage {
     pub problems: Vec<String>,
 }
 
-/// Not drawn yet: the sidebar arrives with #9.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeSegment {
+    pub label: String,
+    pub active: bool,
+}
+
+/// Every Repo of the watched Owners, grouped by Owner, each row a Scope.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sidebar {
-    pub owners: Vec<String>,
+    pub label: String,
+    pub rows: Vec<SidebarRow>,
+    /// The sidebar has keyboard focus (`Tab`).
+    pub focused: bool,
+    /// Index into `rows` of the cursor (shown while focused).
+    pub cursor: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SidebarEntry {
+    AllOwners,
+    Owner,
+    Repo,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidebarRow {
+    /// Choosing this row sets this Scope.
+    pub scope: Scope,
+    pub entry: SidebarEntry,
+    /// "All Owners", the Owner's login, or the Repo's name.
+    pub label: String,
+    /// Work Items with a Next Step in this row's Scope.
+    pub count: usize,
+    pub fork: bool,
+    pub archived: bool,
+    /// This row is the current Scope.
+    pub current: bool,
+    /// Coverage marker slot: some source behind this row was not read
+    /// completely. Filled by the coverage ticket (#8); `false` until then.
+    pub incomplete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
