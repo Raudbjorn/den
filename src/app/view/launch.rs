@@ -350,8 +350,6 @@ pub fn build_release(sheet: &ReleaseSheet) -> LaunchSheet {
     }
     view.fields
         .push(field("URL", sheet.url.clone(), None, Tone::Plain));
-    view.messages
-        .extend(sheet.evidence.iter().map(|e| message(e, Tone::Plain)));
     if let ReleaseState::Refused(why) = &sheet.state {
         view.messages.push(message(why, Tone::Caution));
     }
@@ -364,6 +362,9 @@ pub fn build_release(sheet: &ReleaseSheet) -> LaunchSheet {
     if let Some(notice) = &sheet.notice {
         view.messages.push(message(notice, Tone::Caution));
     }
+    // Outcomes and warnings must remain visible when release evidence is long.
+    view.messages
+        .extend(sheet.evidence.iter().map(|e| message(e, Tone::Plain)));
     view
 }
 

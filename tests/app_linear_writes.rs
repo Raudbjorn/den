@@ -1050,6 +1050,72 @@ fn print_the_linear_sheets() {
     }
 }
 
+#[test]
+fn release_evidence_cannot_hide_write_failures_or_unknown_outcomes() {
+    use den::ui::{Theme, frame};
+    use raudbjorn_tui::profile::{ColorProfile, GlyphProfile, TerminalProfile};
+
+    let theme = Theme::new(TerminalProfile::new(
+        ColorProfile::Mono,
+        GlyphProfile::Unicode,
+    ))
+    .unwrap();
+    for unknown in [false, true] {
+        let mut harness = started(workflow(false));
+        open(&mut harness, "TEAM-3");
+        harness
+            .linear
+            .push_reread(reread(Some(me()), in_progress()));
+        harness.linear_writer.push_outcome(if unknown {
+            LinearWriteOutcome::Unknown {
+                why: "HTTP 502".to_owned(),
+            }
+        } else {
+            LinearWriteOutcome::Failed {
+                error: "state not allowed".to_owned(),
+            }
+        });
+        if unknown {
+            harness.linear.push_reread(reread(Some(me()), release()));
+        }
+        enter(&mut harness);
+        for (cols, rows) in [(160, 45), (80, 24)] {
+            harness.send(Event::Resized { cols, rows });
+            let mut view = harness.view.clone();
+            let Some(Overlay::LaunchSheet(sheet)) = &mut view.overlay else {
+                panic!("release sheet")
+            };
+            // Enlarge the real evidence message without changing its position.
+            let evidence = sheet
+                .messages
+                .iter_mut()
+                .find(|m| m.text.starts_with(den::decide::EVIDENCE_PREFIX))
+                .expect("release evidence");
+            evidence.text.push_str(&" acme/api#123,".repeat(100));
+            let buffer = frame::render(&theme, &view, cols, rows).unwrap();
+            let text = frame::buffer_text(&buffer);
+            // At 80 columns, complete error sentences can wrap across frame rows.
+            let visible = text
+                .lines()
+                .map(|line| line.split('┊').nth(1).unwrap_or(line))
+                .flat_map(str::split_whitespace)
+                .collect::<Vec<_>>()
+                .join(" ");
+            if unknown {
+                assert!(visible.contains("unknown (HTTP 502)"), "{text}");
+                assert!(
+                    visible.contains(&format!(
+                        "Linear now shows TEAM-3 assigned to {LINEAR_ME_NAME}, in {RELEASE}"
+                    )),
+                    "{text}"
+                );
+            } else {
+                assert!(visible.contains("state not allowed"), "{text}");
+            }
+        }
+    }
+}
+
 /// Round 4 of #52: an unassigned issue outside the start teams is still shown
 /// when its Landing Group decides (here, an open member). It isn't offered to
 /// Start, so it never gets Start, and `c` on it neither plans a Job nor
