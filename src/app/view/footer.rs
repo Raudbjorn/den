@@ -1,16 +1,30 @@
 //! Key hints.
 
 use super::State;
-use crate::app::view_model::{Footer, KeyHint, Overlay};
+use crate::app::{
+    Focus,
+    view_model::{Footer, KeyHint, Overlay},
+};
 
 pub fn build(state: &State<'_>) -> Footer {
     let mut hints = Vec::new();
-    if !state.decisions.is_empty() {
+    if state.scope.focus == Focus::Sidebar {
+        hints.push(hint("↑↓", "move"));
+        hints.push(hint("↵", "scope to"));
+        hints.push(hint("esc", "back"));
+    } else if !state.decisions.is_empty() {
         hints.push(hint("↑↓", "select"));
+    }
+    if !state.owners.is_empty() {
+        hints.push(hint("←→", "scope"));
+        hints.push(hint("tab", "repos"));
     }
     match state.overlay {
         Some(Overlay::DetailSheet) => hints.push(hint("esc", "close")),
-        None if !state.layout.has_detail_pane() && state.selected.is_some() => {
+        None if state.scope.focus == Focus::List
+            && !state.layout.has_detail_pane()
+            && state.selected.is_some() =>
+        {
             hints.push(hint("⏎", "detail"));
         }
         _ => {}

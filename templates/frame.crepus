@@ -20,6 +20,12 @@ div w-full h-full flex-col bg-[#aa0018]
     span w-[5] font-bold text-[#aa0006] "{brand}"
     span w-[3] text-[#aa0016] " ┊ "
     span flex-1 text-[#aa000a] "{scope}"
+    for item in scopes
+      span w-[1] " "
+      if {active}
+        span w-[16] bg-[#aa0009] text-[#aa0000] font-bold "{segment}"
+      else
+        span w-[16] bg-[#aa0001] text-[#aa0007] "{segment}"
   div h-[1] flex-row px-2
     span flex-1 text-[#aa0007] "{status}"
   div h-[1] flex-row px-2
@@ -33,7 +39,7 @@ div w-full h-full flex-col bg-[#aa0018]
 --- Footer
 div w-full h-full flex-row bg-[#aa0000] text-[#aa0007] px-2
   for item in hints
-    span w-[3] font-bold text-[#aa0006] "{key}"
+    span w-[4] font-bold text-[#aa0006] "{key}"
     span w-[10] "{label}"
   span flex-1
 

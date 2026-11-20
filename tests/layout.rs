@@ -127,6 +127,24 @@ fn enter_with_nothing_selected_opens_no_sheet() {
     assert_eq!(harness.view.overlay, None);
 }
 
+/// `Enter` means "scope to this row" in the sidebar (#9) and "open the detail
+/// sheet" in the list (#10); with the sidebar focused it opens no sheet.
+#[test]
+fn with_the_sidebar_focused_enter_scopes_and_opens_no_sheet() {
+    let mut harness = surveyed_at(MIN_COLS, MIN_ROWS);
+    harness.key(Key::Tab);
+    assert!(harness.view.sidebar.focused);
+    assert!(!hint_keys(&harness).contains(&"⏎".to_owned()));
+
+    harness.key(Key::Enter);
+
+    assert_eq!(harness.view.overlay, None);
+    assert!(
+        !harness.view.sidebar.focused,
+        "Enter scoped and gave focus back to the list"
+    );
+}
+
 #[test]
 fn q_still_quits_with_the_sheet_open() {
     let mut harness = surveyed_at(MIN_COLS, MIN_ROWS);

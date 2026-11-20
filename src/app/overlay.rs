@@ -2,7 +2,7 @@
 //! narrow for the detail pane, `Enter` opens the detail as a sheet and `Esc` (or
 //! `Enter` again) closes it.
 
-use super::{App, Effect, Key, view_model::Overlay};
+use super::{App, Effect, Focus, Key, view_model::Overlay};
 use crate::layout::{Layout, TerminalSize};
 
 impl App {
@@ -15,7 +15,8 @@ impl App {
                 self.overlay = None;
                 Some(Vec::new())
             }
-            (None, Key::Enter) if self.detail_needs_sheet() => {
+            // With the sidebar focused, Enter scopes to its row (#9) instead.
+            (None, Key::Enter) if self.scope.focus == Focus::List && self.detail_needs_sheet() => {
                 self.overlay = Some(Overlay::DetailSheet);
                 Some(Vec::new())
             }

@@ -1,10 +1,15 @@
-//! Pull Request facts.
+//! Pull Request facts: what GitHub said about an open PR, nothing decided.
 //!
-//! The PR rules ticket (#4) adds mergeability, checks (required / advisory),
-//! review decision, unresolved threads, requested reviewers and merge-queue state
-//! here, alongside the query that fetches them (`github/pull_requests.rs`).
+//! The cheap facts (draft, mergeability, merge state, review decision, merge
+//! queue) come with
+//! the PR list; checks, review threads, review requests and latest reviews come
+//! from a follow-up query and live in [`PrDetails`], which is `None` when that
+//! query could not be read (coverage then says why).
 
-use crate::domain::ids::{RepoId, WorkItemId};
+use crate::domain::{
+    ids::{RepoId, WorkItemId},
+    observation::TeamRef,
+};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +30,14 @@ pub struct PullRequest {
     pub head_repo: Option<RepoId>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    pub mergeability: Mergeability,
+    /// GitHub's own verdict on whether the PR can merge now.
+    pub merge_state: MergeState,
+    /// GitHub's own review decision.
+    pub review_decision: ReviewDecision,
+    pub in_merge_queue: bool,
+    /// Checks and reviews; `None` when den could not read them.
+    pub details: Option<PrDetails>,
 }
 
 impl PullRequest {
@@ -34,4 +47,136 @@ impl PullRequest {
             number: self.number,
         }
     }
+}
+
+/// Whether the PR can merge into its base, as GitHub computed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Mergeability {
+    Mergeable,
+    Conflicting,
+    /// GitHub has not computed it yet (it does so lazily, after pushes).
+    Unknown,
+}
+
+/// GitHub's `mergeStateStatus`: whether the PR can merge right now, judged
+/// against every rule of the base branch, including those den does not read
+/// (a required check that never reported, a second required approval, a
+/// required code-owner review).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MergeState {
+    /// Mergeable, every commit status passing.
+    Clean,
+    /// Mergeable, statuses passing, pre-receive hooks to run.
+    HasHooks,
+    /// Mergeable, but a commit status is not passing.
+    Unstable,
+    /// A base-branch rule blocks merging.
+    Blocked,
+    /// The head branch must be brought up to date with the base first.
+    Behind,
+    /// A merge commit cannot be cleanly created.
+    Dirty,
+    Draft,
+    /// GitHub has not computed it yet, or den does not recognise the value.
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReviewDecision {
+    Approved,
+    ChangesRequested,
+    ReviewRequired,
+    /// GitHub reported no decision: the base branch requires no review (GitHub
+    /// then reports none even if someone reviewed).
+    NotRequired,
+    /// den could not tell: the decision came back null in a response that
+    /// carried errors (which can null a field), or in a form den does not know.
+    Unknown,
+}
+
+/// The facts read by the follow-up query. The default is "read completely,
+/// nothing found".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrDetails {
+    /// Checks on the head commit (check runs and commit statuses).
+    pub checks: Listed<Check>,
+    /// Review threads not yet resolved, among those read.
+    pub unresolved_threads: u32,
+    /// Every review thread was read (so `unresolved_threads` is exact).
+    pub threads_complete: bool,
+    /// Pending review requests.
+    pub review_requests: Listed<Reviewer>,
+    /// Each reviewer's latest approving or change-requesting review.
+    pub latest_reviews: Listed<Review>,
+}
+
+impl Default for PrDetails {
+    fn default() -> Self {
+        Self {
+            checks: Listed::default(),
+            unresolved_threads: 0,
+            threads_complete: true,
+            review_requests: Listed::default(),
+            latest_reviews: Listed::default(),
+        }
+    }
+}
+
+/// A list as far as den read it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Listed<T> {
+    pub items: Vec<T>,
+    /// False when GitHub had more than den read, or some entries came back
+    /// unreadable.
+    pub complete: bool,
+}
+
+impl<T> Default for Listed<T> {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            complete: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Check {
+    /// `workflow / job` for Actions check runs, the context for statuses.
+    pub name: String,
+    /// Required by the base branch's protection or rulesets for this PR.
+    pub required: bool,
+    pub outcome: CheckOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CheckOutcome {
+    Passing,
+    Failing,
+    /// Queued, running or expected.
+    Pending,
+    /// A state den does not know, as GitHub spelled it.
+    Unrecognised(String),
+}
+
+/// Someone asked to review.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Reviewer {
+    User(String),
+    Team(TeamRef),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Review {
+    /// `None` when GitHub has no author (a deleted account).
+    pub author: Option<String>,
+    pub verdict: ReviewVerdict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReviewVerdict {
+    Approved,
+    ChangesRequested,
+    /// Dismissed or another state that neither approves nor blocks.
+    Other,
 }

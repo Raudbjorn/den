@@ -10,7 +10,7 @@
 use super::{
     Theme, UiError,
     bear::{BearArt, EMPTY_BEAR_MAX_ROWS, EMPTY_BEAR_MIN_ROWS, Placement, SPLASH_BEAR_MAX_ROWS},
-    detail, footer, glyphs, header, list, templates,
+    detail, footer, glyphs, header, list, sidebar, templates,
 };
 use crate::{
     app::{ViewModel, view_model::Overlay},
@@ -263,17 +263,6 @@ fn draw_detail_sheet(
     draw_chamfer(frame, theme, plate)
 }
 
-/// The sidebar plate. Its content (Owners, Repos, Scope) is #9's `ui::sidebar`;
-/// until then it is the bare plate, at the width the layout gives it.
-fn draw_sidebar(
-    frame: &mut Frame,
-    theme: &Theme,
-    _view: &ViewModel,
-    area: Rect,
-) -> Result<(), UiError> {
-    theme.draw(frame, templates::RAIL, &TemplateContext::default(), area)
-}
-
 /// The one chamfer, on a detail plate's top-left corner.
 fn draw_chamfer(frame: &mut Frame, theme: &Theme, plate: Rect) -> Result<(), UiError> {
     if plate.is_empty() {
@@ -349,4 +338,14 @@ pub fn buffer_text(buffer: &Buffer) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The sidebar plate (#9 owns its contents; #10 owns where it sits).
+fn draw_sidebar(
+    frame: &mut Frame,
+    theme: &Theme,
+    view: &ViewModel,
+    area: Rect,
+) -> Result<(), UiError> {
+    sidebar::draw(frame, theme, &view.sidebar, area)
 }

@@ -1,6 +1,6 @@
 //! The Next Step list and its empty states.
 
-use super::{State, format, header};
+use super::{State, format, header, scope};
 use crate::{
     app::view_model::{EmptyState, List, Row},
     decide::Decision,
@@ -55,11 +55,16 @@ fn empty_state(state: &State<'_>) -> EmptyState {
             detail: error.to_string(),
         };
     }
+    // A failed refresh comes first: its details say how to recover, and the
+    // header already names the Scope.
     if let Some(failure) = state.failure {
         return EmptyState {
             title: failure.headline().to_owned(),
             detail: failure.to_string(),
         };
+    }
+    if let Some(narrowed) = scope::empty_in_scope(state) {
+        return narrowed;
     }
     match state.observation {
         None if state.surveying => EmptyState {

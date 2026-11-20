@@ -13,9 +13,11 @@ pub const FRAME: TemplateFile = TemplateFile::new("frame");
 pub const LIST: TemplateFile = TemplateFile::new("list");
 /// The detail plate.
 pub const DETAIL_FILE: TemplateFile = TemplateFile::new("detail");
+/// The sidebar plate (Repos and Scopes).
+pub const SIDEBAR_FILE: TemplateFile = TemplateFile::new("sidebar");
 
 /// Every template file den registers.
-pub fn sources() -> [TemplateSource; 3] {
+pub fn sources() -> [TemplateSource; 4] {
     [
         TemplateSource {
             file: FRAME,
@@ -28,6 +30,10 @@ pub fn sources() -> [TemplateSource; 3] {
         TemplateSource {
             file: DETAIL_FILE,
             content: include_str!("../../templates/detail.crepus"),
+        },
+        TemplateSource {
+            file: SIDEBAR_FILE,
+            content: include_str!("../../templates/sidebar.crepus"),
         },
     ]
 }
@@ -43,10 +49,11 @@ pub const CHAMFER: TemplateRef = section(FRAME, "Chamfer");
 pub const LIST_ROWS: TemplateRef = section(LIST, "List");
 pub const LIST_EMPTY: TemplateRef = section(LIST, "Empty");
 pub const DETAIL: TemplateRef = section(DETAIL_FILE, "Detail");
+pub const SIDEBAR: TemplateRef = section(SIDEBAR_FILE, "Sidebar");
 
 /// Every section den draws.
-pub const ALL_SECTIONS: [TemplateRef; 7] = [
-    HEADER, FOOTER, SUTURE_V, CHAMFER, LIST_ROWS, LIST_EMPTY, DETAIL,
+pub const ALL_SECTIONS: [TemplateRef; 8] = [
+    HEADER, FOOTER, SUTURE_V, CHAMFER, LIST_ROWS, LIST_EMPTY, DETAIL, SIDEBAR,
 ];
 
 // The responsive frame and the bear (#10).
