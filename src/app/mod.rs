@@ -432,7 +432,9 @@ impl App {
     fn cache_answered(&mut self) -> Vec<Effect> {
         self.awaiting_cache = false;
         match self.held_answer.take() {
-            Some(HeldAnswer { id, outcome, now }) => self.survey_finished(id, outcome, now),
+            Some(HeldAnswer { id, outcome, now }) => {
+                self.survey_finished(id, outcome, self.now.unwrap_or(now))
+            }
             None => Vec::new(),
         }
     }

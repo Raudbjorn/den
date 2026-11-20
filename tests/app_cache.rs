@@ -10,12 +10,12 @@ mod support;
 use den::{
     app::{Effect, Event, Key, LogLevel, ViewModel},
     cache::{CacheError, CachedObservation},
-    domain::{Incompleteness, Observation, SourceKind, SourceState},
+    domain::{Incompleteness, NextStep, Observation, SourceKind, SourceState},
     ports::SurveyFailure,
 };
 use std::path::PathBuf;
 use support::{
-    build::{ME, ObservationBuilder, now, pr, run, ts},
+    build::{ME, ObservationBuilder, branch, now, pr, run, ts},
     fakes::FakeCache,
     harness::{Harness, config},
 };
@@ -185,6 +185,47 @@ fn a_partial_survey_that_answers_before_the_cache_is_read_still_keeps_the_cached
         unreachable!()
     };
     assert_eq!(cached.observation.pull_requests.len(), 2, "{cached:?}");
+}
+
+#[test]
+fn a_held_survey_uses_the_latest_tick_for_decisions_without_redating_its_facts() {
+    for cache_answer in [
+        Event::CacheLoaded { outcome: Ok(None) },
+        Event::EffectRejected {
+            effect: Box::new(Effect::LoadCache),
+            reason: "store lane stopped".to_owned(),
+        },
+    ] {
+        let observation = ObservationBuilder::new()
+            .fully_read_owner("alpha")
+            .repo("alpha/app")
+            .branch(branch("alpha/app", "threshold").age_days(30))
+            .build();
+        let mut harness = Harness::with_owners(&["alpha"]);
+        harness.answer(Ok(observation.clone()));
+        let effects = harness.send(Event::Started { now: now() });
+        let survey = effect_named(&effects, |e| matches!(e, Effect::Survey { .. }));
+        harness.perform(&survey);
+        harness.send(Event::Tick {
+            now: now() + jiff::SignedDuration::from_secs(1),
+        });
+
+        let effects = harness.send(cache_answer);
+        let [row] = harness.view.list.rows.as_slice() else {
+            panic!("{:?}", harness.view.list.rows);
+        };
+        // The branch crossed 30 days while the survey waited for the cache.
+        assert_eq!(row.next_step, Some(NextStep::PruneOrRevive));
+        let Effect::StoreCache { cached } =
+            effect_named(&effects, |e| matches!(e, Effect::StoreCache { .. }))
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            cached.observation, observation,
+            "only decision time advances"
+        );
+    }
 }
 
 #[test]
