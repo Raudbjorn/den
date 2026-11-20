@@ -21,7 +21,7 @@ use super::{
 use crate::{
     config::LinearWorkflow,
     domain::{
-        Incompleteness, LinearTeamStates, SourceState,
+        Incompleteness, LinearSourceKind, LinearTeamStates, SourceState,
         facts::{LinearIssue, LinearState, LinearStateKind, LinearTeam},
     },
 };
@@ -185,7 +185,11 @@ pub(super) fn start_team_issues(
         |node, page_complete| {
             let raw: RawIssue = serde_json::from_value(node).map_err(|e| e.to_string())?;
             if seen.insert(raw.id.clone()) {
-                issues.push(raw.into_issue(workflow, page_complete));
+                issues.push(raw.into_issue(
+                    workflow,
+                    LinearSourceKind::StartTeamIssues,
+                    page_complete,
+                ));
             }
             Ok(())
         },

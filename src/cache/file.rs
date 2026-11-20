@@ -33,11 +33,15 @@ pub const CACHE_SUBDIR: &str = "cache";
 /// (milestone 2). A milestone-1 cache (4) is refused and surveyed afresh.
 /// 6: the Linear part holds Linear viewers and Linear Issues, and coverage
 /// has Linear incompleteness reasons (#32).
-/// 7: a PR's reviews carry their commit and their author's kind of account,
-/// and a PR has its latest reviews of any kind, comments included (#36); a
-/// Linear Issue carries its attachments and whether they were all read
-/// (#35); the Linear part holds each Linear team's workflow states (#33).
-pub const CACHE_FORMAT: u32 = 7;
+/// 7: never released as one shape. #33, #34, #35 and #36 each moved to 7 for
+/// their own fields on their branches; a cache any of those wrote is refused.
+/// 8: milestone 2's merged shape (#33 + #34 + #35 + #36). A PR's reviews carry
+/// their commit and their author's kind of account, and a PR has its latest
+/// reviews of any kind, comments included (#36); a Linear Issue carries its
+/// attachments and whether they were all read (#35) and the Linear source
+/// that listed it (#34); the Linear part holds each Linear team's workflow
+/// states (#33) and its own survey time (#34).
+pub const CACHE_FORMAT: u32 = 8;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// Names the viewer whose cache startup shows.

@@ -213,6 +213,13 @@ fn reads_team_states_and_the_start_teams_unassigned_issues() {
     // the shared `LinearIssueFields` fragment, so a Start offer's attachments
     // are as complete as an assigned issue's (spec 0002, rule 3).
     assert_eq!(start.attachments.read, AttachmentsRead::Complete);
+    // Integration (#33 + #34): the cache merges each issue by the source that
+    // listed it, so a Start offer names the start-team list.
+    assert_eq!(start.listed_by, LinearSourceKind::StartTeamIssues);
+    assert_eq!(
+        survey.part.issues[0].listed_by,
+        LinearSourceKind::AssignedIssues
+    );
     let request = transport
         .requests()
         .into_iter()

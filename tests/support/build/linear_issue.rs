@@ -5,7 +5,7 @@
 
 use super::{repo_id, ts};
 use den::domain::{
-    LinearIssueId, LinearViewer,
+    LinearIssueId, LinearSourceKind, LinearViewer,
     facts::{
         Attachment, Attachments, AttachmentsRead, LinearCycle, LinearIssue, LinearPriority,
         LinearState, LinearStateKind, LinearTeam, LinearUser, PullRequestRef,
@@ -37,6 +37,7 @@ pub fn linear_issue(owner: &str, id: &str, identifier: &str) -> LinearIssueBuild
         issue: LinearIssue {
             owner: owner.to_owned(),
             id: LinearIssueId::new("acme", id),
+            listed_by: LinearSourceKind::AssignedIssues,
             identifier: identifier.to_owned(),
             title: format!("Linear {identifier}"),
             url: format!(
@@ -87,6 +88,12 @@ impl LinearIssueBuilder {
             id: id.to_owned(),
             name: name.to_owned(),
         });
+        self
+    }
+
+    /// Listed by another Linear source than the assigned issues.
+    pub fn listed_by(mut self, source: LinearSourceKind) -> Self {
+        self.issue.listed_by = source;
         self
     }
 

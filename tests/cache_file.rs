@@ -9,13 +9,16 @@ mod support;
 use den::{
     cache::{CACHE_FORMAT, CacheError, CachedObservation, Carried, FileCache},
     domain::{
-        Source,
-        facts::{MergeState, ReviewDecision},
+        LinearSourceKind, LinearTeamStates, Source, SourceKind, SourceState,
+        facts::{
+            ActorKind, Attachment, AttachmentsRead, LinearState, LinearStateKind, LinearTeam,
+            MergeState, PullRequestRef, ReviewDecision, ReviewVerdict,
+        },
     },
     ports::ObservationCache,
 };
 use std::{fs, time::Duration};
-use support::build::{ObservationBuilder, issue, pr, ts};
+use support::build::{ObservationBuilder, issue, linear_issue, pr, ts};
 
 fn cached(viewer: &str, number: u64) -> CachedObservation {
     let mut cached = CachedObservation::fresh(
@@ -99,6 +102,138 @@ fn every_issue_and_pr_shape_loads_back_unchanged() {
     let cache = FileCache::in_state_dir(dir.path());
     cache.store(&stored).unwrap();
     assert_eq!(cache.load(), Ok(Some(stored)));
+}
+
+/// The Linear part survives the file with what the merge needs (#34): its
+/// own survey time, the source that listed each Linear Issue, and the age
+/// of Linear data kept from an earlier survey.
+#[test]
+fn the_linear_part_and_its_ages_load_back_unchanged() {
+    let mut observation = ObservationBuilder::new()
+        .owner("acme")
+        .linear_viewer("acme", "acme")
+        .linear_issue(linear_issue("acme", "id-7", "TEAM-7"))
+        .linear_issue(
+            linear_issue("acme", "id-9", "TEAM-9")
+                .unassigned()
+                .listed_by(LinearSourceKind::StartTeamIssues),
+        )
+        .owner_coverage(
+            "acme",
+            SourceKind::Linear(LinearSourceKind::StartTeamIssues),
+            SourceState::Failed {
+                error: "timeout".to_owned(),
+            },
+        )
+        .build();
+    observation.linear.observed_at = Some(ts("2026-11-19T11:00:00Z"));
+    let mut stored = CachedObservation::fresh(observation);
+    stored.carried.push(Carried {
+        source: Source::Owner {
+            owner: "acme".to_owned(),
+            kind: SourceKind::Linear(LinearSourceKind::StartTeamIssues),
+        },
+        observed_at: ts("2026-11-19T09:00:00Z"),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCache::in_state_dir(dir.path());
+    cache.store(&stored).unwrap();
+    assert_eq!(cache.load(), Ok(Some(stored)));
+}
+
+/// Format 8 is milestone 2's merged shape. Every field #33, #34, #35 and #36
+/// added to the stored Observation survives a store and load, together:
+/// #33's `LinearPart.team_states`, #34's `LinearIssue.listed_by` and
+/// `LinearPart.observed_at`, #35's attachments (a PR, a link, and an issue
+/// whose attachments weren't all read), and #36's review commit and author
+/// kind (a user's review on an older head, a bot's comment at the head).
+#[test]
+fn milestone_2_s_merged_shape_loads_back_unchanged() {
+    assert_eq!(CACHE_FORMAT, 8, "the merged milestone-2 shape");
+    let team_states = LinearTeamStates {
+        owner: "acme".to_owned(),
+        workspace: "acme".to_owned(),
+        team: LinearTeam {
+            id: "team-team".to_owned(),
+            key: "TEAM".to_owned(),
+        },
+        name: "Team".to_owned(),
+        states: vec![LinearState {
+            id: "TEAM-todo".to_owned(),
+            name: "Todo".to_owned(),
+            kind: LinearStateKind::Unstarted,
+        }],
+    };
+    let mut observation = ObservationBuilder::new()
+        .owner("acme")
+        .repo("acme/api")
+        .pull_request(
+            pr("acme/api", 4)
+                .head("b".repeat(40).as_str())
+                .review_on("alice", ReviewVerdict::ChangesRequested, &"a".repeat(40))
+                .bot_review_at_head("ci-bot", ReviewVerdict::Commented),
+        )
+        .linear_viewer("acme", "acme")
+        .linear_issue(
+            linear_issue("acme", "id-7", "TEAM-7")
+                .attached("acme/api", 4)
+                .link("https://example.com/spec"),
+        )
+        .linear_issue(
+            linear_issue("acme", "id-9", "TEAM-9")
+                .up_for_grabs()
+                .listed_by(LinearSourceKind::StartTeamIssues)
+                .attachments_incomplete("more than 50 attachments"),
+        )
+        .build();
+    observation.linear.team_states = vec![team_states.clone()];
+    observation.linear.observed_at = Some(ts("2026-11-19T11:00:00Z"));
+    let stored = CachedObservation::fresh(observation);
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCache::in_state_dir(dir.path());
+    cache.store(&stored).unwrap();
+    let loaded = cache.load().unwrap().expect("stored");
+    assert_eq!(loaded, stored);
+
+    // The fixture really holds each field, so the equality above covers it.
+    let linear = &loaded.observation.linear;
+    assert_eq!(linear.team_states, [team_states]);
+    assert_eq!(linear.observed_at, Some(ts("2026-11-19T11:00:00Z")));
+    assert_eq!(
+        linear.issues[1].listed_by,
+        LinearSourceKind::StartTeamIssues
+    );
+    assert_eq!(
+        linear.issues[0].attachments.links,
+        [
+            Attachment::PullRequest(PullRequestRef::new(
+                den::domain::RepoId::new("acme", "api"),
+                4
+            )),
+            Attachment::Link {
+                url: "https://example.com/spec".to_owned()
+            },
+        ]
+    );
+    assert!(matches!(
+        linear.issues[1].attachments.read,
+        AttachmentsRead::Incomplete { .. }
+    ));
+    let details = loaded.observation.pull_requests[0]
+        .details
+        .as_ref()
+        .expect("details");
+    let alice = &details.latest_reviews.items[0];
+    assert_eq!(alice.commit.as_deref(), Some("a".repeat(40).as_str()));
+    assert_eq!(alice.author_kind, ActorKind::User);
+    let bot = details
+        .latest_reviews_with_comments
+        .items
+        .iter()
+        .find(|r| r.author.as_deref() == Some("ci-bot"))
+        .expect("the bot's comment");
+    assert_eq!(bot.author_kind, ActorKind::Bot);
+    assert_eq!(bot.verdict, ReviewVerdict::Commented);
 }
 
 #[cfg(unix)]

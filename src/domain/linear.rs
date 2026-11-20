@@ -17,6 +17,7 @@
 //! survey read as incomplete.
 
 use super::facts::{LinearIssue, LinearState, LinearTeam};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 /// What den read from Linear in one survey.
@@ -31,6 +32,11 @@ pub struct LinearPart {
     /// team or a state (#33).
     #[serde(default)]
     pub team_states: Vec<LinearTeamStates>,
+    /// When the Linear survey that read this part started; `None` before any
+    /// Linear survey answered. Linear is surveyed apart from GitHub, so its
+    /// data has its own age: the cache labels Linear data it keeps with it
+    /// (#34), never with the GitHub survey's time.
+    pub observed_at: Option<Timestamp>,
 }
 
 /// One Linear team and its workflow states, as one Linear Workflow read them.
