@@ -17,6 +17,18 @@ pub struct MemberPullRequestState {
     pub state: PullRequestState,
 }
 
+/// A member den asked GitHub about and got no state for (#37), and when it
+/// last asked. The read is bounded, so den asks for members it never asked
+/// about first, then the ones unanswered longest: a member that never
+/// resolves (an attachment naming a Pull Request that doesn't exist) can't
+/// keep the others from being read. Kept only while den still wants that
+/// member's state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberStateAttempt {
+    pub pr: PullRequestRef,
+    pub attempted_at: Timestamp,
+}
+
 /// A Pull Request's state on GitHub.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PullRequestState {
