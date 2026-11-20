@@ -12,6 +12,11 @@
 //! passes the mode again. [`PermissionMode`] has no other value, so no bypass
 //! mode can be expressed. A coding Job gets no mode flag: milestone 1's
 //! command, and the user's own Claude Code settings decide.
+//!
+//! A Job whose worktree den doesn't trust ([`super::trust`]) starts with
+//! `--setting-sources user` ([`SettingSources::UserOnly`]), so the worktree's
+//! `.claude/settings.json` and `.claude/settings.local.json` (and the hooks
+//! in them) are not loaded. Reopening it passes the flag again.
 
 use crate::process::Invocation;
 use serde::{Deserialize, Serialize};
@@ -32,6 +37,38 @@ const CLAUDE_PERMISSION_MODE_FLAG: &str = "--permission-mode";
 /// run shell commands or reach the network. `manual` is the CLI's alias for the
 /// config value `default` (code.claude.com/docs/en/permission-modes).
 const CLAUDE_MANUAL_MODE: &str = "manual";
+/// Claude Code's flag for which settings files to load (`claude --help`:
+/// "Comma-separated list of setting sources to load (user, project, local)").
+const CLAUDE_SETTING_SOURCES_FLAG: &str = "--setting-sources";
+/// Only the user's own settings (`~/.claude/settings.json`).
+const CLAUDE_USER_SOURCE: &str = "user";
+
+/// Which of Claude Code's setting sources a Job's session loads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SettingSources {
+    /// Claude Code's default (no flag): user, project and local.
+    #[default]
+    All,
+    /// `--setting-sources user`: not the worktree's project or local settings.
+    UserOnly,
+}
+
+impl SettingSources {
+    pub fn is_all(&self) -> bool {
+        *self == Self::All
+    }
+
+    /// The flag and its value, as passed to `claude`; none for [`Self::All`].
+    pub fn args(self) -> Vec<String> {
+        match self {
+            Self::All => Vec::new(),
+            Self::UserOnly => vec![
+                CLAUDE_SETTING_SOURCES_FLAG.to_owned(),
+                CLAUDE_USER_SOURCE.to_owned(),
+            ],
+        }
+    }
+}
 
 /// A permission mode den passes to Claude Code. Only the approval-required
 /// mode exists: den never passes a bypass mode, nor `dontAsk`.
@@ -77,6 +114,9 @@ pub struct WindowCommand {
     /// `None`: no mode flag, as in milestone 1 (the user's settings decide).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<PermissionMode>,
+    /// [`SettingSources::All`]: no flag, as in milestone 1.
+    #[serde(default, skip_serializing_if = "SettingSources::is_all")]
+    pub setting_sources: SettingSources,
 }
 
 /// Whether the window starts a new Claude Code session or resumes one.
@@ -99,13 +139,14 @@ pub enum WindowMode {
 }
 
 /// `claude -n <session> <prompt>` (or `claude --resume <session>`), after
-/// `--permission-mode <mode>` when the window has one, as arguments after the
-/// program.
+/// `--permission-mode <mode>` and `--setting-sources user` when the window
+/// has them, as arguments after the program.
 pub fn claude_args(window: &WindowCommand) -> Vec<String> {
     let mode = window
         .permission_mode
         .into_iter()
-        .flat_map(PermissionMode::args);
+        .flat_map(PermissionMode::args)
+        .chain(window.setting_sources.args());
     let session = match window.start {
         SessionStart::New => vec![
             CLAUDE_NAME_FLAG.to_owned(),

@@ -867,6 +867,10 @@ fn no_new_work_repos_keeps_an_existing_linear_job_reopenable() {
     enter(&mut harness);
     assert_eq!(sheet(&harness).status, LaunchStatus::Reopened);
     assert_eq!(harness.launcher.windows()[0].session, job.session);
+    assert_eq!(
+        harness.launcher.windows()[0].setting_sources,
+        den::handoff::command::SettingSources::All,
+    );
     assert_eq!(harness.jobs.records(), [job]);
     assert!(launch_plans(&harness).is_empty());
     assert!(harness.workspace.calls().is_empty());
@@ -923,6 +927,43 @@ fn a_github_owners_launch_sheet_shows_no_linear_writes() {
     let effects = enter(&mut harness);
     assert_eq!(acts(&effects), ["launch"]);
     assert!(!harness.effects.iter().any(is_linear_write));
+}
+
+#[test]
+fn linear_implement_and_review_templates_coexist() {
+    use den::handoff::prompts::{self, PromptFields, PromptKind};
+    let prompts = prompts::parse(
+        std::path::Path::new("prompts.toml"),
+        r#"
+implement_linear = "Work on {identifier} in {repo}: {url}"
+review_linear = "Review {url}{linear_context}{verdict_only}"
+"#,
+    )
+    .unwrap();
+    let review = prompts.render(
+        PromptKind::ReviewLinear,
+        &PromptFields {
+            url: "https://github.com/acme/api/pull/1".to_owned(),
+            linear_issues: vec![("TEAM-8".to_owned(), team_8().url)],
+            ..PromptFields::default()
+        },
+    );
+    assert!(review.contains("TEAM-8"));
+    assert!(review.contains("Return your verdict to me only"));
+    let mut harness = started(workflow(false));
+    harness.app = harness.app.with_launch_settings(Ok(prompts), None);
+    open(&mut harness, "TEAM-8");
+    assert_eq!(
+        sheet(&harness).prompt.as_ref().unwrap().text,
+        format!("Work on TEAM-8 in acme/api: {}", team_8().url)
+    );
+    assert!(
+        prompts::parse(
+            std::path::Path::new("prompts.toml"),
+            "review_linear = '{identifier}{linear_context}{verdict_only}'"
+        )
+        .is_err()
+    );
 }
 
 fn drawn(harness: &mut Harness, (cols, rows): (u16, u16)) -> String {

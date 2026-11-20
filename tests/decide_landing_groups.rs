@@ -616,6 +616,23 @@ fn another_owners_attachment_makes_no_group_and_no_ambiguity() {
         identifiers(&pull_request(&decisions, "acme/api", 4).landing.groups),
         ["TEAM-1"]
     );
+    let octo_9 = linear(&decisions, "OCTO-9");
+    let foreign = &octo_9.landing.members[0];
+    assert_eq!(
+        foreign.status,
+        MemberStatus::NotSurveyed(NotSurveyed::OtherOwner)
+    );
+    assert!(
+        !foreign.ambiguous(),
+        "a foreign member shares no group: {foreign:?}"
+    );
+    assert!(
+        octo_9
+            .explanation
+            .other_conditions
+            .iter()
+            .all(|c| !c.contains("ambiguous"))
+    );
 }
 
 /// A member is named as every other Pull Request reference in den is,

@@ -264,6 +264,7 @@ fn clone_plan(root: &Path, url: &str, tip: &str) -> LaunchPlan {
         session: "app-ci-fix-ci".to_owned(),
         prompt: "/diagnosing-bugs https://github.com/octo/app/actions/runs/41".to_owned(),
         permission_mode: None,
+        project_settings: den::handoff::ProjectSettings::Loaded,
         review_request: None,
         window: WindowMode::Kitty,
         command: String::new(),

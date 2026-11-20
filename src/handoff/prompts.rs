@@ -24,14 +24,18 @@
 //! the request's outcome, so the prompt has no announcement step. den never
 //! touches Slack: the channel is an opaque string in the prompt.
 //!
-//! `implement_linear` (#38) is the prompt of a Linear Issue's Start or
-//! Implement Job, whatever its Next Step: den's `/implement` with the Linear
-//! identifier and URL, and the target Repo. It alone also has `{identifier}`
-//! (`TEAM-123`). Like every default, it never carries the issue's title or
-//! description.
+//! `review_linear` (#41) is the Review Job's template in an Owner with a
+//! Linear Workflow, beside `review` for every other Owner. It alone has
+//! `{linear_context}` (for a Pull Request in a Landing Group, its Linear
+//! Issues' identifiers and URLs; nothing otherwise) and `{verdict_only}`
+//! (the instruction to return a verdict without editing, committing,
+//! approving, requesting changes or posting), and it must use both.
+//!
+//! `implement_linear` (#38) is a Linear Issue's Start or Implement template.
+//! It alone has `{identifier}`; defaults carry no issue title or description.
 
 use crate::config::{Location, location_of};
-use crate::domain::NextStep;
+use crate::domain::{LinearWorkflowPolicy, NextStep};
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
@@ -47,16 +51,102 @@ pub const MAX_TEMPLATE_CHARS: usize = 4_000;
 const PLACEHOLDERS: [&str; 5] = ["repo", "number", "url", "title", "branch"];
 /// Placeholders only the Request review template has (#39).
 const REQUEST_REVIEW_PLACEHOLDERS: [&str; 2] = ["reviewers", "announcement"];
-/// The prompts file's key for a Linear Issue's Start or Implement Job (#38).
+/// Placeholders only the Review (Linear) template has (#41).
+const REVIEW_LINEAR_PLACEHOLDERS: [&str; 2] = ["linear_context", "verdict_only"];
+/// The prompts-file key of the Review (Linear) template.
+pub const REVIEW_LINEAR_KEY: &str = "review_linear";
+/// The prompts-file key of a Linear Issue's Start or Implement Job.
 pub const IMPLEMENT_LINEAR_KEY: &str = "implement_linear";
-/// Placeholders only the `implement_linear` template has (#38).
 const IMPLEMENT_LINEAR_PLACEHOLDERS: [&str; 1] = ["identifier"];
-/// The default `implement_linear` template: identifier, URL and target Repo.
 pub const DEFAULT_IMPLEMENT_LINEAR: &str = "/implement {identifier} {url} in {repo}";
 
 /// The file's key for a Next Step kind: "Address review" → `address_review`.
 pub fn step_key(step: NextStep) -> String {
     step.label().to_ascii_lowercase().replace(' ', "_")
+}
+
+/// Which template a Job's prompt comes from: its Next Step's, or, for a
+/// Review Job in a Linear Workflow, Review (Linear)'s (#41).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PromptKind {
+    Step(NextStep),
+    /// A Review Job for a Pull Request of an Owner with a Linear Workflow:
+    /// verdict only, with the Linear context.
+    ReviewLinear,
+    /// A Start or Implement Job for a Linear Issue.
+    ImplementLinear,
+}
+
+impl From<NextStep> for PromptKind {
+    fn from(step: NextStep) -> Self {
+        Self::Step(step)
+    }
+}
+
+impl PromptKind {
+    /// Every kind, in the prompts file's order.
+    pub fn all() -> impl Iterator<Item = Self> {
+        NextStep::ALL
+            .into_iter()
+            .map(Self::Step)
+            .chain([Self::ReviewLinear, Self::ImplementLinear])
+    }
+
+    /// The template a Job for `step` uses, given its Owner's Linear Workflow
+    /// `policy` (the empty one without a workflow).
+    pub fn for_job(step: NextStep, policy: &LinearWorkflowPolicy) -> Self {
+        match step {
+            NextStep::Review if policy.reviews_verdict_only() => Self::ReviewLinear,
+            step => Self::Step(step),
+        }
+    }
+
+    /// The prompts file's key: `address_review`, `review_linear`.
+    pub fn key(self) -> String {
+        match self {
+            Self::Step(step) => step_key(step),
+            Self::ReviewLinear => REVIEW_LINEAR_KEY.to_owned(),
+            Self::ImplementLinear => IMPLEMENT_LINEAR_KEY.to_owned(),
+        }
+    }
+
+    /// The placeholders only this kind has.
+    fn own_placeholders(self) -> &'static [&'static str] {
+        match self {
+            Self::Step(NextStep::RequestReview) => &REQUEST_REVIEW_PLACEHOLDERS,
+            Self::ReviewLinear => &REVIEW_LINEAR_PLACEHOLDERS,
+            Self::ImplementLinear => &IMPLEMENT_LINEAR_PLACEHOLDERS,
+            Self::Step(_) => &[],
+        }
+    }
+
+    /// The placeholders this kind's template must use, each with what the
+    /// Job would lose without it: a Request review Job learns whom to ask
+    /// only from `{reviewers}`, a verdict-only Review Job its Linear Issue and
+    /// its limits only from `{linear_context}` and `{verdict_only}`.
+    fn required_placeholders(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            Self::Step(NextStep::RequestReview) => {
+                &[("reviewers", "or the Job never gets what the sheet chose")]
+            }
+            Self::ReviewLinear => &[
+                (
+                    "linear_context",
+                    "or the Job never learns which Linear Issue the Pull Request is for",
+                ),
+                (
+                    "verdict_only",
+                    "or the Job is never told to return a verdict only",
+                ),
+            ],
+            Self::Step(_) | Self::ImplementLinear => &[],
+        }
+    }
+
+    /// The kind that owns `placeholder`, when only one kind has it.
+    fn owner_of(placeholder: &str) -> Option<Self> {
+        Self::all().find(|kind| kind.own_placeholders().contains(&placeholder))
+    }
 }
 
 /// The default template for each kind (spec, "Launch handoff").
@@ -116,6 +206,31 @@ If you aren't sure an announcement went out, don't send it again: report it as u
 const NO_ANNOUNCEMENT: &str =
     " Then report whether the review request was made, with the error if it failed.";
 
+/// The default Review (Linear) template (spec 0002, "Prompts").
+const REVIEW_LINEAR_TEMPLATE: &str = "/code-review {url}{linear_context}{verdict_only}";
+
+/// What `{verdict_only}` is (spec 0002, story 70).
+const VERDICT_ONLY: &str = " Return your verdict to me only. Don't edit files, commit, push, approve, request changes, comment or post anywhere: I decide what gets published.";
+
+/// What `{linear_context}` is for a Pull Request attached to `issues`
+/// (identifier, URL): nothing when it is attached to none.
+fn linear_context(issues: &[(String, String)]) -> String {
+    let named: Vec<String> = issues
+        .iter()
+        .map(|(identifier, url)| format!("{identifier} ({url})"))
+        .collect();
+    match named.as_slice() {
+        [] => String::new(),
+        [one] => format!(
+            " It is attached to Linear Issue {one}: review it against what that issue asks for."
+        ),
+        many => format!(
+            " It is attached to the Linear Issues {}: review it against what they ask for.",
+            many.join(", ")
+        ),
+    }
+}
+
 /// The values a template's placeholders take for one Work Item.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PromptFields {
@@ -128,73 +243,72 @@ pub struct PromptFields {
     pub reviewers: Vec<String>,
     /// Request review only: the Owner's Slack channel, opaque.
     pub slack_channel: Option<String>,
+    /// Review (Linear) only: the Linear Issues the Pull Request is attached
+    /// to, as (identifier, URL).
+    pub linear_issues: Vec<(String, String)>,
     /// A Linear Issue's identifier (`TEAM-123`); empty for GitHub Work Items.
     pub identifier: String,
 }
 
-/// A template per Next Step kind.
+/// The default template of any kind.
+pub fn default_template_of(kind: PromptKind) -> &'static str {
+    match kind {
+        PromptKind::Step(step) => default_template(step),
+        PromptKind::ReviewLinear => REVIEW_LINEAR_TEMPLATE,
+        PromptKind::ImplementLinear => DEFAULT_IMPLEMENT_LINEAR,
+    }
+}
+
+/// A template per kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prompts {
-    templates: BTreeMap<NextStep, String>,
-    /// A Linear Issue's Start or Implement Job (#38).
-    implement_linear: String,
+    templates: BTreeMap<PromptKind, String>,
     /// Kinds whose template in the file den can't use, and why; den refuses
     /// to launch them rather than run another prompt than the file's.
-    unusable: BTreeMap<NextStep, PromptsError>,
+    unusable: BTreeMap<PromptKind, PromptsError>,
 }
 
 impl Default for Prompts {
     fn default() -> Self {
         Self {
-            templates: NextStep::ALL
-                .iter()
-                .map(|&step| (step, default_template(step).to_owned()))
+            templates: PromptKind::all()
+                .map(|kind| (kind, default_template_of(kind).to_owned()))
                 .collect(),
-            implement_linear: DEFAULT_IMPLEMENT_LINEAR.to_owned(),
             unusable: BTreeMap::new(),
         }
     }
 }
 
 impl Prompts {
-    /// Why the file's template for `step` can't be used, if it can't.
-    pub fn unusable(&self, step: NextStep) -> Option<&PromptsError> {
-        self.unusable.get(&step)
+    /// Why the file's template for `kind` can't be used, if it can't.
+    pub fn unusable(&self, kind: impl Into<PromptKind>) -> Option<&PromptsError> {
+        self.unusable.get(&kind.into())
     }
 
-    /// Every unusable template's problem, in Next Step order.
+    /// Every unusable template's problem, in kind order.
     pub fn problems(&self) -> impl Iterator<Item = &PromptsError> {
         self.unusable.values()
     }
 
-    pub fn template(&self, step: NextStep) -> &str {
+    pub fn template(&self, kind: impl Into<PromptKind>) -> &str {
+        let kind = kind.into();
         self.templates
-            .get(&step)
-            .map_or_else(|| default_template(step), String::as_str)
+            .get(&kind)
+            .map_or_else(|| default_template_of(kind), String::as_str)
     }
 
-    /// `step`'s template uses `{placeholder}`.
-    pub fn uses(&self, step: NextStep, placeholder: &str) -> bool {
+    /// `kind`'s template uses `{placeholder}`.
+    pub fn uses(&self, kind: impl Into<PromptKind>, placeholder: &str) -> bool {
+        let kind = kind.into();
         // Templates are validated when loaded (defaults included), so this
         // check only lists what they use.
-        check(self.template(step), extra_placeholders(step))
-            .is_ok_and(|used| used.iter().any(|u| u == placeholder))
+        check(self.template(kind), kind).is_ok_and(|used| used.iter().any(|u| u == placeholder))
     }
 
-    /// The prompt for `step` with `fields` filled in.
-    pub fn render(&self, step: NextStep, fields: &PromptFields) -> String {
+    /// The prompt of `kind` with `fields` filled in.
+    pub fn render(&self, kind: impl Into<PromptKind>, fields: &PromptFields) -> String {
         // Templates are validated when loaded, so every placeholder is known.
-        fill(self.template(step), fields)
-    }
-
-    /// The `implement_linear` template (#38).
-    pub fn implement_linear(&self) -> &str {
-        &self.implement_linear
-    }
-
-    /// The prompt of a Linear Issue's Start or Implement Job, `fields` filled in.
-    pub fn render_linear(&self, fields: &PromptFields) -> String {
-        fill(&self.implement_linear, fields)
+        fill(self.template(kind), fields)
     }
 }
 
@@ -238,21 +352,8 @@ pub fn parse(path: &Path, text: &str) -> Result<Prompts, PromptsError> {
     let mut prompts = Prompts::default();
     for (key, value) in raw {
         let span = value.span();
-        if key == IMPLEMENT_LINEAR_KEY {
-            let template = value.into_inner();
-            if let Err(problem) = sized(&template, &key).and_then(|()| {
-                check(&template, &IMPLEMENT_LINEAR_PLACEHOLDERS)
-                    .map(|_| ())
-                    .map_err(|problem| format!("`{key}`: {problem}"))
-            }) {
-                return Err(malformed(Some(span), problem));
-            }
-            prompts.implement_linear = template;
-            continue;
-        }
-        let Some(step) = NextStep::ALL.into_iter().find(|&s| step_key(s) == key) else {
-            let mut known: Vec<String> = NextStep::ALL.into_iter().map(step_key).collect();
-            known.push(IMPLEMENT_LINEAR_KEY.to_owned());
+        let Some(kind) = PromptKind::all().find(|k| k.key() == key) else {
+            let known: Vec<String> = PromptKind::all().map(PromptKind::key).collect();
             return Err(malformed(
                 Some(span),
                 format!(
@@ -262,48 +363,36 @@ pub fn parse(path: &Path, text: &str) -> Result<Prompts, PromptsError> {
             ));
         };
         let template = value.into_inner();
-        if let Err(problem) = sized(&template, &key) {
-            return Err(malformed(Some(span), problem));
+        if template.trim().is_empty() {
+            return Err(malformed(Some(span), format!("`{key}` is empty")));
         }
-        let used = check(&template, extra_placeholders(step))
+        if template.chars().count() > MAX_TEMPLATE_CHARS {
+            return Err(malformed(
+                Some(span),
+                format!("`{key}` is longer than {MAX_TEMPLATE_CHARS} characters"),
+            ));
+        }
+        let used = check(&template, kind)
             .map_err(|problem| malformed(Some(span.clone()), format!("`{key}`: {problem}")))?;
-        if let Some(missing) = missing_required(step, &used) {
+        if let Some(missing) = missing_required(kind, &used) {
             prompts
                 .unusable
-                .insert(step, malformed(Some(span), missing));
+                .insert(kind, malformed(Some(span), missing));
             continue;
         }
-        prompts.templates.insert(step, template);
+        prompts.templates.insert(kind, template);
     }
     Ok(prompts)
 }
 
-/// Checks the template for `key` is neither empty nor too long.
-fn sized(template: &str, key: &str) -> Result<(), String> {
-    if template.trim().is_empty() {
-        return Err(format!("`{key}` is empty"));
-    }
-    if template.chars().count() > MAX_TEMPLATE_CHARS {
-        return Err(format!(
-            "`{key}` is longer than {MAX_TEMPLATE_CHARS} characters"
-        ));
-    }
-    Ok(())
-}
-
-/// The placeholders only `step`'s template has, besides the common ones.
-fn extra_placeholders(step: NextStep) -> &'static [&'static str] {
-    if step == NextStep::RequestReview {
-        &REQUEST_REVIEW_PLACEHOLDERS
-    } else {
-        &[]
-    }
-}
-
-/// Checks every `{…}` in `template` is a placeholder it has (the common ones
-/// and `extra`); returns the placeholders it uses.
-fn check(template: &str, extra: &[&str]) -> Result<Vec<String>, String> {
-    let usable: Vec<&str> = PLACEHOLDERS.iter().chain(extra).copied().collect();
+/// Checks every `{…}` in `kind`'s `template` is a placeholder it has; returns
+/// the placeholders it uses.
+fn check(template: &str, kind: PromptKind) -> Result<Vec<String>, String> {
+    let usable: Vec<&str> = PLACEHOLDERS
+        .iter()
+        .chain(kind.own_placeholders())
+        .copied()
+        .collect();
     let mut used: Vec<String> = Vec::new();
     let mut chars = template.chars().peekable();
     while let Some(c) = chars.next() {
@@ -317,15 +406,12 @@ fn check(template: &str, extra: &[&str]) -> Result<Vec<String>, String> {
             '{' => {
                 let name: String = chars.by_ref().take_while(|&c| c != '}').collect();
                 if !usable.contains(&name.as_str()) {
-                    let kind = if REQUEST_REVIEW_PLACEHOLDERS.contains(&name.as_str()) {
-                        "the request_review-only"
-                    } else if IMPLEMENT_LINEAR_PLACEHOLDERS.contains(&name.as_str()) {
-                        "the implement_linear-only"
-                    } else {
-                        "unknown"
+                    let what = match PromptKind::owner_of(&name) {
+                        Some(owner) => format!("the {}-only", owner.key()),
+                        None => "unknown".to_owned(),
                     };
                     return Err(format!(
-                        "{kind} placeholder {{{name}}}; use {}",
+                        "{what} placeholder {{{name}}}; use {}",
                         spelled(&usable)
                     ));
                 }
@@ -338,25 +424,14 @@ fn check(template: &str, extra: &[&str]) -> Result<Vec<String>, String> {
     Ok(used)
 }
 
-/// Why a template of `step` that uses `used` lacks a placeholder `step`
-/// needs ([`required_placeholders`]), if it does.
-fn missing_required(step: NextStep, used: &[String]) -> Option<String> {
-    let missing = required_placeholders(step)
+/// Why a template of `kind` that uses `used` lacks a placeholder `kind`
+/// needs ([`PromptKind::required_placeholders`]), if it does.
+fn missing_required(kind: PromptKind, used: &[String]) -> Option<String> {
+    let (missing, why) = kind
+        .required_placeholders()
         .iter()
-        .find(|needed| !used.iter().any(|u| u == *needed))?;
-    Some(format!(
-        "`{}` must use {{{missing}}}, or the Job never gets what the sheet chose",
-        step_key(step)
-    ))
-}
-
-/// The placeholders `step`'s template must use: a Request review Job learns
-/// whom to ask only from `{reviewers}`, the list chosen on the sheet.
-fn required_placeholders(step: NextStep) -> &'static [&'static str] {
-    match step {
-        NextStep::RequestReview => &["reviewers"],
-        _ => &[],
-    }
+        .find(|(needed, _)| !used.iter().any(|u| u == needed))?;
+    Some(format!("`{}` must use {{{missing}}}, {why}", kind.key()))
 }
 
 /// `{a}, {b}, …`.
@@ -384,6 +459,7 @@ fn fill(template: &str, fields: &PromptFields) -> String {
             '{' => {
                 let name: String = chars.by_ref().take_while(|&c| c != '}').collect();
                 match name.as_str() {
+                    "identifier" => out.push_str(&fields.identifier),
                     "repo" => out.push_str(&fields.repo),
                     "number" => {
                         out.push_str(&fields.number.map(|n| n.to_string()).unwrap_or_default())
@@ -392,11 +468,12 @@ fn fill(template: &str, fields: &PromptFields) -> String {
                     "title" => out.push_str(&fields.title),
                     "branch" => out.push_str(&fields.branch),
                     "reviewers" => out.push_str(&fields.reviewers.join(", ")),
-                    "identifier" => out.push_str(&fields.identifier),
                     "announcement" => match &fields.slack_channel {
                         Some(channel) => out.push_str(&announcement_step(channel)),
                         None => out.push_str(NO_ANNOUNCEMENT),
                     },
+                    "linear_context" => out.push_str(&linear_context(&fields.linear_issues)),
+                    "verdict_only" => out.push_str(VERDICT_ONLY),
                     _ => {}
                 }
             }

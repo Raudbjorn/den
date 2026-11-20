@@ -11,8 +11,8 @@ use crate::{
     domain::{WorkItemId, WorkItemKind},
     handoff::{
         BaseRef, BranchStart, CloneSource, JobCheck, LaunchOutcome, LaunchPlan, LaunchReport,
-        PathState, PermissionMode, Refusal, ReopenPlan, ReviewRequest, WindowMode, WorktreeState,
-        Writability, command, reviewers, short_commit,
+        PathState, PermissionMode, ProjectSettings, Refusal, ReopenPlan, ReviewRequest, WindowMode,
+        WorktreeState, Writability, command, reviewers, short_commit, workflows,
     },
 };
 
@@ -455,8 +455,31 @@ fn review_request_fields(
     [suggested, announce]
 }
 
-/// The PERMISSIONS field of a coordination Job (#39), or none for a coding
-/// Job, whose command is milestone 1's.
+/// The label of a slash command's availability (#41).
+pub const WORKFLOW_LABEL: &str = "WORKFLOW";
+
+/// One slash command the prompt invokes: where den found it, or "not found"
+/// (amber, with the caution glyph) and where den looked (#41).
+fn workflow_field(check: &workflows::WorkflowCheck) -> SheetField {
+    if check.is_found() {
+        field(
+            WORKFLOW_LABEL,
+            format!("{} found", check.command),
+            Some(check.explanation()),
+            Tone::Good,
+        )
+    } else {
+        field(
+            WORKFLOW_LABEL,
+            format!("{} not found", check.command),
+            Some(check.explanation()),
+            Tone::Caution,
+        )
+    }
+}
+
+/// The PERMISSIONS field of a coordination Job (#39) or a verdict-only
+/// Review Job (#41), or none for any other Job, whose command is milestone 1's.
 fn permissions_field(mode: Option<PermissionMode>) -> Option<SheetField> {
     let mode = mode?;
     Some(field(
@@ -467,6 +490,21 @@ fn permissions_field(mode: Option<PermissionMode>) -> Option<SheetField> {
             mode.args().join(" ")
         )),
         Tone::Good,
+    ))
+}
+
+/// The PROJECT SETTINGS field when den turns the worktree's settings off
+/// (`handoff::trust`); none when they load, as in milestone 1.
+fn project_settings_field(settings: &ProjectSettings) -> Option<SheetField> {
+    let text = settings.sheet_text()?;
+    Some(field(
+        "PROJECT SETTINGS",
+        text,
+        Some(format!(
+            "{}: the worktree's .claude/settings.json and settings.local.json are not loaded; your own settings are",
+            settings.sources().args().join(" ")
+        )),
+        Tone::Caution,
     ))
 }
 
@@ -634,6 +672,15 @@ fn fields(sheet: &Sheet, plan: &LaunchPlan, moved_from: Option<&str>) -> Vec<She
         fields.extend(review_request_fields(request, suggested));
     }
     fields.extend(permissions_field(plan.permission_mode));
+    fields.extend(project_settings_field(&plan.project_settings));
+    // The prompt as shown, edited or not, against what the inspection read.
+    if let Some(dirs) = &sheet.workflows {
+        fields.extend(
+            workflows::check(&sheet.prompt.text(), dirs)
+                .iter()
+                .map(workflow_field),
+        );
+    }
     fields.push(opens_field(&plan.window));
     fields
 }
@@ -694,7 +741,9 @@ fn fill_reopen(view: &mut LaunchSheet, plan: &ReopenPlan) {
             Tone::Plain,
         ),
     ];
-    view.fields.extend(permissions_field(job.reopen_mode()));
+    view.fields.extend(permissions_field(plan.permission_mode));
+    view.fields
+        .extend(project_settings_field(&plan.project_settings));
     view.fields.push(opens_field(&plan.window));
     view.command = Some(plan.command.clone());
     view.messages.push(message(

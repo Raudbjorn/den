@@ -372,6 +372,7 @@ fn open_existing_resumes_the_recorded_session_in_the_existing_worktree_with_a_wa
             prompt: String::new(),
             start: SessionStart::Resume,
             permission_mode: None,
+            setting_sources: den::handoff::SettingSources::All,
         }]
     );
     // Nothing fetched, no worktree added, no new Job recorded, nothing deleted.
@@ -385,6 +386,52 @@ fn open_existing_resumes_the_recorded_session_in_the_existing_worktree_with_a_wa
         "{}",
         messages(done)
     );
+}
+
+#[test]
+fn reopening_rechecks_project_settings_when_a_survey_changes_the_viewer() {
+    let mut harness = harness_with(|h| live_job(h, 7));
+    select(&mut harness, 7);
+    let survey = harness.key(Key::Char('r'));
+    harness.answer(Ok(observation().viewer("alice").build()));
+    press(&mut harness, Key::Char('c'));
+    press(&mut harness, Key::Char('o'));
+    assert_eq!(sheet(&harness).status, LaunchStatus::ReopenReady);
+    assert!(
+        !sheet(&harness)
+            .command
+            .as_ref()
+            .unwrap()
+            .contains("--setting-sources")
+    );
+
+    for effect in &survey {
+        harness.perform(effect);
+    }
+    press(&mut harness, Key::Enter);
+
+    // The old viewer trusted this PR; the new viewer must confirm the restricted command.
+    assert!(harness.launcher.windows().is_empty());
+    let ready = sheet(&harness);
+    assert_eq!(ready.status, LaunchStatus::ReopenReady);
+    assert!(messages(ready).contains("project settings changed"));
+    assert!(field(ready, "PROJECT SETTINGS").0.starts_with("off"));
+    assert!(
+        ready
+            .command
+            .as_ref()
+            .unwrap()
+            .contains("--setting-sources user --resume")
+    );
+
+    press(&mut harness, Key::Enter);
+    assert_eq!(harness.launcher.windows().len(), 1);
+    assert_eq!(
+        harness.launcher.windows()[0].setting_sources,
+        den::handoff::SettingSources::UserOnly
+    );
+    assert!(harness.workspace.calls().is_empty());
+    assert_eq!(harness.jobs.records(), [job(7)]);
 }
 
 #[test]
@@ -680,6 +727,7 @@ fn a_live_job_stays_reopenable_while_its_pr_has_no_next_step() {
             prompt: String::new(),
             start: SessionStart::Resume,
             permission_mode: None,
+            setting_sources: den::handoff::SettingSources::All,
         }]
     );
     assert_eq!(sheet(&harness).status, LaunchStatus::Reopened);

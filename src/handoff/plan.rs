@@ -7,17 +7,18 @@ use super::{
     MainClone, NewCloneView, PathState, Refusal, RefusalReason, RegisteredWorktree, Remote,
     Renamed, ReviewRequest, Target, TargetChoice, WindowMode, WorkspaceView, Writability,
     clone::{self, Candidate},
-    cloning, command, coordination_mode,
+    cloning, command,
     inspect::CloneSearch,
+    job_permission_mode,
     kinds::{self, Facts},
     names,
-    prompts::{PromptFields, Prompts, PromptsError},
-    reviewers, worktree_path,
+    prompts::{PromptFields, PromptKind, Prompts, PromptsError},
+    reviewers, trust, worktree_path,
 };
 use crate::{
     config::Config,
     decide::Decision,
-    domain::{NextStep, Observation, RepoId, WorkItemId, facts::Reviewer},
+    domain::{LinearWorkflowPolicy, NextStep, Observation, RepoId, WorkItemId, facts::Reviewer},
 };
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -31,15 +32,22 @@ pub struct LaunchSettings {
     pub search_root: Option<PathBuf>,
     /// `[main_clones]`, keyed by `owner/name`.
     pub main_clones: BTreeMap<String, PathBuf>,
+    /// The user's Claude directory, for the workflow availability check (#41).
+    pub claude_dir: Option<PathBuf>,
 }
 
 impl LaunchSettings {
-    pub fn from_config(config: Option<&Config>, default_root: Option<PathBuf>) -> Self {
+    pub fn from_config(
+        config: Option<&Config>,
+        default_root: Option<PathBuf>,
+        claude_dir: Option<PathBuf>,
+    ) -> Self {
         Self {
             search_root: config
                 .and_then(|c| c.main_clone_root.clone())
                 .or(default_root),
             main_clones: config.map(|c| c.main_clones.clone()).unwrap_or_default(),
+            claude_dir,
         }
     }
 
@@ -71,6 +79,11 @@ pub struct PlanInput<'a> {
     /// A Linear Issue's Start or Implement (#38): the Repo chosen on the sheet
     /// from its Linear Workflow's Repos for new work. Unused for other kinds.
     pub linear_repo: Option<&'a RepoId>,
+    /// The Work Item's Owner's Linear Workflow policy; the empty policy for
+    /// an Owner without one. It decides the permission mode and the prompt
+    /// template of a Review Job (#41, [`job_permission_mode`],
+    /// [`PromptKind::for_job`]).
+    pub policy: &'a LinearWorkflowPolicy,
 }
 
 /// The facts for a launch, or every reason it can't happen. PRs here; Issues,
@@ -179,6 +192,7 @@ pub fn inspect_request(
         item: decision.item.id.clone(),
         new_branch: facts.new_branch,
         clash_branch,
+        claude_dir: settings.claude_dir.clone(),
     })
 }
 
@@ -193,10 +207,17 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     let item = &input.decision.item.id;
     let view = input.view;
     let mut reasons = Vec::new();
+    // The template this Job's prompt comes from (#41: Review (Linear) for a
+    // Review in a Linear Workflow).
+    let kind = if matches!(item, WorkItemId::LinearIssue { .. }) {
+        PromptKind::ImplementLinear
+    } else {
+        PromptKind::for_job(facts.step, input.policy)
+    };
 
     let prompts = match input.prompts {
         // The file is usable, but not its template for this kind.
-        Ok(prompts) => match prompts.unusable(facts.step) {
+        Ok(prompts) => match prompts.unusable(kind) {
             Some(error) => {
                 reasons.push(RefusalReason::TemplateUnusable {
                     error: error.to_string(),
@@ -368,14 +389,16 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         slack_channel: review_request
             .as_ref()
             .and_then(|r| r.slack_channel.clone()),
+        linear_issues: if kind == PromptKind::ReviewLinear {
+            linear_issues(decision, input.observation)
+        } else {
+            Vec::new()
+        },
         identifier: facts.identifier.clone().unwrap_or_default(),
     };
-    // A Linear Issue's Start or Implement Job has its own template (#38).
-    let prompt = match item {
-        WorkItemId::LinearIssue { .. } => prompts.render_linear(&fields),
-        _ => prompts.render(facts.step, &fields),
-    };
-    let prompt = with_push_line(prompt, &facts, &branch_name, &remote);
+    let prompt = prompts.render(kind, &fields);
+    let permission_mode = job_permission_mode(facts.step, input.policy);
+    let prompt = with_push_line(prompt, &facts, &branch_name, &remote, permission_mode);
     // One suffix rule for the Job's names: the session carries the suffix the
     // worktree got, whether for a fresh start or a name another Job has.
     let session_name = match &facts.identifier {
@@ -414,13 +437,39 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         renamed,
         session,
         prompt,
-        permission_mode: coordination_mode(facts.step),
+        permission_mode,
+        project_settings: trust::project_settings(
+            facts.step,
+            input.policy,
+            trust::checkout(item, Some(input.observation)),
+        ),
         review_request,
         window: view.window.clone(),
         command: String::new(),
     };
     plan.command = command::display(&plan.window, &plan.window_command());
     Ok(plan)
+}
+
+/// The Linear Issues `decision`'s Pull Request is attached to (its Landing
+/// Groups, #35), as (identifier, URL) from the Observation; identifiers and
+/// URLs only, never a title or description.
+fn linear_issues(decision: &Decision, observation: &Observation) -> Vec<(String, String)> {
+    decision
+        .landing
+        .groups
+        .iter()
+        .filter_map(|group| {
+            observation
+                .linear
+                .issues
+                .iter()
+                // Groups are built from these issues (`decide::correlation`),
+                // so each is found.
+                .find(|issue| issue.work_item_id().same(&group.issue))
+                .map(|issue| (group.identifier.clone(), issue.url.clone()))
+        })
+        .collect()
 }
 
 /// For a cross-Repo PR head (decision d): the local branch den uses when the
@@ -439,10 +488,17 @@ fn clash_branch(facts: &Facts) -> Option<String> {
 /// simple). The prompt then ends with the one line that pushes back to it.
 /// Only for a branch of the target (a same-Repo PR head, a Branch): a
 /// cross-Repo PR head lives in another Repo, which the target's remote is not.
-/// Never for a coordination Job ([`coordination_mode`]): it changes nothing on
-/// the branch, and its prompt says so.
-fn with_push_line(prompt: String, facts: &Facts, local: &str, remote: &Remote) -> String {
-    if coordination_mode(facts.step).is_some() {
+/// Never for a Job in the approval-required mode ([`job_permission_mode`]):
+/// a coordination Job or a verdict-only Review Job changes nothing on the
+/// branch, and its prompt says so.
+fn with_push_line(
+    prompt: String,
+    facts: &Facts,
+    local: &str,
+    remote: &Remote,
+    mode: Option<super::PermissionMode>,
+) -> String {
+    if mode.is_some() {
         return prompt;
     }
     match &facts.base {

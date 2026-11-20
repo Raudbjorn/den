@@ -8,7 +8,10 @@ use den::{
     domain::facts::LinearState,
     domain::{Observation, Source, SourceKind, SourceState, UpstreamTargets},
     github::graphql::{GraphQl, GraphQlRequest, GraphQlResponse, TransportError},
-    handoff::{PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode, Writability},
+    handoff::{
+        PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode, Writability,
+        workflows::{ClaudeDir, PluginDir, PluginsRead, installed_plugins_file},
+    },
     jobs::{JobRecord, JobStoreError},
     linear::{HttpReply, LinearRequest, LinearTransport, TransportError as LinearTransportError},
     ports::{
@@ -309,6 +312,11 @@ struct WorkspaceState {
     unwritable: BTreeSet<PathBuf>,
     /// Repos reachable by URL (not cloned): URL → branch → commit.
     hosted: BTreeMap<String, BTreeMap<String, String>>,
+    /// Claude directories (#41): path → what defines slash commands there.
+    /// Any other directory reads as empty.
+    claude_dirs: BTreeMap<PathBuf, ClaudeDir>,
+    /// The installed plugins (#41); `None`: none installed, the list read.
+    plugins: Option<PluginsRead>,
     calls: Vec<WorkspaceCall>,
 }
 
@@ -319,6 +327,70 @@ pub struct FakeWorkspace {
 }
 
 impl FakeWorkspace {
+    /// Changes the Claude directory `dir` (#41), empty to begin with.
+    pub fn with_claude_dir(&self, dir: &str, change: impl FnOnce(&mut ClaudeDir)) {
+        let mut state = self.state.lock().expect("lock");
+        let entry = state
+            .claude_dirs
+            .entry(PathBuf::from(dir))
+            .or_insert_with(|| ClaudeDir::empty(PathBuf::from(dir)));
+        change(entry);
+    }
+
+    /// Adds `commands/<relative>` to the Claude directory `dir`.
+    pub fn add_claude_command(&self, dir: &str, relative: &str) {
+        self.with_claude_dir(dir, |d| {
+            d.commands
+                .as_mut()
+                .expect("readable commands")
+                .push(PathBuf::from(relative));
+        });
+    }
+
+    /// Adds the skill folder `skills/<name>` (with its SKILL.md) to `dir`.
+    pub fn add_claude_skill(&self, dir: &str, name: &str) {
+        self.with_claude_dir(dir, |d| {
+            d.skills
+                .as_mut()
+                .expect("readable skills")
+                .push(name.to_owned());
+        });
+    }
+
+    /// Installs plugin `name` at `path` with these `commands/` files and
+    /// `skills/` folders (relative paths), listed in `claude_dir`'s
+    /// `installed_plugins.json`.
+    pub fn add_plugin(
+        &self,
+        claude_dir: &str,
+        name: &str,
+        path: &str,
+        commands: &[&str],
+        skills: &[&str],
+    ) {
+        let mut state = self.state.lock().expect("lock");
+        let plugin = PluginDir {
+            name: name.to_owned(),
+            path: PathBuf::from(path),
+            commands: Ok(commands.iter().map(PathBuf::from).collect()),
+            skills: Ok(skills.iter().map(PathBuf::from).collect()),
+        };
+        match &mut state.plugins {
+            Some(PluginsRead::Read { plugins, .. }) => plugins.push(plugin),
+            _ => {
+                state.plugins = Some(PluginsRead::Read {
+                    file: installed_plugins_file(Path::new(claude_dir)),
+                    plugins: vec![plugin],
+                });
+            }
+        }
+    }
+
+    /// The installed plugins' list can't be used: `why`.
+    pub fn plugins_not_checked(&self, why: &str) {
+        self.state.lock().expect("lock").plugins = Some(PluginsRead::NotChecked(why.to_owned()));
+    }
+
     /// Adds a clone at `path` with `(name, url)` remotes.
     pub fn add_clone(&self, path: &str, remotes: &[(&str, &str)]) {
         let clone = FakeClone {
@@ -704,6 +776,23 @@ impl Workspace for FakeWorkspace {
         };
         state.clones.insert(into.to_owned(), clone);
         Ok(())
+    }
+
+    fn claude_dir(&self, dir: &Path) -> ClaudeDir {
+        let state = self.state.lock().expect("lock");
+        state
+            .claude_dirs
+            .get(dir)
+            .cloned()
+            .unwrap_or_else(|| ClaudeDir::empty(dir.to_path_buf()))
+    }
+
+    fn installed_plugins(&self, claude_dir: &Path) -> PluginsRead {
+        let state = self.state.lock().expect("lock");
+        state.plugins.clone().unwrap_or_else(|| PluginsRead::Read {
+            file: installed_plugins_file(claude_dir),
+            plugins: Vec::new(),
+        })
     }
 }
 

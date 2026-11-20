@@ -294,6 +294,83 @@ fn a_failed_github_refresh_reads_new_members_in_either_completion_order() {
     }
 }
 
+/// A cached issue excluded from Start still needs its missing member's state:
+/// failed and closed reads must remain retryable until a merge is discovered.
+#[test]
+fn an_unoffered_cached_issue_reads_its_member_before_mark_for_release() {
+    let mut config = support::harness::config_with_linear(&["acme"], &[("acme", "acme")]);
+    config.linear[0].start_teams = vec!["TEAM".to_owned()];
+    config.linear[0].release_state = Some(RELEASE.to_owned());
+    let cached = ObservationBuilder::new()
+        .fully_read_owner("acme")
+        .repo("acme/api")
+        .pull_request(pr("acme/api", 1))
+        .linear_viewer("acme", "acme")
+        .linear_issue(
+            linear_issue("acme", "id-1", "TEAM-1")
+                .unassigned()
+                .listed_by(LinearSourceKind::StartTeamIssues)
+                .state("Backlog", den::domain::facts::LinearStateKind::Backlog)
+                .attached("acme/api", 1),
+        )
+        .build();
+    let mut failed = Coverage::default();
+    for kind in config.linear[0].linear_sources() {
+        failed.record(
+            Source::Owner {
+                owner: "acme".to_owned(),
+                kind: SourceKind::Linear(kind),
+            },
+            SourceState::Failed {
+                error: "Linear unavailable".to_owned(),
+            },
+        );
+    }
+    let mut harness = Harness::with_cache(
+        Ok(config),
+        support::fakes::FakeCache::holding(den::cache::CachedObservation::fresh(cached)),
+    );
+    for _ in 0..4 {
+        harness.answer(Ok(ObservationBuilder::new()
+            .fully_read_owner("acme")
+            .repo("acme/api")
+            .build()));
+        harness.linear.push_answer(LinearSurvey {
+            coverage: failed.clone(),
+            ..LinearSurvey::default()
+        });
+    }
+
+    // The member disappeared from the complete open-PR survey; its read fails.
+    harness.start();
+    assert_eq!(
+        harness.github.member_requests(),
+        [MemberStatesRequest {
+            pull_requests: vec![api_1()],
+        }]
+    );
+    assert_eq!(detail_of(&mut harness, "TEAM-1").next_step, "none");
+    for (state, step) in [
+        (PullRequestState::Closed, "none"),
+        (
+            PullRequestState::Merged { merged_at: None },
+            "Mark for release",
+        ),
+    ] {
+        harness
+            .github
+            .push_member_states(member_states_answer(state));
+        harness.settle(Event::Key(Key::Char('r')));
+        assert_eq!(detail_of(&mut harness, "TEAM-1").next_step, step);
+    }
+    assert_eq!(harness.github.member_requests().len(), 3);
+
+    // Merged evidence survives the next refresh and needs no further read.
+    harness.settle(Event::Key(Key::Char('r')));
+    assert_eq!(harness.github.member_requests().len(), 3);
+    assert_eq!(step_label(&harness, "TEAM-1"), "Mark for release");
+}
+
 /// A member that would Merge reads "lands with TEAM-2" in its row and in its
 /// Linear Issue's detail, and the issue reads Land.
 #[test]
@@ -366,7 +443,7 @@ fn owners_without_a_linear_workflow_never_read_member_states() {
 }
 
 /// Integration (#37 + #39): Land is a coordination step (#39's
-/// `coordination_mode` gives it the approval-required mode), but a Land
+/// `job_permission_mode` gives it the approval-required mode), but a Land
 /// Decision is a Linear Issue's, and `c` on a Land Linear Issue still refuses
 /// before reading the workspace (until #40's Land Job; #38 launches only a
 /// Linear Issue's Start or Implement), naming the Linear Issue.

@@ -18,9 +18,9 @@
 //! older den would drop, bumps [`JOBS_FORMAT`].
 
 use crate::{
-    domain::{LinearIssueId, NextStep, RepoId, WorkItemId},
+    domain::{LinearIssueId, LinearWorkflowPolicy, NextStep, RepoId, WorkItemId},
     files::{self, BoundedReadError},
-    handoff::{PermissionMode, coordination_mode},
+    handoff::{PermissionMode, job_permission_mode},
     ports::JobStore,
 };
 use jiff::Timestamp;
@@ -167,15 +167,28 @@ pub struct JobRecord {
 
 impl JobRecord {
     /// The permission mode reopening the Job passes: the recorded one, else
-    /// the mode a Job for its Next Step launches in ([`coordination_mode`]).
+    /// the mode a Job for its Next Step launches in for its Owner's Linear
+    /// Workflow `policy` ([`job_permission_mode`]; the empty policy for an
+    /// Owner without one).
+    ///
     /// A record can lack the mode its Job ran in: a coordination Job recorded
     /// in format 2 by a build of #39 from before format 3, whose file a den
     /// from before #39 then rewrote (it ignores `permission_mode` and drops
     /// it). Format 3 stops that for new files; this fails safe for old ones,
-    /// rather than reopen a coordination Job with no mode at all.
-    pub fn reopen_mode(&self) -> Option<PermissionMode> {
+    /// rather than reopen a coordination Job with no mode at all. A Review Job
+    /// launched before #41 has no recorded mode either; in a Linear Workflow
+    /// it reopens approval-required, as it would launch now.
+    pub fn reopen_mode(&self, policy: &LinearWorkflowPolicy) -> Option<PermissionMode> {
         self.permission_mode
-            .or_else(|| coordination_mode(self.next_step))
+            .or_else(|| job_permission_mode(self.next_step, policy))
+    }
+
+    /// The Owner of the Work Item the Job was launched for.
+    pub fn owner(&self) -> &str {
+        match &self.subject {
+            JobSubject::GitHub(item) => item.owner(),
+            JobSubject::LinearIssue { owner, .. } => owner,
+        }
     }
 }
 

@@ -14,7 +14,10 @@ use crate::{
         Coverage, LinearIssueId, LinearPart, Observation, UpstreamTargets,
         facts::{LinearState, LinearUser, MemberPullRequestState, PullRequestRef},
     },
-    handoff::{PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode},
+    handoff::{
+        PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode,
+        workflows::{ClaudeDir, PluginsRead},
+    },
     jobs::{JobRecord, JobStoreError},
     upstreams::UpstreamStoreError,
 };
@@ -264,6 +267,18 @@ pub trait Workspace: Send + Sync {
     /// clone's remote for `url` is named `remote`, whatever the user's git
     /// config would name it, so the fetch that follows finds it.
     fn clone_repo(&self, url: &str, remote: &str, into: &Path) -> Result<(), WorkspaceError>;
+    /// What defines slash commands in the Claude directory `dir` (`~/.claude`
+    /// or a Main Clone's `.claude`, #41): the Markdown files under
+    /// `commands/` and the folders under `skills/` holding a `SKILL.md`.
+    /// Reads only. A folder that isn't there reads as empty; one that can't
+    /// be read fully is an error for that folder.
+    fn claude_dir(&self, dir: &Path) -> ClaudeDir;
+    /// The plugins Claude Code lists as installed in the user's Claude
+    /// directory `claude_dir` (`plugins/installed_plugins.json`, #41), each
+    /// with its `commands/` files and the skill folders under its `skills/`.
+    /// Reads only. A missing or unparseable list is
+    /// [`PluginsRead::NotChecked`], never an error.
+    fn installed_plugins(&self, claude_dir: &Path) -> PluginsRead;
 }
 
 /// A worktree to add: where, on which branch, starting how.
