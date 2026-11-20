@@ -7,7 +7,9 @@ mod editor;
 mod effect;
 mod event;
 mod launch;
+mod linear_writes;
 mod overlay;
+mod release;
 mod scope;
 mod upstream;
 mod view;
@@ -49,6 +51,8 @@ enum OverlayState {
     DetailSheet,
     /// The launch sheet (#11).
     Launch(Box<launch::Sheet>),
+    /// The Mark for release sheet (#38).
+    Release(Box<release::ReleaseSheet>),
 }
 
 /// A survey answer held until the startup cache read answers.
@@ -214,6 +218,10 @@ impl App {
             Event::CacheStored { outcome } => cache_stored(outcome),
             Event::LaunchInspected { id, view } => self.launch_inspected(id, view),
             Event::LaunchFinished { id, report } => self.launch_finished(id, report),
+            Event::LinearIssueRead { id, read } => self.linear_issue_read(id, *read),
+            Event::LinearWriteFinished { id, write, outcome } => {
+                self.linear_write_finished(id, write, *outcome)
+            }
             Event::JobsChecked { outcome } => self.jobs_checked(outcome),
             Event::UpstreamsStored { outcome } => self.upstreams_stored(outcome),
         };
@@ -286,6 +294,19 @@ impl App {
             | Effect::Reopen { id, .. } => {
                 self.launch_not_queued(id, reason.clone());
                 "launch request"
+            }
+            Effect::ReadLinearIssue { id, .. }
+            | Effect::AssignLinearIssue { id, .. }
+            | Effect::MoveLinearIssue { id, .. } => {
+                let mut effects = vec![Effect::log(
+                    LogLevel::Error,
+                    format!(
+                        "could not queue a Linear request for sheet {}: {reason}",
+                        id.0
+                    ),
+                )];
+                effects.extend(self.linear_not_queued(id, &effect, &reason));
+                return effects;
             }
             Effect::StoreUpstreams { .. } => {
                 self.upstream_problem = Some(format!(
@@ -397,6 +418,12 @@ impl App {
             && let Some(OverlayState::Launch(sheet)) = self.overlay.take()
         {
             return self.launch_key(sheet, key);
+        }
+        // So does the Mark for release sheet (#38).
+        if let Some(OverlayState::Release(_)) = &self.overlay
+            && let Some(OverlayState::Release(sheet)) = self.overlay.take()
+        {
+            return self.release_key(sheet, key);
         }
         if matches!(key, Key::PageUp | Key::PageDown) {
             self.detail_page =

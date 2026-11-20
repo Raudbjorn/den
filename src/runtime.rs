@@ -7,7 +7,7 @@
 //! the store lane reads and writes den's own state files (cache, Upstream
 //! choices), so a choice is saved at once instead of waiting behind a survey;
 //! Linear surveys have their own lane so they cannot hold back GitHub;
-//! the remote lane runs everything else (`gh`, git, kitty). The UI thread only
+//! the remote lane runs everything else (`gh`, git, kitty, Linear writes). The UI thread only
 //! logs. On quit, [`Worker::finish`] waits a bounded time for the store lane to
 //! write what is queued; remote work still running is abandoned.
 
@@ -73,7 +73,7 @@ pub enum Flow {
 pub enum LaneKind {
     /// den's own state files: small local reads and writes, drained on quit.
     Store,
-    /// `gh`, git and kitty: slow or external, abandoned on quit.
+    /// `gh`, git, kitty and Linear writes: slow or external, abandoned on quit.
     Remote,
     /// Linear surveys: independent of GitHub and abandoned on quit.
     Linear,
@@ -92,6 +92,9 @@ pub fn lane_of(effect: &Effect) -> Option<LaneKind> {
         | Effect::InspectLaunch { .. }
         | Effect::Launch { .. }
         | Effect::CheckJobs
+        | Effect::ReadLinearIssue { .. }
+        | Effect::AssignLinearIssue { .. }
+        | Effect::MoveLinearIssue { .. }
         | Effect::Reopen { .. } => Some(LaneKind::Remote),
         Effect::Quit | Effect::Log(_) => None,
     }

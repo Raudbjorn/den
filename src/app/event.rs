@@ -4,7 +4,10 @@ use crate::{
     cache::{CacheError, CachedObservation},
     domain::Observation,
     handoff::{JobsCheck, LaunchReport, WorkspaceView},
-    ports::{LinearSurvey, MemberStatesRead, SurveyFailure},
+    ports::{
+        LinearIssueRead, LinearSurvey, LinearWriteKind, LinearWriteOutcome, MemberStatesRead,
+        SurveyFailure,
+    },
     upstreams::UpstreamStoreError,
 };
 use jiff::Timestamp;
@@ -95,6 +98,17 @@ pub enum Event {
     LaunchFinished {
         id: LaunchId,
         report: Box<LaunchReport>,
+    },
+    /// A Linear Issue was read again for the sheet `id` (#38).
+    LinearIssueRead {
+        id: LaunchId,
+        read: Box<LinearIssueRead>,
+    },
+    /// A Linear write for the sheet `id` ended (#38): done, failed or unknown.
+    LinearWriteFinished {
+        id: LaunchId,
+        write: LinearWriteKind,
+        outcome: Box<LinearWriteOutcome>,
     },
     /// The recorded Jobs' worktrees were checked (#14), or why the Job records
     /// couldn't be read.

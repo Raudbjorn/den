@@ -11,8 +11,8 @@ use crate::{
     cache::{CacheError, CachedObservation},
     config::LinearWorkflow,
     domain::{
-        Coverage, LinearPart, Observation, UpstreamTargets,
-        facts::{MemberPullRequestState, PullRequestRef},
+        Coverage, LinearIssueId, LinearPart, Observation, UpstreamTargets,
+        facts::{LinearState, LinearUser, MemberPullRequestState, PullRequestRef},
     },
     handoff::{
         PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode,
@@ -123,9 +123,81 @@ pub struct LinearSurvey {
 }
 
 /// Reads Linear for the Owners with a Linear Workflow. Read-only: the two
-/// Linear writes ADR-0004 allows are a separate port (#38).
+/// Linear writes ADR-0004 allows are a separate port, [`LinearWriter`].
 pub trait LinearSource: Send + Sync {
     fn survey(&self, request: &LinearSurveyRequest) -> LinearSurvey;
+    /// Reads one Linear Issue again, just before den writes to it (#38): its
+    /// assignee and state now, and its team's workflow states (so a state can
+    /// be named by ID even for a team the survey didn't read). Never fails:
+    /// what went wrong is [`LinearIssueRead::Failed`].
+    fn read_issue(&self, request: &LinearIssueRequest) -> LinearIssueRead;
+}
+
+/// One Linear Issue, and the Linear Workflow whose key reaches it: what a
+/// re-read or a Linear write is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinearIssueRequest {
+    pub workflow: LinearWorkflow,
+    /// The identity: workspace + Linear's permanent ID.
+    pub issue: LinearIssueId,
+    /// `TEAM-123`, for logs and messages only.
+    pub identifier: String,
+}
+
+/// What a Linear Issue is now, as one re-read found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinearIssueNow {
+    pub assignee: Option<LinearUser>,
+    pub state: LinearState,
+    /// The issue's team's workflow states, in Linear's order; up to
+    /// `linear::MAX_TEAM_STATES`, and `states_complete` says whether that
+    /// was all of them.
+    pub team_states: Vec<LinearState>,
+    pub states_complete: bool,
+}
+
+/// A Linear Issue's re-read: what it is now, or why den couldn't tell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinearIssueRead {
+    Read(LinearIssueNow),
+    Failed { error: String },
+}
+
+/// The two Linear writes den makes (ADR-0004), each only after the user
+/// confirmed it on a sheet. There is no other method, so no other change to
+/// Linear can be expressed: assigning names no user (the adapter assigns the
+/// API key's own user, the Linear viewer), and a state move names a workflow
+/// state by ID. Neither is ever retried or undone by den.
+pub trait LinearWriter: Send + Sync {
+    /// Assigns the issue to the Linear viewer.
+    fn assign_to_viewer(&self, request: &LinearIssueRequest) -> LinearWriteOutcome;
+    /// Moves the issue to `state` (one of its team's workflow states).
+    fn move_state(&self, request: &LinearIssueRequest, state: &LinearState) -> LinearWriteOutcome;
+}
+
+/// Which of the two Linear writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinearWriteKind {
+    AssignToViewer,
+    MoveState,
+}
+
+/// How a Linear write ended (spec 0002, "Linear writer").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinearWriteOutcome {
+    /// Linear made the change and returned the issue's assignee and state,
+    /// which den shows as Linear returned them (another claim may have
+    /// landed in between: there is no compare-and-set).
+    Done {
+        assignee: Option<LinearUser>,
+        state: LinearState,
+    },
+    /// Linear answered and didn't make the change.
+    Failed { error: String },
+    /// den can't tell whether Linear made the change: the request may have
+    /// reached Linear but its answer was lost or timed out. den re-reads the
+    /// issue before anything else and never retries blind.
+    Unknown { why: String },
 }
 
 /// den's own on-disk cache of the last Observation, per viewer. Read-only
@@ -293,6 +365,8 @@ impl Clock for SystemClock {
 pub struct Ports {
     pub github: Arc<dyn GitHubSource>,
     pub linear: Arc<dyn LinearSource>,
+    /// The two Linear writes (#38): only ever performed for a confirmed sheet.
+    pub linear_writer: Arc<dyn LinearWriter>,
     pub cache: Arc<dyn ObservationCache>,
     pub workspace: Arc<dyn Workspace>,
     pub launcher: Arc<dyn Launcher>,

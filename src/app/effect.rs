@@ -4,8 +4,9 @@ use super::event::{LaunchId, SurveyId};
 use crate::{
     cache::CachedObservation,
     domain::UpstreamTargets,
+    domain::facts::LinearState,
     handoff::{InspectRequest, LaunchPlan, ReopenPlan},
-    ports::{LinearSurveyRequest, MemberStatesRequest, SurveyRequest},
+    ports::{LinearIssueRequest, LinearSurveyRequest, MemberStatesRequest, SurveyRequest},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +64,29 @@ pub enum Effect {
     /// Open a Live Job's window again, resuming its session (#14); answered by
     /// `Event::LaunchFinished`.
     Reopen { id: LaunchId, plan: Box<ReopenPlan> },
+    /// Read a Linear Issue again just before writing to it (#38), for the
+    /// sheet `id`; answered by `Event::LinearIssueRead`. Emitted only after
+    /// `Enter` on a sheet that will write to Linear, and after a write whose
+    /// outcome is unknown.
+    ReadLinearIssue {
+        id: LaunchId,
+        request: Box<LinearIssueRequest>,
+    },
+    /// Assign a Linear Issue to the Linear viewer (ADR-0004), for the sheet
+    /// `id`; answered by `Event::LinearWriteFinished`. Emitted only from a
+    /// confirmed sheet, after a re-read showed the issue as the sheet did.
+    AssignLinearIssue {
+        id: LaunchId,
+        request: Box<LinearIssueRequest>,
+    },
+    /// Move a Linear Issue to `state` (ADR-0004), for the sheet `id`;
+    /// answered by `Event::LinearWriteFinished`. Emitted only from a
+    /// confirmed sheet, after a re-read and any assignment it asked for.
+    MoveLinearIssue {
+        id: LaunchId,
+        request: Box<LinearIssueRequest>,
+        state: Box<LinearState>,
+    },
     /// Save which forks target their Upstream (#13); answered by
     /// `Event::UpstreamsStored`.
     StoreUpstreams { upstreams: UpstreamTargets },

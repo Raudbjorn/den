@@ -34,7 +34,7 @@ use den::{
     handoff::prompts,
     jobs::FileJobStore,
     launcher::{KittyLauncher, LaunchEnvironment},
-    linear::LinearApi,
+    linear::{LinearApi, write::LinearWrites},
     logging::{self, LoggingError},
     paths::{Paths, PathsError},
     ports::{Ports, SystemClock, UpstreamStore},
@@ -446,6 +446,7 @@ fn run(args: &[String]) -> Result<(), DenError> {
     let ports = Ports {
         github: Arc::new(GhSource::new(GhCli::new())),
         linear: Arc::new(LinearApi::new(Arc::new(SystemClock))),
+        linear_writer: Arc::new(LinearWrites::new(Arc::new(SystemClock))),
         cache: Arc::new(FileCache::in_state_dir(&paths.state_dir)),
         workspace: Arc::new(GitWorkspace::new()),
         launcher: Arc::new(KittyLauncher::new(LaunchEnvironment::from_env(|name| {

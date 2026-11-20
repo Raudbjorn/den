@@ -17,10 +17,17 @@
 //! - [`transport`]: the HTTPS transport (timeout per call, the key only in
 //!   its header) and the scripted-transport seam.
 //! - [`session`]: replies to source states, paging, the rate-limit stop.
+//! - [`write`]: the real [`LinearWriter`](crate::ports::LinearWriter), den's
+//!   only remote writes (ADR-0004): assign to the Linear viewer, move state.
+//!   Its two `mutation`s are the only ones in den.
+//!
+//! [`LinearApi::read_issue`] reads one Linear Issue again just before a write
+//! (#38): its assignee, state and team states.
 
 mod pages;
 pub mod session;
 pub mod transport;
+pub mod write;
 
 pub use session::{LINEAR_PAGE_SIZE, MAX_LINEAR_PAGES};
 pub use start::MAX_TEAM_STATES;
@@ -38,7 +45,10 @@ use crate::{
             LinearStateKind, LinearTeam, LinearUser,
         },
     },
-    ports::{Clock, LinearSource, LinearSurvey, LinearSurveyRequest},
+    ports::{
+        Clock, LinearIssueNow, LinearIssueRead, LinearIssueRequest, LinearSource, LinearSurvey,
+        LinearSurveyRequest,
+    },
 };
 use jiff::Timestamp;
 use serde::Deserialize;
@@ -47,6 +57,7 @@ use session::{Answer, Pager, Session};
 use std::{collections::HashSet, ffi::OsString, sync::Arc};
 
 const VIEWER_QUERY: &str = include_str!("queries/viewer.graphql");
+const ISSUE_NOW_QUERY: &str = include_str!("queries/issue_now.graphql");
 /// Every query that lists Linear Issues spreads this fragment, so each one
 /// reads the same fields, attachments included (#35), and decodes them with
 /// [`RawIssue`]. Its variables come from [`issue_page_variables`].
@@ -123,6 +134,112 @@ impl LinearSource for LinearApi {
             self.survey_workflow(workflow, &mut survey);
         }
         survey
+    }
+
+    fn read_issue(&self, request: &LinearIssueRequest) -> LinearIssueRead {
+        let failed = |error: String| LinearIssueRead::Failed { error };
+        let workflow = &request.workflow;
+        let key = match api_key(self.env.as_ref(), workflow) {
+            Ok(key) => key,
+            Err(error) => return failed(error),
+        };
+        let transport = (self.connect)(key);
+        let session = Session::new(
+            transport.as_ref(),
+            &workflow.api_key_env,
+            self.clock.as_ref(),
+        );
+        let variables = json!({ "id": request.issue.id, "statesFirst": MAX_TEAM_STATES });
+        match session.run::<IssueNowData>("LinearIssueNow", ISSUE_NOW_QUERY, variables) {
+            Answer::Lost(state) => failed(state.describe()),
+            // Errors next to the issue: den won't compare against what may
+            // be half an answer.
+            Answer::Data { state, .. } if !state.is_complete() => failed(state.describe()),
+            Answer::Data { data, .. } => {
+                if !data
+                    .organization
+                    .url_key
+                    .eq_ignore_ascii_case(&workflow.workspace)
+                {
+                    return failed(format!(
+                        "the API key in {} belongs to the Linear workspace {:?}, not {:?} as configured for {}",
+                        workflow.api_key_env,
+                        data.organization.url_key,
+                        workflow.workspace,
+                        workflow.owner
+                    ));
+                }
+                match data.issue {
+                    Some(issue) => LinearIssueRead::Read(issue.into_now()),
+                    None => failed(format!(
+                        "Linear has no issue {} that this key can see (deleted, or moved out of reach)",
+                        request.identifier
+                    )),
+                }
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct IssueNowData {
+    organization: RawOrganization,
+    issue: Option<RawIssueNow>,
+}
+
+#[derive(Deserialize)]
+struct RawIssueNow {
+    assignee: Option<RawUser>,
+    state: RawState,
+    team: RawTeamWithStates,
+}
+
+#[derive(Deserialize)]
+struct RawTeamWithStates {
+    states: RawStates,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawStates {
+    nodes: Vec<RawState>,
+    page_info: RawHasNextPage,
+}
+
+impl RawIssueNow {
+    fn into_now(self) -> LinearIssueNow {
+        LinearIssueNow {
+            assignee: self.assignee.map(RawUser::into_user),
+            state: self.state.into_state(),
+            states_complete: !self.team.states.page_info.has_next_page,
+            team_states: self
+                .team
+                .states
+                .nodes
+                .into_iter()
+                .map(RawState::into_state)
+                .collect(),
+        }
+    }
+}
+
+/// `workflow`'s key from `env`, or why there is none (naming the variable,
+/// never a value).
+fn api_key(env: &Env, workflow: &LinearWorkflow) -> Result<ApiKey, String> {
+    let variable = &workflow.api_key_env;
+    match env(variable) {
+        None => Err(format!(
+            "the environment variable {variable} is not set, so den has no Linear API key for {}",
+            workflow.owner
+        )),
+        Some(value) if value.is_empty() => Err(format!(
+            "the environment variable {variable} is empty, so den has no Linear API key for {}",
+            workflow.owner
+        )),
+        Some(value) => value
+            .into_string()
+            .map(ApiKey::new)
+            .map_err(|_| format!("the environment variable {variable} is not valid UTF-8")),
     }
 }
 
@@ -202,24 +319,9 @@ impl LinearApi {
         }
     }
 
-    /// The workflow's key, or why there is none (naming the variable, never
-    /// a value).
+    /// The workflow's key, or why there is none.
     fn key(&self, workflow: &LinearWorkflow) -> Result<ApiKey, String> {
-        let variable = &workflow.api_key_env;
-        match (self.env)(variable) {
-            None => Err(format!(
-                "the environment variable {variable} is not set, so den has no Linear API key for {}",
-                workflow.owner
-            )),
-            Some(value) if value.is_empty() => Err(format!(
-                "the environment variable {variable} is empty, so den has no Linear API key for {}",
-                workflow.owner
-            )),
-            Some(value) => value
-                .into_string()
-                .map(ApiKey::new)
-                .map_err(|_| format!("the environment variable {variable} is not valid UTF-8")),
-        }
+        api_key(self.env.as_ref(), workflow)
     }
 }
 
@@ -241,9 +343,18 @@ struct RawUser {
     name: String,
 }
 
+impl RawUser {
+    fn into_user(self) -> LinearUser {
+        LinearUser {
+            id: self.id,
+            name: self.name,
+        }
+    }
+}
+
 /// The Linear viewer, checked against the configured workspace: a key for
 /// another workspace would show someone else's picture as this Owner's.
-fn viewer(
+pub(crate) fn viewer(
     session: &Session<'_>,
     workflow: &LinearWorkflow,
 ) -> Result<(LinearViewer, SourceState), SourceState> {
@@ -368,12 +479,12 @@ struct RawIssue {
 struct RawAttachments {
     /// Kept as values, so one unreadable attachment doesn't lose its issue.
     nodes: Vec<Value>,
-    page_info: RawAttachmentsPage,
+    page_info: RawHasNextPage,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RawAttachmentsPage {
+struct RawHasNextPage {
     has_next_page: bool,
 }
 

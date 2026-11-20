@@ -18,7 +18,7 @@ use super::{
 use crate::{
     config::Config,
     decide::Decision,
-    domain::{LinearWorkflowPolicy, NextStep, Observation, WorkItemId, facts::Reviewer},
+    domain::{LinearWorkflowPolicy, NextStep, Observation, RepoId, WorkItemId, facts::Reviewer},
 };
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -76,6 +76,9 @@ pub struct PlanInput<'a> {
     /// Request review (#39): the Owner's Slack channel from its Linear
     /// Workflow, opaque, only ever put into the prompt. Unused for other kinds.
     pub slack_channel: Option<&'a str>,
+    /// A Linear Issue's Start or Implement (#38): the Repo chosen on the sheet
+    /// from its Linear Workflow's Repos for new work. Unused for other kinds.
+    pub linear_repo: Option<&'a RepoId>,
     /// The Work Item's Owner's Linear Workflow policy; the empty policy for
     /// an Owner without one. It decides the permission mode and the prompt
     /// template of a Review Job (#41, [`job_permission_mode`],
@@ -91,6 +94,7 @@ fn facts(
     decision: &Decision,
     observation: &Observation,
     choice: TargetChoice,
+    linear_repo: Option<&RepoId>,
     policy: &LinearWorkflowPolicy,
 ) -> Result<Facts, Refusal> {
     if let (WorkItemId::LinearIssue { .. }, Some(NextStep::Land)) =
@@ -99,7 +103,7 @@ fn facts(
         return landing::facts(decision, observation, policy);
     }
     let WorkItemId::PullRequest { repo, number } = &decision.item.id else {
-        return kinds::facts(decision, observation, choice);
+        return kinds::facts(decision, observation, choice, linear_repo);
     };
     let mut reasons = Vec::new();
     let step = decision.next_step;
@@ -155,6 +159,8 @@ fn facts(
             base_commit: Some(pr.head_commit.clone()),
             branch: pr.head_ref.clone(),
             new_branch: false,
+            named_fresh: false,
+            identifier: None,
             landing: None,
         }),
         _ => Err(Refusal { reasons }),
@@ -162,15 +168,17 @@ fn facts(
 }
 
 /// What to inspect for launching `decision`'s Work Item, or why den won't even
-/// look (no Next Step, archived, …).
+/// look (no Next Step, archived, …). `linear_repo` is a Linear Issue's chosen
+/// Repo for new work (#38); `None` for any other kind.
 pub fn inspect_request(
     decision: &Decision,
     observation: &Observation,
     choice: TargetChoice,
     settings: &LaunchSettings,
+    linear_repo: Option<&RepoId>,
     policy: &LinearWorkflowPolicy,
 ) -> Result<InspectRequest, Refusal> {
-    let facts = facts(decision, observation, choice, policy)?;
+    let facts = facts(decision, observation, choice, linear_repo, policy)?;
     let configured_clone = settings.configured_clone(&facts.target.repo.to_string());
     let search_root = match (&configured_clone, &settings.search_root) {
         (_, Some(root)) => root.clone(),
@@ -204,6 +212,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         input.decision,
         input.observation,
         input.choice,
+        input.linear_repo,
         input.policy,
     )?;
     let item = &input.decision.item.id;
@@ -211,7 +220,11 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     let mut reasons = Vec::new();
     // The template this Job's prompt comes from (#41: Review (Linear) for a
     // Review in a Linear Workflow).
-    let kind = PromptKind::for_job(facts.step, input.policy);
+    let kind = if facts.identifier.is_some() {
+        PromptKind::ImplementLinear
+    } else {
+        PromptKind::for_job(facts.step, input.policy)
+    };
 
     let prompts = match input.prompts {
         // The file is usable, but not its template for this kind.
@@ -367,58 +380,58 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         slack_channel: input.slack_channel.map(str::to_owned),
         announces: prompts.uses(NextStep::RequestReview, "announcement"),
     });
-    let prompt = prompts.render(
-        kind,
-        &PromptFields {
-            repo: facts.target.repo.to_string(),
-            number: facts.number,
-            url: decision.item.url.clone(),
-            title: decision.item.title.clone(),
-            // The branch the Work Item is about (a PR's head, a Branch), or
-            // the new branch.
-            branch: if facts.new_branch {
-                branch_name.clone()
-            } else {
-                facts.branch.clone()
-            },
-            reviewers: review_request
-                .iter()
-                .flat_map(|r| &r.reviewers)
-                .map(reviewers::spell)
-                .collect(),
-            slack_channel: review_request
-                .as_ref()
-                .and_then(|r| r.slack_channel.clone()),
-            landing_members: facts
-                .landing
-                .iter()
-                .flat_map(|group| &group.members)
-                .map(|m| (m.url.clone(), m.head_commit.clone()))
-                .collect(),
-            held_members: facts
-                .landing
-                .iter()
-                .flat_map(|group| &group.held)
-                .map(|m| m.url.clone())
-                .collect(),
-            linear_issues: if kind == PromptKind::ReviewLinear {
-                linear_issues(decision, input.observation)
-            } else {
-                Vec::new()
-            },
+    let fields = PromptFields {
+        repo: facts.target.repo.to_string(),
+        number: facts.number,
+        url: decision.item.url.clone(),
+        title: decision.item.title.clone(),
+        // The branch the Work Item is about (a PR's head, a Branch), or
+        // the new branch.
+        branch: if facts.new_branch || facts.named_fresh {
+            branch_name.clone()
+        } else {
+            facts.branch.clone()
         },
-    );
+        reviewers: review_request
+            .iter()
+            .flat_map(|r| &r.reviewers)
+            .map(reviewers::spell)
+            .collect(),
+        slack_channel: review_request
+            .as_ref()
+            .and_then(|r| r.slack_channel.clone()),
+        linear_issues: if kind == PromptKind::ReviewLinear {
+            linear_issues(decision, input.observation)
+        } else {
+            Vec::new()
+        },
+        identifier: facts.identifier.clone().unwrap_or_default(),
+        landing_members: facts
+            .landing
+            .iter()
+            .flat_map(|group| &group.members)
+            .map(|m| (m.url.clone(), m.head_commit.clone()))
+            .collect(),
+        held_members: facts
+            .landing
+            .iter()
+            .flat_map(|group| &group.held)
+            .map(|m| m.url.clone())
+            .collect(),
+    };
+    let prompt = prompts.render(kind, &fields);
     let permission_mode = job_permission_mode(facts.step, input.policy);
     let prompt = with_push_line(prompt, &facts, &branch_name, &remote, permission_mode);
     // One suffix rule for the Job's names: the session carries the suffix the
     // worktree got, whether for a fresh start or a name another Job has.
-    // A Land Job's session is named for its Linear Issue's identifier, which
-    // a reader recognises (its permanent ID is opaque).
-    let session = match &facts.landing {
-        Some(group) => names::landing_session_name(item.owner(), &group.identifier),
-        None => names::session_name(item, facts.step),
+    let session_name = match &facts.identifier {
+        Some(identifier) => names::linear_session_name(&facts.target.repo, identifier, facts.step),
+        None => match &facts.landing {
+            Some(group) => names::landing_session_name(item.owner(), &group.identifier),
+            None => names::session_name(item, facts.step),
+        },
     };
-    let session = fresh(session, names::MAX_SESSION_NAME_CHARS);
+    let session = fresh(session_name, names::MAX_SESSION_NAME_CHARS);
     let session = match named.as_ref().and_then(|free| free.suffix) {
         Some(n) => names::suffixed(&session, n, names::MAX_SESSION_NAME_CHARS),
         None => session,
@@ -573,7 +586,7 @@ fn base_commit(
 /// head (a PR ref) tracking nothing.
 fn new_branch_start(facts: &Facts, remote: &Remote) -> BranchStart {
     match facts.base.branch() {
-        _ if facts.new_branch => BranchStart::Fresh,
+        _ if facts.new_branch || facts.named_fresh => BranchStart::Fresh,
         Some(branch) => BranchStart::New {
             tracking: format!("{}/{branch}", remote.name),
         },

@@ -373,8 +373,10 @@ fn a_linear_survey_that_never_answered_is_not_yet_fetched() {
     );
 }
 
-/// The launch sheet for a Linear Issue refuses, saying why, and inspects
-/// nothing (Start and Implement sheets are #38).
+/// The launch sheet for a Linear Issue whose Owner's Linear Workflow offers
+/// no Repos for new work refuses, saying why, and inspects nothing. (Before
+/// #38 every Linear Issue refused here; `app_linear_writes.rs` launches one
+/// into a Repo the workflow offers.)
 #[test]
 fn c_on_a_linear_issue_refuses_without_touching_the_workspace() {
     let mut harness = workflow_harness();
@@ -401,7 +403,7 @@ fn c_on_a_linear_issue_refuses_without_touching_the_workspace() {
         sheet
             .messages
             .iter()
-            .any(|m| m.text.contains("Linear Issue")),
+            .any(|m| m.text.contains("Linear Issue") && m.text.contains("no Repos for new work")),
         "{:?}",
         sheet.messages
     );

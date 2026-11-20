@@ -1,0 +1,34 @@
+# One Linear Issue read again just before den writes to it (#38): who it is
+# assigned to and which state it is in now, and its team's workflow states
+# (so the state to move to can be named by ID for any team). The workspace is
+# read too: a key for another workspace never stands in for this one.
+query LinearIssueNow($id: String!, $statesFirst: Int!) {
+  organization {
+    urlKey
+  }
+  issue(id: $id) {
+    id
+    assignee {
+      id
+      name
+    }
+    state {
+      id
+      name
+      type
+    }
+    team {
+      id
+      states(first: $statesFirst) {
+        nodes {
+          id
+          name
+          type
+        }
+        pageInfo {
+          hasNextPage
+        }
+      }
+    }
+  }
+}

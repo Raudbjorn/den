@@ -11,6 +11,8 @@
 //! without one. Format 4 (#40) adds the [`JobSubject::LandingGroup`] subject
 //! of a Land Job; format-3 files load as is, having none. The next append
 //! writes the whole file in the current format, keeping every earlier record.
+//! Format 5 (#38) adds Linear Issue subjects alongside Landing Groups;
+//! format-4 files from either branch load without losing records.
 //!
 //! A file from a newer den (a format above [`JOBS_FORMAT`]) is refused as such,
 //! never half-read and never overwritten: an older den can't tell what it would
@@ -18,7 +20,9 @@
 //! older den would drop, bumps [`JOBS_FORMAT`].
 
 use crate::{
-    domain::{LinearWorkflowPolicy, NextStep, RepoId, WorkItemId, facts::PullRequestRef},
+    domain::{
+        LinearIssueId, LinearWorkflowPolicy, NextStep, RepoId, WorkItemId, facts::PullRequestRef,
+    },
     files::{self, BoundedReadError},
     handoff::{PermissionMode, job_permission_mode},
     ports::JobStore,
@@ -52,7 +56,8 @@ pub const JOBS_FILE: &str = "jobs.json";
 /// 4: a record's subject may be a [`JobSubject::LandingGroup`] (#40), which
 ///    a den of format 3 could not decode.
 /// #41 reuses the format-3 permission-mode field without changing its shape.
-pub const JOBS_FORMAT: u32 = 4;
+/// 5: adds Linear Issue subjects alongside format 4 Landing Groups (#38).
+pub const JOBS_FORMAT: u32 = 5;
 /// Milestone 1's format, still read and converted on load.
 const JOBS_FORMAT_GITHUB_ONLY: u32 = 1;
 /// Format 2: the current record without `permission_mode`, which decodes as
@@ -61,6 +66,8 @@ const JOBS_FORMAT_NO_PERMISSION_MODE: u32 = 2;
 /// Format 3: the current record, with no Landing Group subject, so it is
 /// read as the current format is.
 const JOBS_FORMAT_NO_LANDING_GROUP: u32 = 3;
+/// Format 4: Landing Groups, or Linear subjects from pre-integration #38 builds.
+const JOBS_FORMAT_SEPARATE_LINEAR_SUBJECTS: u32 = 4;
 /// The largest Job records file den will read or write, in bytes.
 pub const MAX_JOBS_BYTES: u64 = 8 * 1024 * 1024;
 /// The lock file held while a record is appended, beside the records file.
@@ -72,7 +79,7 @@ pub const JOBS_LOCK_WAIT_SECS: u64 = 10;
 ///
 /// A GitHub Work Item, or a Landing Group (#40): the Linear Issue plus the
 /// fixed list of member PRs and their head commits a Land Job covers. A
-/// Linear Issue alone (#38) is still to come. Code that asks whether a Job is
+/// Linear Issue alone (#38) is also a subject. Code that asks whether a Job is
 /// a Work Item's asks [`JobSubject::covers`], so a Landing Group's members are
 /// recognised wherever its Linear Issue is.
 ///
@@ -87,6 +94,9 @@ pub enum JobSubject {
     /// stored the variant's own name, `"GitHub"`, which still reads.
     #[serde(rename = "github", alias = "GitHub")]
     GitHub(WorkItemId),
+    /// A Linear Issue Start or Implement Job, keyed by workspace and permanent ID.
+    #[serde(rename = "linear_issue")]
+    LinearIssue { owner: String, issue: LinearIssueId },
     /// A Land Job's Landing Group (#40): the Linear Issue and the members it
     /// was told to land, each pinned to the head commit the user approved.
     /// Held members are not in it: the Job never touches them.
@@ -132,10 +142,23 @@ impl JobSubject {
     pub fn covers(&self, item: &WorkItemId) -> bool {
         match self {
             Self::GitHub(own) => own.same(item),
+            Self::LinearIssue { owner, issue } => own_linear_issue(owner, issue).same(item),
             Self::LandingGroup(group) => {
                 group.issue.same(item)
                     || group.members.iter().any(|member| member.pr.id().same(item))
             }
+        }
+    }
+
+    /// The subject of a Job launched for `item`: a Linear Issue's own
+    /// variant, else the GitHub Work Item.
+    pub fn of(item: &WorkItemId) -> Self {
+        match item {
+            WorkItemId::LinearIssue { owner, issue } => Self::LinearIssue {
+                owner: owner.clone(),
+                issue: issue.clone(),
+            },
+            other => Self::GitHub(other.clone()),
         }
     }
 
@@ -145,6 +168,9 @@ impl JobSubject {
     pub fn folded(&self) -> Self {
         match self {
             Self::GitHub(item) => Self::GitHub(item.folded()),
+            Self::LinearIssue { owner, issue } => {
+                Self::of(&own_linear_issue(owner, issue).folded())
+            }
             Self::LandingGroup(group) => Self::LandingGroup(LandingGroupSubject {
                 issue: group.issue.folded(),
                 identifier: group.identifier.clone(),
@@ -163,9 +189,17 @@ impl JobSubject {
     /// The Landing Group, for a Land Job.
     pub fn landing_group(&self) -> Option<&LandingGroupSubject> {
         match self {
-            Self::GitHub(_) => None,
+            Self::GitHub(_) | Self::LinearIssue { .. } => None,
             Self::LandingGroup(group) => Some(group),
         }
+    }
+}
+
+/// A Linear Issue subject as the Work Item it is.
+fn own_linear_issue(owner: &str, issue: &LinearIssueId) -> WorkItemId {
+    WorkItemId::LinearIssue {
+        owner: owner.to_owned(),
+        issue: issue.clone(),
     }
 }
 
@@ -173,6 +207,7 @@ impl fmt::Display for JobSubject {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::GitHub(item) => item.fmt(f),
+            Self::LinearIssue { owner, issue } => own_linear_issue(owner, issue).fmt(f),
             Self::LandingGroup(group) => write!(
                 f,
                 "the Landing Group of {} ({})",
@@ -225,6 +260,7 @@ impl JobRecord {
     pub fn owner(&self) -> &str {
         match &self.subject {
             JobSubject::GitHub(item) => item.owner(),
+            JobSubject::LinearIssue { owner, .. } => owner,
             JobSubject::LandingGroup(group) => group.issue.owner(),
         }
     }
@@ -354,11 +390,12 @@ impl JobStore for FileJobStore {
             .map_err(|e| self.read_error(e))?
             .format;
         match format {
-            JOBS_FORMAT | JOBS_FORMAT_NO_LANDING_GROUP | JOBS_FORMAT_NO_PERMISSION_MODE => {
-                serde_json::from_slice::<Envelope>(&bytes)
-                    .map(|e| e.jobs)
-                    .map_err(|e| self.read_error(e))
-            }
+            JOBS_FORMAT
+            | JOBS_FORMAT_SEPARATE_LINEAR_SUBJECTS
+            | JOBS_FORMAT_NO_LANDING_GROUP
+            | JOBS_FORMAT_NO_PERMISSION_MODE => serde_json::from_slice::<Envelope>(&bytes)
+                .map(|e| e.jobs)
+                .map_err(|e| self.read_error(e)),
             JOBS_FORMAT_GITHUB_ONLY => serde_json::from_slice::<GitHubOnlyEnvelope>(&bytes)
                 .map(|e| e.jobs.into_iter().map(JobRecord::from).collect())
                 .map_err(|e| self.read_error(e)),

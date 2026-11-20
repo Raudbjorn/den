@@ -68,6 +68,9 @@ pub fn build(state: &State<'_>) -> ViewModel {
         overlay: state.overlay.map(|overlay| match overlay {
             OverlayState::DetailSheet => Overlay::DetailSheet,
             OverlayState::Launch(sheet) => Overlay::LaunchSheet(Box::new(launch::build(sheet))),
+            OverlayState::Release(sheet) => {
+                Overlay::LaunchSheet(Box::new(launch::build_release(sheet)))
+            }
         }),
         footer: footer::build(state),
         layout: state.layout,

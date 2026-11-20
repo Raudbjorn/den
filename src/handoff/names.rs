@@ -98,6 +98,49 @@ pub fn issue_slug(number: u64, title: &str) -> String {
     within_slug_limit(std::iter::once(number.clone()).chain(words(title))).unwrap_or(number)
 }
 
+/// A Linear Issue's slug: its identifier, then its title in lower-case words
+/// (`team-8-pick-me-up`), by the same rules as [`issue_slug`].
+pub fn linear_issue_slug(identifier: &str, title: &str) -> String {
+    let identifier = words(identifier);
+    let fallback = identifier.join("-");
+    within_slug_limit(identifier.into_iter().chain(words(title))).unwrap_or(fallback)
+}
+
+/// Whether Linear's suggested branch name passes den's safe-name rules, so
+/// den may use it as the Job's branch as it is (#38): only ASCII letters,
+/// digits, `.`, `_`, `-` and `/`; at most [`MAX_BRANCH_NAME_CHARS`]; no empty,
+/// hidden or option-like part (`a//b`, `a/.b`, `-b`), no `..`, nothing ending
+/// in `/`, `.` or `.lock`, and not `HEAD`. Anything else den replaces with a
+/// `<type>_<slug>` name of its own, never a cleaned-up variant of Linear's.
+pub fn is_safe_branch_name(name: &str) -> bool {
+    let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/');
+    !name.is_empty()
+        && name.chars().count() <= MAX_BRANCH_NAME_CHARS
+        && name.chars().all(allowed)
+        && name != "HEAD"
+        && !name.contains("..")
+        && name.split('/').all(|part| {
+            !part.is_empty()
+                && !part.starts_with(['.', '-'])
+                && !part.ends_with('.')
+                && !part.ends_with(".lock")
+        })
+}
+
+/// The Claude Code session name for a Linear Issue's Job in `repo`:
+/// `<repo>-<identifier>-<step>`, e.g. `api-team-8-start`.
+pub fn linear_session_name(repo: &RepoId, identifier: &str, step: NextStep) -> String {
+    clean(
+        &format!(
+            "{}-{}-{}",
+            repo.name,
+            identifier.to_ascii_lowercase(),
+            step_slug(step)
+        ),
+        MAX_SESSION_NAME_CHARS,
+    )
+}
+
 /// Lower-case ASCII words joined by `-`, at most [`MAX_SLUG_CHARS`] long.
 pub fn slug(text: &str) -> String {
     within_slug_limit(words(text).into_iter()).unwrap_or_default()
