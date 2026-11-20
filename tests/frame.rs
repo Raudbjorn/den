@@ -495,3 +495,39 @@ fn a_tall_terminal_draws_its_visible_rows_in_bounded_time() {
     );
     assert!(text.contains("repo-000"), "the sidebar's first Repo");
 }
+
+#[test]
+fn a_title_of_wide_characters_wraps_by_cell_width_without_losing_text() {
+    // 40 distinct CJK characters, two cells each: 80 cells, more than one line
+    // of the detail plate but within its title's line limit.
+    const WIDE_TITLE_CHARS: u32 = 40;
+    let title: String = (0..WIDE_TITLE_CHARS)
+        .filter_map(|offset| char::from_u32(0x4E00 + offset))
+        .collect();
+    let mut harness = Harness::with_owners(&["octo"]);
+    // Wide enough for the detail plate beside the list.
+    let (cols, rows) = DESIGN_SIZE;
+    harness.send(Event::Resized { cols, rows });
+    harness.answer(Ok(ObservationBuilder::new()
+        .owner("octo")
+        .pull_request(pr("octo/one", 1).title(&title))
+        .build()));
+    harness.start();
+    let theme = Theme::new(TerminalProfile::new(
+        ColorProfile::Mono,
+        GlyphProfile::Unicode,
+    ))
+    .expect("theme");
+    let buffer = frame::render(&theme, &harness.view, cols, rows).expect("renders");
+    // Only the detail plate: the list row shows the title too.
+    let detail = frame::regions(buffer.area, &harness.view.layout).detail;
+    let detail_text: String = (detail.top()..detail.bottom())
+        .flat_map(|y| (detail.left()..detail.right()).map(move |x| (x, y)))
+        .map(|cell| buffer[cell].symbol().to_owned())
+        .collect();
+    let missing: String = title
+        .chars()
+        .filter(|c| !detail_text.contains(*c))
+        .collect();
+    assert!(missing.is_empty(), "clipped: {missing}\n{detail_text}");
+}
