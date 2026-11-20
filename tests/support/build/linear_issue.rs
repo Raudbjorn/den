@@ -166,6 +166,18 @@ impl LinearIssueBuilder {
         self
     }
 
+    /// Linear's suggested branch name (#38).
+    pub fn branch_name(mut self, name: &str) -> Self {
+        self.issue.branch_name = Some(name.to_owned());
+        self
+    }
+
+    /// The state's permanent ID (a state's identity; its name is display).
+    pub fn state_id(mut self, id: &str) -> Self {
+        self.issue.state.id = id.to_owned();
+        self
+    }
+
     pub fn build(self) -> LinearIssue {
         self.issue
     }

@@ -5,13 +5,16 @@
 //! coordination Job's permission mode (#39) reads back; a coding Job's record
 //! has no such key. Format 3 adds that key, so a den reading only format 2
 //! refuses the file instead of dropping the mode when it rewrites it; a
-//! format-2 file still loads.
+//! format-2 file still loads. Format 4 (#38) adds the Linear Issue subject,
+//! stored under its pinned name, so a den reading only format 3 refuses the
+//! file instead of failing on the unknown variant; a format-3 file still
+//! loads.
 
 // Test code: helpers outside #[test] fns may fail loudly too (clippy.toml covers only #[test]).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use den::{
-    domain::{NextStep, RepoId, WorkItemId},
+    domain::{LinearIssueId, NextStep, RepoId, WorkItemId},
     handoff::PermissionMode,
     jobs::{
         FileJobStore, JOBS_FILE, JOBS_FORMAT, JobRecord, JobStoreError, JobSubject, MAX_JOBS_BYTES,
@@ -291,6 +294,82 @@ fn a_format_2_file_from_before_the_pinned_name_still_loads() {
         "{body}"
     );
     assert_eq!(store.load().unwrap().len(), 2);
+}
+
+/// Format 3 (#39) is the last format without Linear Issue subjects: a den of
+/// that format must refuse a file holding one, as a newer den's.
+const FORMAT_WITHOUT_LINEAR_ISSUES: u64 = 3;
+
+fn linear_record() -> JobRecord {
+    JobRecord {
+        subject: JobSubject::LinearIssue {
+            owner: "acme".to_owned(),
+            issue: LinearIssueId::new("acme", "id-8"),
+        },
+        next_step: NextStep::Start,
+        target: RepoId::new("acme", "api"),
+        main_clone: "/home/me/dev/api".into(),
+        worktree: "/home/me/dev/api/.claude/worktrees/me-team-8-pick-me".into(),
+        branch: "me/team-8-pick-me".to_owned(),
+        session: "api-team-8-start".to_owned(),
+        launched_at: jiff::Timestamp::UNIX_EPOCH,
+        permission_mode: None,
+    }
+}
+
+/// A Linear Issue's Job (#38) reads back as written, its subject stored under
+/// the pinned name `"linear_issue"` (workspace and Linear's permanent ID,
+/// under its Owner), in a format an older den refuses.
+#[test]
+fn a_linear_issue_subject_reads_back_under_its_pinned_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = FileJobStore::in_state_dir(temp.path());
+    store.record(&linear_record()).unwrap();
+    assert_eq!(store.load().unwrap(), [linear_record()]);
+    let body: serde_json::Value = serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+    assert_eq!(
+        body["jobs"][0]["subject"]["linear_issue"],
+        serde_json::json!({
+            "owner": "acme",
+            "issue": { "workspace": "acme", "id": "id-8" }
+        }),
+        "{body}"
+    );
+    assert!(
+        format_of(&store) > FORMAT_WITHOUT_LINEAR_ISSUES,
+        "format {}",
+        format_of(&store)
+    );
+    // It is the Linear Issue's Job, and no other Work Item's.
+    let subject = &linear_record().subject;
+    assert!(subject.covers(&WorkItemId::LinearIssue {
+        owner: "ACME".to_owned(),
+        issue: LinearIssueId::new("acme", "id-8"),
+    }));
+    assert!(!subject.covers(&WorkItemId::LinearIssue {
+        owner: "acme".to_owned(),
+        issue: LinearIssueId::new("acme", "id-9"),
+    }));
+}
+
+#[test]
+fn a_format_3_file_loads_and_the_next_append_writes_the_current_format() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = FileJobStore::in_state_dir(temp.path());
+    let earlier = JobRecord {
+        next_step: NextStep::RequestReview,
+        permission_mode: Some(PermissionMode::ApprovalRequired),
+        ..store_record()
+    };
+    let body = serde_json::json!({
+        "format": FORMAT_WITHOUT_LINEAR_ISSUES,
+        "jobs": [serde_json::to_value(&earlier).unwrap()],
+    });
+    fs::write(store.path(), serde_json::to_vec(&body).unwrap()).unwrap();
+    assert_eq!(store.load().unwrap(), std::slice::from_ref(&earlier));
+    store.record(&linear_record()).unwrap();
+    assert_eq!(format_of(&store), u64::from(JOBS_FORMAT));
+    assert_eq!(store.load().unwrap(), [earlier, linear_record()]);
 }
 
 /// A format-1 file milestone 1 wrote right up to the bound: converting it to

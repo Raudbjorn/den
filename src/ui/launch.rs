@@ -340,6 +340,70 @@ mod tests {
     use super::*;
     use raudbjorn_tui::profile::GlyphProfile;
 
+    /// #38: each Linear write is one teal line (the Next Step's style),
+    /// labelled LINEAR, directly above the Job's command, however long it is.
+    #[test]
+    fn each_linear_write_is_one_teal_line_above_the_command() {
+        let long = format!(
+            "Linear: move TEAM-8 from Todo to {}",
+            "In Progress ".repeat(20)
+        );
+        let sheet = LaunchSheet {
+            label: "L A U N C H   J O B".to_owned(),
+            reference: "TEAM-8".to_owned(),
+            title: "Pick me".to_owned(),
+            next_step: "Start".to_owned(),
+            status: LaunchStatus::Ready,
+            headline: "Ready".to_owned(),
+            fields: Vec::new(),
+            reviewers: None,
+            prompt: Some(PromptField {
+                text: "/implement TEAM-8".to_owned(),
+                cursor: 0,
+                editing: false,
+            }),
+            linear_writes: vec![
+                "Linear: assign TEAM-8 to Me Myself (you, the Linear viewer)".to_owned(),
+                long,
+            ],
+            command: Some("kitty --detach claude".to_owned()),
+            messages: Vec::new(),
+        };
+        let width = 60;
+        let lines = lines(
+            &sheet,
+            width,
+            40,
+            glyphs::for_profile(GlyphProfile::Unicode),
+        );
+        let writes: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, text, _))| text.starts_with("Linear: "))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(writes.len(), 2, "{lines:#?}");
+        for &i in &writes {
+            assert_eq!(lines[i].2, LineStyle::Step, "{:?}", lines[i]);
+            assert!(lines[i].1.width() <= width, "{:?}", lines[i]);
+        }
+        assert_eq!(lines[writes[0]].0, "LINEAR");
+        assert_eq!(writes[1], writes[0] + 1, "one line each");
+        assert!(lines[writes[1]].1.ends_with(ELLIPSIS), "cut, not wrapped");
+        // The command follows (after a spacer when there is room).
+        let command = lines
+            .iter()
+            .position(|(label, _, _)| label == "COMMAND")
+            .expect("a command line");
+        assert!(command > writes[1], "{lines:#?}");
+        assert!(
+            lines[writes[1] + 1..command]
+                .iter()
+                .all(|(label, text, _)| label.is_empty() && text.is_empty()),
+            "nothing between the writes and the command: {lines:#?}"
+        );
+    }
+
     #[test]
     fn prompt_rows_use_cell_width_for_wrapping_and_cursor_scrolling() {
         for profile in [GlyphProfile::Unicode, GlyphProfile::Ascii] {
