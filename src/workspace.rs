@@ -226,6 +226,28 @@ impl Workspace for GitWorkspace {
         }))
     }
 
+    fn remote_pull_head(
+        &self,
+        clone: &Path,
+        remote: &str,
+        number: u64,
+    ) -> Result<Option<String>, WorkspaceError> {
+        let operation = || {
+            format!(
+                "ask {remote} for PR {number}'s head (from {})",
+                clone.display()
+            )
+        };
+        let remote = checked_remote(remote, operation)?;
+        let wanted = format!("refs/pull/{number}/head");
+        let invocation = self.git(clone).args(["ls-remote", remote]).arg(&wanted);
+        let output = self.run_ok(&invocation, operation, GIT_NETWORK_TIMEOUT_SECS)?;
+        Ok(output.stdout_text().lines().find_map(|line| {
+            let (commit, name) = line.split_once('\t')?;
+            (name.trim() == wanted).then(|| commit.trim().to_owned())
+        }))
+    }
+
     fn worktrees(&self, clone: &Path) -> Result<Vec<RegisteredWorktree>, WorkspaceError> {
         let invocation = self.git(clone).args(["worktree", "list", "--porcelain"]);
         let output = self.run_ok(
@@ -259,6 +281,11 @@ impl Workspace for GitWorkspace {
             WorktreeStart::NewBranchTracking { start } => self
                 .git(clone)
                 .args(["worktree", "add", "--track", "-b", add.branch.as_str()])
+                .arg(&add.path)
+                .arg(start),
+            WorktreeStart::NewBranchAt { start } => self
+                .git(clone)
+                .args(["worktree", "add", "--no-track", "-b", add.branch.as_str()])
                 .arg(&add.path)
                 .arg(start),
             WorktreeStart::ExistingBranch => self

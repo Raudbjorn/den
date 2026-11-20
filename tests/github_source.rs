@@ -102,7 +102,15 @@ fn repo_node(name: &str) -> Value {
         "isFork": name == "fork",
         "isArchived": false,
         "defaultBranchRef": { "name": "main" },
-        "parent": if name == "fork" { json!({ "name": "up", "owner": { "login": "upstream" } }) } else { Value::Null }
+        "parent": if name == "fork" {
+            json!({
+                "name": "up", "owner": { "login": "upstream" },
+                "url": "https://github.com/upstream/up", "isFork": false, "isArchived": false,
+                "defaultBranchRef": { "name": "trunk" }
+            })
+        } else {
+            Value::Null
+        }
     })
 }
 
@@ -193,7 +201,10 @@ fn open_prs_are_paginated_to_completion_and_qualified_by_owner_and_repo() {
     assert_eq!(repos, ["octo/busy", "octo/fork", "octo/quiet"]);
     let fork = observation.repo(&repo_id("octo/fork")).expect("fork");
     assert!(fork.is_fork);
-    assert_eq!(fork.parent, Some(repo_id("upstream/up")));
+    let upstream = fork.upstream().expect("the fork's Upstream");
+    assert_eq!(upstream.id, repo_id("upstream/up"));
+    assert_eq!(upstream.url, "https://github.com/upstream/up");
+    assert_eq!(upstream.default_branch.as_deref(), Some("trunk"));
 
     for source in [
         Source::Viewer,

@@ -19,9 +19,13 @@
 //!   Clone is [`RefusalReason::NoMainClone`]; cloning becomes an executor step
 //!   before `Fetch`. Name collisions are [`RefusalReason::WorktreeExists`]
 //!   today, with the Job records already in the WorkspaceView.
-//! - #13 (Upstream target; cross-Repo heads): [`TargetChoice`] gains `Upstream`;
-//!   [`RefusalReason::CrossRepoHead`] becomes a `BaseRef::PullHead` fetched as
-//!   `refs/pull/<n>/head` from the target's remote.
+//! - #13 (done): [`TargetChoice::Upstream`] targets a fork's Upstream (the
+//!   fork's setting, or `u` on the sheet for one Job); [`Target::upstream_of`]
+//!   says so and [`Target::default_branch`] is the branch #12's new branches
+//!   start from (the Upstream's when it is the target). A PR's head in another
+//!   Repo is [`BaseRef::PullHead`], fetched as `refs/pull/<n>/head` from the
+//!   target's remote. A PR is only ever fetched from the Repo it is in: an
+//!   Upstream target for a fork's PR is [`RefusalReason::PullRequestNotInTarget`].
 //! - #14 (Live Jobs): the Job records are in the WorkspaceView; a worktree that
 //!   exists and belongs to this Work Item's Job is reported with that Job.
 
@@ -97,12 +101,25 @@ pub struct RegisteredWorktree {
     pub prunable: bool,
 }
 
-/// Which Repo the Job's work goes to. #13 adds `Upstream` (a fork's parent).
+/// Which Repo the Job's work goes to (ADR-0003: a fork is its own target
+/// unless its Upstream is chosen, for the fork or for one Job).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TargetChoice {
     /// The Work Item's own Repo (for a fork: the fork itself).
     #[default]
     OwnRepo,
+    /// The fork's Upstream. Only meaningful for a Work Item in a fork.
+    Upstream,
+}
+
+impl TargetChoice {
+    /// The other choice (`u`).
+    pub fn flipped(self) -> Self {
+        match self {
+            Self::OwnRepo => Self::Upstream,
+            Self::Upstream => Self::OwnRepo,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,6 +128,11 @@ pub struct Target {
     /// The Repo's URL on GitHub; a remote matches it when both name the same Repo.
     pub url: String,
     pub is_fork: bool,
+    /// The fork whose Upstream this is, when the target is an Upstream.
+    pub upstream_of: Option<RepoId>,
+    /// The target's default branch (new branches start there, #12); `None`
+    /// for an empty Repo.
+    pub default_branch: Option<String>,
 }
 
 /// How the Main Clone was found.
@@ -129,12 +151,16 @@ pub struct MainClone {
     pub writable: Writability,
 }
 
-/// What the Job's worktree starts from. #12 adds the target's default branch;
-/// #13 adds a cross-Repo PR head (fetched as the PR ref).
+/// What the Job's worktree starts from. #12 adds the target's default branch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BaseRef {
     /// A same-Repo PR's head branch, fetched by name.
     HeadBranch(String),
+    /// The head of PR `number`, whose head branch lives in another Repo than
+    /// the target (or in one that was deleted): fetched as
+    /// `refs/pull/<number>/head` from the target's remote, never from the
+    /// head's Repo.
+    PullHead { number: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,6 +175,9 @@ pub struct Base {
 pub enum BranchStart {
     /// Created at the base, tracking `tracking` (`<remote>/<branch>`).
     New { tracking: String },
+    /// Created at the base, tracking nothing: the head branch lives in another
+    /// Repo, and the target's remote has no branch of that name to track.
+    NewUntracked,
     /// Already exists locally at the base commit; checked out as is.
     Existing,
 }
@@ -235,17 +264,25 @@ impl LaunchPlan {
         self
     }
 
-    /// The remote-tracking ref the base is fetched into: `refs/remotes/<remote>/<branch>`.
+    /// The ref the base is fetched into: `refs/remotes/<remote>/<branch>` for
+    /// a head branch, `refs/remotes/<remote>/pr/<n>` for a PR ref (GitHub's
+    /// documented layout for fetched PR heads).
     pub fn tracking_ref(&self) -> String {
         match &self.base.reference {
             BaseRef::HeadBranch(branch) => format!("refs/remotes/{}/{branch}", self.remote.name),
+            BaseRef::PullHead { number } => {
+                format!("refs/remotes/{}/pr/{number}", self.remote.name)
+            }
         }
     }
 
-    /// The refspec fetched from the remote: the head branch into its tracking ref.
+    /// The refspec fetched from the remote: the head branch, or the PR ref,
+    /// into [`Self::tracking_ref`].
     pub fn fetch_refspec(&self) -> String {
-        match &self.base.reference {
-            BaseRef::HeadBranch(branch) => format!("+refs/heads/{branch}:{}", self.tracking_ref()),
-        }
+        let source = match &self.base.reference {
+            BaseRef::HeadBranch(branch) => format!("refs/heads/{branch}"),
+            BaseRef::PullHead { number } => format!("refs/pull/{number}/head"),
+        };
+        format!("+{source}:{}", self.tracking_ref())
     }
 }

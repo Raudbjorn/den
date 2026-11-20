@@ -64,13 +64,14 @@ struct Facts {
     number: u64,
     head_branch: String,
     head_commit: String,
+    base: BaseRef,
 }
 
 /// The facts for a launch, or every reason it can't happen.
 fn facts(
     decision: &Decision,
     observation: &Observation,
-    _choice: TargetChoice,
+    choice: TargetChoice,
 ) -> Result<Facts, Refusal> {
     let mut reasons = Vec::new();
     let step = decision.next_step;
@@ -95,32 +96,79 @@ fn facts(
         reasons.push(RefusalReason::RepoUnknown { repo: repo.clone() });
         return Err(Refusal { reasons });
     };
-    if repo_facts.is_archived {
-        reasons.push(RefusalReason::RepoArchived { repo: repo.clone() });
-    }
-    if pr.head_repo.as_ref() != Some(repo) {
-        reasons.push(RefusalReason::CrossRepoHead {
-            head_repo: pr.head_repo.clone(),
+    let target = match chosen_target(repo_facts, choice) {
+        Ok(target) => target,
+        Err(reason) => {
+            reasons.push(reason);
+            return Err(Refusal { reasons });
+        }
+    };
+    if target.archived {
+        reasons.push(RefusalReason::RepoArchived {
+            repo: target.target.repo.clone(),
         });
     }
+    // A PR's refs live in the Repo it is in; a same-numbered PR elsewhere is
+    // another PR. So its Job targets that Repo, whatever the fork's setting.
+    if &target.target.repo != repo {
+        reasons.push(RefusalReason::PullRequestNotInTarget {
+            repo: repo.clone(),
+            number: *number,
+            target: target.target.repo.clone(),
+        });
+    }
+    let base = if pr.head_repo.as_ref() == Some(repo) {
+        BaseRef::HeadBranch(pr.head_ref.clone())
+    } else {
+        BaseRef::PullHead { number: *number }
+    };
     match step {
         Some(step) if reasons.is_empty() => Ok(Facts {
             step,
-            target: target(repo_facts),
+            target: target.target,
             number: *number,
             head_branch: pr.head_ref.clone(),
             head_commit: pr.head_commit.clone(),
+            base,
         }),
         _ => Err(Refusal { reasons }),
     }
 }
 
-fn target(repo: &Repo) -> Target {
-    Target {
-        repo: repo.id.clone(),
-        url: repo.url.clone(),
-        is_fork: repo.is_fork,
-    }
+struct ChosenTarget {
+    target: Target,
+    archived: bool,
+}
+
+/// The target `choice` names for a Work Item in `repo`: the Repo itself, or
+/// (for a fork) its Upstream. Never a silent substitute.
+fn chosen_target(repo: &Repo, choice: TargetChoice) -> Result<ChosenTarget, RefusalReason> {
+    let (target, upstream_of) = match choice {
+        TargetChoice::OwnRepo => (repo, None),
+        TargetChoice::Upstream if !repo.is_fork => {
+            return Err(RefusalReason::NotAFork {
+                repo: repo.id.clone(),
+            });
+        }
+        TargetChoice::Upstream => match repo.upstream() {
+            Some(upstream) => (upstream, Some(repo.id.clone())),
+            None => {
+                return Err(RefusalReason::UpstreamUnknown {
+                    fork: repo.id.clone(),
+                });
+            }
+        },
+    };
+    Ok(ChosenTarget {
+        target: Target {
+            repo: target.id.clone(),
+            url: target.url.clone(),
+            is_fork: target.is_fork,
+            upstream_of,
+            default_branch: target.default_branch.clone(),
+        },
+        archived: target.is_archived,
+    })
 }
 
 /// What to inspect for launching `decision`'s Work Item, or why den won't even
@@ -236,8 +284,11 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         }
         match &state.local_branch {
             Ok(None) => {
-                branch_start = Some(BranchStart::New {
-                    tracking: format!("{}/{}", remote.name, facts.head_branch),
+                branch_start = Some(match &facts.base {
+                    BaseRef::HeadBranch(head) => BranchStart::New {
+                        tracking: format!("{}/{head}", remote.name),
+                    },
+                    BaseRef::PullHead { .. } => BranchStart::NewUntracked,
                 });
             }
             Ok(Some(commit)) if *commit == facts.head_commit => {
@@ -291,7 +342,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         main_clone: clone,
         remote,
         base: Base {
-            reference: BaseRef::HeadBranch(facts.head_branch.clone()),
+            reference: facts.base,
             commit: facts.head_commit,
         },
         branch: JobBranch {

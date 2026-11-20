@@ -9,14 +9,14 @@ mod support;
 
 use den::{
     domain::{
-        Observation, Repo, Source, SourceKind, SourceState,
+        Observation, Repo, Source, SourceKind, SourceState, UpstreamTargets,
         facts::{Branch, ComparisonBranch},
     },
     github::{
         branches,
         graphql::{GraphQlRequest, GraphQlResponse, TransportError},
         session::{RateLimitMemo, Session},
-        survey,
+        survey, survey_with,
     },
 };
 use serde_json::{Value, json};
@@ -36,7 +36,15 @@ fn repo_node(name: &str, is_fork: bool, default_branch: &str) -> Value {
         "isFork": is_fork,
         "isArchived": false,
         "defaultBranchRef": { "name": default_branch },
-        "parent": if is_fork { json!({ "name": name, "owner": { "login": "upstream" } }) } else { Value::Null }
+        "parent": if is_fork {
+            json!({
+                "name": name, "owner": { "login": "upstream" },
+                "url": format!("https://github.com/upstream/{name}"), "isFork": false,
+                "isArchived": false, "defaultBranchRef": { "name": "main" }
+            })
+        } else {
+            Value::Null
+        }
     })
 }
 
@@ -382,8 +390,8 @@ fn the_comparison_branch_is_a_parameter_and_another_repos_branch_is_compared_acr
     let session = Session::new(gql.as_ref(), &memo);
     let repos: Vec<Repo> = vec![fork("octo/tool", "upstream/tool", "trunk")];
     let upstream = |repo: &Repo| {
-        repo.parent.clone().map(|parent| ComparisonBranch {
-            repo: parent,
+        repo.parent.as_ref().map(|parent| ComparisonBranch {
+            repo: parent.id.clone(),
             name: "main".to_owned(),
         })
     };
@@ -400,4 +408,76 @@ fn the_comparison_branch_is_a_parameter_and_another_repos_branch_is_compared_acr
         (&vars["owner0"], &vars["name0"], &vars["head0"]),
         (&json!("upstream"), &json!("tool"), &json!("octo:my-fix"))
     );
+}
+
+#[test]
+fn a_survey_compares_a_fork_whose_target_is_its_upstream_against_the_upstreams_default_branch() {
+    // #13: the survey takes the Upstream choices; only the chosen fork is
+    // compared across Repos, as `octo:<branch>` in the Upstream.
+    let world = FakeBranches::default()
+        .repo(
+            "octo/tool",
+            FORKED_AT,
+            vec![
+                FakeBranch::new("trunk", "2026-11-01T00:00:00Z"),
+                FakeBranch::new("my-fix", "2026-11-15T00:00:00Z").ahead(4),
+            ],
+        )
+        .repo(
+            "octo/other",
+            FORKED_AT,
+            vec![
+                FakeBranch::new("trunk", "2026-11-01T00:00:00Z"),
+                FakeBranch::new("wip", "2026-11-15T00:00:00Z").ahead(1),
+            ],
+        )
+        .repo(
+            "upstream/tool",
+            "2020-01-01T00:00:00Z",
+            vec![FakeBranch::new("main", "2026-11-01T00:00:00Z")],
+        );
+    let gql = octo(
+        vec![
+            repo_node("tool", true, "trunk"),
+            repo_node("other", true, "trunk"),
+        ],
+        world,
+        no_failures,
+    );
+    let upstreams = UpstreamTargets::new([repo_id("octo/tool")]);
+    let observation = survey_with(&gql, &["octo".to_owned()], &upstreams, now()).expect("a survey");
+
+    let fix = branch_named(&observation, "octo/tool", "my-fix").expect("my-fix");
+    assert_eq!(
+        fix.comparison,
+        ComparisonBranch {
+            repo: repo_id("upstream/tool"),
+            name: "main".to_owned()
+        }
+    );
+    let wip = branch_named(&observation, "octo/other", "wip").expect("wip");
+    assert_eq!(
+        wip.comparison,
+        ComparisonBranch {
+            repo: repo_id("octo/other"),
+            name: "trunk".to_owned()
+        },
+        "a fork not chosen stays standalone"
+    );
+    let heads: Vec<Value> = ops(&gql, "BranchComparisons")
+        .iter()
+        .flat_map(|r| {
+            r.variables
+                .as_object()
+                .into_iter()
+                .flat_map(|vars| {
+                    vars.iter()
+                        .filter(|(k, _)| k.starts_with("head"))
+                        .map(|(_, v)| v.clone())
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(heads.contains(&json!("octo:my-fix")), "{heads:?}");
+    assert!(heads.contains(&json!("refs/heads/wip")), "{heads:?}");
 }

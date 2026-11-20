@@ -16,6 +16,8 @@ const REPO_INDENT: &str = "  ";
 /// Fork and archived glyphs (each also has an ASCII form).
 struct RepoGlyphs {
     fork: &'static str,
+    /// A fork that targets its Upstream: always this text label, never colour alone.
+    upstream: &'static str,
     archived: &'static str,
     current_scope: &'static str,
     none: &'static str,
@@ -25,12 +27,14 @@ fn repo_glyphs(profile: raudbjorn_tui::profile::GlyphProfile) -> RepoGlyphs {
     match profile {
         raudbjorn_tui::profile::GlyphProfile::Unicode => RepoGlyphs {
             fork: "⑂",
+            upstream: "upstream →",
             archived: "▣",
             current_scope: "●",
             none: "·",
         },
         raudbjorn_tui::profile::GlyphProfile::Ascii => RepoGlyphs {
             fork: "Y",
+            upstream: "upstream >",
             archived: "#",
             current_scope: "*",
             none: ".",
@@ -129,6 +133,8 @@ fn row_context(
         )
         .set("label", label)
         .set("icons", icons)
+        .set("has_upstream", row.upstream.is_some())
+        .set("upstream", marks.upstream)
         .set("flag", if row.incomplete { incomplete } else { " " })
         .set("count", format!("{count:>3}"));
     ctx

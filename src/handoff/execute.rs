@@ -4,8 +4,8 @@
 //! earlier step by deleting anything.
 
 use super::{
-    BranchStart, LaunchPlan, PathState, Refusal, RefusalReason, WindowMode, check_prompt, clone,
-    command, short_commit,
+    BaseRef, BranchStart, LaunchPlan, PathState, Refusal, RefusalReason, WindowMode, check_prompt,
+    clone, command, short_commit,
 };
 use crate::{
     jobs::JobRecord,
@@ -129,6 +129,7 @@ fn run(
     // 3. Add the worktree with git itself (not Claude Code's worktree options).
     let start = match &plan.branch.start {
         BranchStart::New { .. } => WorktreeStart::NewBranchTracking { start: tracking },
+        BranchStart::NewUntracked => WorktreeStart::NewBranchAt { start: tracking },
         BranchStart::Existing => WorktreeStart::ExistingBranch,
     };
     let add = WorktreeAdd {
@@ -227,7 +228,7 @@ fn verify(plan: &LaunchPlan, workspace: &dyn Workspace) -> Result<(), Verificati
         .resolve(clone_path, &format!("refs/heads/{}", plan.branch.name))
         .map_err(|e| Verification::Failed(e.to_string()))?;
     let as_planned = match (&plan.branch.start, &local) {
-        (BranchStart::New { .. }, None) => true,
+        (BranchStart::New { .. } | BranchStart::NewUntracked, None) => true,
         (BranchStart::Existing, Some(commit)) => *commit == plan.base.commit,
         _ => false,
     };
@@ -236,15 +237,25 @@ fn verify(plan: &LaunchPlan, workspace: &dyn Workspace) -> Result<(), Verificati
             branch: plan.branch.name.clone(),
         }));
     }
-    let super::BaseRef::HeadBranch(branch) = &plan.base.reference;
-    match workspace
-        .remote_branch_head(clone_path, &plan.remote.name, branch)
-        .map_err(|e| Verification::Failed(e.to_string()))?
-    {
-        None => Err(Verification::Refused(RefusalReason::HeadBranchGone {
-            remote: plan.remote.name.clone(),
-            branch: branch.clone(),
-        })),
+    let remote = &plan.remote.name;
+    let (head, gone) = match &plan.base.reference {
+        BaseRef::HeadBranch(branch) => (
+            workspace.remote_branch_head(clone_path, remote, branch),
+            RefusalReason::HeadBranchGone {
+                remote: remote.clone(),
+                branch: branch.clone(),
+            },
+        ),
+        BaseRef::PullHead { number } => (
+            workspace.remote_pull_head(clone_path, remote, *number),
+            RefusalReason::PullRefGone {
+                remote: remote.clone(),
+                number: *number,
+            },
+        ),
+    };
+    match head.map_err(|e| Verification::Failed(e.to_string()))? {
+        None => Err(Verification::Refused(gone)),
         Some(commit) if commit == plan.base.commit => Ok(()),
         Some(commit) => Err(Verification::Moved(commit)),
     }

@@ -91,6 +91,9 @@ pub struct SidebarRow {
     /// Work Items with a Next Step in this row's Scope.
     pub count: usize,
     pub fork: bool,
+    /// A fork whose target is its Upstream: the Upstream (`owner/name`), shown
+    /// in rust with the "upstream →" label.
+    pub upstream: Option<String>,
     pub archived: bool,
     /// This row is the current Scope.
     pub current: bool,
@@ -231,6 +234,9 @@ pub enum Tone {
     /// Needs attention: a refusal, a failure, a moved head.
     Caution,
     Muted,
+    /// The target is a fork's Upstream (rust); the text always carries the
+    /// "upstream →" label too.
+    Upstream,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

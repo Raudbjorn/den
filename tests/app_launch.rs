@@ -706,12 +706,9 @@ fn work_items_den_cannot_launch_yet_are_refused_with_the_reason() {
         ObservationBuilder::new()
             .owner("octo")
             .repo("octo/app")
-            .pull_request(
-                pr("octo/app", 7)
-                    .author(ME)
-                    .changes_requested()
-                    .head_from("someone/app"),
-            )
+            // #13 made cross-Repo heads launchable (fetched as the PR ref), so
+            // the cross-Repo PR #7 that was refused here moved to
+            // `tests/app_upstream.rs`, which asserts it launches.
             .pull_request(pr("octo/app", 8).author(ME).pending("CI"))
             .issue(issue("octo/app", 9))
             .build(),
@@ -733,10 +730,6 @@ fn work_items_den_cannot_launch_yet_are_refused_with_the_reason() {
         seen.insert(sheet(&harness).reference.clone(), messages(sheet(&harness)));
         press(&mut harness, Key::Esc);
     }
-    assert_eq!(
-        seen["octo/app#7"],
-        "the PR's head branch lives in another Repo (someone/app); launching for cross-Repo heads isn't built yet"
-    );
     assert_eq!(
         seen["octo/app#8"],
         "this Work Item has no Next Step to hand off"

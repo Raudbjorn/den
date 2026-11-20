@@ -17,7 +17,7 @@ use crate::{
     cache::Carried,
     config::{Config, ConfigError},
     decide::Decision,
-    domain::Observation,
+    domain::{Observation, UpstreamTargets},
     layout::Layout,
     ordering::Scope,
     ports::SurveyFailure,
@@ -47,6 +47,10 @@ pub struct State<'a> {
     pub now: Option<Timestamp>,
     pub layout: Layout,
     pub overlay: Option<&'a OverlayState>,
+    /// The forks whose target is their Upstream (#13).
+    pub upstreams: &'a UpstreamTargets,
+    /// Something wrong with the Upstream choices, for the header.
+    pub upstream_note: Option<String>,
 }
 
 pub fn build(state: &State<'_>) -> ViewModel {
