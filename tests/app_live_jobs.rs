@@ -507,6 +507,43 @@ fn start_fresh_plans_a_distinct_worktree_branch_and_session_and_leaves_the_old_o
 }
 
 #[test]
+fn start_fresh_on_a_pr_ends_the_prompt_with_how_to_push_back_to_the_prs_branch() {
+    // Decision c: the fresh Job's branch is `feature-7-2`, tracking
+    // `upstream/feature-7`; a plain `git push` would refuse (push.default
+    // simple), so the prompt's last line says how to push to the PR.
+    let mut harness = harness_with(|h| live_job(h, 7));
+    select(&mut harness, 7);
+    press(&mut harness, Key::Char('c'));
+    press(&mut harness, Key::Char('f'));
+    let ready = sheet(&harness).clone();
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    let push_line = "Push with: git push upstream HEAD:feature-7";
+    let shown = ready.prompt.as_ref().expect("a prompt").text.clone();
+    assert!(shown.ends_with(push_line), "{shown}");
+
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1, "{plans:?}");
+    assert_eq!(
+        plans[0].prompt,
+        format!("/gh-resolve https://github.com/octo/app/pull/7 {push_line}")
+    );
+    assert!(plans[0].command.contains(push_line), "{}", plans[0].command);
+}
+
+#[test]
+fn a_plain_launch_on_the_prs_own_branch_has_no_push_line() {
+    // Without a fresh start the Job is on `feature-7` itself: `git push` works.
+    let mut harness = harness_with(|_| {});
+    select(&mut harness, 7);
+    press(&mut harness, Key::Char('c'));
+    let ready = sheet(&harness).clone();
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    let shown = ready.prompt.as_ref().expect("a prompt").text.clone();
+    assert!(!shown.contains("Push with"), "{shown}");
+}
+
+#[test]
 fn start_fresh_skips_suffixes_another_job_or_worktree_already_uses() {
     let mut harness = harness_with(|h| {
         live_job(h, 7);

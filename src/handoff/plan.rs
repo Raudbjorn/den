@@ -21,6 +21,9 @@ use crate::{
 };
 use std::{collections::BTreeMap, path::PathBuf};
 
+/// How a fresh start's prompt tells Claude to push back to the branch it tracks.
+const PUSH_LINE_PREFIX: &str = "Push with: git push";
+
 /// Where to look for Main Clones: the config's settings, with den's default root.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LaunchSettings {
@@ -296,6 +299,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             },
         },
     );
+    let prompt = with_push_line(prompt, &facts, &branch_name, &remote);
     // One suffix rule for the Job's names: the session carries the suffix the
     // worktree got, whether for a fresh start or a name another Job has.
     let session = fresh(
@@ -337,6 +341,20 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     };
     plan.command = command::display(&plan.window, &plan.window_command());
     Ok(plan)
+}
+
+/// A fresh start's local branch (`feature-7-2`) tracks a branch of another
+/// name (`origin/feature-7`), so a plain `git push` refuses (push.default
+/// simple). The prompt then ends with the one line that pushes back to it.
+/// Only for a branch of the target (a same-Repo PR head, a Branch): a
+/// cross-Repo PR head lives in another Repo, which the target's remote is not.
+fn with_push_line(prompt: String, facts: &Facts, local: &str, remote: &Remote) -> String {
+    match &facts.base {
+        BaseRef::HeadBranch(branch) if !facts.new_branch && local != branch => {
+            format!("{prompt} {PUSH_LINE_PREFIX} {} HEAD:{branch}", remote.name)
+        }
+        _ => prompt,
+    }
 }
 
 /// The commit the Job starts on: the PR head GitHub reported, or where the
