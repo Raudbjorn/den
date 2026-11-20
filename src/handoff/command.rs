@@ -6,6 +6,12 @@
 //! `claude -n <session> <prompt>`. Outside kitty: `cd <worktree> && claude -n
 //! <session> <prompt>`, for the clipboard. Reopening a Live Job (#14) runs
 //! `claude --resume <session>` instead. No permission-bypass flags, ever.
+//!
+//! A coordination Job (#39) starts in the approval-required permission mode:
+//! `claude --permission-mode manual -n <session> <prompt>`, and reopening it
+//! passes the mode again. [`PermissionMode`] has no other value, so no bypass
+//! mode can be expressed. A coding Job gets no mode flag: milestone 1's
+//! command, and the user's own Claude Code settings decide.
 
 use crate::process::Invocation;
 use serde::{Deserialize, Serialize};
@@ -18,6 +24,40 @@ const CLAUDE_NAME_FLAG: &str = "-n";
 /// Claude Code's flag for resuming a session by its name (or ID), as
 /// `claude --help` describes it in Claude Code 2.1.
 const CLAUDE_RESUME_FLAG: &str = "--resume";
+/// Claude Code's flag for the session's permission mode (`claude --help`,
+/// Claude Code 2.1.325: choices acceptEdits, auto, bypassPermissions, manual,
+/// dontAsk, plan).
+const CLAUDE_PERMISSION_MODE_FLAG: &str = "--permission-mode";
+/// Claude Code's Manual mode, which asks before most actions that edit files,
+/// run shell commands or reach the network. `manual` is the CLI's alias for the
+/// config value `default` (code.claude.com/docs/en/permission-modes).
+const CLAUDE_MANUAL_MODE: &str = "manual";
+
+/// A permission mode den passes to Claude Code. Only the approval-required
+/// mode exists: den never passes a bypass mode, nor `dontAsk`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PermissionMode {
+    /// Claude asks before acting (Claude Code's Manual mode), for coordination
+    /// Jobs, which act on GitHub and beyond rather than on code.
+    ApprovalRequired,
+}
+
+impl PermissionMode {
+    /// As the sheet names it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ApprovalRequired => "approval-required",
+        }
+    }
+
+    /// The flag and its value, as passed to `claude`.
+    pub fn args(self) -> [String; 2] {
+        let value = match self {
+            Self::ApprovalRequired => CLAUDE_MANUAL_MODE,
+        };
+        [CLAUDE_PERMISSION_MODE_FLAG.to_owned(), value.to_owned()]
+    }
+}
 
 /// What a Job's window runs, and where.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,6 +67,9 @@ pub struct WindowCommand {
     /// The prompt for a new session; unused when resuming.
     pub prompt: String,
     pub start: SessionStart,
+    /// `None`: no mode flag, as in milestone 1 (the user's settings decide).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<PermissionMode>,
 }
 
 /// Whether the window starts a new Claude Code session or resumes one.
@@ -48,17 +91,23 @@ pub enum WindowMode {
     Clipboard { why: String },
 }
 
-/// `claude -n <session> <prompt>` (or `claude --resume <session>`), as
-/// arguments after the program.
+/// `claude -n <session> <prompt>` (or `claude --resume <session>`), after
+/// `--permission-mode <mode>` when the window has one, as arguments after the
+/// program.
 pub fn claude_args(window: &WindowCommand) -> Vec<String> {
-    match window.start {
+    let mode = window
+        .permission_mode
+        .into_iter()
+        .flat_map(PermissionMode::args);
+    let session = match window.start {
         SessionStart::New => vec![
             CLAUDE_NAME_FLAG.to_owned(),
             window.session.clone(),
             window.prompt.clone(),
         ],
         SessionStart::Resume => vec![CLAUDE_RESUME_FLAG.to_owned(), window.session.clone()],
-    }
+    };
+    mode.chain(session).collect()
 }
 
 /// The kitty invocation that opens the Job's window: `--detach` so kitty

@@ -12,6 +12,7 @@
 use crate::{
     domain::{NextStep, RepoId, WorkItemId},
     files::{self, BoundedReadError},
+    handoff::PermissionMode,
     ordering::same_work_item,
     ports::JobStore,
 };
@@ -115,6 +116,11 @@ pub struct JobRecord {
     /// The Claude Code session name (`claude -n`).
     pub session: String,
     pub launched_at: Timestamp,
+    /// The permission mode the Job was launched in, passed again when it is
+    /// reopened (#39). Absent for coding Jobs and in older records, so the
+    /// stored shape of those is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<PermissionMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -176,6 +182,7 @@ impl From<GitHubOnlyRecord> for JobRecord {
             branch: old.branch,
             session: old.session,
             launched_at: old.launched_at,
+            permission_mode: None,
         }
     }
 }

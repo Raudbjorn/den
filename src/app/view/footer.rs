@@ -61,7 +61,7 @@ fn hint(key: &str, label: &str) -> KeyHint {
 
 /// The launch sheet's keys, for where it stands.
 fn launch_hints(sheet: &Sheet) -> Vec<KeyHint> {
-    if sheet.editing {
+    if sheet.editing || sheet.reviewers.as_ref().is_some_and(|r| r.editing) {
         return vec![
             hint("⏎", "done"),
             hint("←→", "move"),
@@ -73,6 +73,7 @@ fn launch_hints(sheet: &Sheet) -> Vec<KeyHint> {
     match sheet.state {
         SheetState::Ready { .. } => [hint("⏎", "launch"), hint("e", "edit")]
             .into_iter()
+            .chain(sheet.reviewers.as_ref().map(|_| hint("r", "reviewers")))
             .chain(switch)
             .chain([hint("esc", "cancel")])
             .collect(),

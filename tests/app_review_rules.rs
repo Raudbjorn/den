@@ -1,8 +1,7 @@
 //! Seam 2, the Linear Workflow's review rules (#36): the config's review
 //! settings reach the decision engine; a held PR reads "held for release" in
-//! the list and the detail; the detail shows the suggested reviewers; and
-//! Request review is a decision only, so `c` refuses it without inspecting
-//! anything.
+//! the list and the detail; and the detail shows the suggested reviewers.
+//! Launching Request review is `app_request_review.rs` (#39).
 
 // Test code: helpers outside #[test] fns may fail loudly too (clippy.toml covers only #[test]).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -10,12 +9,9 @@
 mod support;
 
 use den::{
-    app::{
-        Effect, Key,
-        view_model::{LaunchStatus, Overlay, ViewModel},
-    },
+    app::{Key, view_model::ViewModel},
     config::{self, Config},
-    domain::{NextStep, RepoId, TeamRef, facts::ReviewVerdict},
+    domain::{RepoId, TeamRef, facts::ReviewVerdict},
 };
 use support::{
     build::{ME, ObservationBuilder, pr},
@@ -127,33 +123,4 @@ fn the_detail_shows_the_suggested_reviewers_of_a_workflow_pr_only() {
     let detail = view.detail.content.expect("selected");
     assert_eq!(detail.next_step, "Merge");
     assert_eq!(detail.facts, None);
-}
-
-#[test]
-fn c_on_request_review_refuses_without_touching_the_workspace() {
-    let mut harness = started();
-    let view = select(&mut harness, "acme/api", "#2");
-    assert_eq!(
-        view.list.rows[view.list.selected.unwrap()].next_step,
-        Some(NextStep::RequestReview)
-    );
-    let effects = harness.key(Key::Char('c'));
-    assert!(
-        effects
-            .iter()
-            .all(|e| !matches!(e, Effect::InspectLaunch { .. } | Effect::Launch { .. })),
-        "{effects:#?}"
-    );
-    let Some(Overlay::LaunchSheet(sheet)) = &harness.view.overlay else {
-        panic!("a sheet: {:?}", harness.view.overlay);
-    };
-    assert_eq!(sheet.status, LaunchStatus::Refused);
-    assert!(
-        sheet
-            .messages
-            .iter()
-            .any(|m| m.text.contains("Request review")),
-        "{:?}",
-        sheet.messages
-    );
 }

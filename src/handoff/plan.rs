@@ -5,19 +5,19 @@
 use super::{
     Base, BaseRef, BranchStart, ChosenClone, CloneSource, InspectRequest, JobBranch, LaunchPlan,
     MainClone, NewCloneView, PathState, Refusal, RefusalReason, RegisteredWorktree, Remote,
-    Renamed, Target, TargetChoice, WindowMode, WorkspaceView, Writability,
+    Renamed, ReviewRequest, Target, TargetChoice, WindowMode, WorkspaceView, Writability,
     clone::{self, Candidate},
-    cloning, command,
+    cloning, command, coordination_mode,
     inspect::CloneSearch,
     kinds::{self, Facts},
     names,
     prompts::{PromptFields, Prompts, PromptsError},
-    worktree_path,
+    reviewers, worktree_path,
 };
 use crate::{
     config::Config,
     decide::Decision,
-    domain::{NextStep, Observation, WorkItemId},
+    domain::{NextStep, Observation, WorkItemId, facts::Reviewer},
 };
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -62,6 +62,12 @@ pub struct PlanInput<'a> {
     /// Start fresh beside a Live Job (#14): the suffix for the worktree name,
     /// the local branch and the session name. `None` for a plain launch.
     pub fresh: Option<u32>,
+    /// Request review (#39): the reviewers chosen on the sheet. `None` means
+    /// the Decision's suggested reviewers. Unused for other kinds.
+    pub reviewers: Option<&'a [Reviewer]>,
+    /// Request review (#39): the Owner's Slack channel from its Linear
+    /// Workflow, opaque, only ever put into the prompt. Unused for other kinds.
+    pub slack_channel: Option<&'a str>,
 }
 
 /// The facts for a launch, or every reason it can't happen. PRs here; Issues,
@@ -78,9 +84,6 @@ fn facts(
     let step = decision.next_step;
     if step.is_none() {
         reasons.push(RefusalReason::NoNextStep);
-    }
-    if step == Some(NextStep::RequestReview) {
-        reasons.push(RefusalReason::RequestReviewNotLaunchable);
     }
     let Some(pr) = observation
         .pull_requests
@@ -313,6 +316,15 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     clone.writable = writable;
     let worktree = worktree_path(&clone.path, &worktree_name);
     let decision = input.decision;
+    // Request review names its reviewers (the sheet's, else the suggested)
+    // and the Owner's Slack channel.
+    let review_request = (facts.step == NextStep::RequestReview).then(|| ReviewRequest {
+        reviewers: input.reviewers.map_or_else(
+            || decision.suggested_reviewers.clone().unwrap_or_default(),
+            <[Reviewer]>::to_vec,
+        ),
+        slack_channel: input.slack_channel.map(str::to_owned),
+    });
     let prompt = prompts.render(
         facts.step,
         &PromptFields {
@@ -327,6 +339,14 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             } else {
                 facts.branch.clone()
             },
+            reviewers: review_request
+                .iter()
+                .flat_map(|r| &r.reviewers)
+                .map(reviewers::spell)
+                .collect(),
+            slack_channel: review_request
+                .as_ref()
+                .and_then(|r| r.slack_channel.clone()),
         },
     );
     let prompt = with_push_line(prompt, &facts, &branch_name, &remote);
@@ -367,6 +387,8 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         renamed,
         session,
         prompt,
+        permission_mode: coordination_mode(facts.step),
+        review_request,
         window: view.window.clone(),
         command: String::new(),
     };

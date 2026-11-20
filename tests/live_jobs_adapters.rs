@@ -61,6 +61,7 @@ fn job(clone: &Path, number: u64, name: &str) -> JobRecord {
         branch: name.to_owned(),
         session: format!("app-pr{number}-address-review"),
         launched_at: Timestamp::UNIX_EPOCH,
+        permission_mode: None,
     }
 }
 

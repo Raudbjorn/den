@@ -26,7 +26,7 @@
 //! two policy switches have defaults, and those are the config's (on), not
 //! the policy type's (whose empty default changes nothing).
 
-use super::{Location, is_valid_login, location_of};
+use super::{Location, is_valid_login, is_valid_team_slug, location_of};
 use crate::domain::{RepoId, TeamRef};
 use serde::Deserialize;
 use std::{collections::BTreeMap, ops::Range};
@@ -40,8 +40,6 @@ const MAX_ENV_NAME_CHARS: usize = 128;
 const MAX_TEAM_KEY_CHARS: usize = 32;
 /// GitHub's longest Repo name, in characters.
 const MAX_REPO_NAME_CHARS: usize = 100;
-/// den's bound on a team slug, in characters.
-const MAX_TEAM_SLUG_CHARS: usize = 100;
 /// den's bound on a state name or Slack channel, in characters.
 const MAX_SETTING_CHARS: usize = 100;
 
@@ -320,11 +318,7 @@ fn reviewer(value: Spanned<String>) -> Result<Reviewer, Invalid> {
         None if is_valid_login(&value) => Ok(Reviewer::User(value.clone())),
         None => Err(invalid()),
         Some((org, slug)) => {
-            let slug_ok = (1..=MAX_TEAM_SLUG_CHARS).contains(&slug.chars().count())
-                && slug
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
-            if is_valid_login(org) && slug_ok {
+            if is_valid_login(org) && is_valid_team_slug(slug) {
                 Ok(Reviewer::Team(TeamRef {
                     org: org.to_owned(),
                     slug: slug.to_owned(),

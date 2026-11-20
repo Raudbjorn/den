@@ -11,6 +11,14 @@
 //! `{branch}`; `{{` and `}}` are literal braces. Prompts reference the Work Item
 //! by URL and identifiers; the defaults never use `{title}`, and nothing can
 //! insert Issue or PR body text, so text written by others can't steer a Job.
+//!
+//! `request_review` alone also has `{reviewers}` (the logins and `org/team`s
+//! chosen on the sheet, comma-separated) and `{announcement}` (#39). With a
+//! Slack channel in the Owner's Linear Workflow, `{announcement}` is the
+//! best-effort announcement step with the separate-outcomes and no-blind-resend
+//! rules; without one, it only asks for the request's outcome, so the prompt
+//! has no announcement step. den never touches Slack: the channel is an opaque
+//! string in the prompt.
 
 use crate::config::{Location, location_of};
 use crate::domain::NextStep;
@@ -27,6 +35,8 @@ pub const PROMPTS_FILE: &str = "prompts.toml";
 pub const MAX_TEMPLATE_CHARS: usize = 4_000;
 
 const PLACEHOLDERS: [&str; 5] = ["repo", "number", "url", "title", "branch"];
+/// Placeholders only the Request review template has (#39).
+const REQUEST_REVIEW_PLACEHOLDERS: [&str; 2] = ["reviewers", "announcement"];
 
 /// The file's key for a Next Step kind: "Address review" → `address_review`.
 pub fn step_key(step: NextStep) -> String {
@@ -59,12 +69,12 @@ pub fn default_template(step: NextStep) -> &'static str {
             "Branch {branch} in {repo} has no Pull Request and no commits for over 30 days. Work out whether to revive or prune it, and ask me before deleting anything."
         }
         // Milestone 2 (spec 0002, "Prompts"). Start launches an Implement
-        // Job (#38); Request review and Land are coordination Jobs whose
-        // full prompts arrive with #39 and #40; Mark for release is a
+        // Job (#38); Request review (#39) and Land (#40) are coordination
+        // Jobs; Land's full prompt arrives with #40; Mark for release is a
         // Linear write den makes itself, never a Job (#38).
         NextStep::Start => "/implement {url}",
         NextStep::RequestReview => {
-            "Pull Request {repo}#{number} ({url}) needs reviewers asked. Ask me which reviewers to request before requesting anyone."
+            "Pull Request {repo}#{number} ({url}) needs review. Request reviews on GitHub from exactly these reviewers: {reviewers}. Change nothing else on the Pull Request.{announcement}"
         }
         NextStep::Land => "Landing Group {url} is ready to land. Ask me before merging anything.",
         NextStep::MarkForRelease => {
@@ -73,14 +83,35 @@ pub fn default_template(step: NextStep) -> &'static str {
     }
 }
 
+/// What `{announcement}` is when the Owner's Linear Workflow names a Slack
+/// channel: the announcement step, then the separate-outcomes and
+/// no-blind-resend rules (spec 0002, stories 65 and 66).
+fn announcement_step(channel: &str) -> String {
+    format!(
+        " Then post one short announcement in the Slack channel {channel} naming the Pull Request by its URL and the reviewers you requested. \
+The announcement is best-effort: if it fails, the review request still stands. \
+Report the two as separate outcomes: the review request (done or failed, with the error), and the announcement (sent, failed, or unknown when you can't tell whether it went out). \
+If you aren't sure an announcement went out, don't send it again: report it as unknown."
+    )
+}
+
+/// What `{announcement}` is without a Slack channel: no announcement step,
+/// only the request's outcome.
+const NO_ANNOUNCEMENT: &str =
+    " Then report whether the review request was made, with the error if it failed.";
+
 /// The values a template's placeholders take for one Work Item.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PromptFields {
     pub repo: String,
     pub number: Option<u64>,
     pub url: String,
     pub title: String,
     pub branch: String,
+    /// Request review only: the chosen reviewers, as logins and `org/team`s.
+    pub reviewers: Vec<String>,
+    /// Request review only: the Owner's Slack channel, opaque.
+    pub slack_channel: Option<String>,
 }
 
 /// A template per Next Step kind.
@@ -174,7 +205,7 @@ pub fn parse(path: &Path, text: &str) -> Result<Prompts, PromptsError> {
                 format!("`{key}` is longer than {MAX_TEMPLATE_CHARS} characters"),
             ));
         }
-        if let Err(problem) = check(&template) {
+        if let Err(problem) = check(&template, step) {
             return Err(malformed(Some(span), format!("`{key}`: {problem}")));
         }
         prompts.templates.insert(step, template);
@@ -182,8 +213,12 @@ pub fn parse(path: &Path, text: &str) -> Result<Prompts, PromptsError> {
     Ok(prompts)
 }
 
-/// Checks every `{…}` in `template` is a known placeholder.
-fn check(template: &str) -> Result<(), String> {
+/// Checks every `{…}` in `step`'s `template` is a placeholder it has.
+fn check(template: &str, step: NextStep) -> Result<(), String> {
+    let known = |name: &str| {
+        PLACEHOLDERS.contains(&name)
+            || (step == NextStep::RequestReview && REQUEST_REVIEW_PLACEHOLDERS.contains(&name))
+    };
     let mut chars = template.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
@@ -195,10 +230,24 @@ fn check(template: &str) -> Result<(), String> {
             }
             '{' => {
                 let name: String = chars.by_ref().take_while(|&c| c != '}').collect();
-                if !PLACEHOLDERS.contains(&name.as_str()) {
+                if !known(&name) {
+                    let mut usable: Vec<&str> = PLACEHOLDERS.to_vec();
+                    if step == NextStep::RequestReview {
+                        usable.extend(REQUEST_REVIEW_PLACEHOLDERS);
+                    }
+                    let only_request_review = REQUEST_REVIEW_PLACEHOLDERS.contains(&name.as_str());
                     return Err(format!(
-                        "unknown placeholder {{{name}}}; use {}",
-                        PLACEHOLDERS.map(|p| format!("{{{p}}}")).join(", ")
+                        "{} placeholder {{{name}}}; use {}",
+                        if only_request_review {
+                            "the request_review-only"
+                        } else {
+                            "unknown"
+                        },
+                        usable
+                            .iter()
+                            .map(|p| format!("{{{p}}}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ));
                 }
             }
@@ -232,6 +281,11 @@ fn fill(template: &str, fields: &PromptFields) -> String {
                     "url" => out.push_str(&fields.url),
                     "title" => out.push_str(&fields.title),
                     "branch" => out.push_str(&fields.branch),
+                    "reviewers" => out.push_str(&fields.reviewers.join(", ")),
+                    "announcement" => match &fields.slack_channel {
+                        Some(channel) => out.push_str(&announcement_step(channel)),
+                        None => out.push_str(NO_ANNOUNCEMENT),
+                    },
                     _ => {}
                 }
             }

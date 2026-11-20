@@ -41,6 +41,14 @@
 //! One suffix rule for every name den suffixes ([`names::suffixed`],
 //! `<name>-<n>`): a worktree name another Work Item's Job has (#12), and a
 //! fresh start beside this Work Item's Live Job (#14).
+//!
+//! Coordination Jobs (#39): a Request review (and, with #40, a Land) Job acts
+//! on GitHub rather than on code. It still gets a worktree on the PR head, as
+//! a PR Job does, but runs in the approval-required permission mode
+//! ([`coordination_mode`], [`LaunchPlan::permission_mode`]), recorded with
+//! the Job so reopening it asks again. A Request review plan also carries the
+//! reviewers chosen on the sheet ([`PlanInput::reviewers`], [`reviewers`]) and
+//! the Owner's Slack channel, both only in its prompt.
 
 pub mod clone;
 pub mod cloning;
@@ -53,17 +61,18 @@ pub mod names;
 mod plan;
 pub mod prompts;
 mod refusal;
+pub mod reviewers;
 
 pub use clone::Remote;
 pub use cloning::NewCloneView;
-pub use command::{SessionStart, WindowCommand, WindowMode};
+pub use command::{PermissionMode, SessionStart, WindowCommand, WindowMode};
 pub use execute::{LaunchOutcome, LaunchReport, LaunchStep, execute};
 pub use inspect::{ChosenClone, CloneSearch, InspectRequest, WorkspaceView, inspect};
 pub use live::{JobCheck, JobsCheck, ReopenPlan, WorktreeState};
 pub use plan::{LaunchSettings, PlanInput, inspect_request, plan};
 pub use refusal::{Refusal, RefusalReason};
 
-use crate::domain::{NextStep, RepoId, WorkItemId};
+use crate::domain::{NextStep, RepoId, WorkItemId, facts::Reviewer};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -73,6 +82,27 @@ pub const WORKTREES_DIR: [&str; 2] = [".claude", "worktrees"];
 pub const MAX_PROMPT_CHARS: usize = 8_000;
 /// Characters of a commit shown on the sheet.
 pub const SHORT_COMMIT_CHARS: usize = 7;
+
+/// The permission mode a Job for `step` runs in: approval-required for a
+/// coordination Job (Request review, Land), none (milestone 1's command) for
+/// every coding Job.
+pub fn coordination_mode(step: NextStep) -> Option<PermissionMode> {
+    match step {
+        NextStep::RequestReview | NextStep::Land => Some(PermissionMode::ApprovalRequired),
+        NextStep::FinishDraft
+        | NextStep::ResolveConflicts
+        | NextStep::FixCi
+        | NextStep::AddressReview
+        | NextStep::Review
+        | NextStep::Merge
+        | NextStep::Triage
+        | NextStep::Implement
+        | NextStep::OpenPr
+        | NextStep::PruneOrRevive
+        | NextStep::Start
+        | NextStep::MarkForRelease => None,
+    }
+}
 
 /// The worktree path for a Job named `name` in `clone`.
 pub fn worktree_path(clone: &Path, name: &str) -> PathBuf {
@@ -278,9 +308,23 @@ pub struct LaunchPlan {
     pub renamed: Option<Renamed>,
     pub session: String,
     pub prompt: String,
+    /// The approval-required mode for a coordination Job; `None` for a coding
+    /// Job, whose command is milestone 1's ([`coordination_mode`]).
+    pub permission_mode: Option<PermissionMode>,
+    /// Request review only: whom the prompt asks, and where it announces.
+    pub review_request: Option<ReviewRequest>,
     pub window: WindowMode,
     /// The exact command, as shown on the sheet.
     pub command: String,
+}
+
+/// What a Request review Job's prompt names (#39), besides the PR's URL.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewRequest {
+    /// The reviewers to request on GitHub, as chosen on the sheet.
+    pub reviewers: Vec<Reviewer>,
+    /// The Owner's Slack channel, opaque; `None`: no announcement step.
+    pub slack_channel: Option<String>,
 }
 
 /// A worktree name (and, for a new branch, the branch name) that got a
@@ -331,6 +375,7 @@ impl LaunchPlan {
             session: self.session.clone(),
             prompt: self.prompt.clone(),
             start: SessionStart::New,
+            permission_mode: self.permission_mode,
         }
     }
 
