@@ -206,9 +206,16 @@ impl FileCache {
     }
 
     /// When the Observation already stored at `path` was made; `None` when there
-    /// is none, or it can't be read (an unreadable file is overwritten anyway).
+    /// is none, or it can't be read (an unreadable file is overwritten anyway),
+    /// or it is an older format, which no den of this format reads again: its
+    /// age must not keep a survey from replacing it (after a clock change, say).
+    /// A newer format's age still counts: that is a newer den's survey.
     fn stored_observed_at(&self, path: &Path) -> Option<Timestamp> {
         let bytes = self.read_bounded(path).ok()??;
+        let format = serde_json::from_slice::<FormatOnly>(&bytes).ok()?.format;
+        if format < CACHE_FORMAT {
+            return None;
+        }
         serde_json::from_slice::<StoredAge>(&bytes)
             .ok()
             .map(|stored| stored.cached.observation.observed_at)
