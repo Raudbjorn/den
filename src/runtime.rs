@@ -53,7 +53,8 @@ pub fn settle(app: &mut App, event: Event, ports: &Ports) -> (ViewModel, Vec<Eff
 pub struct Dispatched {
     /// `Effect::Quit` was among the Effects.
     pub quit: bool,
-    /// The Events of Effects performed at once, for the App next.
+    /// For the App next: the Events of Effects performed at once, and an
+    /// [`Event::EffectRejected`] for each Effect the worker could not accept.
     pub events: Vec<Event>,
 }
 
@@ -66,6 +67,8 @@ fn performs_at_once(effect: &Effect) -> bool {
 
 /// Sends the App's Effects where they run: Quit and Log on the UI thread, local
 /// setting writes at once ([`performs_at_once`]), everything else to `worker`.
+/// An Effect the worker rejects comes back as its rejection Event, so the App
+/// can undo what it started for it.
 pub fn dispatch(effects: Vec<Effect>, worker: &Worker, ports: &Ports) -> Dispatched {
     let mut out = Dispatched::default();
     for effect in effects {
