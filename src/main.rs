@@ -48,6 +48,7 @@ use den::{
 use jiff::Timestamp;
 use raudbjorn_tui::profile::{ProfileError, TerminalProfile};
 use std::{
+    collections::VecDeque,
     io::{self, Write as _},
     process::ExitCode,
     sync::Arc,
@@ -278,15 +279,18 @@ enum Flow {
 }
 
 /// Hands Effects to the worker (or the log); reports whether one asked to quit.
-fn dispatch(effects: Vec<Effect>, worker: &Worker) -> Flow {
+fn dispatch(effects: Vec<Effect>, worker: &Worker, app: &mut App, view: &mut ViewModel) -> Flow {
     let mut flow = Flow::Continue;
-    for effect in effects {
+    let mut pending: VecDeque<_> = effects.into();
+    while let Some(effect) = pending.pop_front() {
         match effect {
             Effect::Quit => flow = Flow::Quit,
             Effect::Log(record) => runtime::log(&record),
             other => {
-                if let Err(error) = worker.submit(other) {
-                    tracing::error!(%error, "could not queue an effect");
+                if let Err(rejected) = worker.submit(other) {
+                    let (next_view, effects) = app.handle(*rejected);
+                    *view = next_view;
+                    pending.extend(effects);
                 }
             }
         }
@@ -332,7 +336,7 @@ fn event_loop(
     let (mut view, effects) = app.handle(Event::Started {
         now: Timestamp::now(),
     });
-    if let Flow::Quit = dispatch(effects, worker) {
+    if let Flow::Quit = dispatch(effects, worker, app, &mut view) {
         return Ok(());
     }
     let mut dirty = true;
@@ -364,7 +368,7 @@ fn event_loop(
             let (next_view, effects) = app.handle(event);
             view = next_view;
             dirty = true;
-            if let Flow::Quit = dispatch(effects, worker) {
+            if let Flow::Quit = dispatch(effects, worker, app, &mut view) {
                 return Ok(());
             }
         }

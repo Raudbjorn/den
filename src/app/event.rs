@@ -40,6 +40,11 @@ pub enum Key {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
+    /// The worker could not accept an operation; no I/O for it was performed.
+    EffectRejected {
+        effect: Box<super::Effect>,
+        reason: String,
+    },
     /// den started; the first event the App sees.
     Started {
         now: Timestamp,

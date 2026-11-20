@@ -18,6 +18,7 @@ use crate::{
     config::Config,
     decide::Decision,
     domain::{Observation, WorkItemId},
+    ordering::same_work_item,
 };
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -703,6 +704,6 @@ fn recorded_job(
         .ok()?
         .iter()
         .rev()
-        .find(|job| &job.work_item == item && job.worktree == worktree)
+        .find(|job| same_work_item(&job.work_item, item) && job.worktree == worktree)
         .map(|job| (job.session.clone(), job.launched_at))
 }

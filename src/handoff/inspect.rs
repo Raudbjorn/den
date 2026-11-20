@@ -13,6 +13,7 @@ use super::{
 use crate::{
     domain::{Observation, RepoId, WorkItemId},
     jobs::JobRecord,
+    ordering::same_work_item,
     ports::{JobStore, Launcher, Workspace},
 };
 use std::{path::PathBuf, time::Duration};
@@ -64,7 +65,11 @@ impl InspectRequest {
     /// Main Clone search and no launch facts. `None` when den has no facts
     /// about the Job's target Repo or the worktree path has no folder name.
     pub fn for_job(job: &JobRecord, observation: &Observation) -> Option<Self> {
-        let target = observation.repo(&job.target)?;
+        let target = observation
+            .repos
+            .iter()
+            .chain(observation.repos.iter().filter_map(|repo| repo.upstream()))
+            .find(|repo| repo.id.same(&job.target))?;
         let worktree_name = job.worktree.file_name()?.to_string_lossy().into_owned();
         Some(Self {
             item: job.work_item.clone(),
@@ -197,7 +202,7 @@ pub fn inspect(
         Ok(records) => {
             let mine: Vec<JobRecord> = records
                 .iter()
-                .filter(|job| job.work_item == request.item)
+                .filter(|job| same_work_item(&job.work_item, &request.item))
                 .cloned()
                 .collect();
             live::check_jobs(&mine, workspace, Duration::from_secs(JOB_CHECK_BUDGET_SECS)).checks

@@ -81,16 +81,53 @@ impl Worker {
         }
     }
 
-    /// Queues an Effect for the worker without blocking the UI.
-    pub fn submit(&self, effect: Effect) -> Result<(), WorkerError> {
-        self.effects.try_send(effect).map_err(|e| match e {
-            TrySendError::Full(_) => WorkerError::Busy,
-            TrySendError::Disconnected(_) => WorkerError::Stopped,
+    /// Queues an Effect without blocking; feed any rejection event back to the App.
+    pub fn submit(&self, effect: Effect) -> Result<(), Box<Event>> {
+        self.effects.try_send(effect).map_err(|e| {
+            let (effect, error) = match e {
+                TrySendError::Full(effect) => (effect, WorkerError::Busy),
+                TrySendError::Disconnected(effect) => (effect, WorkerError::Stopped),
+            };
+            Box::new(Event::EffectRejected {
+                effect: Box::new(effect),
+                reason: error.to_string(),
+            })
         })
     }
 
     /// Events the worker has finished, without waiting.
     pub fn finished(&self) -> impl Iterator<Item = Event> + '_ {
         self.events.try_iter()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_full_or_stopped_worker_returns_the_rejected_effect_to_the_app() {
+        let (effects, queued) = mpsc::sync_channel(EFFECT_QUEUE_CAPACITY);
+        let (_events, events) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
+        let worker = Worker { effects, events };
+        for _ in 0..EFFECT_QUEUE_CAPACITY {
+            assert!(worker.submit(Effect::LoadCache).is_ok());
+        }
+        let effect = Effect::StoreUpstreams {
+            upstreams: Default::default(),
+        };
+        let rejected = worker.submit(effect.clone()).unwrap_err();
+        assert!(
+            matches!(*rejected, Event::EffectRejected { effect: returned, reason }
+            if *returned == effect && reason.contains("still busy"))
+        );
+        assert_eq!(queued.try_iter().count(), EFFECT_QUEUE_CAPACITY);
+        assert!(worker.submit(Effect::CheckJobs).is_ok());
+        drop(queued);
+        let rejected = worker.submit(effect.clone()).unwrap_err();
+        assert!(
+            matches!(*rejected, Event::EffectRejected { effect: returned, reason }
+            if *returned == effect && reason.contains("worker stopped"))
+        );
     }
 }
