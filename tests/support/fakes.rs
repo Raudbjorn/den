@@ -94,6 +94,8 @@ struct WorkspaceState {
     clones: BTreeMap<PathBuf, FakeClone>,
     /// Other paths that exist (worktrees added, folders in the way).
     existing: BTreeSet<PathBuf>,
+    /// Paths den can't inspect, and why.
+    uninspectable: BTreeMap<PathBuf, String>,
     /// Operation name ("fetch", "add_worktree", "ls-remote") → error.
     failures: BTreeMap<String, String>,
     calls: Vec<WorkspaceCall>,
@@ -163,6 +165,37 @@ impl FakeWorkspace {
         });
     }
 
+    /// Marks the registered worktree at `path` locked and/or prunable.
+    pub fn flag_worktree(&self, clone: &str, path: &str, locked: bool, prunable: bool) {
+        self.with_clone(clone, |c| {
+            let worktree = c
+                .worktrees
+                .iter_mut()
+                .find(|w| w.path == Path::new(path))
+                .expect("a registered worktree at that path");
+            worktree.locked = locked;
+            worktree.prunable = prunable;
+        });
+    }
+
+    /// den can't inspect `path` (`path_state` answers unknown).
+    pub fn make_uninspectable(&self, path: &str, why: &str) {
+        self.state
+            .lock()
+            .expect("lock")
+            .uninspectable
+            .insert(path.into(), why.to_owned());
+    }
+
+    /// Something at `path` is gone (a folder removed by hand).
+    pub fn remove_existing(&self, path: &str) {
+        self.state
+            .lock()
+            .expect("lock")
+            .existing
+            .remove(Path::new(path));
+    }
+
     pub fn make_unwritable(&self, clone: &str) {
         self.with_clone(clone, |c| c.not_writable = true);
     }
@@ -176,7 +209,8 @@ impl FakeWorkspace {
             .insert(path.into());
     }
 
-    /// The next `operation` ("fetch", "add_worktree", "ls-remote") fails.
+    /// The next `operation` ("fetch", "add_worktree", "ls-remote",
+    /// "worktree-list") fails.
     pub fn fail(&self, operation: &str, error: &str) {
         self.state
             .lock()
@@ -230,6 +264,9 @@ impl Workspace for FakeWorkspace {
 
     fn path_state(&self, path: &Path) -> PathState {
         let state = self.state.lock().expect("lock");
+        if let Some(why) = state.uninspectable.get(path) {
+            return PathState::Unknown(why.clone());
+        }
         match state.clones.get(path) {
             Some(clone) => PathState::Exists {
                 writable: if clone.not_writable {
@@ -266,10 +303,20 @@ impl Workspace for FakeWorkspace {
             .cloned())
     }
 
+    /// Like `git worktree list`: the clone's own checkout first.
     fn worktrees(&self, clone: &Path) -> Result<Vec<RegisteredWorktree>, WorkspaceError> {
         let state = self.state.lock().expect("lock");
+        Self::failure(&state, "worktree-list")?;
         let fake = state.clones.get(clone).ok_or_else(|| no_clone(clone))?;
-        Ok(fake.worktrees.clone())
+        let own = RegisteredWorktree {
+            path: clone.to_owned(),
+            branch: None,
+            locked: false,
+            prunable: false,
+        };
+        Ok(std::iter::once(own)
+            .chain(fake.worktrees.iter().cloned())
+            .collect())
     }
 
     fn fetch(&self, clone: &Path, remote: &str, refspec: &str) -> Result<(), WorkspaceError> {
