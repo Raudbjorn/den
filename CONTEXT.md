@@ -108,8 +108,8 @@ Each Work Item has at most one. An Issue with a linked open Pull Request has non
 - **Prune or revive**: a Stale Branch needs a decision.
 - **Start**: an unassigned Linear Issue in one of its Linear Workflow's start teams, not yet started and with no Pull Request, can be picked up. "Not yet started" is Linear's unstarted state type, or backlog when the workflow includes it; the workflow may also limit Start to the active cycle. Start is Waiting On nobody: anyone may pick it up.
 - **Request review**: a Pull Request in a Linear Workflow, with no review request pending, has no approval at its current head, or a reviewer whose feedback was given on an older head and needs a fresh look. Its author asks reviewers, or asks them again.
-- **Land**: every open Pull Request of a Landing Group, outside Held Repos, is ready to merge, so the group can land.
-- **Mark for release**: a Linear Issue's Pull Requests have all landed, so the issue can move to its release state.
+- **Land**: every open Pull Request of a Landing Group outside Held Repos would Merge, none is ambiguous, not surveyed or in a merge queue, and den read all of the Linear Issue's attachments and those Pull Requests' facts, so the group can land as a whole. Waiting On the Linear assignee. Each such member shows no Next Step of its own and "lands with TEAM-123" instead of Merge, so half a group is never merged by itself. A held member never blocks Land and is never landed; otherwise the Linear Issue has no Next Step and its Explanation names each blocking member.
+- **Mark for release**: a Linear Issue has no open Pull Request (held ones included), at least one of its Pull Requests is known to have merged (den reads a member's state by number when it isn't among the open Pull Requests; closed without merging is no evidence), and its state is neither the release state nor completed or canceled, so it can move to its release state. Waiting On the Linear assignee. It claims only that Pull Requests merged, never that the work shipped. A Linear Issue already in the release state has no Next Step: release is outside den.
 
 ### Doing it
 

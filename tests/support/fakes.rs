@@ -5,15 +5,16 @@
 
 use den::{
     cache::{CacheError, CachedObservation},
-    domain::{Observation, UpstreamTargets},
+    domain::{Observation, Source, SourceKind, SourceState, UpstreamTargets},
     github::graphql::{GraphQl, GraphQlRequest, GraphQlResponse, TransportError},
     handoff::{PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode, Writability},
     jobs::{JobRecord, JobStoreError},
     linear::{HttpReply, LinearRequest, LinearTransport, TransportError as LinearTransportError},
     ports::{
         Clock, GitHubSource, JobStore, LaunchError, Launcher, LinearSource, LinearSurvey,
-        LinearSurveyRequest, ObservationCache, Ports, SurveyFailure, SurveyRequest, UpstreamStore,
-        Workspace, WorkspaceError, WorktreeAdd, WorktreeStart,
+        LinearSurveyRequest, MemberStatesRead, MemberStatesRequest, ObservationCache, Ports,
+        SurveyFailure, SurveyRequest, UpstreamStore, Workspace, WorkspaceError, WorktreeAdd,
+        WorktreeStart,
     },
     upstreams::UpstreamStoreError,
 };
@@ -26,19 +27,30 @@ use std::{
 
 type SurveyOutcome = Result<Observation, SurveyFailure>;
 
-/// Answers surveys from a queue, and records every request.
+/// Answers surveys, and reads of Landing Group members' states (#37), from
+/// queues, and records every request.
 #[derive(Default)]
 pub struct FakeGitHub {
     answers: Mutex<VecDeque<SurveyOutcome>>,
     requests: Mutex<Vec<SurveyRequest>>,
+    member_answers: Mutex<VecDeque<MemberStatesRead>>,
+    member_requests: Mutex<Vec<MemberStatesRequest>>,
 }
 
 impl FakeGitHub {
     pub fn answering(answers: impl IntoIterator<Item = SurveyOutcome>) -> Self {
         Self {
             answers: Mutex::new(answers.into_iter().collect()),
-            requests: Mutex::default(),
+            ..Self::default()
         }
+    }
+
+    pub fn push_member_states(&self, answer: MemberStatesRead) {
+        self.member_answers.lock().expect("lock").push_back(answer);
+    }
+
+    pub fn member_requests(&self) -> Vec<MemberStatesRequest> {
+        self.member_requests.lock().expect("lock").clone()
     }
 
     pub fn push_answer(&self, answer: SurveyOutcome) {
@@ -62,6 +74,40 @@ impl GitHubSource for FakeGitHub {
                     detail: "the fake GitHub source has no more answers".to_owned(),
                 })
             })
+    }
+
+    /// The next queued answer; without one, every Owner asked about failed.
+    fn member_states(&self, request: &MemberStatesRequest) -> MemberStatesRead {
+        self.member_requests
+            .lock()
+            .expect("lock")
+            .push(request.clone());
+        let mut read = self
+            .member_answers
+            .lock()
+            .expect("lock")
+            .pop_front()
+            .unwrap_or_else(|| {
+                let mut read = MemberStatesRead::default();
+                for pr in &request.pull_requests {
+                    read.coverage.record(
+                        Source::Owner {
+                            owner: pr.repo.owner.clone(),
+                            kind: SourceKind::MemberStates,
+                        },
+                        SourceState::Failed {
+                            error: "the fake GitHub source has no member states to give".to_owned(),
+                        },
+                    );
+                }
+                read
+            });
+        // Like the real source unbounded: every member asked was sent,
+        // unless the scripted answer says which were.
+        if read.asked.is_empty() {
+            read.asked.clone_from(&request.pull_requests);
+        }
+        read
     }
 }
 

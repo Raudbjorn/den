@@ -88,6 +88,7 @@ pub fn lane_of(effect: &Effect) -> Option<LaneKind> {
         }
         Effect::SurveyLinear { .. } => Some(LaneKind::Linear),
         Effect::Survey { .. }
+        | Effect::ReadMemberStates { .. }
         | Effect::InspectLaunch { .. }
         | Effect::Launch { .. }
         | Effect::CheckJobs

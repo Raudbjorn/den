@@ -60,10 +60,10 @@ fn decision(
         explanation: Explanation::default(),
         coverage: Vec::new(),
         observed_at: ts(support::build::NOW),
-        landing: Landing::default(),
-        start_order: None,
         held_back: None,
         suggested_reviewers: None,
+        landing: Landing::default(),
+        start_order: None,
         suggested_reviewers_unread: None,
     }
 }

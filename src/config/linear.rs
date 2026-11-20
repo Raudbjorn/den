@@ -86,8 +86,11 @@ pub struct LinearWorkflow {
 pub use crate::domain::facts::Reviewer;
 
 impl LinearWorkflow {
-    /// The decision engine's policy for this workflow's Owner. Fields arrive
-    /// with the tickets that use them (Start: #33, review rules and Held Repos: #36).
+    /// The decision engine's policy for this workflow's Owner: which
+    /// unassigned Linear Issues it offers to Start (#33), its review rules
+    /// (the two switches as configured, and the configured reviewers), its
+    /// Held Repos (#36) and its release state (#37). The landing order
+    /// arrives with #40.
     pub fn policy(&self) -> LinearWorkflowPolicy {
         LinearWorkflowPolicy {
             start: StartPolicy {
@@ -101,13 +104,17 @@ impl LinearWorkflow {
                 reviewers: self.reviewers.clone(),
             }),
             held_repos: self.held_repos.clone(),
+            release_state: self.release_state.clone(),
         }
     }
 
     /// The Linear sources this workflow reads, in survey order: always the
     /// viewer and its assigned issues; the team states when the workflow names
     /// a start team or a state to check against Linear; the start teams'
-    /// issues when it names a start team.
+    /// issues when it names a start team. Every Linear source den records
+    /// for the workflow comes from here, so one it no longer reads is dropped
+    /// from the cache (`CachedObservation::restricted_to_linear`,
+    /// `cache::merge_linear`).
     pub fn linear_sources(&self) -> Vec<LinearSourceKind> {
         let mut sources = vec![LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues];
         if !self.start_teams.is_empty() || self.state_names().next().is_some() {

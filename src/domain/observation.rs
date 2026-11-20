@@ -2,8 +2,8 @@
 
 use super::{
     coverage::Coverage,
-    facts::{Branch, Issue, PullRequest, Run},
-    ids::{RepoId, same_login},
+    facts::{Branch, Issue, MemberPullRequestState, MemberStateAttempt, PullRequest, Run},
+    ids::{RepoId, WorkItemId, same_login},
     linear::{LinearPart, LinearViewer},
 };
 use jiff::Timestamp;
@@ -103,6 +103,15 @@ pub struct Observation {
     /// What den read from Linear, for Owners with a Linear Workflow. Empty when
     /// no Owner has one; its sources are in `coverage` like GitHub's.
     pub linear: LinearPart,
+    /// What GitHub said, after the survey, of the Landing Group members den
+    /// didn't find among the open Pull Requests (#37): merged, closed or open
+    /// again. Read by number, with their own coverage
+    /// (`SourceKind::MemberStates`, per Owner).
+    pub member_states: Vec<MemberPullRequestState>,
+    /// The members den asked about and got no state for, with when it last
+    /// asked (#37): they order the next bounded read, oldest first, after
+    /// the members never asked about.
+    pub member_attempts: Vec<MemberStateAttempt>,
     pub coverage: Coverage,
 }
 
@@ -126,11 +135,24 @@ impl Observation {
             branches: Vec::new(),
             runs: Vec::new(),
             linear: LinearPart::default(),
+            member_states: Vec::new(),
+            member_attempts: Vec::new(),
             coverage: Coverage::default(),
         }
     }
 
     pub fn repo(&self, id: &RepoId) -> Option<&Repo> {
         self.repos.iter().find(|r| &r.id == id)
+    }
+
+    /// When the survey that read `id`'s facts was made: a Linear Issue's is
+    /// the Linear survey's (Linear is surveyed apart from GitHub), any other
+    /// Work Item's the GitHub survey's. Data kept from an earlier survey is
+    /// older still; the cache records that age.
+    pub fn observed_at_of(&self, id: &WorkItemId) -> Timestamp {
+        match (id, self.linear.observed_at) {
+            (WorkItemId::LinearIssue { .. }, Some(linear)) => linear,
+            _ => self.observed_at,
+        }
     }
 }

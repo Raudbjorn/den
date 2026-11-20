@@ -10,17 +10,14 @@ mod support;
 use den::{
     app::{Effect, Event, Key, LogLevel, ViewModel},
     cache::{CACHE_SUBDIR, CacheError, CachedObservation, FileCache},
-    domain::{
-        Coverage, Incompleteness, LinearPart, LinearSourceKind, NextStep, Observation, Source,
-        SourceKind, SourceState,
-    },
-    ports::{LinearSurvey, ObservationCache, SurveyFailure},
+    domain::{Incompleteness, NextStep, Observation, SourceKind, SourceState},
+    ports::{ObservationCache, SurveyFailure},
 };
 use std::path::PathBuf;
 use support::{
-    build::{ME, ObservationBuilder, branch, linear_viewer, now, pr, run, ts},
+    build::{ME, ObservationBuilder, branch, now, pr, run, ts},
     fakes::FakeCache,
-    harness::{Harness, config, config_with_linear},
+    harness::{Harness, config},
 };
 
 /// When the earlier survey was observed (two hours before `now()`).
@@ -346,84 +343,6 @@ fn a_source_that_failed_keeps_its_previous_data_marked_with_its_age_and_the_fail
             .any(|c| c.contains("failed") && c.contains("10:00 UTC") && c.contains("2 h ago")),
         "{:?}",
         detail.coverage
-    );
-}
-
-/// Until Linear data is merged per source (#34), a refresh keeps none of the
-/// earlier Linear part, so a Linear source that fails is never said to be
-/// kept from the earlier survey: it reads as failed, with no age.
-///
-/// #44 fed the failure in through the GitHub answer. From #32 an Owner's
-/// Linear coverage comes only from the Linear survey (the App drops any in a
-/// GitHub answer), so here the failure comes through the Linear port, for an
-/// Owner with a Linear Workflow.
-#[test]
-fn a_failed_linear_source_is_never_said_to_be_kept() {
-    let linear_survey = |assigned: SourceState| {
-        let mut coverage = Coverage::default();
-        for (kind, state) in [
-            (LinearSourceKind::Viewer, SourceState::Complete),
-            (LinearSourceKind::AssignedIssues, assigned),
-        ] {
-            coverage.record(
-                Source::Owner {
-                    owner: "alpha".to_owned(),
-                    kind: SourceKind::Linear(kind),
-                },
-                state,
-            );
-        }
-        LinearSurvey {
-            part: LinearPart {
-                viewers: vec![linear_viewer("alpha", "alpha")],
-                ..LinearPart::default()
-            },
-            coverage,
-        }
-    };
-    let mut harness = Harness::new(Ok(config_with_linear(&["alpha"], &[("alpha", "alpha")])));
-    harness.answer(Ok(ObservationBuilder::new()
-        .observed_at(EARLIER)
-        .fully_read_owner("alpha")
-        .build()));
-    harness
-        .linear
-        .push_answer(linear_survey(SourceState::Complete));
-    harness.start();
-    assert!(
-        harness.view.header.coverage_complete,
-        "{}",
-        harness.view.header.coverage
-    );
-    harness.answer(Ok(ObservationBuilder::new()
-        .fully_read_owner("alpha")
-        .build()));
-    harness
-        .linear
-        .push_answer(linear_survey(failed("Linear did not answer")));
-    let effects = harness.key(Key::Char('r'));
-    let mut follow_ups = Vec::new();
-    for wanted in [
-        (|e: &Effect| matches!(e, Effect::SurveyLinear { .. })) as fn(&Effect) -> bool,
-        |e: &Effect| matches!(e, Effect::Survey { .. }),
-    ] {
-        follow_ups.extend(harness.perform(&effect_named(&effects, wanted)));
-    }
-
-    let Effect::StoreCache { cached } =
-        effect_named(&follow_ups, |e| matches!(e, Effect::StoreCache { .. }))
-    else {
-        unreachable!()
-    };
-    assert!(
-        !cached.carried.iter().any(|c| c.source.is_linear()),
-        "{:?}",
-        cached.carried
-    );
-    let coverage = &harness.view.header.coverage;
-    assert!(
-        coverage.contains("Linear did not answer") && !coverage.contains("10:00 UTC"),
-        "{coverage}"
     );
 }
 

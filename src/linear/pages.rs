@@ -38,10 +38,10 @@ pub(super) struct List<'q, V, C> {
     pub connection: C,
 }
 
-/// Reads the pages of `list` from its first, handing each node to `each`,
-/// until the last page, a lost page, or `pager` having read `max_pages` in
-/// all. Each page's state goes into `pager`; `each` also gets whether that
-/// page was complete, so issue attachments retain page-level errors.
+/// Reads the pages of `list` from its first, handing each node to `each`
+/// with whether its page came without errors (#35: errors next to data leave
+/// that page's attachments incomplete), until the last page, a lost page, or
+/// `pager` having read `max_pages` in all. Each page's state goes into `pager`.
 pub(super) fn read_list<T, V, C>(
     session: &Session<'_>,
     pager: &mut Pager,
@@ -57,7 +57,7 @@ where
     pager.cursor = None;
     loop {
         let variables = (list.variables)(pager.cursor.as_deref());
-        let (page, page_complete) = match session.run::<T>(list.operation, list.query, variables) {
+        let page = match session.run::<T>(list.operation, list.query, variables) {
             Answer::Lost(state) => {
                 pager.page_lost(state);
                 return End::Stopped;
@@ -68,6 +68,7 @@ where
                 ((list.connection)(data), complete)
             }
         };
+        let (page, page_complete) = page;
         for node in page.nodes {
             each(node, page_complete);
         }

@@ -18,8 +18,8 @@ use den::{
         decide,
     },
     domain::{
-        Incompleteness, NextStep, Observation, Policies, RepoId, SourceKind, SourceState, Viewers,
-        WaitingOn, WorkItemId, facts::PullRequestRef,
+        Incompleteness, LinearWorkflowPolicy, NextStep, Observation, Policies, RepoId, SourceKind,
+        SourceState, StartPolicy, Viewers, WaitingOn, WorkItemId, facts::PullRequestRef,
     },
     ordering::{Scope, in_scope, same_work_item},
 };
@@ -502,11 +502,15 @@ fn scope_narrowing_changes_no_decision() {
 }
 
 /// Spec 0002, rule 4: when den couldn't read all of a Linear Issue's
-/// attachments, it can't say there is no Pull Request: no Implement (and no
-/// Start, which #33 adds under the same gate), with the unknown said. The
-/// issue stays visible.
+/// attachments, it can't say there is no Pull Request: no Implement and no
+/// Start, with the unknown said. The issue stays visible.
+///
+/// Integration (#33 + #35): on #35 alone TEAM-2 was simply unassigned. With
+/// #33 an unassigned issue the workflow doesn't offer gets no Decision at
+/// all, so TEAM-2 is now an issue acme's start team offers (unstarted, team
+/// `TEAM`), which is the case the gate has to withhold.
 #[test]
-fn partial_attachment_coverage_withholds_implement() {
+fn partial_attachment_coverage_withholds_start_and_implement() {
     let observation = two_owners()
         .linear_issue(
             linear_issue("acme", "id-1", "TEAM-1")
@@ -514,11 +518,21 @@ fn partial_attachment_coverage_withholds_implement() {
         )
         .linear_issue(
             linear_issue("acme", "id-2", "TEAM-2")
-                .unassigned()
+                .up_for_grabs()
                 .attachments_incomplete("Linear returned errors alongside the page"),
         )
         .build();
-    let decisions = decide_all(&observation);
+    let policies = Policies::default().with(
+        "acme",
+        LinearWorkflowPolicy {
+            start: StartPolicy {
+                teams: vec!["TEAM".to_owned()],
+                ..StartPolicy::default()
+            },
+            ..LinearWorkflowPolicy::default()
+        },
+    );
+    let decisions = decide(&observation, &Viewers::of(&observation), &policies, now());
     for identifier in ["TEAM-1", "TEAM-2"] {
         let decision = linear(&decisions, identifier);
         assert_eq!(decision.next_step, None, "{decision:?}");

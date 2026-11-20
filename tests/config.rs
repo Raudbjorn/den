@@ -251,8 +251,10 @@ fn owners_without_a_linear_workflow_get_the_empty_policy() {
     assert_eq!(github_only.policies(), den::domain::Policies::default());
 }
 
-/// #33 and #36 share one mapping: Start settings, review rules and Held Repos
-/// must all reach the decision engine together, as configured.
+/// #36: a Linear Workflow's review settings and Held Repos reach the decision
+/// engine as the Owner's policy, the switches as configured; so do its start
+/// teams and their two switches (#33), and its release state (#37).
+/// `Config::policies` maps every field.
 #[test]
 fn a_linear_workflows_review_settings_become_its_owners_policy() {
     use den::domain::{
@@ -279,6 +281,7 @@ fn a_linear_workflows_review_settings_become_its_owners_policy() {
                 ],
             }),
             held_repos: vec![RepoId::new("acme", "app")],
+            release_state: Some("Ready for Release".to_owned()),
         }
     );
     // The config's defaults: both switches on.
@@ -293,10 +296,13 @@ fn a_linear_workflows_review_settings_become_its_owners_policy() {
         .expect("review rules");
     assert!(review.exact_head_approval && review.comment_reviews_need_rereview);
     assert!(review.reviewers.is_empty());
-    // The empty policy keeps every switch off and holds nothing.
+    // The empty policy keeps every switch off, offers no Start and holds
+    // nothing.
     let empty = LinearWorkflowPolicy::default();
+    assert_eq!(empty.start, StartPolicy::NONE);
     assert_eq!(empty.review, None);
     assert!(empty.held_repos.is_empty());
+    assert_eq!(empty.release_state, None);
 }
 
 #[test]

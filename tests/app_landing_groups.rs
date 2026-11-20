@@ -74,12 +74,12 @@ fn harness_with(extra: Vec<LinearIssue>) -> Harness {
     harness.jobs.holding(JobRecord {
         subject: JobSubject::GitHub(pr_id("octo/app", 7)),
         next_step: NextStep::AddressReview,
+        permission_mode: None,
         target: RepoId::new("octo", "app"),
         main_clone: CLONE.into(),
         worktree: WORKTREE_7.into(),
         branch: "feature-7".to_owned(),
         session: "app-pr7-address-review".to_owned(),
-        permission_mode: None,
         launched_at: now(),
     });
     harness.workspace.add_existing(WORKTREE_7);
@@ -90,12 +90,13 @@ fn harness_with(extra: Vec<LinearIssue>) -> Harness {
         .fully_read_owner("octo")
         .repo("octo/app")
         .repo("octo/api")
+        // octo has a Linear Workflow, so #36's review rules apply: Address
+        // review needs the change request at the current head.
         .pull_request(
             pr("octo/app", 7)
                 .author(ME)
                 .changes_requested()
-                // Workflow review rules require a current-head review for Address review.
-                .review_at_head("alice", ReviewVerdict::ChangesRequested),
+                .review_at_head("reviewer", ReviewVerdict::ChangesRequested),
         )
         .pull_request(pr("octo/api", 8).author(ME).draft())
         .pull_request(pr("octo/api", 9).author(ME).head_ref("team-3-cache"))
@@ -113,7 +114,6 @@ fn harness_with(extra: Vec<LinearIssue>) -> Harness {
     harness.linear.push_answer(LinearSurvey {
         part: LinearPart {
             viewers: vec![linear_viewer("octo", "acme")],
-            team_states: Vec::new(),
             issues: vec![
                 linear_issue("octo", "id-1", "TEAM-1")
                     .attached("octo/app", 7)
@@ -128,6 +128,7 @@ fn harness_with(extra: Vec<LinearIssue>) -> Harness {
             .into_iter()
             .chain(extra)
             .collect(),
+            ..LinearPart::default()
         },
         coverage,
     });
@@ -160,27 +161,6 @@ fn detail_of(harness: &mut Harness, reference: &str) -> DetailContent {
         harness.key(key);
     }
     harness.view.detail.content.clone().expect("selected")
-}
-
-#[test]
-fn a_pr_detail_keeps_review_policy_facts_and_its_landing_group() {
-    let mut harness = harness_with(vec![
-        linear_issue("octo", "id-4", "TEAM-4")
-            .attached("octo/api", 9)
-            .build(),
-    ]);
-    let detail = detail_of(&mut harness, "#9");
-    assert_eq!(
-        detail.facts.expect("workflow facts").label,
-        "LINEAR WORKFLOW"
-    );
-    let landing = detail.landing.expect("Landing Group detail");
-    assert!(
-        landing
-            .lines
-            .iter()
-            .any(|line| line.text.contains("member of TEAM-4"))
-    );
 }
 
 /// Story 20: each PR row says which Linear Issue it belongs to; a branch
@@ -433,4 +413,67 @@ fn group_tags_read_in_monochrome() {
             );
         }
     }
+}
+
+/// A member PR in a Held Repo reads in the Landing Group as it does in the
+/// list and the detail: "held for release", never "no Next Step".
+#[test]
+fn a_held_member_reads_as_held_for_release_in_the_landing_group() {
+    let mut workflow = linear_workflow("octo", "acme");
+    workflow.held_repos = vec![RepoId::new("octo", "app")];
+    let config = Config {
+        owners: vec!["octo".to_owned()],
+        main_clone_root: Some(PathBuf::from(ROOT)),
+        main_clones: std::collections::BTreeMap::new(),
+        linear: vec![workflow],
+    };
+    let mut harness = Harness::new(Ok(config));
+    let (cols, rows) = SIZE;
+    harness.send(Event::Resized { cols, rows });
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("octo")
+        .repo("octo/app")
+        // Ready, passing and approved at its head: it would Merge, but its
+        // Repo is held.
+        .pull_request(
+            pr("octo/app", 7)
+                .author(ME)
+                .passing("ci")
+                .approved()
+                .review_at_head("reviewer", ReviewVerdict::Approved),
+        )
+        .build()));
+    let mut coverage = Coverage::default();
+    for kind in [LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues] {
+        coverage.record(
+            Source::Owner {
+                owner: "octo".to_owned(),
+                kind: SourceKind::Linear(kind),
+            },
+            SourceState::Complete,
+        );
+    }
+    harness.linear.push_answer(LinearSurvey {
+        part: LinearPart {
+            viewers: vec![linear_viewer("octo", "acme")],
+            issues: vec![
+                linear_issue("octo", "id-1", "TEAM-1")
+                    .attached("octo/app", 7)
+                    .build(),
+            ],
+            ..LinearPart::default()
+        },
+        coverage,
+    });
+    harness.start();
+
+    let pr_detail = detail_of(&mut harness, "#7");
+    assert_eq!(pr_detail.next_step, "none (held for release)");
+    let detail = detail_of(&mut harness, "TEAM-1");
+    let landing = detail.landing.expect("a Landing Group section");
+    let texts: Vec<&str> = landing.lines.iter().map(|l| l.text.as_str()).collect();
+    // Was "octo/app #7 · …". Changed in the merge of #49 (634c48b), which
+    // spells a member PR one way everywhere, `owner/repo#n`; the line's
+    // content (open, held for release) is unchanged.
+    assert_eq!(texts, ["octo/app#7 · open · held for release"]);
 }

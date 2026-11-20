@@ -26,8 +26,9 @@ use super::{
 use crate::{
     config::LinearWorkflow,
     domain::{
-        Incompleteness, LinearTeamStates, SourceState,
+        Incompleteness, LinearSourceKind, LinearTeamStates, SourceState,
         facts::{LinearIssue, LinearPriority, LinearState, LinearStateKind, LinearTeam},
+        ids::same_login,
     },
 };
 use serde::Deserialize;
@@ -35,6 +36,8 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 
 const TEAM_STATES_QUERY: &str = include_str!("queries/team_states.graphql");
+/// Spreads #35's `LinearIssueFields`, so a Start offer carries its
+/// attachments like any other Linear Issue.
 const START_TEAM_ISSUES_QUERY: &str = with_issue_fields!("queries/start_team_issues.graphql");
 
 /// Workflow states read per team. A team with more is read partially, and
@@ -189,25 +192,19 @@ fn read_teams(session: &Session<'_>, workflow: &LinearWorkflow, filter: &Value) 
         },
         connection: |data: TeamsData| data.teams,
     };
-    let end = pages::read_list(
-        session,
-        &mut pager,
-        MAX_LINEAR_PAGES,
-        &list,
-        |node, _page_complete| {
-            let raw: RawTeamStates = match serde_json::from_value(node) {
-                Ok(raw) => raw,
-                Err(e) => return unreadable.push(e.to_string()),
-            };
-            if !seen.insert(raw.id.clone()) {
-                return;
-            }
-            if raw.states.page_info.has_next_page {
-                truncated.insert(raw.id.clone());
-            }
-            teams.push(raw.into_team_states(workflow));
-        },
-    );
+    let end = pages::read_list(session, &mut pager, MAX_LINEAR_PAGES, &list, |node, _| {
+        let raw: RawTeamStates = match serde_json::from_value(node) {
+            Ok(raw) => raw,
+            Err(e) => return unreadable.push(e.to_string()),
+        };
+        if !seen.insert(raw.id.clone()) {
+            return;
+        }
+        if raw.states.page_info.has_next_page {
+            truncated.insert(raw.id.clone());
+        }
+        teams.push(raw.into_team_states(workflow));
+    });
     if end == End::Cut {
         let bound = pages::page_bound(&pager, None);
         pager.note(bound);
@@ -279,7 +276,8 @@ fn has_state(states: &[LinearState], name: &str) -> bool {
 }
 
 /// The start teams' unassigned, not-yet-started Linear Issues (see the
-/// module docs), without those already in `known`.
+/// module docs), without those this workflow's Owner already holds in
+/// `known` (another Owner reading the same workspace lists its own).
 ///
 /// One page, oldest first, holds them all in most workspaces. When Linear
 /// has more, den reads them again by priority, urgent first and oldest first
@@ -298,7 +296,7 @@ pub(super) fn start_team_issues(
     let filter = start_filter(workflow);
     let known: HashSet<&str> = known
         .iter()
-        .filter(|i| i.id.workspace == workflow.workspace)
+        .filter(|i| i.id.workspace == workflow.workspace && same_login(&i.owner, &workflow.owner))
         .map(|i| i.id.id.as_str())
         .collect();
     let mut pager = Pager::default();
@@ -309,9 +307,7 @@ pub(super) fn start_team_issues(
         &mut pager,
         1,
         &issues_list(&filter),
-        |node, page_complete| {
-            all.take(node, workflow, &known, page_complete);
-        },
+        |node, page_complete| all.take(node, page_complete, workflow, &known),
     );
     if end != End::Cut {
         return all.finish(pager);
@@ -340,9 +336,7 @@ pub(super) fn start_team_issues(
                 &mut pager,
                 MAX_LINEAR_PAGES,
                 &list,
-                |node, page_complete| {
-                    by_priority.take(node, workflow, &known, page_complete);
-                },
+                |node, page_complete| by_priority.take(node, page_complete, workflow, &known),
             ) {
                 End::Done => continue,
                 // The pager says why; the later priorities are left unread.
@@ -420,17 +414,22 @@ struct Collected {
 }
 
 impl Collected {
+    /// Takes one node of a page read without errors when `page_complete`.
     fn take(
         &mut self,
         node: Value,
+        page_complete: bool,
         workflow: &LinearWorkflow,
         known: &HashSet<&str>,
-        page_complete: bool,
     ) {
         match serde_json::from_value::<RawIssue>(node) {
             Ok(raw) if known.contains(raw.id.as_str()) => {}
             Ok(raw) if self.seen.insert(raw.id.clone()) => {
-                self.issues.push(raw.into_issue(workflow, page_complete));
+                self.issues.push(raw.into_issue(
+                    workflow,
+                    LinearSourceKind::StartTeamIssues,
+                    page_complete,
+                ));
             }
             Ok(_) => {}
             Err(e) => self.unreadable.push(e.to_string()),

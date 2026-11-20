@@ -7,8 +7,9 @@
 //! against the configured workspace), then the viewer's active assigned
 //! Linear Issues, paged up to [`MAX_LINEAR_PAGES`], then, when the workflow
 //! names start teams or states, the team states and the start teams'
-//! unassigned issues ([`start`], #33). Both issue queries read attachments
-//! up to [`ATTACHMENTS_PER_ISSUE`], with completeness per issue. Each source is recorded as
+//! unassigned issues ([`start`], #33). Every issue query reads each issue's
+//! attachments in the same request (#35; up to [`ATTACHMENTS_PER_ISSUE`],
+//! reduced to Pull Request identities or kept as links). Each source is recorded as
 //! `Source::Owner { owner, kind: SourceKind::Linear(..) }`. Owners without a
 //! Linear Workflow are never in the request, so they make no Linear request
 //! and need no key.
@@ -58,9 +59,11 @@ macro_rules! with_issue_fields {
         )
     };
 }
-mod start;
-
 const ASSIGNED_ISSUES_QUERY: &str = with_issue_fields!("queries/assigned_issues.graphql");
+
+// Declared after `with_issue_fields!`, which it uses (a `macro_rules!` is in
+// scope only below its definition).
+mod start;
 
 /// Attachments read per Linear Issue, in the query that lists it. An issue
 /// with more has its attachments marked incomplete, which withholds Start
@@ -111,6 +114,11 @@ impl LinearApi {
 impl LinearSource for LinearApi {
     fn survey(&self, request: &LinearSurveyRequest) -> LinearSurvey {
         let mut survey = LinearSurvey::default();
+        if request.workflows.is_empty() {
+            return survey;
+        }
+        // Like a GitHub survey, its data is dated from when it started.
+        survey.part.observed_at = Some(self.clock.now());
         for workflow in &request.workflows {
             self.survey_workflow(workflow, &mut survey);
         }
@@ -318,9 +326,11 @@ fn assigned_issues(
         MAX_LINEAR_PAGES,
         &list,
         |node, page_complete| match serde_json::from_value::<RawIssue>(node) {
-            Ok(raw) if seen.insert(raw.id.clone()) => {
-                issues.push(raw.into_issue(workflow, page_complete))
-            }
+            Ok(raw) if seen.insert(raw.id.clone()) => issues.push(raw.into_issue(
+                workflow,
+                LinearSourceKind::AssignedIssues,
+                page_complete,
+            )),
             Ok(_) => {}
             Err(e) => unreadable.push(e.to_string()),
         },
@@ -401,12 +411,19 @@ impl RawState {
 }
 
 impl RawIssue {
-    /// `page_complete`: the page that listed it came without errors; when it
-    /// didn't, den can't tell whether an error took some of its attachments.
-    fn into_issue(self, workflow: &LinearWorkflow, page_complete: bool) -> LinearIssue {
+    /// The issue, as listed by `listed_by` (#34). `page_complete`: the page
+    /// that listed it came without errors; when it didn't, den can't tell
+    /// whether an error took some of its attachments (#35).
+    fn into_issue(
+        self,
+        workflow: &LinearWorkflow,
+        listed_by: LinearSourceKind,
+        page_complete: bool,
+    ) -> LinearIssue {
         LinearIssue {
             owner: workflow.owner.clone(),
             id: LinearIssueId::new(workflow.workspace.clone(), self.id),
+            listed_by,
             identifier: self.identifier,
             title: self.title,
             url: self.url,

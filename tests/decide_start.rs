@@ -77,18 +77,27 @@ fn an_unassigned_unstarted_issue_in_a_start_team_is_start_waiting_on_nobody() {
         rule.contains("unassigned") && rule.contains("start team TEAM") && rule.contains("Todo"),
         "{rule}"
     );
-    // #35 reads the complete empty attachment list; the old #33 placeholder is gone.
+    // Integration (#33 + #35): attachments are read now, so with every one
+    // read and none a Pull Request there is nothing unknown about a PR, and
+    // the rule says none is attached. (On #33 alone this asserted #32's
+    // "attachments unread" placeholder unknown, a gap marker #35 closed.)
+    assert!(rule.contains("no Pull Request is attached"), "{rule}");
     assert!(start.explanation.unknowns.is_empty(), "{start:?}");
     assert!(start.start_order.is_some());
 }
 
+/// Spec 0002, rule 3 (integration of #33 with #35): Start, like Implement,
+/// needs complete attachment coverage and no members. An offered issue with a
+/// Pull Request attached, or whose attachments den couldn't all read, has no
+/// Next Step; a branch-name hint withholds nothing.
 #[test]
-fn attachments_gate_start_but_a_branch_hint_does_not() {
+fn a_start_offer_with_a_pr_attached_or_unread_attachments_is_not_start() {
     let observation = ObservationBuilder::new()
         .fully_read_owner("acme")
         .repo("acme/api")
         .linear_viewer("acme", "acme")
-        .pull_request(pr("acme/api", 4).head_ref("me/team-5-fix"))
+        .pull_request(pr("acme/api", 4).author(ME))
+        .pull_request(pr("acme/api", 5).author(ME).head_ref("me/team-3-cache"))
         .linear_issue(
             linear_issue("acme", "id-1", "TEAM-1")
                 .up_for_grabs()
@@ -97,38 +106,35 @@ fn attachments_gate_start_but_a_branch_hint_does_not() {
         .linear_issue(
             linear_issue("acme", "id-2", "TEAM-2")
                 .up_for_grabs()
-                .attachments_incomplete("page errors"),
+                .attachments_incomplete("more than 50 attachments"),
         )
-        .linear_issue(
-            linear_issue("acme", "id-3", "TEAM-3")
-                .up_for_grabs()
-                .attached("acme/unsurveyed", 4),
-        )
-        .linear_issue(
-            linear_issue("acme", "id-4", "TEAM-4")
-                .up_for_grabs()
-                .link("github.example.com/acme/api/pull/4"),
-        )
-        .linear_issue(linear_issue("acme", "id-5", "TEAM-5").up_for_grabs())
-        .linear_issue(
-            linear_issue("acme", "id-6", "TEAM-6")
-                .up_for_grabs()
-                .attached("acme/api", 99),
-        )
+        .linear_issue(linear_issue("acme", "id-3", "TEAM-3").up_for_grabs())
         .build();
     let decisions = decide_under(&observation, &start_policy(false, false));
-    for identifier in ["TEAM-1", "TEAM-2", "TEAM-3", "TEAM-4", "TEAM-6"] {
-        let decision = find(&decisions, identifier).expect("blocked issue remains visible");
-        assert_eq!(decision.next_step, None, "{identifier}: {decision:?}");
-        assert_eq!(
-            decision.start_order, None,
-            "only offered Starts have a rank"
-        );
-    }
-    let hinted = find(&decisions, "TEAM-5").unwrap();
-    assert_eq!(hinted.next_step, Some(NextStep::Start));
-    assert_eq!(hinted.landing.hints.len(), 1);
-    assert!(hinted.start_order.is_some());
+
+    let attached = find(&decisions, "TEAM-1").expect("listed");
+    assert_eq!(attached.next_step, None, "{attached:?}");
+    assert!(
+        attached
+            .explanation
+            .no_step_reason
+            .as_deref()
+            .is_some_and(|r| r.contains("carries the work")),
+        "{attached:?}"
+    );
+    assert_eq!(attached.start_order, None);
+    let unread = find(&decisions, "TEAM-2").expect("listed");
+    assert_eq!(unread.next_step, None, "{unread:?}");
+    assert!(
+        unread
+            .explanation
+            .unknowns
+            .iter()
+            .any(|u| u.contains("couldn't establish whether a PR exists")),
+        "{unread:?}"
+    );
+    let hinted = find(&decisions, "TEAM-3").expect("listed");
+    assert_eq!(hinted.next_step, Some(NextStep::Start), "{hinted:?}");
 }
 
 #[test]
