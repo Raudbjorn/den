@@ -12,7 +12,7 @@ use super::{
 use crate::{
     domain::{
         CoverageEntry, RepoId, Source, SourceKind,
-        facts::{Mergeability, PullRequest, ReviewDecision},
+        facts::{MergeState, Mergeability, PullRequest, ReviewDecision},
     },
     ports::SurveyFailure,
 };
@@ -71,6 +71,7 @@ struct PrNode {
     head_ref_oid: String,
     head_repository: Option<HeadRepo>,
     mergeable: String,
+    merge_state_status: String,
     review_decision: Option<String>,
     is_in_merge_queue: bool,
 }
@@ -82,8 +83,10 @@ struct HeadRepo {
 }
 
 impl PrNode {
-    /// The PR's node ID and its facts (details not read yet).
-    fn into_fact(self, repo: &RepoId) -> (String, PullRequest) {
+    /// The PR's node ID and its facts (details not read yet). `page_complete`
+    /// is false when the page came with errors alongside data, which can null
+    /// a nullable field such as the review decision.
+    fn into_fact(self, repo: &RepoId, page_complete: bool) -> (String, PullRequest) {
         let fact = PullRequest {
             repo: repo.clone(),
             number: self.number,
@@ -100,7 +103,8 @@ impl PrNode {
             created_at: self.created_at,
             updated_at: self.updated_at,
             mergeability: mergeability(&self.mergeable),
-            review_decision: self.review_decision.as_deref().and_then(review_decision),
+            merge_state: merge_state(&self.merge_state_status),
+            review_decision: review_decision(self.review_decision.as_deref(), page_complete),
             in_merge_queue: self.is_in_merge_queue,
             details: None,
         };
@@ -124,16 +128,44 @@ fn mergeability(state: &str) -> Mergeability {
     }
 }
 
-/// GitHub's `PullRequestReviewDecision`.
-fn review_decision(decision: &str) -> Option<ReviewDecision> {
-    match decision {
-        "APPROVED" => Some(ReviewDecision::Approved),
-        "CHANGES_REQUESTED" => Some(ReviewDecision::ChangesRequested),
-        "REVIEW_REQUIRED" => Some(ReviewDecision::ReviewRequired),
+/// GitHub's `MergeStateStatus`. Anything den doesn't recognise counts as unknown.
+fn merge_state(state: &str) -> MergeState {
+    match state {
+        "CLEAN" => MergeState::Clean,
+        "HAS_HOOKS" => MergeState::HasHooks,
+        "UNSTABLE" => MergeState::Unstable,
+        "BLOCKED" => MergeState::Blocked,
+        "BEHIND" => MergeState::Behind,
+        "DIRTY" => MergeState::Dirty,
+        "DRAFT" => MergeState::Draft,
+        "UNKNOWN" => MergeState::Unknown,
         other => {
-            tracing::warn!(decision = other, "unrecognised PR review decision; ignored");
-            None
+            tracing::warn!(
+                state = other,
+                "unrecognised PR merge state; treated as unknown"
+            );
+            MergeState::Unknown
         }
+    }
+}
+
+/// GitHub's `PullRequestReviewDecision`. Null means no review is required,
+/// unless the page carried errors: an error nulls the field it hits, so a null
+/// there proves nothing.
+fn review_decision(decision: Option<&str>, page_complete: bool) -> ReviewDecision {
+    match decision {
+        Some("APPROVED") => ReviewDecision::Approved,
+        Some("CHANGES_REQUESTED") => ReviewDecision::ChangesRequested,
+        Some("REVIEW_REQUIRED") => ReviewDecision::ReviewRequired,
+        Some(other) => {
+            tracing::warn!(
+                decision = other,
+                "unrecognised PR review decision; treated as unknown"
+            );
+            ReviewDecision::Unknown
+        }
+        None if page_complete => ReviewDecision::NotRequired,
+        None => ReviewDecision::Unknown,
     }
 }
 
@@ -147,13 +179,14 @@ pub fn fetch(session: &Session<'_>, owner: &str) -> Result<KindFetch<PullRequest
     let mut found_prs: Vec<(String, PullRequest)> = Vec::new();
     let mut pager = Pager::new(None);
     while pager.may_continue() {
-        let page = match session.run::<OwnerData>(
+        let (page, page_complete) = match session.run::<OwnerData>(
             &owner_query,
             json!({ "owner": owner, "after": pager.cursor }),
         )? {
             Fetched::Data { data, state } => {
+                let complete = state.is_complete();
                 pager.page_read(state);
-                data
+                (data, complete)
             }
             Fetched::Lost(state) => {
                 pager.page_lost(state);
@@ -172,7 +205,7 @@ pub fn fetch(session: &Session<'_>, owner: &str) -> Result<KindFetch<PullRequest
                 prs.nodes
                     .into_iter()
                     .flatten()
-                    .map(|pr| pr.into_fact(&repo)),
+                    .map(|pr| pr.into_fact(&repo, page_complete)),
             );
             if prs.page_info.has_next_page {
                 fetch_rest_of_repo(
@@ -215,10 +248,11 @@ fn fetch_rest_of_repo(
     }
     while pager.may_continue() {
         let variables = json!({ "owner": repo.owner, "name": repo.name, "after": pager.cursor });
-        let page = match session.run::<RepoData>(&query, variables)? {
+        let (page, page_complete) = match session.run::<RepoData>(&query, variables)? {
             Fetched::Data { data, state } => {
+                let complete = state.is_complete();
                 pager.page_read(state);
-                data
+                (data, complete)
             }
             Fetched::Lost(state) => {
                 pager.page_lost(state);
@@ -232,7 +266,12 @@ fn fetch_rest_of_repo(
             break;
         };
         let prs = found.pull_requests;
-        found_prs.extend(prs.nodes.into_iter().flatten().map(|pr| pr.into_fact(repo)));
+        found_prs.extend(
+            prs.nodes
+                .into_iter()
+                .flatten()
+                .map(|pr| pr.into_fact(repo, page_complete)),
+        );
         if !pager.advance(prs.page_info.has_next_page, prs.page_info.end_cursor) {
             break;
         }

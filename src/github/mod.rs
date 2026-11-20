@@ -89,6 +89,8 @@ fn survey_owner(session: &Session<'_>, owner: &str) -> Result<OwnerSurvey, Surve
     let pull_requests = pull_requests::fetch(session, owner)?;
     let issues = issues::fetch(session, owner, &repos.items)?;
     let branches = branches::fetch(session, owner, &repos.items)?;
+    // Each kind is never more complete than the Repo list: Coverage::record
+    // applies that when the Owner's coverage is recorded.
     let runs = runs::fetch(session, owner, &repos.items)?;
     let coverage = [
         repos.coverage,

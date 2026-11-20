@@ -12,7 +12,7 @@ use crate::{
 use jiff::Timestamp;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 /// Upper bound on pages read per connection, so a runaway pagination can't run
 /// forever. Reaching it is recorded as partial coverage.
@@ -60,16 +60,16 @@ struct RateLimitState {
 
 impl RateLimitMemo {
     fn state(&self) -> RateLimitState {
-        // A poisoned lock only means another thread panicked mid-write of a Copy value.
-        self.0
-            .lock()
-            .map_or_else(|_| RateLimitState::default(), |guard| *guard)
+        self.update(|s| *s)
     }
 
-    fn update(&self, change: impl FnOnce(&mut RateLimitState)) {
-        if let Ok(mut guard) = self.0.lock() {
-            change(&mut guard);
-        }
+    /// Reads and changes the state under one lock, so a check and the change it
+    /// decides on can't interleave with another Owner's thread.
+    fn update<R>(&self, change: impl FnOnce(&mut RateLimitState) -> R) -> R {
+        // A poisoned lock only means another thread panicked while holding it;
+        // every change is a few plain field writes, so the state is still sound.
+        let mut guard = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        change(&mut guard)
     }
 
     fn get(&self) -> Option<Timestamp> {
@@ -81,17 +81,17 @@ impl RateLimitMemo {
     }
 
     /// Records that the limit was hit. If no response said when it resets, asks
-    /// GitHub once (that question does not count against the limit).
+    /// GitHub once (that question does not count against the limit). The one
+    /// question is claimed under the lock, so parallel Owner threads hitting the
+    /// limit together still ask only once.
     fn hit(&self, gql: &dyn GraphQl) {
-        let before = self.state();
-        self.update(|s| {
+        let should_ask = self.update(|s| {
+            let should_ask = s.resets_at.is_none() && !s.asked;
             s.hit = true;
             s.asked = true;
+            should_ask
         });
-        if before.resets_at.is_none()
-            && !before.asked
-            && let Some(at) = gql.rate_limit_reset()
-        {
+        if should_ask && let Some(at) = gql.rate_limit_reset() {
             self.set(at);
         }
     }

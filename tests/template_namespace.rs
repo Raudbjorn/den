@@ -95,6 +95,70 @@ fn render_context_cannot_override_a_registered_template() {
 }
 
 #[test]
+fn render_context_cannot_override_a_registered_include() {
+    let outer = TemplateFile::new("outer");
+    let inner = TemplateFile::new("inner");
+    let section = TemplateRef {
+        file: outer,
+        section: "Body",
+    };
+    // Same key as the registered `inner` file, so only precedence decides.
+    let ctx = TemplateContext {
+        virtual_files: Arc::new(HashMap::from([(
+            inner.path(),
+            "--- Part\ndiv \"overridden\"\n".to_owned(),
+        )])),
+        ..TemplateContext::default()
+    };
+    let buffer = support::render(
+        vec![
+            TemplateSource {
+                file: outer,
+                content: "--- Body\ndiv\n include inner.crepus#Part\n",
+            },
+            TemplateSource {
+                file: inner,
+                content: "--- Part\ndiv \"registered\"\n",
+            },
+        ],
+        section,
+        &ctx,
+        support::profile(ColorProfile::TrueColor),
+        12,
+        1,
+    );
+    assert_eq!(support::row_text(&buffer, 0).trim_end(), "registered");
+}
+
+#[test]
+fn render_context_files_stay_visible_to_include() {
+    let outer = TemplateFile::new("outer");
+    let section = TemplateRef {
+        file: outer,
+        section: "Body",
+    };
+    let ctx = TemplateContext {
+        virtual_files: Arc::new(HashMap::from([(
+            TemplateFile::new("extra").path(),
+            "--- Part\ndiv \"from ctx\"\n".to_owned(),
+        )])),
+        ..TemplateContext::default()
+    };
+    let buffer = support::render(
+        vec![TemplateSource {
+            file: outer,
+            content: "--- Body\ndiv\n include extra.crepus#Part\n",
+        }],
+        section,
+        &ctx,
+        support::profile(ColorProfile::TrueColor),
+        12,
+        1,
+    );
+    assert_eq!(support::row_text(&buffer, 0).trim_end(), "from ctx");
+}
+
+#[test]
 fn every_template_problem_is_reported_with_its_file() {
     let good = TemplateFile::new("good");
     let result = TemplateStore::from_sources([

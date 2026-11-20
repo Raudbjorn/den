@@ -39,8 +39,8 @@ div w-full h-full flex-col bg-[#aa0018]
 --- Footer
 div w-full h-full flex-row bg-[#aa0000] text-[#aa0007] px-2
   for item in hints
-    span w-[4] font-bold text-[#aa0006] "{key}"
-    span w-[10] "{label}"
+    span w-[{key_cols}] font-bold text-[#aa0006] "{key}"
+    span w-[{label_cols}] "{label}"
   span flex-1
 
 --- SutureV

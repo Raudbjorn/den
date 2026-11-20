@@ -217,7 +217,7 @@ fn a_partly_read_repo_list_flags_the_owners_rows_and_says_why_in_detail_header_a
     assert!(
         view.header
             .coverage
-            .contains("Repo list of alpha was only partly read"),
+            .contains("Repo list of alpha was not read completely"),
         "{}",
         view.header.coverage
     );
@@ -243,7 +243,7 @@ fn a_partly_read_repo_list_flags_the_owners_rows_and_says_why_in_detail_header_a
         detail
             .coverage
             .iter()
-            .any(|line| line.contains("Repo list of alpha was only partly read")),
+            .any(|line| line.contains("Repo list of alpha was not read completely")),
         "{:?}",
         detail.coverage
     );

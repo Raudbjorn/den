@@ -50,7 +50,7 @@ fn row(state: &State<'_>, scope: &Scope) -> SidebarRow {
         count,
         fork: repo.is_some_and(|r| r.is_fork),
         archived: repo.is_some_and(|r| r.is_archived),
-        current: &state.scope.scope == scope,
+        current: state.scope.scope.same(scope),
         // No Observation yet is not "incomplete coverage": nothing was read.
         incomplete: state
             .observation

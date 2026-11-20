@@ -76,6 +76,14 @@ impl RunBuilder {
         self
     }
 
+    /// GitHub reported who started the first attempt (`login`) but no
+    /// triggering actor for this attempt.
+    pub fn started_by_only(mut self, login: &str) -> Self {
+        self.run.triggering_actor = None;
+        self.run.actor = Some(login.to_owned());
+        self
+    }
+
     /// GitHub reported no triggering actor (and no actor at all).
     pub fn no_actor(mut self) -> Self {
         self.run.triggering_actor = None;
