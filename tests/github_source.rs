@@ -86,6 +86,7 @@ fn pr_node(number: u64, draft: bool) -> Value {
         "headRefOid": "abc123",
         "headRepository": { "name": "fork", "owner": { "login": "someone" } },
         "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
         "reviewDecision": null,
         "isInMergeQueue": false
     })

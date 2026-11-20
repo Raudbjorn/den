@@ -76,6 +76,10 @@ pub enum Incompleteness {
     /// The list was read, but a follow-up query for some of its items' facts
     /// was lost (for example a PR's checks and reviews).
     FollowUpLost { what: String, reason: String },
+    /// A follow-up query was read, but some of its lists were not read in
+    /// full: GitHub had more than den reads in one query, or some entries
+    /// came back unreadable (for example a PR's checks or review threads).
+    FollowUpTruncated { what: String },
     /// The Owner's Repo list was not read completely, so Work Items in the
     /// Repos den missed may be missing too (whatever this kind's own fetch said).
     RepoListIncomplete { owner: String },
@@ -85,11 +89,13 @@ impl Incompleteness {
     /// Ranks reasons so that combining two keeps the more telling one: a rate
     /// limit (which also stops pagination, and says when it resets) over whole
     /// items missing (a stopped pagination, or a Repo list read only in part)
-    /// over facts missing from items den has (errors alongside data, a lost
-    /// follow-up query).
+    /// over facts missing from items den has (errors alongside data, a lost or
+    /// truncated follow-up query).
     fn rank(&self) -> u8 {
         match self {
-            Self::ErrorsAlongsideData { .. } | Self::FollowUpLost { .. } => 0,
+            Self::ErrorsAlongsideData { .. }
+            | Self::FollowUpLost { .. }
+            | Self::FollowUpTruncated { .. } => 0,
             Self::PaginationStopped { .. } | Self::RepoListIncomplete { .. } => 1,
             Self::RateLimited { .. } => 2,
         }
@@ -142,6 +148,7 @@ impl Incompleteness {
                 format!("stopped after {pages_read} page(s): {reason}")
             }
             Self::FollowUpLost { what, reason } => format!("{what} could not be read: {reason}"),
+            Self::FollowUpTruncated { what } => format!("not every entry was read: {what}"),
             Self::RepoListIncomplete { owner } => {
                 format!(
                     "the Repo list of {owner} was not read completely, so some of its Repos may be missing"

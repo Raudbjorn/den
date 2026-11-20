@@ -5,7 +5,10 @@
 //! A batch that can't be read leaves its PRs' `details` as `None` and records
 //! partial coverage on their Repos; a batch with errors alongside data is kept,
 //! and its Repos are marked partial too (an error can null out a nested field,
-//! such as the check rollup, without anything else showing it).
+//! such as the check rollup, without anything else showing it, so a null
+//! rollup in such a batch counts as checks not read, not as no checks). A PR
+//! whose lists were not read in full (more entries than one query reads, or
+//! unreadable entries) marks its Repo partial as well.
 
 use super::repo_source;
 use crate::{
@@ -62,7 +65,8 @@ fn fill_batch(
             return Ok(());
         }
     };
-    if !state.is_complete() {
+    let response_complete = state.is_complete();
+    if !response_complete {
         for repo in repos_of(batch.iter().map(|(_, pr)| pr)).into_keys() {
             coverage.push(CoverageEntry {
                 source: repo_source(&repo),
@@ -73,7 +77,7 @@ fn fill_batch(
     for (i, (_, pr)) in batch.iter_mut().enumerate() {
         let node = data.get(&format!("pr{i}")).cloned().unwrap_or(Value::Null);
         match serde_json::from_value::<Option<DetailsNode>>(node) {
-            Ok(Some(details)) => pr.details = Some(details.into_details()),
+            Ok(Some(details)) => pr.details = Some(details.into_details(response_complete)),
             Ok(None) => {
                 let lost = SourceState::Failed {
                     error: "GitHub returned nothing for it".to_owned(),
@@ -88,7 +92,55 @@ fn fill_batch(
             }
         }
     }
+    record_truncated(batch.iter().map(|(_, pr)| pr), coverage);
     Ok(())
+}
+
+/// Records, per Repo, the PRs whose details were read but not in full. The
+/// per-PR flags reach the decision engine; this is what the header and sidebar
+/// see.
+fn record_truncated<'a>(
+    prs: impl Iterator<Item = &'a PullRequest>,
+    coverage: &mut Vec<CoverageEntry>,
+) {
+    let mut by_repo: BTreeMap<RepoId, Vec<String>> = BTreeMap::new();
+    for pr in prs {
+        let Some(details) = &pr.details else {
+            continue;
+        };
+        let lists = truncated_lists(details);
+        if lists.is_empty() {
+            continue;
+        }
+        by_repo.entry(pr.repo.clone()).or_default().push(format!(
+            "#{} ({})",
+            pr.number,
+            lists.join(", ")
+        ));
+    }
+    for (repo, prs) in by_repo {
+        let state = SourceState::Partial(Incompleteness::FollowUpTruncated {
+            what: prs.join("; "),
+        });
+        tracing::warn!(repo = %repo, state = %state.describe(), "PR details not read in full");
+        coverage.push(CoverageEntry {
+            source: repo_source(&repo),
+            state,
+        });
+    }
+}
+
+/// The names of a PR's lists that were not read in full.
+fn truncated_lists(details: &PrDetails) -> Vec<&'static str> {
+    [
+        (!details.checks.complete, "checks"),
+        (!details.threads_complete, "review threads"),
+        (!details.review_requests.complete, "review requests"),
+        (!details.latest_reviews.complete, "reviews"),
+    ]
+    .into_iter()
+    .filter_map(|(truncated, name)| truncated.then_some(name))
+    .collect()
 }
 
 /// The query for a batch of `len` PRs. Only digits are spliced into the text;
@@ -258,13 +310,14 @@ struct NamedNode {
 }
 
 impl DetailsNode {
-    fn into_details(self) -> PrDetails {
+    /// `response_complete` is false when the response carried errors.
+    fn into_details(self, response_complete: bool) -> PrDetails {
         let threads = self.review_threads;
         let threads_complete =
             !threads.page_info.has_next_page && threads.nodes.iter().all(Option::is_some);
         let unresolved = threads.nodes.iter().flatten().filter(|t| !t.is_resolved);
         PrDetails {
-            checks: checks(self.commits),
+            checks: checks(self.commits, response_complete),
             unresolved_threads: u32::try_from(unresolved.count()).unwrap_or(u32::MAX),
             threads_complete,
             review_requests: listed(self.review_requests, |node| {
@@ -295,16 +348,20 @@ fn listed<N, T>(connection: Connection<N>, convert: impl Fn(N) -> Option<T>) -> 
     Listed { items, complete }
 }
 
-/// The head commit's checks. No rollup means no checks were ever reported.
-fn checks(commits: CommitList) -> Listed<Check> {
+/// The head commit's checks. No rollup (or no commit) means no checks were
+/// ever reported, unless the response carried errors: an error nulls the field
+/// it hits, so there a missing rollup means the checks were not read.
+fn checks(commits: CommitList, response_complete: bool) -> Listed<Check> {
+    let not_read = Listed {
+        items: Vec::new(),
+        complete: false,
+    };
     match commits.nodes.into_iter().next_back() {
-        None => Listed::default(),
-        Some(None) => Listed {
-            items: Vec::new(),
-            complete: false,
-        },
+        None if response_complete => Listed::default(),
+        None | Some(None) => not_read,
         Some(Some(node)) => match node.commit.status_check_rollup {
-            None => Listed::default(),
+            None if response_complete => Listed::default(),
+            None => not_read,
             Some(rollup) => listed(rollup.contexts, ContextNode::into_check),
         },
     }
