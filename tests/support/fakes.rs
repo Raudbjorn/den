@@ -85,7 +85,8 @@ impl GitHubSource for FakeGitHub {
             .lock()
             .expect("lock")
             .push(request.clone());
-        self.member_answers
+        let mut read = self
+            .member_answers
             .lock()
             .expect("lock")
             .pop_front()
@@ -103,7 +104,13 @@ impl GitHubSource for FakeGitHub {
                     );
                 }
                 read
-            })
+            });
+        // Like the real source unbounded: every member asked was sent,
+        // unless the scripted answer says which were.
+        if read.asked.is_empty() {
+            read.asked.clone_from(&request.pull_requests);
+        }
+        read
     }
 }
 

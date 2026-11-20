@@ -62,10 +62,12 @@ pub fn read(gql: &dyn GraphQl, request: &MemberStatesRequest) -> MemberStatesRea
     }
     let bound = request.pull_requests.len().min(MAX_MEMBER_STATES);
     let (asked, beyond) = request.pull_requests.split_at(bound);
+    let mut sent: Vec<PullRequestRef> = Vec::new();
     let mut batches = asked.chunks(MEMBERS_PER_QUERY);
     // Set when gh failed: why every batch not yet sent goes unread.
     let mut stopped: Option<SourceState> = None;
     for batch in batches.by_ref() {
+        sent.extend(batch.iter().cloned());
         match session.run::<Map<String, Value>>(&batch_query(batch.len()), variables(batch)) {
             Err(failure) => {
                 // gh missing or logged out: nothing more can be read.
@@ -126,6 +128,7 @@ pub fn read(gql: &dyn GraphQl, request: &MemberStatesRequest) -> MemberStatesRea
     }
     let mut read = MemberStatesRead {
         states: found,
+        asked: sent,
         ..MemberStatesRead::default()
     };
     for (owner, state) in owners.0 {

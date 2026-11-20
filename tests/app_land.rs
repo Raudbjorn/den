@@ -40,6 +40,11 @@ fn api_1() -> PullRequestRef {
 /// - TEAM-1's only member, api #1, isn't among the open Pull Requests;
 /// - TEAM-2's only member, app #2, is open and would Merge.
 fn harness() -> Harness {
+    harness_with_issues(default_issues())
+}
+
+/// `harness()`, but its first round's Linear Issues are `issues`.
+fn harness_with_issues(issues: Vec<LinearIssue>) -> Harness {
     let mut workflow = linear_workflow("acme", "acme");
     workflow.release_state = Some(RELEASE.to_owned());
     let config = Config {
@@ -49,23 +54,25 @@ fn harness() -> Harness {
         linear: vec![workflow],
     };
     let harness = Harness::new(Ok(config));
-    queue_round(&harness);
+    queue_round_with(&harness, issues);
     harness
 }
 
 /// One survey round's answers: GitHub's, then Linear's.
 fn queue_round(harness: &Harness) {
-    queue_round_with(
-        harness,
-        vec![
-            linear_issue("acme", "id-1", "TEAM-1")
-                .attached("acme/api", 1)
-                .build(),
-            linear_issue("acme", "id-2", "TEAM-2")
-                .attached("acme/app", 2)
-                .build(),
-        ],
-    );
+    queue_round_with(harness, default_issues());
+}
+
+/// TEAM-1 with api #1 (not among the open Pull Requests), TEAM-2 with app #2.
+fn default_issues() -> Vec<LinearIssue> {
+    vec![
+        linear_issue("acme", "id-1", "TEAM-1")
+            .attached("acme/api", 1)
+            .build(),
+        linear_issue("acme", "id-2", "TEAM-2")
+            .attached("acme/app", 2)
+            .build(),
+    ]
 }
 
 /// One survey round's answers, with these Linear Issues.
@@ -113,6 +120,8 @@ fn member_states_answer(state: PullRequestState) -> MemberStatesRead {
     );
     MemberStatesRead {
         states: vec![MemberPullRequestState { pr: api_1(), state }],
+        // The fake fills in every member asked.
+        asked: Vec::new(),
         coverage,
     }
 }
@@ -423,5 +432,68 @@ fn never_read_members_are_asked_for_before_closed_ones() {
     assert_eq!(
         requests.last().unwrap().pull_requests,
         [PullRequestRef::new(RepoId::new("acme", "api"), 5), api_1()]
+    );
+}
+
+/// Members den asked about and got no state for rotate behind the members
+/// it never asked about, the longest unanswered first: the real read is
+/// bounded (here as if it sent only one member a round), so one that never
+/// resolves must not hold its place ahead of the rest every round.
+#[test]
+fn members_asked_without_an_answer_rotate_behind_the_others() {
+    let api = |n: u64| PullRequestRef::new(RepoId::new("acme", "api"), n);
+    let issue = || {
+        vec![
+            linear_issue("acme", "id-1", "TEAM-1")
+                .attached("acme/api", 1)
+                .attached("acme/api", 5)
+                .attached("acme/api", 6)
+                .build(),
+        ]
+    };
+    let unanswered = |sent: PullRequestRef| MemberStatesRead {
+        asked: vec![sent],
+        ..MemberStatesRead::default()
+    };
+    let mut harness = harness_with_issues(issue());
+    harness.github.push_member_states(unanswered(api(1)));
+    harness.start();
+
+    harness.set_clock(support::build::ts("2026-11-20T13:00:00Z"));
+    queue_round_with(&harness, issue());
+    harness.github.push_member_states(unanswered(api(5)));
+    harness.settle(Event::Key(Key::Char('r')));
+
+    harness.set_clock(support::build::ts("2026-11-20T14:00:00Z"));
+    queue_round_with(&harness, issue());
+    harness.github.push_member_states(unanswered(api(6)));
+    harness.settle(Event::Key(Key::Char('r')));
+
+    queue_round_with(&harness, issue());
+    harness.settle(Event::Key(Key::Char('r')));
+
+    let asked: Vec<Vec<PullRequestRef>> = harness
+        .github
+        .member_requests()
+        .into_iter()
+        .map(|r| r.pull_requests)
+        .collect();
+    assert_eq!(
+        asked,
+        [
+            vec![api(1), api(5), api(6)],
+            // #1 was asked and not answered: the never-asked go first.
+            vec![api(5), api(6), api(1)],
+            vec![api(6), api(1), api(5)],
+            // All asked: the longest unanswered first.
+            vec![api(1), api(5), api(6)],
+        ]
+    );
+    let stored = harness.cache.stored();
+    let attempts = &stored.last().unwrap().observation.member_attempts;
+    assert_eq!(
+        attempts.len(),
+        3,
+        "bounded by the members still wanted: {attempts:?}"
     );
 }

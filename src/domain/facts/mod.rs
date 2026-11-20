@@ -15,7 +15,7 @@ pub use linear_issue::{
     Attachment, Attachments, AttachmentsRead, LinearCycle, LinearIssue, LinearPriority,
     LinearState, LinearStateKind, LinearTeam, LinearUser, PullRequestRef,
 };
-pub use member_state::{MemberPullRequestState, PullRequestState};
+pub use member_state::{MemberPullRequestState, MemberStateAttempt, PullRequestState};
 pub use pull_request::{
     ActorKind, Check, CheckOutcome, Listed, MergeState, Mergeability, PrDetails, PullRequest,
     Review, ReviewDecision, ReviewVerdict, Reviewer,
