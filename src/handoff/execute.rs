@@ -42,6 +42,9 @@ impl fmt::Display for LaunchStep {
 pub enum LaunchOutcome {
     /// Every step ran.
     Launched { job: JobRecord },
+    /// A Live Job's window was opened again, resuming its session (#14).
+    /// Nothing was fetched, added or recorded.
+    Reopened { job: JobRecord },
     /// Re-verification found a mismatch; nothing was done.
     Refused(Refusal),
     /// The PR head moved since the sheet showed it; nothing was done. The sheet

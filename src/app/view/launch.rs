@@ -4,8 +4,9 @@ use super::super::launch::{Sheet, SheetState};
 use crate::{
     app::view_model::{LaunchSheet, LaunchStatus, PromptField, SheetField, SheetMessage, Tone},
     handoff::{
-        BaseRef, BranchStart, CloneSource, LaunchOutcome, LaunchPlan, LaunchReport, PathState,
-        Refusal, WindowMode, Writability, command, short_commit,
+        BaseRef, BranchStart, CloneSource, JobCheck, LaunchOutcome, LaunchPlan, LaunchReport,
+        PathState, Refusal, ReopenPlan, WindowMode, WorktreeState, Writability, command,
+        short_commit,
     },
 };
 
@@ -49,6 +50,15 @@ pub fn build(sheet: &Sheet) -> LaunchSheet {
                 None => "Ready: ⏎ launches, esc cancels".to_owned(),
             };
             fill_plan(&mut view, sheet, plan, moved_from.as_deref());
+            if let Some((_, beside)) = &sheet.fresh {
+                view.messages.push(message(
+                    &format!(
+                        "Starting fresh: the Live Job's worktree {} is left as it is.",
+                        beside.job.worktree.display()
+                    ),
+                    Tone::Plain,
+                ));
+            }
         }
         SheetState::Refused(refusal) => {
             view.status = LaunchStatus::Refused;
@@ -62,7 +72,49 @@ pub fn build(sheet: &Sheet) -> LaunchSheet {
         }
         SheetState::Finished { plan, report } => {
             fill_plan(&mut view, sheet, plan, None);
-            finished(&mut view, plan, report);
+            finished(&mut view, &plan.window, report);
+        }
+        SheetState::LiveJob { check, .. } => {
+            view.status = LaunchStatus::LiveJob;
+            view.headline =
+                "This Work Item has a Live Job: open existing or start fresh?".to_owned();
+            view.fields = job_fields(check);
+            view.messages.push(message(
+                &format!(
+                    "o open existing: a new window in this worktree, resuming session {}",
+                    check.job.session
+                ),
+                Tone::Plain,
+            ));
+            view.messages.push(message(
+                "f start fresh: a new worktree with a distinct name; this one is left as it is",
+                Tone::Plain,
+            ));
+        }
+        SheetState::JobUnknown { check, .. } => {
+            view.status = LaunchStatus::JobUnknown;
+            view.headline =
+                "den can't tell whether this Work Item's Job still has its worktree".to_owned();
+            view.fields = job_fields(check);
+            view.messages.push(message(
+                "den won't treat it as gone, won't delete it, and won't launch again unless you ask: f starts fresh in a new worktree, esc cancels",
+                Tone::Muted,
+            ));
+        }
+        SheetState::ReopenReady { plan } => {
+            view.status = LaunchStatus::ReopenReady;
+            view.headline = "Ready: ⏎ opens the existing Job, esc cancels".to_owned();
+            fill_reopen(&mut view, plan);
+        }
+        SheetState::Reopening { plan } => {
+            view.status = LaunchStatus::Launching;
+            view.headline = "Opening…".to_owned();
+            fill_reopen(&mut view, plan);
+        }
+        SheetState::Reopened { plan, report } => {
+            fill_reopen(&mut view, plan);
+            view.messages.clear();
+            finished(&mut view, &plan.window, report);
         }
     }
     if let Some(notice) = &sheet.notice {
@@ -160,7 +212,76 @@ fn fields(plan: &LaunchPlan, moved_from: Option<&str>) -> Vec<SheetField> {
         Tone::Good,
     ));
     fields.push(field("SESSION", plan.session.clone(), None, Tone::Plain));
-    fields.push(match &plan.window {
+    fields.push(opens_field(&plan.window));
+    fields
+}
+
+fn worktree_note(state: &PathState) -> String {
+    match state {
+        PathState::Missing => "free".to_owned(),
+        PathState::Exists { .. } => "already exists".to_owned(),
+        PathState::Unknown(why) => format!("unknown: {why}"),
+    }
+}
+
+/// The recorded Job's worktree, branch and session, with its state.
+fn job_fields(check: &JobCheck) -> Vec<SheetField> {
+    let job = &check.job;
+    let (note, tone) = match &check.state {
+        WorktreeState::Present => (
+            "present: it exists and git has it registered".to_owned(),
+            Tone::Good,
+        ),
+        WorktreeState::Missing => ("missing: its folder is gone".to_owned(), Tone::Muted),
+        WorktreeState::Unknown(why) => (format!("unknown: {why}"), Tone::Caution),
+    };
+    vec![
+        field("JOB", job.worktree.display().to_string(), Some(note), tone),
+        field("BRANCH", job.branch.clone(), None, Tone::Plain),
+        field(
+            "SESSION",
+            job.session.clone(),
+            Some(format!(
+                "launched {}",
+                job.launched_at.strftime("%Y-%m-%d %H:%M UTC")
+            )),
+            Tone::Plain,
+        ),
+    ]
+}
+
+/// Open existing: the worktree, the resumed session, the window, the command,
+/// and the duplicate-writer warning.
+fn fill_reopen(view: &mut LaunchSheet, plan: &ReopenPlan) {
+    let job = &plan.job;
+    view.fields = vec![
+        field(
+            "WORKTREE",
+            job.worktree.display().to_string(),
+            Some("existing: nothing is fetched or added".to_owned()),
+            Tone::Good,
+        ),
+        field("BRANCH", job.branch.clone(), None, Tone::Plain),
+        field(
+            "SESSION",
+            job.session.clone(),
+            Some(format!(
+                "resumed by name (launched {})",
+                job.launched_at.strftime("%Y-%m-%d %H:%M UTC")
+            )),
+            Tone::Plain,
+        ),
+        opens_field(&plan.window),
+    ];
+    view.command = Some(plan.command.clone());
+    view.messages.push(message(
+        "If the Job's original window is still open, both windows will write to the same conversation.",
+        Tone::Caution,
+    ));
+}
+
+fn opens_field(window: &WindowMode) -> SheetField {
+    match window {
         WindowMode::Kitty => field(
             "OPENS",
             "a new kitty OS window".to_owned(),
@@ -173,32 +294,31 @@ fn fields(plan: &LaunchPlan, moved_from: Option<&str>) -> Vec<SheetField> {
             Some(why.clone()),
             Tone::Caution,
         ),
-    });
-    fields
-}
-
-fn worktree_note(state: &PathState) -> String {
-    match state {
-        PathState::Missing => "free".to_owned(),
-        PathState::Exists { .. } => "already exists".to_owned(),
-        PathState::Unknown(why) => format!("unknown: {why}"),
     }
 }
 
-fn finished(view: &mut LaunchSheet, plan: &LaunchPlan, report: &LaunchReport) {
+fn finished(view: &mut LaunchSheet, window: &WindowMode, report: &LaunchReport) {
     view.messages
         .extend(report.done.iter().map(|d| message(d, Tone::Good)));
+    let opened = |view: &mut LaunchSheet| {
+        view.messages.push(match window {
+            WindowMode::Kitty => message("The Job's window is open.", Tone::Plain),
+            WindowMode::Clipboard { .. } => message(
+                "The command is on the clipboard: paste it into a terminal.",
+                Tone::Plain,
+            ),
+        });
+    };
     match &report.outcome {
         LaunchOutcome::Launched { .. } => {
             view.status = LaunchStatus::Launched;
             view.headline = "Launched".to_owned();
-            view.messages.push(match &plan.window {
-                WindowMode::Kitty => message("The Job's window is open.", Tone::Plain),
-                WindowMode::Clipboard { .. } => message(
-                    "The command is on the clipboard: paste it into a terminal.",
-                    Tone::Plain,
-                ),
-            });
+            opened(view);
+        }
+        LaunchOutcome::Reopened { .. } => {
+            view.status = LaunchStatus::Reopened;
+            view.headline = "Reopened the existing Job".to_owned();
+            opened(view);
         }
         LaunchOutcome::Refused(refusal) => {
             view.status = LaunchStatus::Refused;

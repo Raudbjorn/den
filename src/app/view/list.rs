@@ -1,11 +1,12 @@
 //! The Next Step list and its empty states.
 
-use super::{State, format, header, scope};
+use super::{State, format, header, jobs, scope};
 use crate::cache;
 use crate::{
     app::view_model::{EmptyState, List, Row},
     decide::Decision,
     domain::WaitingOn,
+    handoff::live,
 };
 
 const LABEL: &str = "N E X T   S T E P S";
@@ -45,6 +46,7 @@ fn row(state: &State<'_>, decision: &Decision) -> Row {
         dimmed: decision.waiting_on == WaitingOn::SomeoneElse,
         incomplete: decision.coverage.iter().any(|c| !c.state.is_complete()),
         age: format::age(state.now, decision.item.updated_at),
+        job: live::most_telling(state.job_checks, id).map(|c| jobs::marker(&c.state)),
     }
 }
 

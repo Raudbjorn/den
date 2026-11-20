@@ -4,7 +4,7 @@ use super::{
     Theme, UiError, glyphs, templates,
     text::{self, LineStyle},
 };
-use crate::app::view_model::Detail;
+use crate::app::view_model::{Detail, JobMarker};
 use crepuscularity_tui::TemplateContext;
 use ratatui::{Frame, layout::Rect};
 
@@ -44,6 +44,18 @@ pub fn draw(frame: &mut Frame, theme: &Theme, detail: &Detail, area: Rect) -> Re
                 push("INCOMPLETE DATA", LineStyle::Label);
                 for note in &content.coverage {
                     push(&format!("{} {note}", glyphs.incomplete), LineStyle::Caution);
+                }
+            }
+            if let Some(job) = &content.job {
+                push("JOB", LineStyle::Label);
+                let (glyph, style) = match job.marker {
+                    JobMarker::Live => (glyphs.live_job, LineStyle::Step),
+                    JobMarker::Missing => (glyphs.job_missing, LineStyle::Muted),
+                    JobMarker::Unknown => (glyphs.job_unknown, LineStyle::Caution),
+                };
+                push(&format!("{glyph} {}", job.summary), style);
+                for line in &job.lines {
+                    push(line, LineStyle::Muted);
                 }
             }
             if !content.unknowns.is_empty() {

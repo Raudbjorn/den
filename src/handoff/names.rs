@@ -28,6 +28,19 @@ pub fn pr_session_name(repo: &RepoId, number: u64, step: NextStep) -> String {
     )
 }
 
+/// `name` with a numeric suffix, `<name>-<n>`, for a Job started fresh beside a
+/// Live Job (#14). `name` is already clean (from [`worktree_name`],
+/// [`pr_session_name`] or a branch name); it is shortened, never the suffix, so
+/// the result stays within `max_chars` and stays distinct.
+pub fn suffixed(name: &str, n: u32, max_chars: usize) -> String {
+    let suffix = format!("-{n}");
+    let room = max_chars.saturating_sub(suffix.chars().count());
+    let base: String = name.chars().take(room).collect();
+    let base = base.trim_end_matches(['.', '-', '/']);
+    let base = if base.is_empty() { FALLBACK_NAME } else { base };
+    format!("{base}{suffix}")
+}
+
 /// The Next Step as a lower-case slug: "Address review" → `address-review`.
 pub fn step_slug(step: NextStep) -> String {
     step.label().to_ascii_lowercase().replace(' ', "-")

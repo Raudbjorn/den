@@ -3,7 +3,7 @@
 use crate::{
     cache::{CacheError, CachedObservation},
     domain::Observation,
-    handoff::{LaunchReport, WorkspaceView},
+    handoff::{JobsCheck, LaunchReport, WorkspaceView},
     ports::SurveyFailure,
 };
 use jiff::Timestamp;
@@ -75,5 +75,10 @@ pub enum Event {
     LaunchFinished {
         id: LaunchId,
         report: Box<LaunchReport>,
+    },
+    /// The recorded Jobs' worktrees were checked (#14), or why the Job records
+    /// couldn't be read.
+    JobsChecked {
+        outcome: Result<Box<JobsCheck>, String>,
     },
 }

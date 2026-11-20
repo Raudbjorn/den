@@ -130,6 +130,30 @@ pub struct Row {
     pub incomplete: bool,
     /// Time since the item was last updated, e.g. "3d".
     pub age: String,
+    /// A Job den launched for it, by its worktree's state (#14); `None`
+    /// without one. Drawn as a glyph plus a colour.
+    pub job: Option<JobMarker>,
+}
+
+/// A recorded Job's worktree state, for the list and the detail (#14).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobMarker {
+    /// The worktree exists and git has it registered: a Live Job.
+    Live,
+    /// The worktree is gone.
+    Missing,
+    /// den couldn't tell; never treated as gone.
+    Unknown,
+}
+
+/// The detail's account of a Work Item's recorded Job (#14).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobDetail {
+    pub marker: JobMarker,
+    /// "Live Job: …", "Job's worktree is gone", "Job's worktree: unknown, …".
+    pub summary: String,
+    /// The worktree, the session and launch time, the branch.
+    pub lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,6 +187,8 @@ pub struct DetailContent {
     pub coverage: Vec<String>,
     /// When the facts were observed, e.g. "12:00 UTC, 4 min ago".
     pub observed: String,
+    /// The Job den launched for this Work Item, if any (#14).
+    pub job: Option<JobDetail>,
 }
 
 /// Sheets drawn over the screen; at most one at a time.
@@ -210,6 +236,14 @@ pub enum LaunchStatus {
     Launched,
     /// A step failed; what ran before it is listed.
     Failed,
+    /// The Work Item has a Live Job: open existing or start fresh? (#14)
+    LiveJob,
+    /// The Work Item's Job has a worktree den can't tell about (#14).
+    JobUnknown,
+    /// Open existing is planned: `Enter` opens the window (#14).
+    ReopenReady,
+    /// The Live Job's window was opened again (#14).
+    Reopened,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

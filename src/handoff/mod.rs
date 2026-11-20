@@ -22,22 +22,29 @@
 //! - #13 (Upstream target; cross-Repo heads): [`TargetChoice`] gains `Upstream`;
 //!   [`RefusalReason::CrossRepoHead`] becomes a `BaseRef::PullHead` fetched as
 //!   `refs/pull/<n>/head` from the target's remote.
-//! - #14 (Live Jobs): the Job records are in the WorkspaceView; a worktree that
-//!   exists and belongs to this Work Item's Job is reported with that Job.
+//! - #14 (Live Jobs, built): [`live`] tells each recorded Job's worktree
+//!   present / missing / unknown. The WorkspaceView carries this Work Item's
+//!   checks (`job_checks`); the App asks "open existing or start fresh?" on a
+//!   Live Job. Open existing is a [`live::ReopenPlan`] carried out by
+//!   [`live::reopen`] (`claude --resume`, never in the Main Clone); start fresh
+//!   is [`PlanInput::fresh`], a suffix on the worktree name, branch and
+//!   session ([`names::suffixed`]).
 
 pub mod clone;
 pub mod command;
 mod execute;
 mod inspect;
+pub mod live;
 pub mod names;
 mod plan;
 pub mod prompts;
 mod refusal;
 
 pub use clone::Remote;
-pub use command::{WindowCommand, WindowMode};
+pub use command::{SessionStart, WindowCommand, WindowMode};
 pub use execute::{LaunchOutcome, LaunchReport, LaunchStep, execute};
 pub use inspect::{ChosenClone, CloneSearch, InspectRequest, WorkspaceView, inspect};
+pub use live::{JobCheck, JobsCheck, ReopenPlan, WorktreeState};
 pub use plan::{LaunchSettings, PlanInput, inspect_request, plan};
 pub use refusal::{Refusal, RefusalReason};
 
@@ -217,6 +224,7 @@ impl LaunchPlan {
             directory: self.worktree.clone(),
             session: self.session.clone(),
             prompt: self.prompt.clone(),
+            start: SessionStart::New,
         }
     }
 

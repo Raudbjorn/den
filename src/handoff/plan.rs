@@ -9,6 +9,7 @@ use super::{
     clone::{self, Candidate},
     command,
     inspect::CloneSearch,
+    live::MAX_FRESH_BRANCH_CHARS,
     names,
     prompts::{PromptFields, Prompts, PromptsError},
     worktree_path,
@@ -55,6 +56,9 @@ pub struct PlanInput<'a> {
     pub choice: TargetChoice,
     pub view: &'a WorkspaceView,
     pub prompts: Result<&'a Prompts, &'a PromptsError>,
+    /// Start fresh beside a Live Job (#14): the suffix for the worktree name,
+    /// the local branch and the session name. `None` for a plain launch.
+    pub fresh: Option<u32>,
 }
 
 /// What a launch needs from GitHub's facts alone.
@@ -140,6 +144,7 @@ pub fn inspect_request(
         (None, None) => return Err(Refusal::one(RefusalReason::NoSearchRoot)),
     };
     Ok(InspectRequest {
+        work_item: decision.item.id.clone(),
         target: facts.target.repo.clone(),
         target_url: facts.target.url.clone(),
         configured_clone,
@@ -186,7 +191,17 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         chosen
     });
 
-    let worktree_name = names::worktree_name(&facts.head_branch);
+    let fresh = |name: String, max_chars: usize| match input.fresh {
+        Some(n) => names::suffixed(&name, n, max_chars),
+        None => name,
+    };
+    let worktree_name = fresh(
+        names::worktree_name(&facts.head_branch),
+        names::MAX_WORKTREE_NAME_CHARS,
+    );
+    // A fresh start's local branch is new, beside the Live Job's, and tracks
+    // the same head branch on the target's remote.
+    let branch_name = fresh(facts.head_branch.clone(), MAX_FRESH_BRANCH_CHARS);
     let mut branch_start = None;
     let mut writable = Writability::Unknown("not inspected".to_owned());
     if let (Some((clone, remote)), Some(state)) = (&found, state) {
@@ -243,17 +258,17 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             Ok(Some(commit)) if *commit == facts.head_commit => {
                 match registered
                     .iter()
-                    .find(|w| w.branch.as_deref() == Some(facts.head_branch.as_str()))
+                    .find(|w| w.branch.as_deref() == Some(branch_name.as_str()))
                 {
                     Some(elsewhere) => reasons.push(RefusalReason::BranchCheckedOut {
-                        branch: facts.head_branch.clone(),
+                        branch: branch_name.clone(),
                         worktree: elsewhere.path.clone(),
                     }),
                     None => branch_start = Some(BranchStart::Existing),
                 }
             }
             Ok(Some(commit)) => reasons.push(RefusalReason::LocalBranchDiffers {
-                branch: facts.head_branch.clone(),
+                branch: branch_name.clone(),
                 commit: commit.clone(),
                 base: facts.head_commit.clone(),
             }),
@@ -281,7 +296,10 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             branch: facts.head_branch.clone(),
         },
     );
-    let session = names::pr_session_name(&facts.target.repo, facts.number, facts.step);
+    let session = fresh(
+        names::pr_session_name(&facts.target.repo, facts.number, facts.step),
+        names::MAX_SESSION_NAME_CHARS,
+    );
     let mut plan = LaunchPlan {
         work_item: decision.item.id.clone(),
         title: decision.item.title.clone(),
@@ -295,7 +313,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             commit: facts.head_commit,
         },
         branch: JobBranch {
-            name: facts.head_branch,
+            name: branch_name,
             start,
         },
         worktree,

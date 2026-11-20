@@ -4,18 +4,21 @@
 use super::{
     PathState, RegisteredWorktree, WindowMode,
     clone::{self, Candidate, Remote},
-    worktree_path,
+    live::{self, JOB_CHECK_BUDGET_SECS, JobCheck, MAX_FRESH_BRANCH_CHARS},
+    names, worktree_path,
 };
 use crate::{
-    domain::RepoId,
+    domain::{RepoId, WorkItemId},
     jobs::JobRecord,
     ports::{JobStore, Launcher, Workspace},
 };
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 /// What to look at for one launch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectRequest {
+    /// The Work Item being launched; its recorded Jobs are checked (#14).
+    pub work_item: WorkItemId,
     pub target: RepoId,
     pub target_url: String,
     /// The Main Clone set for this Repo in the config, if any.
@@ -26,6 +29,18 @@ pub struct InspectRequest {
     pub worktree_name: String,
     /// The Job's local branch name.
     pub branch: String,
+}
+
+impl InspectRequest {
+    /// The same request for a fresh start beside a Live Job (#14): the
+    /// worktree folder and the local branch get the suffix `n`.
+    #[must_use]
+    pub fn fresh(mut self, n: u32) -> Self {
+        self.worktree_name =
+            names::suffixed(&self.worktree_name, n, names::MAX_WORKTREE_NAME_CHARS);
+        self.branch = names::suffixed(&self.branch, n, MAX_FRESH_BRANCH_CHARS);
+        self
+    }
 }
 
 /// How the Main Clone candidates were found.
@@ -69,6 +84,9 @@ pub struct WorkspaceView {
     pub window: WindowMode,
     pub claude_available: bool,
     pub jobs: Result<Vec<JobRecord>, String>,
+    /// This Work Item's recorded Jobs and their worktrees' states, newest
+    /// first (#14); empty when the records couldn't be read.
+    pub job_checks: Vec<JobCheck>,
 }
 
 /// Gathers the WorkspaceView for `request`.
@@ -101,12 +119,25 @@ pub fn inspect(
         worktrees: workspace.worktrees(&path).map_err(|e| e.to_string()),
         path,
     });
+    let jobs = jobs.load().map_err(|e| e.to_string());
+    let job_checks = match &jobs {
+        Ok(records) => {
+            let mine: Vec<JobRecord> = records
+                .iter()
+                .filter(|job| job.work_item == request.work_item)
+                .cloned()
+                .collect();
+            live::check_jobs(&mine, workspace, Duration::from_secs(JOB_CHECK_BUDGET_SECS)).checks
+        }
+        Err(_) => Vec::new(),
+    };
     WorkspaceView {
         clones,
         chosen,
         window: launcher.window_mode(),
         claude_available: launcher.claude_available(),
-        jobs: jobs.load().map_err(|e| e.to_string()),
+        jobs,
+        job_checks,
     }
 }
 

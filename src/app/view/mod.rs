@@ -5,6 +5,7 @@ mod detail;
 mod footer;
 mod format;
 mod header;
+mod jobs;
 mod launch;
 mod list;
 mod scope;
@@ -18,6 +19,7 @@ use crate::{
     config::{Config, ConfigError},
     decide::Decision,
     domain::Observation,
+    handoff::JobCheck,
     layout::Layout,
     ordering::Scope,
     ports::SurveyFailure,
@@ -47,6 +49,8 @@ pub struct State<'a> {
     pub now: Option<Timestamp>,
     pub layout: Layout,
     pub overlay: Option<&'a OverlayState>,
+    /// The recorded Jobs' worktree states (#14).
+    pub job_checks: &'a [JobCheck],
 }
 
 pub fn build(state: &State<'_>) -> ViewModel {

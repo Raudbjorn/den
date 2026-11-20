@@ -68,8 +68,17 @@ fn launch_hints(sheet: &Sheet) -> Vec<KeyHint> {
             hint("e", "edit"),
             hint("esc", "cancel"),
         ],
+        SheetState::LiveJob { .. } => vec![
+            hint("o", "open existing"),
+            hint("f", "start fresh"),
+            hint("esc", "cancel"),
+        ],
+        SheetState::JobUnknown { .. } => vec![hint("f", "start fresh"), hint("esc", "cancel")],
+        SheetState::ReopenReady { .. } => vec![hint("⏎", "open"), hint("esc", "cancel")],
         SheetState::Inspecting => vec![hint("esc", "cancel")],
-        SheetState::Launching { .. } => Vec::new(),
-        SheetState::Refused(_) | SheetState::Finished { .. } => vec![hint("esc", "close")],
+        SheetState::Launching { .. } | SheetState::Reopening { .. } => Vec::new(),
+        SheetState::Refused(_) | SheetState::Finished { .. } | SheetState::Reopened { .. } => {
+            vec![hint("esc", "close")]
+        }
     }
 }

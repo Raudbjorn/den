@@ -4,7 +4,8 @@
 //! In kitty: a new kitty OS window (a new kitty process, so no remote control is
 //! needed) with its working directory set to the worktree, running
 //! `claude -n <session> <prompt>`. Outside kitty: `cd <worktree> && claude -n
-//! <session> <prompt>`, for the clipboard. No permission-bypass flags, ever.
+//! <session> <prompt>`, for the clipboard. Reopening a Live Job (#14) runs
+//! `claude --resume <session>` instead. No permission-bypass flags, ever.
 
 use crate::process::Invocation;
 use serde::{Deserialize, Serialize};
@@ -14,13 +15,28 @@ pub const KITTY_PROGRAM: &str = "kitty";
 pub const CLAUDE_PROGRAM: &str = "claude";
 /// Claude Code's flag for the session's name.
 const CLAUDE_NAME_FLAG: &str = "-n";
+/// Claude Code's flag for resuming a session by its name (or ID), as
+/// `claude --help` describes it in Claude Code 2.1.
+const CLAUDE_RESUME_FLAG: &str = "--resume";
 
 /// What a Job's window runs, and where.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowCommand {
     pub directory: PathBuf,
     pub session: String,
+    /// The prompt for a new session; unused when resuming.
     pub prompt: String,
+    pub start: SessionStart,
+}
+
+/// Whether the window starts a new Claude Code session or resumes one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SessionStart {
+    /// `claude -n <session> <prompt>`.
+    #[default]
+    New,
+    /// `claude --resume <session>`: a Live Job's recorded session (#14).
+    Resume,
 }
 
 /// How the Job's session will be started.
@@ -32,13 +48,17 @@ pub enum WindowMode {
     Clipboard { why: String },
 }
 
-/// `claude -n <session> <prompt>`, as arguments after the program.
+/// `claude -n <session> <prompt>` (or `claude --resume <session>`), as
+/// arguments after the program.
 pub fn claude_args(window: &WindowCommand) -> Vec<String> {
-    vec![
-        CLAUDE_NAME_FLAG.to_owned(),
-        window.session.clone(),
-        window.prompt.clone(),
-    ]
+    match window.start {
+        SessionStart::New => vec![
+            CLAUDE_NAME_FLAG.to_owned(),
+            window.session.clone(),
+            window.prompt.clone(),
+        ],
+        SessionStart::Resume => vec![CLAUDE_RESUME_FLAG.to_owned(), window.session.clone()],
+    }
 }
 
 /// The kitty invocation that opens the Job's window: `--detach` so kitty

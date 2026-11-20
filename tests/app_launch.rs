@@ -15,10 +15,10 @@ use den::{
     config::Config,
     domain::Observation,
     handoff::{
-        BranchStart, LaunchPlan, WindowCommand,
+        BranchStart, LaunchPlan, SessionStart, WindowCommand,
         prompts::{self, Prompts},
     },
-    jobs::{JobRecord, JobStoreError},
+    jobs::JobStoreError,
     ports::{WorktreeAdd, WorktreeStart},
 };
 use std::{collections::BTreeMap, path::PathBuf};
@@ -187,6 +187,7 @@ fn c_then_enter_on_a_pr_produces_exactly_one_launch_plan_fetching_from_the_remot
             directory: WORKTREE.into(),
             session: "app-pr7-address-review".to_owned(),
             prompt: "/gh-resolve https://github.com/octo/app/pull/7".to_owned(),
+            start: SessionStart::New,
         }]
     );
     let job = harness.jobs.records();
@@ -557,28 +558,19 @@ fn a_main_clone_whose_remote_changed_after_the_sheet_opened_refuses_at_launch_do
     assert!(harness.workspace.calls().is_empty());
 }
 
+// A recorded Job at that path is a Live Job (or unknown) since #14: see
+// tests/app_live_jobs.rs. Without a record, the path is simply taken.
 #[test]
-fn a_worktree_path_that_exists_is_refused_and_a_recorded_job_there_is_named() {
+fn a_worktree_path_that_exists_without_a_recorded_job_is_refused() {
     let mut harness = started(launch_config(&[]), observation().build());
     with_upstream_clone(&harness);
     harness.workspace.add_existing(WORKTREE);
-    let item = harness.view.list.rows[0].id.clone();
-    harness.jobs.holding(JobRecord {
-        work_item: item,
-        next_step: den::domain::NextStep::AddressReview,
-        target: den::domain::RepoId::new("octo", "app"),
-        main_clone: CLONE.into(),
-        worktree: WORKTREE.into(),
-        branch: "feature-7".to_owned(),
-        session: "app-pr7-address-review".to_owned(),
-        launched_at: now(),
-    });
     press(&mut harness, Key::Char('c'));
     let refused = sheet(&harness);
     assert_eq!(refused.status, LaunchStatus::Refused);
     assert!(
         messages(refused).contains(
-            "a Job for this Work Item (session app-pr7-address-review, launched 2026-11-19 12:00 UTC) already has the worktree"
+            "the worktree path /home/me/dev/app/.claude/worktrees/feature-7 already exists and isn't a Job den launched"
         ),
         "{}",
         messages(refused)

@@ -11,7 +11,7 @@ use den::{
     domain::{NextStep, RepoId, WorkItemId},
     handoff::{
         self, Base, BaseRef, BranchStart, CloneSource, JobBranch, LaunchOutcome, LaunchPlan,
-        MainClone, PathState, Remote, Target, WindowCommand, WindowMode, Writability,
+        MainClone, PathState, Remote, SessionStart, Target, WindowCommand, WindowMode, Writability,
         clone::{RepoUrl, has_numeric_suffix, same_repo},
         command, names,
     },
@@ -34,6 +34,7 @@ fn window() -> WindowCommand {
         directory: "/home/me/dev/app/.claude/worktrees/feature-7".into(),
         session: "app-pr7-address-review".to_owned(),
         prompt: "/gh-resolve https://github.com/octo/app/pull/7 — it's fine".to_owned(),
+        start: SessionStart::New,
     }
 }
 
