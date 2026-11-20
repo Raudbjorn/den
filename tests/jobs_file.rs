@@ -124,7 +124,58 @@ fn a_coordination_jobs_permission_mode_reads_back_and_a_coding_jobs_record_has_n
     let body: serde_json::Value = serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
     assert_eq!(format_of(&store), u64::from(JOBS_FORMAT));
     assert!(body["jobs"][0].get("permission_mode").is_none(), "{body}");
-    assert_eq!(body["jobs"][1]["permission_mode"], "ApprovalRequired");
+    // Review on #50: the stored name is pinned (`approval_required`), no
+    // longer the Rust variant's name, so a rename can't change the file.
+    assert_eq!(body["jobs"][1]["permission_mode"], "approval_required");
+}
+
+/// A format-3 file written before the mode's name was pinned stored the Rust
+/// variant's name, `"ApprovalRequired"`. It still loads, and the next append
+/// rewrites it under the pinned name.
+#[test]
+fn a_permission_mode_from_before_the_pinned_name_still_loads() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = FileJobStore::in_state_dir(temp.path());
+    let written_before_the_pin = r#"{
+  "format": 3,
+  "jobs": [
+    {
+      "subject": {
+        "github": {
+          "PullRequest": {
+            "repo": { "owner": "octo", "name": "app" },
+            "number": 7
+          }
+        }
+      },
+      "next_step": "RequestReview",
+      "target": { "owner": "octo", "name": "app" },
+      "main_clone": "/home/me/dev/app",
+      "worktree": "/home/me/dev/app/.claude/worktrees/feature-7",
+      "branch": "feature-7",
+      "session": "app-pr7-request-review",
+      "launched_at": "2026-11-19T12:00:00Z",
+      "permission_mode": "ApprovalRequired"
+    }
+  ]
+}"#;
+    fs::write(store.path(), written_before_the_pin).unwrap();
+
+    let records = store.load().unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .map(|r| r.permission_mode)
+            .collect::<Vec<_>>(),
+        [Some(PermissionMode::ApprovalRequired)]
+    );
+
+    store.record(&store_record()).unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+    assert_eq!(
+        body["jobs"][0]["permission_mode"], "approval_required",
+        "{body}"
+    );
 }
 
 /// Format 2 is the format before `permission_mode`: the format an older den
