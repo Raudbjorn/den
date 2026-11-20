@@ -19,7 +19,7 @@ use den::{
     ordering::Scope,
 };
 use support::{
-    build::{ObservationBuilder, issue, now, pr, repo_id, run},
+    build::{ObservationBuilder, branch, issue, now, pr, repo_id, run},
     harness::Harness,
 };
 
@@ -57,7 +57,7 @@ fn carried_state(decision: &Decision, owner: &str, kind: SourceKind) -> Option<S
 }
 
 /// alpha's Repo list stopped paginating; beta was read completely. Each has a
-/// PR, alpha also an Issue and a failing Run.
+/// PR, alpha also an Issue, a failing Run and a Branch with commits ahead.
 fn alpha_repo_list_partial() -> Observation {
     ObservationBuilder::new()
         .fully_read_owner("alpha")
@@ -68,6 +68,7 @@ fn alpha_repo_list_partial() -> Observation {
         .pull_request(pr("alpha/app", 1))
         .issue(issue("alpha/app", 2))
         .run(run("alpha/app", "ci.yml", 3).failed())
+        .branch(branch("alpha/app", "feature").ahead(2).age_days(1))
         .pull_request(pr("beta/lib", 4))
         .build()
 }
@@ -98,7 +99,7 @@ fn a_partly_read_repo_list_is_carried_onto_every_kind_of_that_owners_work_items(
         .iter()
         .filter(|d| d.item.id.repo().owner == "alpha")
         .collect();
-    assert_eq!(alpha.len(), 3, "a PR, an Issue and a Run");
+    assert_eq!(alpha.len(), 4, "a PR, an Issue, a Run and a Branch");
     for decision in alpha {
         let kind = SourceKind::for_work_item(decision.item.id.kind());
         assert_eq!(
@@ -201,7 +202,12 @@ fn a_partly_read_repo_list_flags_the_owners_rows_and_says_why_in_detail_header_a
     }
 
     assert!(!view.header.coverage_complete);
-    for kind in ["Pull Requests of alpha", "Issues of alpha", "Runs of alpha"] {
+    for kind in [
+        "Pull Requests of alpha",
+        "Issues of alpha",
+        "Branches of alpha",
+        "Runs of alpha",
+    ] {
         assert!(
             view.header.coverage.contains(kind),
             "{kind}: {}",
