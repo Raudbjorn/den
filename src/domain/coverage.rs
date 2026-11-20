@@ -18,6 +18,10 @@ pub enum SourceKind {
 }
 
 impl SourceKind {
+    /// The kinds that yield Work Items: everything but the Repo list itself.
+    pub const WORK_ITEMS: [Self; 4] =
+        [Self::PullRequests, Self::Issues, Self::Branches, Self::Runs];
+
     pub fn for_work_item(kind: WorkItemKind) -> Self {
         match kind {
             WorkItemKind::Issue => Self::Issues,
@@ -90,19 +94,23 @@ pub enum Incompleteness {
     /// full: GitHub had more than den reads in one query, or some entries
     /// came back unreadable (for example a PR's checks or review threads).
     FollowUpTruncated { what: String },
+    /// The Owner's Repo list was not read completely, so Work Items in the
+    /// Repos den missed may be missing too (whatever this kind's own fetch said).
+    RepoListIncomplete { owner: String },
 }
 
 impl Incompleteness {
     /// Ranks reasons so that combining two keeps the more telling one: a rate
-    /// limit (which also stops pagination, and says when it resets) over a
-    /// stopped pagination (whole pages missing) over facts missing from items
-    /// den has (errors alongside data, a lost or truncated follow-up query).
+    /// limit (which also stops pagination, and says when it resets) over whole
+    /// items missing (a stopped pagination, or a Repo list read only in part)
+    /// over facts missing from items den has (errors alongside data, a lost or
+    /// truncated follow-up query).
     fn rank(&self) -> u8 {
         match self {
             Self::ErrorsAlongsideData { .. }
             | Self::FollowUpLost { .. }
             | Self::FollowUpTruncated { .. } => 0,
-            Self::PaginationStopped { .. } => 1,
+            Self::PaginationStopped { .. } | Self::RepoListIncomplete { .. } => 1,
             Self::RateLimited { .. } => 2,
         }
     }
@@ -155,6 +163,11 @@ impl Incompleteness {
             }
             Self::FollowUpLost { what, reason } => format!("{what} could not be read: {reason}"),
             Self::FollowUpTruncated { what } => format!("not every entry was read: {what}"),
+            Self::RepoListIncomplete { owner } => {
+                format!(
+                    "the Repo list of {owner} was not read completely, so some of its Repos may be missing"
+                )
+            }
         }
     }
 }
@@ -216,18 +229,64 @@ pub struct CoverageEntry {
 }
 
 /// Coverage for every source an Observation tried.
+///
+/// Invariant: an Owner's Work Item kinds are never recorded as more complete
+/// than its Repo list. Recording an incomplete `Owner { kind: Repos }` also
+/// records every Work Item kind of that Owner as partial
+/// ([`Incompleteness::RepoListIncomplete`]), or not yet fetched when the Repo
+/// list was not fetched yet. This holds whichever order the sources are
+/// recorded in, so the header, the sidebar, each item's applicable coverage,
+/// the cache merge and "Nothing needs you" all see it without knowing the rule.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Coverage {
     entries: Vec<CoverageEntry>,
 }
 
 impl Coverage {
-    /// Records a source's state. Recording the same source again keeps the worse state.
+    /// Records a source's state. Recording the same source again keeps the worse
+    /// state. An incomplete Repo list also marks the Owner's Work Item kinds
+    /// (see the type's invariant).
     pub fn record(&mut self, source: Source, state: SourceState) {
+        if let Source::Owner {
+            owner,
+            kind: SourceKind::Repos,
+        } = &source
+            && !state.is_complete()
+        {
+            let derived = match &state {
+                SourceState::NotYetFetched => SourceState::NotYetFetched,
+                _ => SourceState::Partial(Incompleteness::RepoListIncomplete {
+                    owner: owner.clone(),
+                }),
+            };
+            for kind in SourceKind::WORK_ITEMS {
+                self.record_one(
+                    Source::Owner {
+                        owner: owner.clone(),
+                        kind,
+                    },
+                    derived.clone(),
+                );
+            }
+        }
+        self.record_one(source, state);
+    }
+
+    fn record_one(&mut self, source: Source, state: SourceState) {
         match self.entries.iter_mut().find(|e| e.source == source) {
             Some(existing) => {
                 let previous = std::mem::replace(&mut existing.state, SourceState::Complete);
-                existing.state = previous.worst(state);
+                // A source's own reason for being partial says more than the one
+                // derived from its Owner's Repo list, so it replaces it.
+                let derived = matches!(
+                    previous,
+                    SourceState::Partial(Incompleteness::RepoListIncomplete { .. })
+                );
+                existing.state = if derived && matches!(state, SourceState::Partial(_)) {
+                    state
+                } else {
+                    previous.worst(state)
+                };
             }
             None => self.entries.push(CoverageEntry { source, state }),
         }

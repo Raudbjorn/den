@@ -124,36 +124,32 @@ fn octo_with_list_errors(
     details: Box<DetailsAnswer>,
 ) -> ScriptedGraphQl {
     let prs = Arc::new(prs);
-    ScriptedGraphQl::new(move |request| {
-        if let Some(answer) = only_default_branches(request) {
-            return answer;
-        }
-        match operation(request).as_str() {
-            "Viewer" => Ok(data(json!({
-                "rateLimit": { "remaining": 4999, "resetAt": RESET_AT },
-                "viewer": { "login": "me" }
-            }))),
-            "ViewerTeams" => Ok(data(json!({ "viewer": { "organizations": {
-                "pageInfo": { "hasNextPage": false }, "nodes": []
-            }}}))),
-            "OwnerRepos" => Ok(data(json!({ "repositoryOwner": { "repositories": {
+    ScriptedGraphQl::new(move |request| match operation(request).as_str() {
+        "Viewer" => Ok(data(json!({
+            "rateLimit": { "remaining": 4999, "resetAt": RESET_AT },
+            "viewer": { "login": "me" }
+        }))),
+        "ViewerTeams" => Ok(data(json!({ "viewer": { "organizations": {
+            "pageInfo": { "hasNextPage": false }, "nodes": []
+        }}}))),
+        "OwnerRepos" => Ok(data(json!({ "repositoryOwner": { "repositories": {
+            "pageInfo": page_info(false),
+            "nodes": [{ "name": "app", "url": "https://github.com/octo/app", "isFork": false,
+                        "isArchived": false, "defaultBranchRef": { "name": "main" }, "parent": null }]
+        }}}))),
+        "OwnerPullRequests" => Ok(GraphQlResponse {
+            data: Some(json!({ "repositoryOwner": { "repositories": {
                 "pageInfo": page_info(false),
-                "nodes": [{ "name": "app", "url": "https://github.com/octo/app", "isFork": false,
-                            "isArchived": false, "defaultBranchRef": { "name": "main" }, "parent": null }]
-            }}}))),
-            "OwnerPullRequests" => Ok(GraphQlResponse {
-                data: Some(json!({ "repositoryOwner": { "repositories": {
-                    "pageInfo": page_info(false),
-                    "nodes": [{ "name": "app", "pullRequests": { "pageInfo": page_info(false), "nodes": *prs } }]
-                }}})),
-                errors: list_errors.clone(),
-            }),
-            "PullRequestDetails" => details(request),
-            "OwnerIssueCounts" => Ok(data(json!({ "repositoryOwner": { "repositories": {
-                "pageInfo": page_info(false), "nodes": []
-            }}}))),
-            other => panic!("unexpected {other}"),
-        }
+                "nodes": [{ "name": "app", "pullRequests": { "pageInfo": page_info(false), "nodes": *prs } }]
+            }}})),
+            errors: list_errors.clone(),
+        }),
+        "PullRequestDetails" => details(request),
+        "BranchRefs" => only_default_branches(request).expect("a BranchRefs answer"),
+        "OwnerIssueCounts" => Ok(data(json!({ "repositoryOwner": { "repositories": {
+            "pageInfo": page_info(false), "nodes": []
+        }}}))),
+        other => panic!("unexpected {other}"),
     })
 }
 
@@ -239,9 +235,8 @@ fn list_facts_map_mergeability_review_decision_and_merge_queue() {
         assert!(details.checks.items.is_empty() && details.checks.complete);
     }
     assert_eq!(owner_prs_state(&observation), Some(SourceState::Complete));
-    // Was `None` (nothing marked the Repo partial). A Repo whose PRs all came
-    // on one clean Owner page now records that page's state as its own, so the
-    // cache can drop its closed PRs even if a later Owner page is lost.
+    // A complete first page now records Repo coverage so later Owner failures
+    // do not prevent the cache from dropping this Repo's closed PRs.
     assert_eq!(app_prs_state(&observation), Some(SourceState::Complete));
 }
 

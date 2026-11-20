@@ -26,6 +26,7 @@ use den::{
 use serde_json::{Value, json};
 use std::{os::unix::fs::PermissionsExt, sync::Mutex, time::Duration};
 use support::{
+    branch_graphql::only_default_branches,
     build::{now, repo_id, ts},
     fakes::{data, operation},
 };
@@ -34,8 +35,9 @@ const RESET_EPOCH_SECS: i64 = 1_795_136_400;
 
 type RestScript = dyn Fn(&str) -> Result<RestResponse, TransportError> + Send + Sync;
 
-/// A transport with both sides: GraphQL answers the viewer and the Repo list
-/// (anything else gets empty data), REST answers from `script` by path.
+/// A transport with both sides: GraphQL answers the viewer and the Repo list,
+/// and the other kinds' first queries with nothing found (anything else gets
+/// empty data); REST answers from `script` by path.
 struct ScriptedGitHub {
     repos: Value,
     /// An error GitHub sends alongside the Repo list's data.
@@ -76,6 +78,9 @@ impl GraphQl for ScriptedGitHub {
             ("OwnerRepos", Some(error)) => vec![error.clone()],
             _ => Vec::new(),
         };
+        if let Some(branches) = only_default_branches(request) {
+            return branches;
+        }
         let response = data(match operation.as_str() {
             "Viewer" => json!({ "viewer": { "login": "me" } }),
             "ViewerTeams" => json!({ "viewer": { "organizations": {
@@ -84,7 +89,12 @@ impl GraphQl for ScriptedGitHub {
             "OwnerRepos" => json!({ "repositoryOwner": { "repositories": {
                 "pageInfo": { "hasNextPage": false }, "nodes": self.repos
             }}}),
-            // Other kinds' queries: not this file's concern.
+            // Other kinds: nothing open, so the survey reads every kind completely.
+            "OwnerPullRequests" | "OwnerIssueCounts" => {
+                json!({ "repositoryOwner": { "repositories": {
+                    "pageInfo": { "hasNextPage": false }, "nodes": []
+                }}})
+            }
             _ => json!({}),
         });
         Ok(GraphQlResponse { errors, ..response })
@@ -185,17 +195,8 @@ fn repo(name: &str, default_branch: Option<&str>, archived: bool) -> Repo {
 }
 
 fn fetch(github: &ScriptedGitHub, repos: &[Repo]) -> Result<KindFetch<Run>, SurveyFailure> {
-    fetch_listed(github, repos, &SourceState::Complete)
-}
-
-/// `fetch`, with the Owner's Repos listed only as completely as `repo_list`.
-fn fetch_listed(
-    github: &ScriptedGitHub,
-    repos: &[Repo],
-    repo_list: &SourceState,
-) -> Result<KindFetch<Run>, SurveyFailure> {
     let memo = RateLimitMemo::default();
-    runs::fetch(&Session::new(github, &memo), "octo", repos, repo_list)
+    runs::fetch(&Session::new(github, &memo), "octo", repos)
 }
 
 fn owner_state(fetched: &KindFetch<Run>) -> &SourceState {
@@ -596,52 +597,43 @@ fn repeated_timeouts_stop_the_owner_and_mark_its_runs_partial() {
     );
 }
 
+/// Coverage::record's rule, through the real survey (coverage_seams.rs checks
+/// it at seams 1 and 2): each kind of the Owner read completely on its own,
+/// but the Repo list came with an error, so every kind is partial.
 #[test]
-fn the_owners_runs_are_no_more_complete_than_its_repo_list() {
-    let github = ScriptedGitHub::new(json!([]), |_| ok(runs_page(0, vec![])));
-    let repos = [repo("r", Some("main"), false)];
-    let cut_short = SourceState::Partial(Incompleteness::PaginationStopped {
-        pages_read: 2,
-        reason: "page 3 failed".to_owned(),
-    });
-    let fetched = fetch_listed(&github, &repos, &cut_short).expect("fetch");
-    assert_eq!(
-        owner_state(&fetched),
-        &cut_short,
-        "Repos missing from the list had no Runs read"
-    );
-
-    let unlisted = SourceState::Failed {
-        error: "HTTP 502".to_owned(),
-    };
-    let fetched = fetch_listed(&github, &[], &unlisted).expect("fetch");
-    assert!(
-        matches!(owner_state(&fetched), SourceState::Failed { error } if error.contains("could not be listed") && error.contains("HTTP 502")),
-        "{:?}",
-        owner_state(&fetched)
-    );
-}
-
-#[test]
-fn the_survey_passes_the_repo_lists_coverage_to_the_owners_runs() {
+fn a_partly_read_repo_list_makes_every_kind_of_the_owner_partial_in_the_survey() {
     let mut github = ScriptedGitHub::new(json!([repo_node("r", Some("main"), false)]), |_| {
         ok(runs_page(0, vec![]))
     });
+    let surveyed = survey(&github, &["octo".to_owned()], now()).expect("survey");
+    for kind in SourceKind::WORK_ITEMS {
+        assert_eq!(
+            surveyed.coverage.get(&Source::Owner {
+                owner: "octo".to_owned(),
+                kind,
+            }),
+            Some(&SourceState::Complete),
+            "{kind:?} on its own"
+        );
+    }
+
     github.repo_list_error = Some(GraphQlError {
         message: "Something went wrong listing a repository".to_owned(),
         kind: None,
     });
-    let observation = survey(&github, &["octo".to_owned()], now()).expect("survey");
-    assert!(
-        matches!(
-            observation.coverage.get(&owner_runs()),
-            Some(SourceState::Partial(
-                Incompleteness::ErrorsAlongsideData { .. }
-            ))
-        ),
-        "{:?}",
-        observation.coverage.get(&owner_runs())
-    );
+    let surveyed = survey(&github, &["octo".to_owned()], now()).expect("survey");
+    for kind in SourceKind::WORK_ITEMS {
+        assert_eq!(
+            surveyed.coverage.get(&Source::Owner {
+                owner: "octo".to_owned(),
+                kind,
+            }),
+            Some(&SourceState::Partial(Incompleteness::RepoListIncomplete {
+                owner: "octo".to_owned()
+            })),
+            "{kind:?} under a partly read Repo list"
+        );
+    }
 }
 
 #[test]

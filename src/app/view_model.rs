@@ -9,6 +9,16 @@ use crate::{
     ordering::Scope,
 };
 
+/// Between the parts of a ViewModel sentence ("Owner · octo"). The renderer
+/// draws it in the glyph profile's form (ASCII: `-`).
+pub const SEPARATOR: char = '·';
+/// Ends a ViewModel sentence about work under way ("Surveying…"). The renderer
+/// draws it in the glyph profile's form (ASCII: `...`).
+pub const ELLIPSIS: char = '…';
+/// The Enter key in a key hint. The renderer draws it in the glyph profile's
+/// form (ASCII: `RET`).
+pub const ENTER_KEY: char = '⏎';
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewModel {
     pub header: Header,
@@ -26,7 +36,8 @@ pub struct ViewModel {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
-    /// What the list covers, e.g. "All Owners · Raudbjorn, massif-network".
+    /// What the list covers, e.g. "All Owners · Raudbjorn, massif-network"
+    /// (parts separated by [`SEPARATOR`]).
     pub scope: String,
     /// The segmented Scope control: All Owners, each Owner, and the Repo when
     /// the Scope is one. Exactly one segment is active.
@@ -94,8 +105,8 @@ pub struct SidebarRow {
     pub archived: bool,
     /// This row is the current Scope.
     pub current: bool,
-    /// Coverage marker slot: some source behind this row was not read
-    /// completely. Filled by the coverage ticket (#8); `false` until then.
+    /// Some source behind this row's Scope was not read completely (the
+    /// viewer, or a source of its Owner or Repo); drawn as a glyph.
     pub incomplete: bool,
 }
 

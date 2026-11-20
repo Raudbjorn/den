@@ -8,7 +8,10 @@
 mod support;
 
 use den::{
-    app::{App, Event, Key, ViewModel, view_model::EmptyState},
+    app::{
+        App, Event, Key, ViewModel,
+        view_model::{ELLIPSIS, ENTER_KEY, EmptyState, SEPARATOR},
+    },
     palette::OXIDE_TRUECOLOR,
     ui::{Theme, frame},
 };
@@ -194,178 +197,6 @@ fn a_long_list_keeps_the_selection_in_view() {
     assert!(text.contains("40 of 40"), "{text}");
 }
 
-/// Many Repos under two Owners, one a fork and one archived, with Work Items.
-fn many_repos() -> Harness {
-    let mut builder = ObservationBuilder::new()
-        .owner("octo")
-        .owner("beta")
-        .fork("octo/a-fork", Some("up/a-fork"))
-        .archived_repo("octo/b-old");
-    for n in 0..60 {
-        builder = builder.repo(&format!("octo/repo-{n:02}"));
-    }
-    builder = builder
-        .repo("beta/zeta")
-        .pull_request(pr("octo/a-fork", 1).draft().author(ME))
-        .pull_request(pr("octo/b-old", 2).draft().author("alice"))
-        .pull_request(pr("beta/zeta", 3).draft().author(ME));
-    let mut harness = Harness::with_owners(&["octo", "beta"]);
-    harness.answer(Ok(builder.build()));
-    harness.start();
-    harness
-}
-
-/// The text inside `area` of a rendered buffer, one line per row, trimmed at
-/// both ends, so a check on one plate cannot match text drawn in another.
-fn region_lines(buffer: &Buffer, area: Rect) -> Vec<String> {
-    (area.top()..area.bottom())
-        .map(|y| {
-            (area.left()..area.right())
-                .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
-                .collect::<String>()
-                .trim()
-                .to_owned()
-        })
-        .collect()
-}
-
-/// The sidebar row whose first word (after any mark) ends with `label`, split
-/// into words: label, then any fork/archived glyph, then the count.
-fn sidebar_row(lines: &[String], label: &str) -> Vec<String> {
-    lines
-        .iter()
-        .map(|line| {
-            line.split_whitespace()
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        })
-        .find(|words| words.first().is_some_and(|w| w.ends_with(label)))
-        .unwrap_or_else(|| panic!("no sidebar row {label:?} in {lines:#?}"))
-}
-
-#[test]
-fn the_sidebar_shows_repos_with_counts_and_glyphs_and_the_header_its_segments() {
-    let harness = many_repos();
-    for (glyphs, fork, archived, scope_mark) in [
-        (GlyphProfile::Unicode, "⑂", "▣", "●"),
-        (GlyphProfile::Ascii, "Y", "#", "*"),
-    ] {
-        let theme = Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
-        let (cols, rows) = DESIGN_SIZE;
-        let buffer = frame::render(&theme, &harness.view, cols, rows).expect("renders");
-        let regions = frame::regions(buffer.area, &harness.view.layout);
-        let sidebar = region_lines(&buffer, regions.sidebar);
-        let text = frame::buffer_text(&buffer);
-        assert!(
-            sidebar.iter().any(|l| l.starts_with("R E P O S")),
-            "{glyphs:?}: the sidebar label\n{text}"
-        );
-        // Each row carries its own glyph and count: a glyph or count drawn on
-        // the wrong row, or not at all, fails here.
-        for (label, words) in [
-            (
-                "All Owners",
-                vec![
-                    format!("{scope_mark}All"),
-                    "Owners".to_owned(),
-                    "3".to_owned(),
-                ],
-            ),
-            ("octo", vec!["octo".to_owned(), "2".to_owned()]),
-            (
-                "a-fork",
-                vec!["a-fork".to_owned(), fork.to_owned(), "1".to_owned()],
-            ),
-            (
-                "b-old",
-                vec!["b-old".to_owned(), archived.to_owned(), "1".to_owned()],
-            ),
-        ] {
-            let first = label.split_whitespace().next().unwrap_or(label);
-            assert_eq!(
-                sidebar_row(&sidebar, first),
-                words,
-                "{glyphs:?}: the {label} row\n{text}"
-            );
-        }
-
-        // The header names the whole Scope, then draws one segment per Scope
-        // step after it (beta's sidebar row is scrolled out of view here, so
-        // "beta" can only come from the header).
-        let header = region_lines(&buffer, regions.header).join("\n");
-        // The ASCII profile draws the sentence's "·" as "?" today (reported
-        // separately), so only the Unicode run checks the separator; both
-        // check the Owners' part and that the segments follow it.
-        if glyphs == GlyphProfile::Unicode {
-            assert!(
-                header.contains("All Owners · octo, beta"),
-                "{glyphs:?}: the Scope sentence\n{text}"
-            );
-        }
-        let (before, after) = header
-            .split_once("octo, beta")
-            .unwrap_or_else(|| panic!("{glyphs:?}: the Scope sentence\n{text}"));
-        assert!(
-            before.contains("All Owners"),
-            "{glyphs:?}: the Scope sentence\n{text}"
-        );
-        let segments: Vec<&str> = after
-            .split_whitespace()
-            .filter(|w| ["All", "Owners", "octo", "beta"].contains(w))
-            .collect();
-        assert_eq!(
-            segments,
-            ["All", "Owners", "octo", "beta"],
-            "{glyphs:?}: segments drawn after the sentence\n{text}"
-        );
-    }
-}
-
-#[test]
-fn a_long_sidebar_keeps_its_cursor_in_view() {
-    let mut harness = many_repos();
-    harness.key(den::app::Key::Tab);
-    // Down to beta/zeta, the last row.
-    for _ in 0..80 {
-        harness.key(den::app::Key::Down);
-    }
-    let theme = Theme::new(TerminalProfile::new(
-        ColorProfile::Mono,
-        GlyphProfile::Ascii,
-    ))
-    .expect("theme");
-    let (cols, rows) = DESIGN_SIZE;
-    let text =
-        frame::buffer_text(&frame::render(&theme, &harness.view, cols, rows).expect("renders"));
-    assert!(text.contains(">   zeta"), "cursor row drawn\n{text}");
-    assert!(!text.contains("repo-00"), "scrolled past the top\n{text}");
-}
-
-/// #9 left the sidebar out below a fixed width as an interim; #10's responsive
-/// layout replaced that with the spec's rule (22% of the width, clamped to
-/// 30–40 columns, at every supported size), so at 80×24 the sidebar keeps its
-/// narrowest rail. The header still names the whole Scope.
-#[test]
-fn at_the_minimum_size_the_sidebar_keeps_its_narrowest_rail() {
-    let mut harness = many_repos();
-    let (cols, rows) = MINIMUM_SIZE;
-    harness.send(Event::Resized { cols, rows });
-    let theme = Theme::new(TerminalProfile::new(
-        ColorProfile::Mono,
-        GlyphProfile::Unicode,
-    ))
-    .expect("theme");
-    let buffer = frame::render(&theme, &harness.view, cols, rows).expect("renders");
-    let regions = frame::regions(buffer.area, &harness.view.layout);
-    assert_eq!(regions.sidebar.width, den::layout::RAIL_MIN_COLS);
-    let text = frame::buffer_text(&buffer);
-    let header = region_lines(&buffer, regions.header).join("\n");
-    assert!(
-        header.contains("All Owners · octo, beta"),
-        "the header still names the whole Scope\n{text}"
-    );
-}
-
 #[test]
 fn the_detail_plate_appears_at_the_wide_threshold_and_not_below_it() {
     use den::layout::WIDE_LAYOUT_MIN_COLS;
@@ -510,6 +341,279 @@ fn a_terminal_below_80_by_24_says_so_in_the_footer() {
     assert!(text.contains("den needs at least 80x24"), "{text}");
 }
 
+/// Many Repos under two Owners, one a fork and one archived, with Work Items,
+/// at `size`.
+fn many_repos((cols, rows): (u16, u16)) -> Harness {
+    let mut builder = ObservationBuilder::new()
+        .owner("octo")
+        .owner("beta")
+        .fork("octo/a-fork", Some("up/a-fork"))
+        .archived_repo("octo/b-old");
+    for n in 0..60 {
+        builder = builder.repo(&format!("octo/repo-{n:02}"));
+    }
+    builder = builder
+        .repo("beta/zeta")
+        .pull_request(pr("octo/a-fork", 1).draft().author(ME))
+        .pull_request(pr("octo/b-old", 2).draft().author("alice"))
+        .pull_request(pr("beta/zeta", 3).draft().author(ME));
+    let mut harness = Harness::with_owners(&["octo", "beta"]);
+    harness.send(Event::Resized { cols, rows });
+    harness.answer(Ok(builder.build()));
+    harness.start();
+    harness
+}
+
+/// The text inside `area` of a rendered buffer, one line per row, trimmed at
+/// both ends, so a check on one plate cannot match text drawn in another.
+fn region_lines(buffer: &Buffer, area: Rect) -> Vec<String> {
+    (area.top()..area.bottom())
+        .map(|y| {
+            (area.left()..area.right())
+                .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
+                .collect::<String>()
+                .trim()
+                .to_owned()
+        })
+        .collect()
+}
+
+/// The sidebar row whose first word (after any mark) ends with `label`, split
+/// into words: label, then any fork/archived glyph, any incomplete mark, then
+/// the count.
+fn sidebar_row(lines: &[String], label: &str) -> Vec<String> {
+    lines
+        .iter()
+        .map(|line| {
+            line.split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .find(|words| words.first().is_some_and(|w| w.ends_with(label)))
+        .unwrap_or_else(|| panic!("no sidebar row {label:?} in {lines:#?}"))
+}
+
+#[test]
+fn the_sidebar_shows_repos_with_counts_and_glyphs_and_the_header_its_segments() {
+    let harness = many_repos(DESIGN_SIZE);
+    // Every row is marked incomplete: the builder leaves Branches and Runs
+    // unfetched, so no Scope here was read completely.
+    for (glyphs, fork, archived, scope_mark, incomplete, separator) in [
+        (GlyphProfile::Unicode, "⑂", "▣", "●", "⚠", "·"),
+        (GlyphProfile::Ascii, "Y", "#", "*", "!", "-"),
+    ] {
+        let theme = Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
+        let (cols, rows) = DESIGN_SIZE;
+        let buffer = frame::render(&theme, &harness.view, cols, rows).expect("renders");
+        let regions = frame::regions(buffer.area, &harness.view.layout);
+        let sidebar = region_lines(&buffer, regions.sidebar);
+        let text = frame::buffer_text(&buffer);
+        assert!(
+            sidebar.iter().any(|l| l.starts_with("R E P O S")),
+            "{glyphs:?}: the sidebar label\n{text}"
+        );
+        // Each row carries its own glyphs and count: a glyph or count drawn on
+        // the wrong row, or not at all, fails here.
+        for (label, words) in [
+            (
+                "All Owners",
+                vec![
+                    format!("{scope_mark}All"),
+                    "Owners".to_owned(),
+                    incomplete.to_owned(),
+                    "3".to_owned(),
+                ],
+            ),
+            (
+                "octo",
+                vec!["octo".to_owned(), incomplete.to_owned(), "2".to_owned()],
+            ),
+            (
+                "a-fork",
+                vec![
+                    "a-fork".to_owned(),
+                    fork.to_owned(),
+                    incomplete.to_owned(),
+                    "1".to_owned(),
+                ],
+            ),
+            (
+                "b-old",
+                vec![
+                    "b-old".to_owned(),
+                    archived.to_owned(),
+                    incomplete.to_owned(),
+                    "1".to_owned(),
+                ],
+            ),
+        ] {
+            let first = label.split_whitespace().next().unwrap_or(label);
+            assert_eq!(
+                sidebar_row(&sidebar, first),
+                words,
+                "{glyphs:?}: the {label} row\n{text}"
+            );
+        }
+
+        // The header names the whole Scope, then draws one segment per Scope
+        // step after it (beta's sidebar row is scrolled out of view here, so
+        // "beta" can only come from the header).
+        let header = region_lines(&buffer, regions.header).join("\n");
+        // The sentence's separator has an ASCII form of its own (not the
+        // engine's "?" for a character it cannot draw).
+        assert!(
+            header.contains(&format!("All Owners {separator} octo, beta")),
+            "{glyphs:?}: the Scope sentence\n{text}"
+        );
+        let (before, after) = header
+            .split_once("octo, beta")
+            .unwrap_or_else(|| panic!("{glyphs:?}: the Scope sentence\n{text}"));
+        assert!(
+            before.contains("All Owners"),
+            "{glyphs:?}: the Scope sentence\n{text}"
+        );
+        let segments: Vec<&str> = after
+            .split_whitespace()
+            .filter(|w| ["All", "Owners", "octo", "beta"].contains(w))
+            .collect();
+        assert_eq!(
+            segments,
+            ["All", "Owners", "octo", "beta"],
+            "{glyphs:?}: segments drawn after the sentence\n{text}"
+        );
+    }
+}
+
+/// The ViewModel's separator and ellipsis each have an ASCII form, so an ASCII
+/// header never shows the engine's "?" for them. (The status is set on the view:
+/// a refresh in flight is otherwise only visible between two settles.)
+#[test]
+fn an_ascii_header_draws_separators_and_ellipses_in_ascii() {
+    let mut view = surveyed_harness(DESIGN_SIZE).view;
+    view.header.status = format!("observed 12:00 UTC {SEPARATOR} refreshing{ELLIPSIS}");
+    let theme = Theme::new(TerminalProfile::new(
+        ColorProfile::Mono,
+        GlyphProfile::Ascii,
+    ))
+    .expect("theme");
+    let (cols, rows) = DESIGN_SIZE;
+    let buffer = frame::render(&theme, &view, cols, rows).expect("renders");
+    let header = region_lines(&buffer, frame::regions(buffer.area, &view.layout).header).join("\n");
+    assert!(header.contains("All Owners - octo"), "{header}");
+    assert!(
+        header.contains("observed 12:00 UTC - refreshing..."),
+        "{header}"
+    );
+    assert!(!header.contains('?'), "{header}");
+}
+
+#[test]
+fn a_long_sidebar_keeps_its_cursor_in_view() {
+    let mut harness = many_repos(DESIGN_SIZE);
+    harness.key(Key::Tab);
+    // Down to beta/zeta, the last row.
+    for _ in 0..80 {
+        harness.key(Key::Down);
+    }
+    let theme = Theme::new(TerminalProfile::new(
+        ColorProfile::Mono,
+        GlyphProfile::Ascii,
+    ))
+    .expect("theme");
+    let (cols, rows) = DESIGN_SIZE;
+    let text =
+        frame::buffer_text(&frame::render(&theme, &harness.view, cols, rows).expect("renders"));
+    assert!(text.contains(">   zeta"), "cursor row drawn\n{text}");
+    assert!(!text.contains("repo-00"), "scrolled past the top\n{text}");
+}
+
+/// #10's narrow layout keeps the sidebar (the rail) at 80x24; only the detail
+/// pane gives way (to a sheet).
+#[test]
+fn the_sidebar_stays_beside_the_list_at_the_minimum_size() {
+    let harness = many_repos(MINIMUM_SIZE);
+    let theme = Theme::new(TerminalProfile::new(
+        ColorProfile::Mono,
+        GlyphProfile::Unicode,
+    ))
+    .expect("theme");
+    let (cols, rows) = MINIMUM_SIZE;
+    let buffer = frame::render(&theme, &harness.view, cols, rows).expect("renders");
+    let regions = frame::regions(buffer.area, &harness.view.layout);
+    assert!(!regions.sidebar.is_empty());
+    assert!(regions.detail.is_empty());
+    let text = frame::buffer_text(&buffer);
+    assert!(text.contains("R E P O S"), "the sidebar is drawn\n{text}");
+    let header = region_lines(&buffer, regions.header).join("\n");
+    assert!(
+        header.contains("All Owners · octo, beta"),
+        "the header still names the whole Scope\n{text}"
+    );
+}
+
+/// A terminal far taller than any design size, with many Work Items and Repos.
+const TALL_SIZE: (u16, u16) = (160, 400);
+/// A tall frame must draw well within this, even in a debug build. Before the
+/// list, sidebar and sutures stopped handing the template engine one element
+/// per row, a frame like this took over a second in a release build (and a
+/// 160x2200 `--dump` ran for minutes).
+const TALL_REPOS: u64 = 120;
+const TALL_WORK_ITEMS: u64 = 240;
+const TALL_FRAME_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[test]
+fn a_tall_terminal_draws_its_visible_rows_in_bounded_time() {
+    let (cols, rows) = TALL_SIZE;
+    let mut builder = ObservationBuilder::new().owner("octo");
+    for n in 0..TALL_REPOS {
+        builder = builder.repo(&format!("octo/repo-{n:03}"));
+    }
+    // More Work Items than the 198 two-line rows a 400-row list plate holds.
+    for n in 0..TALL_WORK_ITEMS {
+        builder =
+            builder.pull_request(pr(&format!("octo/repo-{:03}", n % TALL_REPOS), n + 1).draft());
+    }
+    let mut harness = Harness::with_owners(&["octo"]);
+    harness.send(Event::Resized { cols, rows });
+    harness.answer(Ok(builder.build()));
+    harness.start();
+    // The last row selected, so the list window must scroll (set on the view:
+    // 600 key presses would only slow the test down).
+    let mut view = harness.view.clone();
+    view.list.selected = Some(view.list.rows.len() - 1);
+    let theme = truecolor();
+    // The first frame at a size, when no layout is cached yet: the worst case.
+    let started = std::time::Instant::now();
+    let buffer = frame::render(&theme, &view, cols, rows).expect("renders");
+    let took = started.elapsed();
+    assert!(took < TALL_FRAME_BUDGET, "a 160x400 frame took {took:?}");
+    // And every frame after it: the layouts it needs must all stay cached.
+    let started = std::time::Instant::now();
+    frame::render(&theme, &view, cols, rows).expect("renders");
+    let took = started.elapsed();
+    assert!(
+        took < TALL_FRAME_BUDGET,
+        "the next 160x400 frame took {took:?}"
+    );
+
+    let text = frame::buffer_text(&buffer);
+    let selected = &view.list.rows[view.list.selected.expect("selected")];
+    assert!(
+        text.contains(&format!("{} {}", selected.repo, selected.reference)),
+        "the selected row is in view"
+    );
+    let first = &view.list.rows[0];
+    assert!(
+        !text.contains(&format!("{} {} ", first.repo, first.reference)),
+        "the list scrolled past its first row"
+    );
+    assert!(
+        text.contains(&format!("{TALL_WORK_ITEMS} of {TALL_WORK_ITEMS}")),
+        "the position"
+    );
+    assert!(text.contains("repo-000"), "the sidebar's first Repo");
+}
+
 #[test]
 fn a_title_of_wide_characters_wraps_by_cell_width_without_losing_text() {
     // 40 distinct CJK characters, two cells each: 80 cells, more than one line
@@ -544,4 +648,54 @@ fn a_title_of_wide_characters_wraps_by_cell_width_without_losing_text() {
         .filter(|c| !detail_text.contains(*c))
         .collect();
     assert!(missing.is_empty(), "clipped: {missing}\n{detail_text}");
+}
+
+/// At the minimum size every key hint is drawn whole, in either focus and
+/// either glyph profile: each hint takes its own width, and the Enter key has an
+/// ASCII form. (Fixed-width hints overflowed 80 columns once the narrow
+/// layout's Enter hint, or the sidebar's three, joined the rest.)
+#[test]
+fn every_key_hint_fits_the_footer_at_80_by_24() {
+    let mut harness = surveyed_harness(MINIMUM_SIZE);
+    let (cols, rows) = MINIMUM_SIZE;
+    for focus in ["list", "sidebar"] {
+        if focus == "sidebar" {
+            harness.key(Key::Tab);
+        }
+        assert!(
+            harness.view.footer.hints.len() >= 6,
+            "{focus}: {:?}",
+            harness.view.footer
+        );
+        for (glyphs, enter) in [(GlyphProfile::Unicode, "⏎"), (GlyphProfile::Ascii, "RET")] {
+            let theme =
+                Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
+            let buffer = frame::render(&theme, &harness.view, cols, rows).expect("renders");
+            let footer = frame::buffer_text(&buffer)
+                .lines()
+                .last()
+                .unwrap_or_default()
+                .to_owned();
+            for hint in &harness.view.footer.hints {
+                let key = if hint.key == ENTER_KEY.to_string() {
+                    enter.to_owned()
+                } else if glyphs == GlyphProfile::Ascii {
+                    // The engine's own ASCII forms for arrows.
+                    hint.key
+                        .replace('↑', "^")
+                        .replace('↓', "v")
+                        .replace('←', "<")
+                        .replace('→', ">")
+                } else {
+                    hint.key.clone()
+                };
+                let drawn = format!("{key} {}", hint.label);
+                assert!(
+                    footer.contains(&drawn),
+                    "{focus}/{glyphs:?}: {drawn:?} in {footer:?}"
+                );
+            }
+            assert!(!footer.contains('?'), "{focus}/{glyphs:?}: {footer:?}");
+        }
+    }
 }

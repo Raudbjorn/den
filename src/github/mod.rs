@@ -18,7 +18,7 @@ pub mod viewer;
 
 use crate::{
     domain::{
-        CoverageEntry, Observation, Repo, SourceState,
+        CoverageEntry, Observation, Repo,
         facts::{Branch, Issue, PullRequest, Run},
     },
     ports::{GitHubSource, SurveyFailure, SurveyRequest},
@@ -88,14 +88,10 @@ fn survey_owner(session: &Session<'_>, owner: &str) -> Result<OwnerSurvey, Surve
     let repos = repos::fetch(session, owner)?;
     let pull_requests = pull_requests::fetch(session, owner)?;
     let issues = issues::fetch(session, owner, &repos.items)?;
-    let repo_list = repos
-        .coverage
-        .iter()
-        .fold(SourceState::Complete, |state, entry| {
-            state.worst(entry.state.clone())
-        });
-    let branches = branches::fetch(session, owner, &repos.items, &repo_list)?;
-    let runs = runs::fetch(session, owner, &repos.items, &repo_list)?;
+    let branches = branches::fetch(session, owner, &repos.items)?;
+    // Each kind is never more complete than the Repo list: Coverage::record
+    // applies that when the Owner's coverage is recorded.
+    let runs = runs::fetch(session, owner, &repos.items)?;
     let coverage = [
         repos.coverage,
         pull_requests.coverage,
@@ -112,21 +108,6 @@ fn survey_owner(session: &Session<'_>, owner: &str) -> Result<OwnerSurvey, Surve
         runs: runs.items,
         coverage,
     })
-}
-
-/// An Owner's coverage of a kind read Repo by Repo from its Repo list, as far
-/// as `repo_list` (how completely that list was read) limits it: Repos missing
-/// from the list weren't read. `what` names the kind ("Runs").
-pub(crate) fn of_listed_repos_only(repo_list: &SourceState, what: &str) -> SourceState {
-    match repo_list {
-        SourceState::Failed { error } => SourceState::Failed {
-            error: format!(
-                "the Owner's Repos could not be listed, so no {what} were read: {error}"
-            ),
-        },
-        // Partial (with the list's own reason), not yet fetched, or complete.
-        other => other.clone(),
-    }
 }
 
 fn record(observation: &mut Observation, entries: impl IntoIterator<Item = CoverageEntry>) {

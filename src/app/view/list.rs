@@ -3,7 +3,7 @@
 use super::{State, format, header, scope};
 use crate::cache;
 use crate::{
-    app::view_model::{EmptyState, List, Row},
+    app::view_model::{ELLIPSIS, EmptyState, List, Row},
     decide::Decision,
     domain::WaitingOn,
 };
@@ -69,7 +69,7 @@ fn empty_state(state: &State<'_>) -> EmptyState {
     }
     match state.observation {
         None if state.surveying => EmptyState {
-            title: "Surveying…".to_owned(),
+            title: format!("Surveying{ELLIPSIS}"),
             detail: "Reading open Pull Requests through gh.".to_owned(),
         },
         None => EmptyState {

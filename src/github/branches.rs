@@ -69,20 +69,16 @@ pub fn fetch(
     session: &Session<'_>,
     owner: &str,
     repos: &[Repo],
-    repo_list: &SourceState,
 ) -> Result<KindFetch<Branch>, SurveyFailure> {
-    fetch_against(session, owner, repos, repo_list, &own_default_branch)
+    fetch_against(session, owner, repos, &own_default_branch)
 }
 
 /// Reads the Owner's Branches, comparing each Repo's Branches against the branch
-/// `comparison` names for it. Repos it names none for are skipped. `repo_list`
-/// is how completely the Owner's Repos were listed: Branches of Repos missing
-/// from the list weren't read, so the Owner's Branches are no more complete.
+/// `comparison` names for it. Repos it names none for are skipped.
 pub fn fetch_against(
     session: &Session<'_>,
     owner: &str,
     repos: &[Repo],
-    repo_list: &SourceState,
     comparison: &(dyn Fn(&Repo) -> Option<ComparisonBranch> + Sync),
 ) -> Result<KindFetch<Branch>, SurveyFailure> {
     let mut reads: Vec<RepoRead<'_>> = repos
@@ -119,7 +115,7 @@ pub fn fetch_against(
             owner: owner.to_owned(),
             kind: SourceKind::Branches,
         },
-        state: super::of_listed_repos_only(repo_list, "Branches"),
+        state: SourceState::Complete,
     });
     out.coverage.extend(
         reads

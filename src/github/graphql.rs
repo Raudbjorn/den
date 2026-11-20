@@ -73,16 +73,16 @@ pub enum TransportError {
 pub trait GraphQl: Send + Sync {
     fn execute(&self, request: &GraphQlRequest) -> Result<GraphQlResponse, TransportError>;
 
-    /// When GitHub's GraphQL rate limit resets, asked after a rate-limited
-    /// response that did not say. `None` when unknown (the default).
-    fn rate_limit_reset(&self) -> Option<Timestamp> {
-        None
-    }
-
     /// REST through the same CLI, for facts GraphQL lacks (workflow Runs; see
     /// `rest.rs`). `None` when this transport has no REST (GraphQL-only test
     /// scripts): sources that need it are then recorded as not yet fetched.
     fn rest(&self) -> Option<&dyn Rest> {
+        None
+    }
+
+    /// When GitHub's GraphQL rate limit resets, asked after a rate-limited
+    /// response that did not say. `None` when unknown (the default).
+    fn rate_limit_reset(&self) -> Option<Timestamp> {
         None
     }
 }

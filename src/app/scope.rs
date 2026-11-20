@@ -44,7 +44,7 @@ impl ScopeState {
     /// Handles a Scope key. `entries` are the sidebar's rows, in order.
     pub fn key(&mut self, key: Key, owners: &[String], entries: &[Scope]) -> Outcome {
         match (key, self.focus) {
-            // Quit and refresh work whatever has focus.
+            // Quit and refresh work whichever pane has focus.
             (Key::Char('q' | 'r') | Key::Interrupt, _) => Outcome::Unhandled,
             (Key::Tab, Focus::List) => {
                 self.focus = Focus::Sidebar;

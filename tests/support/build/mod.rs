@@ -144,8 +144,8 @@ impl ObservationBuilder {
         self
     }
 
-    pub fn branch(mut self, branch: BranchBuilder) -> Self {
-        self.observation.branches.push(branch.build());
+    pub fn issue(mut self, issue: IssueBuilder) -> Self {
+        self.observation.issues.push(issue.build());
         self
     }
 
@@ -154,14 +154,14 @@ impl ObservationBuilder {
         self
     }
 
-    /// Adds a Repo as given (a fork, another default branch).
-    pub fn with_repo(mut self, repo: Repo) -> Self {
-        self.observation.repos.push(repo);
+    pub fn branch(mut self, branch: BranchBuilder) -> Self {
+        self.observation.branches.push(branch.build());
         self
     }
 
-    pub fn issue(mut self, issue: IssueBuilder) -> Self {
-        self.observation.issues.push(issue.build());
+    /// Adds a Repo as given (a fork, another default branch).
+    pub fn with_repo(mut self, repo: Repo) -> Self {
+        self.observation.repos.push(repo);
         self
     }
 

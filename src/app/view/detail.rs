@@ -40,7 +40,10 @@ pub fn build(state: &State<'_>) -> Detail {
                     .filter(|c| !c.state.is_complete())
                     .map(|c| coverage::entry_line(state, c, decision.item.id.repo()))
                     .collect(),
-                observed: observed(state, decision.observed_at),
+                observed: observed(
+                    state,
+                    coverage::item_observed_at(state, &decision.coverage, decision.observed_at),
+                ),
             }
         });
     Detail {

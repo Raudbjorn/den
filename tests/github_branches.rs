@@ -387,9 +387,7 @@ fn the_comparison_branch_is_a_parameter_and_another_repos_branch_is_compared_acr
             name: "main".to_owned(),
         })
     };
-    let fetched =
-        branches::fetch_against(&session, "octo", &repos, &SourceState::Complete, &upstream)
-            .expect("fetch");
+    let fetched = branches::fetch_against(&session, "octo", &repos, &upstream).expect("fetch");
     let [fix] = fetched.items.as_slice() else {
         panic!("{:?}", fetched.items)
     };

@@ -21,7 +21,8 @@ App, on SurveyFinished:  cache::merge(shown, Observation) ─► decide::decide 
 ```
 
 `main` only wires: XDG paths, log, config, ports, and the terminal loop. The
-loop hands Effects to a background `runtime::Worker` thread so the UI stays
+loop checks for a termination signal (SIGTERM, SIGHUP, SIGINT, SIGQUIT) before
+every input wait, so the terminal is always restored, and hands Effects to a background `runtime::Worker` thread so the UI stays
 responsive while `gh` runs; `den --dump COLSxROWS` and the tests use
 `runtime::settle`, which performs Effects synchronously through the same
 `ports::perform`.
@@ -32,12 +33,12 @@ responsive while `gh` runs; `den --dump COLSxROWS` and the tests use
 |---|---|
 | `domain/` | Glossary types. `ids` (RepoId, WorkItemId qualified by Owner and Repo), `next_step` (all ten Next Steps, Waiting On), `observation` (Observation, Viewer with teams, Repo), `coverage` (Source, SourceState: complete / partial(why) / failed(error) / not yet fetched), `facts/` one file per Work Item kind. |
 | `decide/` | **Seam 1.** `decide(&Observation, &Viewer, now) -> Vec<Decision>`. Pure. `mod.rs` defines Decision (Next Step, Waiting On + reason, `unattributed`, Explanation {winning rule, no-step reason, other conditions, unknowns}, applicable coverage) and dispatches to one module per kind: `pull_request.rs`, `issue.rs`, `branch.rs`, `run.rs`. `attribution.rs` resolves people/teams to me / someone else / nobody (+unattributed). |
-| `ordering.rs` | Pure: `Scope` (All Owners / Owner / Repo), `in_scope` (the Decisions a Scope covers), and `order` (Waiting On, kind rank, newest first). |
+| `ordering.rs` | Pure: `Scope` (All Owners / Owner / Repo), `in_scope` (the Decisions a Scope covers), and `order` (Waiting On, kind rank, newest first). Owner and Repo names compare case-insensitively, as GitHub's do (`Scope::same`, `same_repo`); the cache merge folds the same way. |
 | `app/` | **Seam 2.** `App::handle(Event) -> (ViewModel, Vec<Effect>)`. No I/O, no clock (time arrives in events). `view_model.rs` has one type per screen section; `view/` has one builder per section (`header`, `sidebar`, `list`, `detail`, `footer`; `scope` builds the header's Scope sentence and segments). `scope.rs` holds the Scope, the sidebar's focus and cursor, and the sidebar's rows. |
-| `cache/` | The last Observation per viewer. `CachedObservation` = Observation + `carried` (per source, the age of data kept from an earlier survey). `merge.rs` (pure, generic over sources): a source read completely is replaced, any other keeps the earlier facts, marked with their own age; never merged across viewers. `file.rs`: `FileCache`, `$XDG_STATE_HOME/den/cache/<login>.json` + `last-viewer`, versioned (`CACHE_FORMAT`), size-bounded, atomic, 0600; unreadable = error value, logged, fresh survey. `survey_complete` gates "Nothing needs you". |
+| `cache/` | The last Observation per viewer. `CachedObservation` = Observation + `carried` (per source, the age of data kept from an earlier survey). `merge.rs` (pure, generic over sources): a source read completely is replaced, any other keeps the earlier facts, marked with their own age (a Repo's own, when older than its Owner's); sources and facts are matched by case-folded Owner and Repo; never merged across viewers. `file.rs`: `FileCache`, `$XDG_STATE_HOME/den/cache/<login>.json` + `last-viewer`, versioned (`CACHE_FORMAT`, bumped whenever a cached type's stored shape changes), size-bounded, atomic, 0600; unreadable = error value, logged, fresh survey. `survey_complete` gates "Nothing needs you". |
 | `ports/` | Traits: `GitHubSource` (read-only), `ObservationCache` (#8), `Workspace`, `Launcher` (empty until #11/#12), `Clock`. `Ports` bundles them; `perform(&Effect, &Ports) -> Vec<Event>`. `SurveyFailure` = no Observation at all (gh missing, logged out, viewer unreadable). |
 | `github/` | The real `GitHubSource`. `graphql.rs`: `GraphQl` transport trait and `GhCli` (`gh api graphql --input -`, `GH_TIMEOUT_SECS`, error classification). `session.rs`: query → `SourceState`, `Pager` (bounded by `MAX_PAGES`), rate-limit memo (once the limit is hit the survey stops fetching; the reset time comes from responses or one `gh api rate_limit`). One fetcher per source: `viewer`, `repos`, `pull_requests`, `issues`, `branches`, `runs`; queries in `queries/*.graphql`. `mod.rs::survey` runs the viewer, then each Owner on its own thread, merged in config order. |
-| `ui/` | Draws a ViewModel, nothing else. `frame.rs` lays out plates; `header`, `list` (windowed), `detail`, `footer` each draw one; templates in `templates/{frame,list,detail}.crepus`. |
+| `ui/` | Draws a ViewModel, nothing else. `frame.rs` lays out plates; `header`, `list` (windowed), `detail`, `footer` each draw one; templates in `templates/{frame,list,detail}.crepus`. `glyphs.rs` gives every glyph an ASCII form, including the ViewModel's sentence separator, ellipsis and Enter key (`view_model::SEPARATOR`, `ELLIPSIS`, `ENTER_KEY`), which `Glyphs::text` swaps in where ViewModel text is drawn. Footer hints take their own width, so all of them fit 80 columns. |
 | `layout.rs` | Pure responsive layout (#10): from the terminal size (`Event::Resized`), the sidebar width (22%, 30–40 cols), the detail pane width or none below 110 cols (then `Enter` opens `Overlay::DetailSheet`), and the 80×24 minimum. The App puts it in `ViewModel.layout`; `ui::frame` turns it into rectangles. `ui::bear` draws the bear (kitty graphics or half-blocks, one protocol state per placement; skipped under overlays). |
 | `config.rs`, `paths.rs`, `logging.rs`, `process.rs` | Config with file+line errors; XDG paths; JSON log in the state dir; external commands with a timeout. |
 
@@ -45,6 +46,16 @@ responsive while `gh` runs; `den --dump COLSxROWS` and the tests use
 
 - Coverage is honest: a source not read is `NotYetFetched`, never "empty".
   GraphQL errors next to data are `Partial`, never success. No invented counts.
+  `Coverage::record` keeps one cross-kind rule: an Owner's Work Item kinds
+  (PRs, Issues, Branches, Runs) are never more complete than its Repo list
+  (`Incompleteness::RepoListIncomplete`; partial even when the list failed,
+  since an Owner's PR query does not depend on it). It is the only place the
+  rule lives: fetchers record only what they read and never take the Repos
+  state. A kind's own partial reason replaces the derived one; two reasons for
+  one source combine by `Incompleteness::rank` (rate limit › whole items missing
+  › facts missing from items den has). Sidebar markers and narrowed
+  empty states use `app/view/coverage::scope_complete`; All Owners is
+  `cache::survey_complete`, the only gate for "Nothing needs you".
 - Facts are what GitHub said; Decisions are what den concluded. Don't put rules
   in fetchers or facts in the ViewModel builders.
 - Tests go through the two seams (plus thin adapter checks in

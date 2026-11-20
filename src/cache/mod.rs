@@ -57,7 +57,7 @@ impl CachedObservation {
         let own = self
             .carried
             .iter()
-            .find(|c| &c.source == source)
+            .find(|c| c.source.same(source))
             .map(|c| c.observed_at);
         own.or_else(|| match source {
             Source::Repo { repo, kind } => self.carried_since(&Source::Owner {

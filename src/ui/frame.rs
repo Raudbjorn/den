@@ -10,14 +10,16 @@
 use super::{
     Theme, UiError,
     bear::{BearArt, EMPTY_BEAR_MAX_ROWS, EMPTY_BEAR_MIN_ROWS, Placement, SPLASH_BEAR_MAX_ROWS},
-    detail, footer, glyphs, header, list, sidebar, templates,
+    detail, footer,
+    glyphs::{self, Glyphs},
+    header, list, sidebar, templates,
 };
 use crate::{
     app::{ViewModel, view_model::Overlay},
     layout::{Layout, MIN_COLS, MIN_ROWS},
     palette::OXIDE_TRUECOLOR,
 };
-use crepuscularity_tui::{TemplateContext, TemplateValue};
+use crepuscularity_tui::TemplateContext;
 use ratatui::{
     Frame, Terminal,
     backend::TestBackend,
@@ -113,6 +115,38 @@ fn detail_sheet_area(body: Rect) -> Rect {
     Rect::new(body.right() - cols, body.y, cols, body.height)
 }
 
+/// Layout-cache entries one terminal row can need per frame: a sidebar row
+/// and half a two-line list row each solve a few layouts, plus detail lines.
+const LAYOUT_CACHE_ENTRIES_PER_ROW: usize = 8;
+/// What ratatui starts with; den never shrinks below it.
+const LAYOUT_CACHE_BASE_ENTRIES: usize = Split::DEFAULT_CACHE_SIZE;
+
+thread_local! {
+    /// The layout-cache size den last set on this thread.
+    static LAYOUT_CACHE_ENTRIES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(LAYOUT_CACHE_BASE_ENTRIES) };
+}
+
+/// Grows ratatui's per-thread layout cache to hold one whole frame of `rows`.
+///
+/// Each list and sidebar row is drawn with its own small layouts, keyed by the
+/// row's position. When a frame needs more layouts than the cache holds (500
+/// by default), the LRU evicts entries the same frame needs again, so every
+/// frame re-solves every row: a 160x400 frame of real data took about 58 ms
+/// that way and about 21 ms with room for the whole frame (release build).
+fn ensure_layout_cache(rows: u16) {
+    let wanted = LAYOUT_CACHE_BASE_ENTRIES
+        .saturating_add(usize::from(rows).saturating_mul(LAYOUT_CACHE_ENTRIES_PER_ROW));
+    LAYOUT_CACHE_ENTRIES.with(|current| {
+        if wanted > current.get()
+            && let Some(size) = std::num::NonZeroUsize::new(wanted)
+        {
+            Split::init_cache(size);
+            current.set(wanted);
+        }
+    });
+}
+
 /// Draws the ViewModel over the whole terminal.
 pub fn draw(
     frame: &mut Frame,
@@ -120,6 +154,7 @@ pub fn draw(
     view: &ViewModel,
     bear: &mut BearArt,
 ) -> Result<(), UiError> {
+    ensure_layout_cache(frame.area().height);
     if view.splash {
         return draw_splash(frame, theme, view, bear);
     }
@@ -168,7 +203,8 @@ pub fn draw(
             OXIDE_TRUECOLOR.mark_bg,
         );
     }
-    let empty_bear = empty_bear_area(view, r.list, bear);
+    let glyphs = glyphs::for_profile(theme.profile().glyphs);
+    let empty_bear = empty_bear_area(view, r.list, bear, &glyphs);
     if uncovered(empty_bear) {
         bear.draw(frame, Placement::Empty, empty_bear, OXIDE_TRUECOLOR.bg);
     }
@@ -197,8 +233,8 @@ fn header_bear_area(header: Rect, bear: &BearArt) -> Rect {
 }
 
 /// The large bear above the empty state's text, when there is room for it.
-fn empty_bear_area(view: &ViewModel, list_area: Rect, bear: &BearArt) -> Rect {
-    let Some(text_top) = list::empty_text_top(&view.list, list_area) else {
+fn empty_bear_area(view: &ViewModel, list_area: Rect, bear: &BearArt, glyphs: &Glyphs) -> Rect {
+    let Some(text_top) = list::empty_text_top(&view.list, list_area, glyphs) else {
         return Rect::default();
     };
     let top = list_area.y + LIST_LABEL_ROWS + EMPTY_BEAR_MARGIN_ROWS;
@@ -228,10 +264,11 @@ fn draw_splash(
         Some(empty) => (empty.title.as_str(), empty.detail.as_str()),
         None => (view.header.status.as_str(), ""),
     };
+    let glyphs = glyphs::for_profile(theme.profile().glyphs);
     let mut ctx = TemplateContext::default();
     ctx.set("brand", BRAND)
-        .set("title", title)
-        .set("detail", detail);
+        .set("title", glyphs.text(title).as_ref())
+        .set("detail", glyphs.text(detail).as_ref());
     theme.draw(frame, templates::SPLASH, &ctx, plate)?;
     footer::draw(frame, theme, &view.footer, footer_area)?;
     let zone = Rect {
@@ -277,16 +314,27 @@ fn draw_chamfer(frame: &mut Frame, theme: &Theme, plate: Rect) -> Result<(), UiE
     theme.draw(frame, templates::CHAMFER, &ctx, corner)
 }
 
+/// A vertical suture: the template draws its top row, which is copied down the
+/// rest of the column. (A template row per terminal row made one flex column
+/// as tall as the terminal, whose layout solve grew with the square of it.)
 fn draw_suture(frame: &mut Frame, theme: &Theme, area: Rect) -> Result<(), UiError> {
     if area.is_empty() {
         return Ok(());
     }
-    let rows = (0..area.height)
-        .map(|_| TemplateContext::default())
-        .collect();
-    let mut ctx = TemplateContext::default();
-    ctx.set("rows", TemplateValue::List(rows));
-    theme.draw(frame, templates::SUTURE_V, &ctx, area)
+    let top = Rect { height: 1, ..area };
+    theme.draw(frame, templates::SUTURE_V, &TemplateContext::default(), top)?;
+    let buffer = frame.buffer_mut();
+    for x in area.left()..area.right() {
+        let Some(cell) = buffer.cell((x, area.y)).cloned() else {
+            continue;
+        };
+        for y in area.top().saturating_add(1)..area.bottom() {
+            if let Some(target) = buffer.cell_mut((x, y)) {
+                *target = cell.clone();
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Says the terminal is smaller than den supports, in place of the key hints.

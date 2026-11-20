@@ -213,10 +213,13 @@ fn open_prs_are_paginated_to_completion_and_qualified_by_owner_and_repo() {
             "{source:?}"
         );
     }
-    assert_eq!(
-        state(&observation, owner_source(SourceKind::Issues)),
-        SourceState::Complete
-    );
+    for kind in [SourceKind::Issues, SourceKind::Branches] {
+        assert_eq!(
+            state(&observation, owner_source(kind)),
+            SourceState::Complete,
+            "{kind:?}"
+        );
+    }
     assert_eq!(
         state(&observation, owner_source(SourceKind::Runs)),
         SourceState::NotYetFetched
@@ -692,12 +695,12 @@ fn branches_of_repos_that_could_not_be_listed_are_not_complete() {
         }
     });
     let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    // The shared Coverage rule marks every kind partial when the Repo list is lost.
     assert_eq!(
         state(&observation, owner_source(SourceKind::Branches)),
-        SourceState::Failed {
-            error: "the Owner's Repos could not be listed, so no Branches were read: repos down"
-                .to_owned()
-        }
+        SourceState::Partial(Incompleteness::RepoListIncomplete {
+            owner: "octo".to_owned()
+        })
     );
 }
 

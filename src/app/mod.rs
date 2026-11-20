@@ -81,6 +81,7 @@ impl App {
             }
             Event::Tick { now } => {
                 self.now = Some(now);
+                self.redecide(now);
                 Vec::new()
             }
             Event::Key(key) => self.key(key),
@@ -150,7 +151,10 @@ impl App {
     }
 
     fn key(&mut self, key: Key) -> Vec<Effect> {
-        if let Some(effects) = self.overlay_key(key) {
+        // An open sheet claims its keys before anything else.
+        if self.overlay.is_some()
+            && let Some(effects) = self.overlay_key(key)
+        {
             return effects;
         }
         let entries = self.sidebar_entries();
@@ -162,6 +166,10 @@ impl App {
                 self.apply_scope();
                 return Vec::new();
             }
+        }
+        // `Enter` in the list opens the detail sheet when there is no pane.
+        if let Some(effects) = self.overlay_key(key) {
+            return effects;
         }
         match key {
             Key::Char('q') | Key::Interrupt => vec![Effect::Quit],
@@ -287,17 +295,24 @@ impl App {
 
     /// Shows `shown`, deciding its Work Items as of `now`, keeping the selection.
     fn show(&mut self, shown: CachedObservation, now: Timestamp) {
+        self.shown = Some(shown);
+        self.redecide(now);
+    }
+
+    fn redecide(&mut self, now: Timestamp) {
+        let Some(shown) = &self.shown else {
+            return;
+        };
         let observation = &shown.observation;
         self.ordered = ordering::order(decide::decide(observation, &observation.viewer, now));
-        self.shown = Some(shown);
         self.apply_scope();
     }
 
     /// The watched Owners: the config's, else the last Observation's.
     fn owners(&self) -> &[String] {
-        match (&self.config, &self.shown) {
+        match (&self.config, self.shown.as_ref().map(|s| &s.observation)) {
             (Ok(config), _) => &config.owners,
-            (Err(_), Some(shown)) => &shown.observation.owners,
+            (Err(_), Some(observation)) => &observation.owners,
             (Err(_), None) => &[],
         }
     }

@@ -58,8 +58,7 @@ fn decision(
         unattributed: false,
         explanation: Explanation::default(),
         coverage: Vec::new(),
-        // Ordering never reads when the facts were observed.
-        observed_at: ts(updated),
+        observed_at: ts(support::build::NOW),
     }
 }
 

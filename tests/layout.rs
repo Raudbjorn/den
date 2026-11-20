@@ -8,7 +8,10 @@
 mod support;
 
 use den::{
-    app::{Event, Key, view_model::Overlay},
+    app::{
+        Event, Key,
+        view_model::{ENTER_KEY, Overlay},
+    },
     layout::{DESIGN_COLS, MIN_COLS, MIN_ROWS, RAIL_MAX_COLS, RAIL_MIN_COLS, WIDE_LAYOUT_MIN_COLS},
 };
 use support::{
@@ -127,24 +130,6 @@ fn enter_with_nothing_selected_opens_no_sheet() {
     assert_eq!(harness.view.overlay, None);
 }
 
-/// `Enter` means "scope to this row" in the sidebar (#9) and "open the detail
-/// sheet" in the list (#10); with the sidebar focused it opens no sheet.
-#[test]
-fn with_the_sidebar_focused_enter_scopes_and_opens_no_sheet() {
-    let mut harness = surveyed_at(MIN_COLS, MIN_ROWS);
-    harness.key(Key::Tab);
-    assert!(harness.view.sidebar.focused);
-    assert!(!hint_keys(&harness).contains(&"⏎".to_owned()));
-
-    harness.key(Key::Enter);
-
-    assert_eq!(harness.view.overlay, None);
-    assert!(
-        !harness.view.sidebar.focused,
-        "Enter scoped and gave focus back to the list"
-    );
-}
-
 #[test]
 fn q_still_quits_with_the_sheet_open() {
     let mut harness = surveyed_at(MIN_COLS, MIN_ROWS);
@@ -191,14 +176,14 @@ fn a_terminal_smaller_than_80_by_24_is_flagged_and_80_by_24_is_not() {
 #[test]
 fn the_footer_offers_enter_when_narrow_and_esc_while_the_sheet_is_open() {
     let mut harness = surveyed_at(MIN_COLS, MIN_ROWS);
-    assert!(hint_keys(&harness).contains(&"⏎".to_owned()));
-    // Refresh remains available alongside the layout-specific hints after integration.
+    assert!(hint_keys(&harness).contains(&ENTER_KEY.to_string()));
+    // Keep refresh available alongside the layout-specific hints after integration.
     assert!(hint_keys(&harness).contains(&"r".to_owned()));
 
     harness.key(Key::Enter);
     let keys = hint_keys(&harness);
     assert!(keys.contains(&"esc".to_owned()), "{keys:?}");
-    assert!(!keys.contains(&"⏎".to_owned()), "{keys:?}");
+    assert!(!keys.contains(&ENTER_KEY.to_string()), "{keys:?}");
     assert!(keys.contains(&"r".to_owned()), "{keys:?}");
 
     let effects = harness.key(Key::Char('r'));
@@ -211,7 +196,7 @@ fn the_footer_offers_enter_when_narrow_and_esc_while_the_sheet_is_open() {
 
     resize(&mut harness, DESIGN_COLS, MIN_ROWS);
     let keys = hint_keys(&harness);
-    assert!(!keys.contains(&"⏎".to_owned()), "{keys:?}");
+    assert!(!keys.contains(&ENTER_KEY.to_string()), "{keys:?}");
     assert!(!keys.contains(&"esc".to_owned()), "{keys:?}");
     assert!(keys.contains(&"r".to_owned()), "{keys:?}");
 }
@@ -238,4 +223,47 @@ fn no_splash_without_a_usable_config() {
     }));
     harness.send(Event::Started { now: now() });
     assert!(!harness.view.splash);
+}
+
+// ---- with the sidebar (#9) ----------------------------------------------
+
+#[test]
+fn in_the_sidebar_enter_scopes_and_never_opens_the_detail_sheet() {
+    let mut harness = surveyed_at(MIN_COLS, MIN_ROWS);
+    harness.key(Key::Tab);
+    assert!(harness.view.sidebar.focused);
+    // Enter is offered, but to scope to the sidebar row, never for the detail.
+    // (The sidebar's Enter hint once had a glyph of its own; both use ENTER_KEY
+    // now, so the label tells them apart.)
+    let hints: Vec<(String, String)> = harness
+        .view
+        .footer
+        .hints
+        .iter()
+        .map(|h| (h.key.clone(), h.label.clone()))
+        .collect();
+    assert!(
+        hints.contains(&(ENTER_KEY.to_string(), "scope to".to_owned()))
+            && !hints.iter().any(|(_, label)| label == "detail"),
+        "no detail hint while the sidebar has focus: {hints:?}"
+    );
+    // The cursor starts on the current Scope (All Owners); one down is octo.
+    harness.key(Key::Down);
+    harness.key(Key::Enter);
+    assert_eq!(harness.view.overlay, None);
+    assert!(!harness.view.sidebar.focused, "Enter returns to the list");
+    assert_eq!(harness.view.header.scope, "Owner · octo");
+}
+
+#[test]
+fn an_open_detail_sheet_claims_esc_before_the_scope_keys() {
+    let mut harness = surveyed_at(MIN_COLS, MIN_ROWS);
+    harness.key(Key::Enter);
+    assert_eq!(harness.view.overlay, Some(Overlay::DetailSheet));
+    harness.key(Key::Esc);
+    assert_eq!(harness.view.overlay, None);
+    assert!(!harness.view.sidebar.focused);
+    // Scope keys still work under no sheet.
+    harness.key(Key::Right);
+    assert_eq!(harness.view.header.scope, "Owner · octo");
 }
