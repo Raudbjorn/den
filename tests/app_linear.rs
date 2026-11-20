@@ -235,6 +235,48 @@ fn the_sidebar_and_header_mark_an_owner_with_a_linear_workflow() {
 /// Story 88 for the tracer: a Linear source that failed is incomplete
 /// coverage like a GitHub one, named in the header, and blocks "Nothing
 /// needs you".
+/// Until Landing Groups (#35) put Linear Issues into Repo Scopes, a Repo
+/// Scope holds none, so the Owner's Linear sources don't bear on it: a
+/// failed Linear source leaves the Owner (and All Owners) incomplete, never
+/// its Repos.
+#[test]
+fn a_failed_linear_source_leaves_the_owners_repos_complete() {
+    let mut harness = workflow_harness();
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("acme")
+        .fully_read_owner("octo")
+        .repo("acme/api")
+        .build()));
+    harness.linear.push_answer(LinearSurvey {
+        part: LinearPart {
+            viewers: vec![linear_viewer("acme", "acme")],
+            issues: Vec::new(),
+        },
+        coverage: linear_coverage(SourceState::Failed {
+            error: "Linear did not answer within 20s".to_owned(),
+        }),
+    });
+    let view = harness.start().clone();
+    let row = |scope: Scope| {
+        view.sidebar
+            .rows
+            .iter()
+            .find(|r| r.scope == scope)
+            .unwrap_or_else(|| panic!("{scope:?} row: {:#?}", view.sidebar.rows))
+            .clone()
+    };
+    assert!(row(Scope::Owner("acme".to_owned())).incomplete);
+    let api = Scope::Repo(den::domain::RepoId::new("acme", "api"));
+    assert!(!row(api).incomplete, "no Linear Issue can be in acme/api");
+    let api_coverage = view
+        .header
+        .repos
+        .iter()
+        .find(|r| r.repo == "acme/api")
+        .expect("acme/api coverage");
+    assert!(api_coverage.complete, "{api_coverage:?}");
+}
+
 #[test]
 fn a_failed_linear_source_shows_in_coverage_and_blocks_nothing_needs_you() {
     let mut harness = workflow_harness();

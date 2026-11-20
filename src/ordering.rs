@@ -50,6 +50,22 @@ impl Scope {
         }
     }
 
+    /// Whether this Scope can hold Linear Issues, and so whether its Owner's
+    /// Linear sources bear on its coverage (a Linear source den could not
+    /// read may hide work only where Linear Issues can appear).
+    ///
+    /// The Owner and All Owners Scopes hold them. A Repo Scope holds none
+    /// until Landing Groups (#35) put the Linear Issues with a member PR
+    /// there into it; whatever makes a Repo Scope hold them must turn this
+    /// on with it, for every Repo of the Owner (which Repo a Linear Issue's
+    /// member is in can't be known from a Linear source den couldn't read).
+    pub fn holds_linear_issues(&self) -> bool {
+        match self {
+            Self::AllOwners | Self::Owner(_) => true,
+            Self::Repo(_) => false,
+        }
+    }
+
     /// Whether two Scopes name the same thing. GitHub logins and Repo names are
     /// case-insensitive, so a refresh that returns a different casing keeps the
     /// sidebar cursor and the current Scope on their row.
