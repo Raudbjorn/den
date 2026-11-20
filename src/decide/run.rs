@@ -72,7 +72,7 @@ fn decide_one(ctx: &Context<'_>, run: &Run) -> Option<Decision> {
         }
         _ => (None, "the Run's triggering actor"),
     };
-    let attribution = Attribution::person(&ctx.viewers.github, login, role);
+    let attribution = Attribution::person(ctx.viewers.github, login, role);
     let mut unknowns = Vec::new();
     if login.is_none() {
         unknowns.push(match &run.actor {

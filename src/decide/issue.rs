@@ -128,13 +128,13 @@ fn own_step(ctx: &Context<'_>, issue: &Issue) -> OwnStep {
         (_, [only]) => OwnStep {
             step: NextStep::Implement,
             rule: format!("the Issue is assigned to {only}"),
-            attribution: Attribution::person(&ctx.viewers.github, Some(only), ASSIGNEE_ROLE),
+            attribution: Attribution::person(ctx.viewers.github, Some(only), ASSIGNEE_ROLE),
         },
         (_, assignees) => OwnStep {
             step: NextStep::Implement,
             rule: format!("the Issue is assigned to {}", assignees.join(", ")),
             attribution: Attribution::any_of(
-                &ctx.viewers.github,
+                ctx.viewers.github,
                 assignees,
                 &[],
                 ASSIGNEES_ROLE,
@@ -149,7 +149,7 @@ fn own_step(ctx: &Context<'_>, issue: &Issue) -> OwnStep {
             .any(|login| ctx.viewers.github.is(login))
     {
         own.attribution = Attribution::any_of(
-            &ctx.viewers.github,
+            ctx.viewers.github,
             &issue.assignees,
             &[],
             ASSIGNEES_ROLE,

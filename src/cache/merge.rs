@@ -12,9 +12,7 @@
 //! earlier survey's facts instead of keeping or doubling them.
 
 use super::{CachedObservation, Carried};
-use crate::domain::{
-    Observation, RepoId, Source, SourceKind, SourceState, ids::same_login,
-};
+use crate::domain::{Observation, RepoId, Source, SourceKind, SourceState, ids::same_login};
 use jiff::Timestamp;
 use std::{collections::HashSet, hash::Hash};
 

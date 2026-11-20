@@ -161,8 +161,7 @@ fn a_github_subject_is_stored_under_its_pinned_name() {
     store.record(&store_record()).unwrap();
     let body: serde_json::Value = serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
     assert_eq!(
-        body["jobs"][0]["subject"]["github"]["Branch"]["name"],
-        "feature-x",
+        body["jobs"][0]["subject"]["github"]["Branch"]["name"], "feature-x",
         "{body}"
     );
 }

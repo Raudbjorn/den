@@ -38,7 +38,11 @@ impl Policies {
     #[must_use]
     pub fn with(mut self, owner: impl Into<String>, policy: LinearWorkflowPolicy) -> Self {
         let owner = owner.into();
-        match self.by_owner.iter_mut().find(|(o, _)| same_login(o, &owner)) {
+        match self
+            .by_owner
+            .iter_mut()
+            .find(|(o, _)| same_login(o, &owner))
+        {
             Some(entry) => *entry = (owner, policy),
             None => self.by_owner.push((owner, policy)),
         }
