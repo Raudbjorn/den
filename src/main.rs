@@ -8,11 +8,18 @@ use den::{
     ui::{Theme, UiError, frame},
 };
 use raudbjorn_tui::profile::{ProfileError, TerminalProfile};
-use std::{io, process::ExitCode, time::Duration};
+use std::{
+    io::{self, Write as _},
+    process::ExitCode,
+    time::Duration,
+};
 
 const EXIT_FAILURE: u8 = 1;
 const EXIT_USAGE: u8 = 2;
 const USAGE: &str = "usage: den [--dump COLSxROWS]";
+/// The largest `--dump` width or height, in cells. The dump buffer holds
+/// cols x rows cells, so unbounded sizes could exhaust memory.
+const MAX_DUMP_SIDE_CELLS: u16 = 1000;
 /// How long to wait for input before checking for a termination signal, in milliseconds.
 const SIGNAL_CHECK_MS: u64 = 100;
 
@@ -26,6 +33,8 @@ enum DenError {
     Ui(#[from] UiError),
     #[error("terminal: {0}")]
     Terminal(#[from] io::Error),
+    #[error("writing the dump: {0}")]
+    Output(io::Error),
     #[error("stopped by signal {0}")]
     Signalled(i32),
     /// The session failed and then restoring the terminal failed as well.
@@ -48,11 +57,15 @@ fn parse_args(args: &[String]) -> Result<Mode, DenError> {
             let parsed = size
                 .split_once('x')
                 .and_then(|(c, r)| Some((c.parse::<u16>().ok()?, r.parse::<u16>().ok()?)))
-                .filter(|&(cols, rows)| cols > 0 && rows > 0);
+                .filter(|&(cols, rows)| {
+                    (1..=MAX_DUMP_SIDE_CELLS).contains(&cols)
+                        && (1..=MAX_DUMP_SIDE_CELLS).contains(&rows)
+                });
             match parsed {
                 Some((cols, rows)) => Ok(Mode::Dump { cols, rows }),
                 None => Err(DenError::Usage(format!(
-                    "--dump expects COLSxROWS such as 160x45, got {size:?}"
+                    "--dump expects COLSxROWS such as 160x45, each from 1 to \
+                     {MAX_DUMP_SIDE_CELLS}, got {size:?}"
                 ))),
             }
         }
@@ -110,8 +123,9 @@ fn run(args: &[String]) -> Result<(), DenError> {
         Mode::Interactive => run_interactive(&theme),
         Mode::Dump { cols, rows } => {
             let buffer = frame::render_empty_frame(&theme, cols, rows)?;
-            println!("{}", frame::buffer_text(&buffer));
-            Ok(())
+            // Not `println!`, which panics when stdout is closed (`den --dump .. | head`).
+            writeln!(io::stdout().lock(), "{}", frame::buffer_text(&buffer))
+                .map_err(DenError::Output)
         }
     }
 }
