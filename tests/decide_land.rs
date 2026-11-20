@@ -741,3 +741,27 @@ fn an_ambiguous_held_member_does_not_block_land() {
         ],
     );
 }
+
+/// A member den hasn't asked about yet, after an earlier read that was
+/// complete, reads "den hasn't read its state yet": GitHub was never asked,
+/// so den doesn't say GitHub didn't report it.
+#[test]
+fn a_member_not_asked_yet_after_a_complete_read_is_not_blamed_on_github() {
+    let observation = acme_owner()
+        .owner_coverage("acme", SourceKind::MemberStates, SourceState::Complete)
+        .linear_issue(linear_issue("acme", "id-1", "TEAM-1").attached("acme/api", 7))
+        .build();
+    let decisions = decide_all(&observation, &acme());
+    let issue = linear(&decisions, "TEAM-1");
+    assert_says(
+        issue,
+        &[
+            "whether acme/api #7 merged or was closed without merging: den hasn't read its state yet",
+        ],
+    );
+    assert!(
+        !said(issue).contains("GitHub didn't report its state"),
+        "{}",
+        said(issue)
+    );
+}

@@ -545,12 +545,14 @@ fn why_unread(ctx: &Context<'_>, member: &Member) -> String {
             } => same_login(owner, &member.pr.repo.owner),
             _ => false,
         });
+    // A member den asked about either has a state or left its Owner's
+    // entry incomplete; so with no state and a complete entry (or none), den
+    // hasn't asked about it yet.
     match source {
         Some(entry) if !entry.state.is_complete() => {
             format!("{} {}", entry.source.label(), entry.state.describe())
         }
-        Some(_) => "GitHub didn't report its state".to_owned(),
-        None => "den hasn't read its state yet".to_owned(),
+        Some(_) | None => "den hasn't read its state yet".to_owned(),
     }
 }
 
