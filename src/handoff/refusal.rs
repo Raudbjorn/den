@@ -34,9 +34,6 @@ pub enum RefusalReason {
     /// A Linear Issue: den launches Jobs for it only from the Start and
     /// Implement sheets, which arrive with the Linear writes (#38).
     LinearIssueNotLaunchable,
-    /// Request review (#36) is a decision only: its Job needs the reviewer
-    /// sheet and the approval-required permission mode, which arrive with #39.
-    RequestReviewNotLaunchable,
     /// The Work Item is not in what den last observed.
     WorkItemGone,
     RepoUnknown {
@@ -73,6 +70,11 @@ pub enum RefusalReason {
         target: RepoId,
     },
     PromptsUnusable {
+        error: String,
+    },
+    /// The prompts file's template for this Next Step kind can't be used; the
+    /// file's other templates can.
+    TemplateUnusable {
         error: String,
     },
     JobRecordsUnreadable {
@@ -220,9 +222,6 @@ impl fmt::Display for RefusalReason {
             Self::LinearIssueNotLaunchable => f.write_str(
                 "den can't launch a Job for a Linear Issue yet: it has no Repo until one is chosen for it, and the sheet that chooses one isn't built yet",
             ),
-            Self::RequestReviewNotLaunchable => f.write_str(
-                "den can't launch a Request review Job yet: it needs the reviewer sheet and a permission mode where Claude asks before acting, which aren't built yet; request reviewers on GitHub for now",
-            ),
             Self::WorkItemGone => f.write_str("this Work Item is no longer in the survey"),
             Self::RepoUnknown { repo } => write!(f, "den has no facts about the Repo {repo}"),
             Self::RepoArchived { repo } => {
@@ -282,6 +281,10 @@ impl fmt::Display for RefusalReason {
                 "the Branch {branch} is in {repo}, not in {target}: den fetches a Branch only from the Repo it is in; press u to target {repo} for this Job"
             ),
             Self::PromptsUnusable { error } => write!(f, "the prompts file is unusable: {error}"),
+            Self::TemplateUnusable { error } => write!(
+                f,
+                "the prompts file's template for this kind is unusable: {error}"
+            ),
             Self::JobRecordsUnreadable { error } => write!(
                 f,
                 "den can't read its Job records, so it can't tell whether this Work Item already has a Job: {error}"

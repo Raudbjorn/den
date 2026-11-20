@@ -20,6 +20,24 @@
 //! Job's own worktree and offers only `o`. `u` works on the question too (a
 //! fork's Upstream target refused, a fresh start on the fork wanted): switching
 //! the target forgets a fresh start, so the question is asked again for it.
+//!
+//! Request review (#39): the sheet also lists the reviewers the Job will ask,
+//! starting from the Decision's suggested reviewers. `r` edits them (logins
+//! and `org/team`s, comma- or space-separated); `Enter`, `Esc` or `Tab` stop
+//! editing and rebuild the prompt from its template with the new list. An
+//! edited prompt is replaced then, and the sheet says so. `Enter` launches
+//! only with a non-empty, well-formed list. The Job is a coordination Job: it
+//! runs in the approval-required permission mode, shown on the sheet. A list
+//! the user never edited follows the Decision's suggestions when a survey
+//! changes them.
+//!
+//! `Enter` plans again from the current Decision. When a survey that landed
+//! while the sheet was open changed what decides the Job (its Next Step, and
+//! so its permission mode and prompt template; its reviewers; den's prompt),
+//! nothing is launched: the sheet shows the new plan, says what changed, and
+//! asks again (spec 0001, "Re-verification"). Editing the reviewers checks
+//! the shown plan the same way before it adopts the new list. The prompt and
+//! reviewer checks come after, so they always speak about the plan shown.
 
 use super::{
     App, Effect, Key, LogLevel, OverlayState,
@@ -27,11 +45,12 @@ use super::{
     event::LaunchId,
 };
 use crate::{
-    domain::{NextStep, Observation, RepoId, WorkItemId},
+    decide::Decision,
+    domain::{NextStep, Observation, RepoId, WorkItemId, facts::Reviewer},
     handoff::{
         self, InspectRequest, JobCheck, LaunchOutcome, LaunchPlan, LaunchReport, LaunchSettings,
         PlanInput, Refusal, RefusalReason, ReopenPlan, TargetChoice, WorkspaceView, WorktreeState,
-        check_prompt, live, names, short_commit,
+        check_prompt, live, names, reviewers, short_commit,
     },
 };
 
@@ -74,6 +93,44 @@ pub(super) struct Sheet {
     /// Why a fresh launch can't happen, when the sheet was opened only to
     /// reopen the Work Item's Live Job (#14). `f` is not offered then.
     pub launch_refused: Option<Refusal>,
+    /// Request review (#39): the reviewers the Job will ask, editable with `r`.
+    pub reviewers: Option<ReviewersField>,
+}
+
+/// A Request review sheet's reviewers (#39).
+#[derive(Debug, Clone)]
+pub(super) struct ReviewersField {
+    /// Logins and `org/team`s, as the user edits them.
+    pub editor: PromptEditor,
+    pub editing: bool,
+    /// The Decision's suggested reviewers, as the sheet last planned with.
+    pub suggested: Vec<Reviewer>,
+    /// What den did not read to filter the suggestions (#47's
+    /// [`Decision::suggested_reviewers_unread`]), as the sheet last planned
+    /// with: they may name someone already asked or approved.
+    pub suggested_unread: Option<String>,
+}
+
+impl ReviewersField {
+    fn new(decision: &Decision) -> Self {
+        let suggested = decision.suggested_reviewers.clone().unwrap_or_default();
+        Self {
+            editor: PromptEditor::new(&reviewers::spell_list(&suggested)),
+            editing: false,
+            suggested,
+            suggested_unread: decision.suggested_reviewers_unread.clone(),
+        }
+    }
+
+    /// The list as typed, parsed.
+    fn chosen(&self) -> Result<Vec<Reviewer>, reviewers::ReviewersProblem> {
+        reviewers::parse_list(&self.editor.text())
+    }
+
+    /// The list still reads as the suggestions: the user never made it theirs.
+    fn follows_suggestions(&self) -> bool {
+        self.editor.text() == reviewers::spell_list(&self.suggested)
+    }
 }
 
 /// The two targets a Work Item in a fork can have.
@@ -167,6 +224,8 @@ impl App {
             default_prompt: None,
             fresh: None,
             launch_refused: None,
+            reviewers: (decision.next_step == Some(NextStep::RequestReview))
+                .then(|| ReviewersField::new(decision)),
         };
         let effects = self.inspect_for(&mut sheet, "opened");
         self.overlay = Some(OverlayState::Launch(Box::new(sheet)));
@@ -187,7 +246,7 @@ impl App {
         let Some(observation) = self.shown.as_ref().map(|s| &s.observation) else {
             return gone(sheet);
         };
-        let Some(decision) = self.ordered.iter().find(|d| d.item.id == sheet.item) else {
+        let Some(decision) = self.decision_of(&sheet.item) else {
             return gone(sheet);
         };
         let settings =
@@ -278,6 +337,18 @@ impl App {
             return vec![Effect::Quit];
         }
         sheet.notice = None;
+        if let Some(field) = sheet.reviewers.as_mut().filter(|f| f.editing) {
+            if field.editor.key(key) == Edit::NotAnEdit
+                && matches!(key, Key::Enter | Key::Esc | Key::Tab)
+            {
+                field.editing = false;
+                let effects = self.reviewers_edited(&mut sheet);
+                self.overlay = Some(OverlayState::Launch(sheet));
+                return effects;
+            }
+            self.overlay = Some(OverlayState::Launch(sheet));
+            return Vec::new();
+        }
         if sheet.editing {
             if sheet.prompt.key(key) == Edit::NotAnEdit
                 && matches!(key, Key::Enter | Key::Esc | Key::Tab)
@@ -301,6 +372,14 @@ impl App {
                 return Vec::new();
             }
             (Key::Char('e') | Key::Tab, SheetState::Ready { .. }) => sheet.editing = true,
+            (Key::Char('r'), SheetState::Ready { .. }) => match sheet.reviewers.as_mut() {
+                Some(field) => field.editing = true,
+                None => {
+                    sheet.notice = Some(
+                        "r does nothing here: only a Request review asks reviewers".to_owned(),
+                    );
+                }
+            },
             (
                 Key::Char('u'),
                 SheetState::Ready { .. }
@@ -351,52 +430,67 @@ impl App {
         effects
     }
 
-    /// `Enter` on a ready sheet: checks the prompt, plans again against what den
-    /// knows now (a refresh may have archived the Repo), and launches.
+    /// `Enter` on a ready sheet: plans again against what den knows now (a
+    /// refresh may have archived the Repo), checks the prompt and the
+    /// reviewers, and launches. When a survey that landed while the sheet was
+    /// open changed what decides the Job (its Next Step, and so its permission
+    /// mode and prompt template; its reviewers; its default prompt), den
+    /// launches nothing: the sheet shows the new plan and `Enter` asks again.
+    /// That comes before the prompt and reviewer checks, so a problem is
+    /// always explained on the plan it is about.
     fn launch(&self, sheet: &mut Sheet) -> Vec<Effect> {
-        let SheetState::Ready { view, .. } = &sheet.state else {
+        let SheetState::Ready {
+            plan: shown,
+            view,
+            moved_from,
+        } = &sheet.state
+        else {
             return Vec::new();
         };
+        let (shown, view, moved_from) = (shown.clone(), view.clone(), moved_from.clone());
+        sync_reviewers(sheet, self.decision_of(&sheet.item));
+        let planned = planned_reviewers(sheet, Some(&shown));
+        let plan = match self.replan(sheet, &view, planned.as_deref()) {
+            Ok(plan) => plan,
+            Err(refusal) => return refuse(sheet, refusal),
+        };
+        if let Some(change) = what_changed(&shown, sheet.default_prompt.as_deref(), &plan) {
+            return ask_again(sheet, plan, view, moved_from, &change);
+        }
         let text = sheet.prompt.text();
         if let Err(problem) = check_prompt(&text) {
             sheet.notice = Some(format!("{problem}; edit it with e"));
             return Vec::new();
         }
-        let view = view.clone();
-        match self.replan(sheet, &view) {
-            Ok(plan) => {
-                let plan = match plan.with_prompt(&text) {
-                    Ok(plan) => plan,
-                    Err(problem) => {
-                        sheet.notice = Some(format!("{problem}; edit it with e"));
-                        return Vec::new();
-                    }
-                };
-                let log = Effect::log(
-                    LogLevel::Info,
-                    format!(
-                        "launch {} confirmed for {}: {} from {} at {} into {}",
-                        sheet.id.0,
-                        plan.work_item,
-                        plan.target.repo,
-                        plan.remote.name,
-                        short_commit(&plan.base.commit),
-                        plan.worktree.display()
-                    ),
-                );
-                let plan = Box::new(plan);
-                sheet.state = SheetState::Launching {
-                    plan: plan.clone(),
-                    view,
-                };
-                vec![log, Effect::Launch { id: sheet.id, plan }]
-            }
-            Err(refusal) => {
-                let log = refused_log(sheet.id, &sheet.item, &refusal);
-                sheet.state = SheetState::Refused(refusal);
-                vec![log]
-            }
+        if let Some(Err(problem)) = sheet.reviewers.as_ref().map(ReviewersField::chosen) {
+            sheet.notice = Some(format!("{problem}; edit the reviewers with r"));
+            return Vec::new();
         }
+        let plan = match plan.with_prompt(&text) {
+            Ok(plan) => plan,
+            Err(problem) => {
+                sheet.notice = Some(format!("{problem}; edit it with e"));
+                return Vec::new();
+            }
+        };
+        let log = Effect::log(
+            LogLevel::Info,
+            format!(
+                "launch {} confirmed for {}: {} from {} at {} into {}",
+                sheet.id.0,
+                plan.work_item,
+                plan.target.repo,
+                plan.remote.name,
+                short_commit(&plan.base.commit),
+                plan.worktree.display()
+            ),
+        );
+        let plan = Box::new(plan);
+        sheet.state = SheetState::Launching {
+            plan: plan.clone(),
+            view,
+        };
+        vec![log, Effect::Launch { id: sheet.id, plan }]
     }
 
     /// `f` on a Live (or unknown) Job: picks a suffix no Job or worktree uses,
@@ -410,9 +504,7 @@ impl App {
     ) -> Vec<Effect> {
         let gone = || Refusal::one(RefusalReason::WorkItemGone);
         let request = self
-            .ordered
-            .iter()
-            .find(|d| d.item.id == sheet.item)
+            .decision_of(&sheet.item)
             .ok_or_else(gone)
             .and_then(|decision| {
                 let observation = self
@@ -465,19 +557,91 @@ impl App {
         }
     }
 
-    /// Plans the sheet's launch from the current Observation and `view`.
-    fn replan(&self, sheet: &Sheet, view: &WorkspaceView) -> Result<LaunchPlan, Refusal> {
+    /// The reviewers were edited (`r`, then `Enter`/`Esc`/`Tab`): a list that
+    /// parses rebuilds the prompt from its template; one that doesn't is
+    /// explained and changes nothing else. Before adopting the new list, den
+    /// checks the plan the sheet shows as `Enter` does: when a survey changed
+    /// what decides the Job, the sheet shows the new plan and says what
+    /// changed, never swaps it in silently.
+    fn reviewers_edited(&self, sheet: &mut Sheet) -> Vec<Effect> {
+        let Some(field) = &sheet.reviewers else {
+            return Vec::new();
+        };
+        let chosen = match field.chosen() {
+            Ok(chosen) => chosen,
+            Err(problem) => {
+                sheet.notice = Some(format!("{problem}; edit the reviewers with r"));
+                return Vec::new();
+            }
+        };
+        let SheetState::Ready {
+            plan: shown,
+            view,
+            moved_from,
+        } = &sheet.state
+        else {
+            return Vec::new();
+        };
+        if shown
+            .review_request
+            .as_ref()
+            .is_some_and(|r| r.reviewers == chosen)
+        {
+            return Vec::new();
+        }
+        let (shown, view, moved_from) = (shown.clone(), view.clone(), moved_from.clone());
+        sync_reviewers(sheet, self.decision_of(&sheet.item));
+        // The plan the sheet shows, as den would make it now: with the
+        // reviewers it shows, so only what a survey changed differs.
+        let as_shown = shown.review_request.as_ref().map(|r| r.reviewers.clone());
+        let change = match self.replan(sheet, &view, as_shown.as_deref()) {
+            Ok(now) => what_changed(&shown, sheet.default_prompt.as_deref(), &now),
+            Err(refusal) => return refuse(sheet, refusal),
+        };
+        let planned = planned_reviewers(sheet, Some(&shown));
+        let plan = match self.replan(sheet, &view, planned.as_deref()) {
+            Ok(plan) => plan,
+            Err(refusal) => return refuse(sheet, refusal),
+        };
+        if let Some(change) = change {
+            return ask_again(sheet, plan, view, moved_from, &change);
+        }
+        let default = sheet.default_prompt.as_deref().unwrap_or(&shown.prompt);
+        if sheet.prompt.text() != default {
+            sheet.notice = Some(
+                "The reviewers changed, so den rebuilt the prompt from its template; your edits to the prompt were replaced".to_owned(),
+            );
+        }
+        sheet.edited_prompt = None;
+        show_plan(sheet, plan, view, moved_from);
+        Vec::new()
+    }
+
+    /// The current Decision for `item`, if it is still surveyed.
+    fn decision_of(&self, item: &WorkItemId) -> Option<&Decision> {
+        self.ordered.iter().find(|d| &d.item.id == item)
+    }
+
+    /// Plans the sheet's launch from the current Observation and `view`, asking
+    /// `reviewers` for a Request review (`None`: the Decision's suggestions).
+    fn replan(
+        &self,
+        sheet: &Sheet,
+        view: &WorkspaceView,
+        reviewers: Option<&[Reviewer]>,
+    ) -> Result<LaunchPlan, Refusal> {
         let gone = || Refusal::one(handoff::RefusalReason::WorkItemGone);
-        let decision = self
-            .ordered
-            .iter()
-            .find(|d| d.item.id == sheet.item)
-            .ok_or_else(gone)?;
+        let decision = self.decision_of(&sheet.item).ok_or_else(gone)?;
         let observation = self
             .shown
             .as_ref()
             .map(|s| &s.observation)
             .ok_or_else(gone)?;
+        let slack_channel = sheet
+            .item
+            .repo()
+            .and_then(|repo| self.config.as_ref().ok()?.linear_workflow(&repo.owner))
+            .and_then(|workflow| workflow.slack_channel.as_deref());
         let plan = handoff::plan(&PlanInput {
             decision,
             observation,
@@ -485,6 +649,8 @@ impl App {
             view,
             prompts: self.prompts.as_ref(),
             fresh: sheet.fresh.as_ref().map(|(n, _)| *n),
+            reviewers,
+            slack_channel,
         })?;
         Ok(match &sheet.accepted_head {
             Some(commit) => plan.on_commit(commit),
@@ -536,24 +702,18 @@ impl App {
                 vec![log]
             }
             // No Job, or its worktree is gone: launch as usual.
-            _ => match self.replan(&sheet, &view) {
-                Ok(plan) => {
-                    sheet.prompt =
-                        PromptEditor::new(sheet.edited_prompt.as_deref().unwrap_or(&plan.prompt));
-                    sheet.default_prompt = Some(plan.prompt.clone());
-                    sheet.state = SheetState::Ready {
-                        plan: Box::new(plan),
-                        view,
-                        moved_from: None,
-                    };
-                    Vec::new()
+            _ => {
+                let decision = self.decision_of(&sheet.item);
+                sync_reviewers(&mut sheet, decision);
+                let planned = planned_reviewers(&sheet, None);
+                match self.replan(&sheet, &view, planned.as_deref()) {
+                    Ok(plan) => {
+                        show_plan(&mut sheet, plan, view, None);
+                        Vec::new()
+                    }
+                    Err(refusal) => refuse(&mut sheet, refusal),
                 }
-                Err(refusal) => {
-                    let log = refused_log(id, &sheet.item, &refusal);
-                    sheet.state = SheetState::Refused(refusal);
-                    vec![log]
-                }
-            },
+            }
         };
         self.overlay = Some(OverlayState::Launch(sheet));
         effects
@@ -624,6 +784,142 @@ impl App {
             }
         }
     }
+}
+
+/// Keeps a sheet's reviewers in step with the current Decision, before the
+/// sheet plans with them: a Request review gets the field (a survey may have
+/// made the Next Step Request review since the sheet opened), any other Next
+/// Step loses it. The suggestions follow the Decision, and so does a list the
+/// user never edited (it still reads as the old suggestions): it would
+/// otherwise ask someone who has since approved, been asked or become the
+/// author. A list the user edited is theirs and stays.
+fn sync_reviewers(sheet: &mut Sheet, decision: Option<&Decision>) {
+    let Some(decision) = decision.filter(|d| d.next_step == Some(NextStep::RequestReview)) else {
+        sheet.reviewers = None;
+        return;
+    };
+    let suggested = decision.suggested_reviewers.clone().unwrap_or_default();
+    match sheet.reviewers.as_mut() {
+        Some(field) => {
+            if field.follows_suggestions() {
+                field.editor = PromptEditor::new(&reviewers::spell_list(&suggested));
+            }
+            field.suggested = suggested;
+            field.suggested_unread = decision.suggested_reviewers_unread.clone();
+        }
+        None => sheet.reviewers = Some(ReviewersField::new(decision)),
+    }
+}
+
+/// What changed between the plan the sheet shows (with `shown_default`, the
+/// prompt den built for it) and `now`, in what decides the Job; `None` when
+/// nothing did.
+fn what_changed(
+    shown: &LaunchPlan,
+    shown_default: Option<&str>,
+    now: &LaunchPlan,
+) -> Option<String> {
+    if shown.next_step != now.next_step {
+        return Some(format!(
+            "the Next Step is now {} (was {})",
+            now.next_step.label(),
+            shown.next_step.label()
+        ));
+    }
+    // Equal while the mode follows the Next Step alone (`coordination_mode`);
+    // kept for modes that depend on more (#41).
+    if shown.permission_mode != now.permission_mode {
+        return Some("the permission mode changed".to_owned());
+    }
+    match (&shown.review_request, &now.review_request) {
+        (Some(before), Some(after)) if before.reviewers != after.reviewers => {
+            return Some("the suggested reviewers changed".to_owned());
+        }
+        (before, after) if before != after => {
+            return Some("the announcement channel changed".to_owned());
+        }
+        _ => {}
+    }
+    shown_default
+        .is_some_and(|default| default != now.prompt)
+        .then(|| "the prompt den builds changed".to_owned())
+}
+
+/// Shows `plan` instead of the plan the sheet showed, because of `change`:
+/// nothing is launched, and `Enter` launches only once the user has seen it.
+/// A prompt the user edited was for the old plan, so den's new one replaces
+/// it, and the sheet says so.
+fn ask_again(
+    sheet: &mut Sheet,
+    plan: LaunchPlan,
+    view: Box<WorkspaceView>,
+    moved_from: Option<String>,
+    change: &str,
+) -> Vec<Effect> {
+    let edited = sheet
+        .default_prompt
+        .as_deref()
+        .is_some_and(|default| sheet.prompt.text() != default);
+    let replaced = if edited {
+        "; your edits to the prompt were replaced"
+    } else {
+        ""
+    };
+    sheet.notice = Some(format!(
+        "Not launched: {change} since the sheet showed it. den planned again{replaced}; check the sheet, then press Enter to launch"
+    ));
+    let log = Effect::log(
+        LogLevel::Info,
+        format!(
+            "launch sheet {} not launched for {}: {change}; asking again",
+            sheet.id.0, sheet.item
+        ),
+    );
+    sheet.edited_prompt = None;
+    show_plan(sheet, plan, view, moved_from);
+    vec![log]
+}
+
+/// Puts `plan` on the sheet, ready: its Next Step, its prompt (or the edit
+/// kept across a `u`, [`Sheet::edited_prompt`]) and the default it was built
+/// from. The one way a sheet adopts a plan, so they stay in step.
+fn show_plan(
+    sheet: &mut Sheet,
+    plan: LaunchPlan,
+    view: Box<WorkspaceView>,
+    moved_from: Option<String>,
+) {
+    sheet.next_step = Some(plan.next_step);
+    sheet.prompt = PromptEditor::new(sheet.edited_prompt.as_deref().unwrap_or(&plan.prompt));
+    sheet.default_prompt = Some(plan.prompt.clone());
+    sheet.state = SheetState::Ready {
+        plan: Box::new(plan),
+        view,
+        moved_from,
+    };
+}
+
+/// The reviewers a sheet plans with: its list when it parses. A list that
+/// doesn't parse plans with what it stands for until `Enter` explains it: the
+/// suggestions while it still reads as them (`None`), else the reviewers of
+/// the plan the sheet shows (`shown`), so a survey's new suggestions never
+/// read as a change the user made.
+fn planned_reviewers(sheet: &Sheet, shown: Option<&LaunchPlan>) -> Option<Vec<Reviewer>> {
+    let field = sheet.reviewers.as_ref()?;
+    match field.chosen() {
+        Ok(chosen) => Some(chosen),
+        Err(_) if field.follows_suggestions() => None,
+        Err(_) => shown
+            .and_then(|plan| plan.review_request.as_ref())
+            .map(|request| request.reviewers.clone()),
+    }
+}
+
+/// The sheet refuses with `refusal`, logged.
+fn refuse(sheet: &mut Sheet, refusal: Refusal) -> Vec<Effect> {
+    let log = refused_log(sheet.id, &sheet.item, &refusal);
+    sheet.state = SheetState::Refused(refusal);
+    vec![log]
 }
 
 /// The inspection for reopening `item`'s Live Job alone, when den last saw

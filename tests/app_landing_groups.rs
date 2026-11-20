@@ -74,6 +74,7 @@ fn harness_with(extra: Vec<LinearIssue>) -> Harness {
     harness.jobs.holding(JobRecord {
         subject: JobSubject::GitHub(pr_id("octo/app", 7)),
         next_step: NextStep::AddressReview,
+        permission_mode: None,
         target: RepoId::new("octo", "app"),
         main_clone: CLONE.into(),
         worktree: WORKTREE_7.into(),

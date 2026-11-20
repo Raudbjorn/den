@@ -19,10 +19,8 @@ pub mod linear;
 
 pub use linear::{LinearWorkflow, Reviewer};
 
-use crate::domain::{
-    Policies,
-    ids::{MAX_LOGIN_CHARS, is_valid_login},
-};
+pub(crate) use crate::domain::ids::is_valid_login;
+use crate::domain::{Policies, ids::MAX_LOGIN_CHARS};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -32,6 +30,9 @@ use std::{
     path::{Path, PathBuf},
 };
 use toml::Spanned;
+
+/// den's bound on a team slug, in characters.
+const MAX_TEAM_SLUG_CHARS: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -230,6 +231,14 @@ fn absolute(path: Spanned<PathBuf>, what: &str) -> Result<PathBuf, (Range<usize>
             path.display().to_string()
         ),
     ))
+}
+
+/// A team's slug, the `team` of `org/team`.
+pub(crate) fn is_valid_team_slug(slug: &str) -> bool {
+    (1..=MAX_TEAM_SLUG_CHARS).contains(&slug.chars().count())
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 pub(crate) fn location_of(text: &str, offset: usize) -> Location {

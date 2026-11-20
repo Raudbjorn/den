@@ -27,9 +27,12 @@
 //! the policy type's (whose empty default changes nothing).
 
 use super::{Location, location_of};
-use crate::domain::{
-    LinearSourceKind, LinearWorkflowPolicy, RepoId, ReviewPolicy, StartPolicy, TeamRef,
-    ids::{is_valid_login, is_valid_repo_name},
+use crate::{
+    domain::{
+        LinearSourceKind, LinearWorkflowPolicy, RepoId, ReviewPolicy, StartPolicy,
+        ids::is_valid_repo_name,
+    },
+    handoff::reviewers,
 };
 use serde::Deserialize;
 use std::{collections::BTreeMap, ops::Range};
@@ -41,8 +44,6 @@ const MAX_WORKSPACE_CHARS: usize = 64;
 const MAX_ENV_NAME_CHARS: usize = 128;
 /// den's bound on a Linear team key, in characters.
 const MAX_TEAM_KEY_CHARS: usize = 32;
-/// den's bound on a team slug, in characters.
-const MAX_TEAM_SLUG_CHARS: usize = 100;
 /// den's bound on a state name or Slack channel, in characters.
 const MAX_SETTING_CHARS: usize = 100;
 
@@ -79,6 +80,10 @@ pub struct LinearWorkflow {
     /// A COMMENTED review needs a fresh look after the head moves (#36). Default on.
     pub comment_reviews_need_rereview: bool,
 }
+
+/// A configured reviewer is the domain's: a GitHub login or a team, parsed
+/// from `"login"` or `"org/team"` (`reviewer`).
+pub use crate::domain::facts::Reviewer;
 
 impl LinearWorkflow {
     /// The decision engine's policy for this workflow's Owner: which
@@ -132,10 +137,6 @@ impl LinearWorkflow {
         .filter_map(|(setting, name)| name.map(|n| (setting, n)))
     }
 }
-
-/// A configured reviewer is the domain's: a GitHub login or a team, parsed
-/// from `"login"` or `"org/team"` (`reviewer`).
-pub use crate::domain::facts::Reviewer;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -293,10 +294,7 @@ impl Folded for RepoId {
 
 impl Folded for Reviewer {
     fn folded(&self) -> String {
-        match self {
-            Self::User(login) => login.to_ascii_lowercase(),
-            Self::Team(team) => format!("{}/{}", team.org, team.slug).to_ascii_lowercase(),
-        }
+        reviewers::folded(self)
     }
 }
 
@@ -379,34 +377,17 @@ fn repo(owner: &str, field: &str, value: Spanned<String>) -> Result<RepoId, Inva
     Ok(RepoId::new(owner, name))
 }
 
-/// A GitHub login, or `org/team-slug`.
+/// A GitHub login, or `org/team-slug`: the grammar the Request review sheet
+/// takes too ([`reviewers::parse`]).
 fn reviewer(value: Spanned<String>) -> Result<Reviewer, Invalid> {
     let span = value.span();
     let value = value.into_inner();
-    let invalid = || {
+    reviewers::parse(&value).ok_or_else(|| {
         (
-            span.clone(),
+            span,
             format!("{value:?} in `reviewers` is not a GitHub login or an org/team"),
         )
-    };
-    match value.split_once('/') {
-        None if is_valid_login(&value) => Ok(Reviewer::User(value.clone())),
-        None => Err(invalid()),
-        Some((org, slug)) => {
-            let slug_ok = (1..=MAX_TEAM_SLUG_CHARS).contains(&slug.chars().count())
-                && slug
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
-            if is_valid_login(org) && slug_ok {
-                Ok(Reviewer::Team(TeamRef {
-                    org: org.to_owned(),
-                    slug: slug.to_owned(),
-                }))
-            } else {
-                Err(invalid())
-            }
-        }
-    }
+    })
 }
 
 /// A free-text setting: not blank, no control characters, bounded.
