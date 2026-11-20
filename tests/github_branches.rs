@@ -66,6 +66,8 @@ fn octo(
                 "pageInfo": empty_page, "nodes": repos } } }))),
             "OwnerPullRequests" => Ok(data(json!({ "repositoryOwner": { "repositories": {
                 "pageInfo": empty_page, "nodes": [] } } }))),
+            "OwnerIssueCounts" => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": empty_page, "nodes": [] } } }))),
             other => panic!("unexpected {other}"),
         }
     })

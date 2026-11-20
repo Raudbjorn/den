@@ -72,6 +72,44 @@ pub enum Incompleteness {
 }
 
 impl Incompleteness {
+    /// Ranks reasons so that combining two keeps the more telling one: a rate
+    /// limit (which also stops pagination, and says when it resets) over a
+    /// stopped pagination (whole pages missing) over errors alongside data.
+    fn rank(&self) -> u8 {
+        match self {
+            Self::ErrorsAlongsideData { .. } => 0,
+            Self::PaginationStopped { .. } => 1,
+            Self::RateLimited { .. } => 2,
+        }
+    }
+
+    /// Combines two reasons for one source. Errors alongside data from several
+    /// responses are all kept; of two rate limits the later known reset is kept;
+    /// otherwise the higher-ranked reason wins (the first one wins a tie).
+    fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (
+                Self::ErrorsAlongsideData { mut errors },
+                Self::ErrorsAlongsideData { errors: more },
+            ) => {
+                errors.extend(more);
+                Self::ErrorsAlongsideData { errors }
+            }
+            (Self::RateLimited { resets_at: first }, Self::RateLimited { resets_at: second }) => {
+                Self::RateLimited {
+                    resets_at: first.max(second),
+                }
+            }
+            (first, second) => {
+                if second.rank() > first.rank() {
+                    second
+                } else {
+                    first
+                }
+            }
+        }
+    }
+
     pub fn describe(&self) -> String {
         match self {
             Self::ErrorsAlongsideData { errors } => match errors.as_slice() {
@@ -119,12 +157,19 @@ impl SourceState {
         }
     }
 
-    /// The worse of two states (the first one wins a tie).
+    /// The worse of two states (the first one wins a tie). Two partial states
+    /// combine their reasons (see [`Incompleteness`]), so a later rate limit is
+    /// not lost behind an earlier page's errors.
     pub fn worst(self, other: Self) -> Self {
-        if other.severity() > self.severity() {
-            other
-        } else {
-            self
+        match (self, other) {
+            (Self::Partial(first), Self::Partial(second)) => Self::Partial(first.combine(second)),
+            (first, second) => {
+                if second.severity() > first.severity() {
+                    second
+                } else {
+                    first
+                }
+            }
         }
     }
 

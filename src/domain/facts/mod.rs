@@ -8,6 +8,6 @@ pub mod pull_request;
 pub mod run;
 
 pub use branch::{Branch, ComparisonBranch};
-pub use issue::{Issue, IssueLink, LinkKind};
+pub use issue::{Issue, IssueLink, LinkKind, LinkedPrState};
 pub use pull_request::PullRequest;
 pub use run::{Run, RunConclusion, RunStatus};
