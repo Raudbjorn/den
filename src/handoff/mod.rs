@@ -46,9 +46,11 @@
 //! on GitHub rather than on code. It still gets a worktree on the PR head, as
 //! a PR Job does, but runs in the approval-required permission mode
 //! ([`coordination_mode`], [`LaunchPlan::permission_mode`]), recorded with
-//! the Job so reopening it asks again. A Request review plan also carries the
-//! reviewers chosen on the sheet ([`PlanInput::reviewers`], [`reviewers`]) and
-//! the Owner's Slack channel, both only in its prompt.
+//! the Job so reopening it asks again; a record without the mode falls back
+//! to its Next Step's ([`crate::jobs::JobRecord::reopen_mode`]). Its prompt
+//! gets no push line. A Request review plan also carries the reviewers chosen
+//! on the sheet ([`PlanInput::reviewers`], [`reviewers`]) and the Owner's
+//! Slack channel, both only in its prompt.
 
 pub mod clone;
 pub mod cloning;

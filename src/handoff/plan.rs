@@ -412,7 +412,12 @@ fn clash_branch(facts: &Facts) -> Option<String> {
 /// simple). The prompt then ends with the one line that pushes back to it.
 /// Only for a branch of the target (a same-Repo PR head, a Branch): a
 /// cross-Repo PR head lives in another Repo, which the target's remote is not.
+/// Never for a coordination Job ([`coordination_mode`]): it changes nothing on
+/// the branch, and its prompt says so.
 fn with_push_line(prompt: String, facts: &Facts, local: &str, remote: &Remote) -> String {
+    if coordination_mode(facts.step).is_some() {
+        return prompt;
+    }
     match &facts.base {
         BaseRef::HeadBranch(branch) if !facts.new_branch && local != branch => {
             format!(
