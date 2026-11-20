@@ -179,3 +179,30 @@ impl fmt::Display for WorkItemId {
 pub fn same_login(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
 }
+
+/// GitHub's longest login, in characters.
+pub const MAX_LOGIN_CHARS: usize = 39;
+/// GitHub's longest Repo name, in characters.
+pub const MAX_REPO_NAME_CHARS: usize = 100;
+
+/// A GitHub login: letters, digits and inner hyphens, at most
+/// [`MAX_LOGIN_CHARS`] characters. The one check for the config's Owners and
+/// reviewers and for the logins in attachment URLs.
+pub fn is_valid_login(login: &str) -> bool {
+    (1..=MAX_LOGIN_CHARS).contains(&login.chars().count())
+        && login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && !login.starts_with('-')
+        && !login.ends_with('-')
+}
+
+/// A GitHub Repo name: letters, digits, `.`, `_` and `-`, at most
+/// [`MAX_REPO_NAME_CHARS`] characters, and neither `.` nor `..`. The one
+/// check for the config's Repo names and for the Repos in attachment URLs.
+pub fn is_valid_repo_name(name: &str) -> bool {
+    (1..=MAX_REPO_NAME_CHARS).contains(&name.chars().count())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        && name != "."
+        && name != ".."
+}

@@ -26,8 +26,11 @@
 //! two policy switches have defaults, and those are the config's (on), not
 //! the policy type's (whose empty default changes nothing).
 
-use super::{Location, is_valid_login, location_of};
-use crate::domain::{RepoId, TeamRef};
+use super::{Location, location_of};
+use crate::domain::{
+    RepoId, TeamRef,
+    ids::{is_valid_login, is_valid_repo_name},
+};
 use serde::Deserialize;
 use std::{collections::BTreeMap, ops::Range};
 use toml::Spanned;
@@ -38,8 +41,6 @@ const MAX_WORKSPACE_CHARS: usize = 64;
 const MAX_ENV_NAME_CHARS: usize = 128;
 /// den's bound on a Linear team key, in characters.
 const MAX_TEAM_KEY_CHARS: usize = 32;
-/// GitHub's longest Repo name, in characters.
-const MAX_REPO_NAME_CHARS: usize = 100;
 /// den's bound on a team slug, in characters.
 const MAX_TEAM_SLUG_CHARS: usize = 100;
 /// den's bound on a state name or Slack channel, in characters.
@@ -291,13 +292,7 @@ fn repo(owner: &str, field: &str, value: Spanned<String>) -> Result<RepoId, Inva
             ),
         ));
     }
-    let ok = (1..=MAX_REPO_NAME_CHARS).contains(&name.chars().count())
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-        && name != "."
-        && name != "..";
-    if !ok {
+    if !is_valid_repo_name(name) {
         return Err((
             span,
             format!("{value:?} in `{field}` is not a Repo name (`name` or `{owner}/name`)"),

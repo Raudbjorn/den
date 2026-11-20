@@ -4,7 +4,7 @@
 //! (Owner, Repo, number) or kept as unrecognized links; which of them make a
 //! Landing Group is the decision engine's (`decide::correlation`, #35).
 
-use crate::domain::ids::{LinearIssueId, RepoId, WorkItemId};
+use crate::domain::ids::{LinearIssueId, RepoId, WorkItemId, is_valid_login, is_valid_repo_name};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -245,10 +245,6 @@ pub struct PullRequestRef {
     pub number: u64,
 }
 
-/// GitHub's bound on a login, in characters.
-const MAX_LOGIN_CHARS: usize = 39;
-/// GitHub's bound on a Repo name, in characters.
-const MAX_REPO_NAME_CHARS: usize = 100;
 /// GitHub's web host; Pull Request URLs on any other host are links.
 const GITHUB_HOSTS: [&str; 2] = ["github.com", "www.github.com"];
 
@@ -293,7 +289,7 @@ impl PullRequestRef {
         let canonical_number = !number.is_empty()
             && number.chars().all(|c| c.is_ascii_digit())
             && !number.starts_with('0');
-        if !(canonical_number && is_login(owner) && is_repo_name(repo)) {
+        if !(canonical_number && is_valid_login(owner) && is_valid_repo_name(repo)) {
             return None;
         }
         let number = number.parse::<u64>().ok()?;
@@ -306,20 +302,4 @@ fn strip_prefix_ignoring_case<'u>(text: &'u str, prefix: &str) -> Option<&'u str
     head.eq_ignore_ascii_case(prefix)
         .then(|| text.get(prefix.len()..))
         .flatten()
-}
-
-fn is_login(login: &str) -> bool {
-    (1..=MAX_LOGIN_CHARS).contains(&login.chars().count())
-        && login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-        && !login.starts_with('-')
-        && !login.ends_with('-')
-}
-
-fn is_repo_name(name: &str) -> bool {
-    (1..=MAX_REPO_NAME_CHARS).contains(&name.chars().count())
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-        && name != "."
-        && name != ".."
 }
