@@ -31,6 +31,10 @@ use serde_json::json;
 /// `gh` timeout, so without a stop an outage costs one per Repo with Issues.
 const UNREACHABLE_REPOS_BEFORE_STOPPING: u32 = 2;
 
+/// Pages of linked PRs den reads per Issue and link kind (`issue_facts.graphql`
+/// asks for one page and never follows its cursor).
+const LINK_PAGES_READ: u32 = 1;
+
 const FACTS: &str = include_str!("queries/issue_facts.graphql");
 const COUNTS_QUERY: &str = include_str!("queries/issue_counts_owner.graphql");
 const REPO_QUERY: &str = include_str!("queries/issues_repo.graphql");
@@ -129,9 +133,12 @@ struct LinkedRepo {
 }
 
 impl IssueNode {
-    fn into_fact(self, repo: &RepoId) -> Issue {
+    /// The Issue fact, and whether GitHub had more linked PRs than den asked for
+    /// (den stopped reading them; no error says so).
+    fn into_fact(self, repo: &RepoId) -> (Issue, bool) {
         let mut linked_prs = Vec::new();
         let mut linked_prs_complete = true;
+        let mut links_cut_short = false;
         for (kind, links) in [
             (LinkKind::ClosingReference, self.closing_references),
             (LinkKind::ManualLink, self.manual_links),
@@ -141,6 +148,9 @@ impl IssueNode {
                 linked_prs_complete = false;
                 continue;
             };
+            if links.page_info.has_next_page {
+                links_cut_short = true;
+            }
             if links.page_info.has_next_page || links.nodes.iter().any(Option::is_none) {
                 linked_prs_complete = false;
             }
@@ -157,7 +167,7 @@ impl IssueNode {
         }
         let (labels, labels_complete) = read_list(self.labels, |n| n.name);
         let (assignees, assignees_complete) = read_list(self.assignees, |n| n.login);
-        Issue {
+        let issue = Issue {
             repo: repo.clone(),
             number: self.number,
             title: self.title,
@@ -169,7 +179,8 @@ impl IssueNode {
             updated_at: self.updated_at,
             linked_prs,
             linked_prs_complete,
-        }
+        };
+        (issue, links_cut_short)
     }
 }
 
@@ -280,6 +291,7 @@ fn fetch_repo(
     let mut pager = Pager::new(None);
     let mut read = RepoRead::Reached;
     let mut first_page = true;
+    let mut links_cut_short = Vec::new();
     while pager.may_continue() {
         let variables = json!({ "owner": repo.owner, "name": repo.name, "after": pager.cursor });
         let page = match session.run::<RepoData>(&query, variables)? {
@@ -303,16 +315,31 @@ fn fetch_repo(
             break;
         };
         let issues = found.issues;
-        out.items.extend(
-            issues
-                .nodes
-                .into_iter()
-                .flatten()
-                .map(|issue| issue.into_fact(repo)),
-        );
+        for (issue, cut_short) in issues
+            .nodes
+            .into_iter()
+            .flatten()
+            .map(|n| n.into_fact(repo))
+        {
+            if cut_short {
+                links_cut_short.push(format!("#{}", issue.number));
+            }
+            out.items.push(issue);
+        }
         if !pager.advance(issues.page_info.has_next_page, issues.page_info.end_cursor) {
             break;
         }
+    }
+    if !links_cut_short.is_empty() {
+        // Linked PRs are read one page per Issue and never paginated further,
+        // so a cut-short list is a stopped pagination of that nested list.
+        pager.note(SourceState::Partial(Incompleteness::PaginationStopped {
+            pages_read: LINK_PAGES_READ,
+            reason: format!(
+                "more linked PRs than den reads on {}",
+                links_cut_short.join(", ")
+            ),
+        }));
     }
     out.coverage.push(pager.finish(Source::Repo {
         repo: repo.clone(),
