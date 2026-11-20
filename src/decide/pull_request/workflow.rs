@@ -3,6 +3,11 @@
 //! Linear Workflow reach this module; every other PR keeps milestone 1's
 //! rules in the parent module.
 //!
+//! Reviews are judged against the head read in the same query as they were
+//! (`PrDetails::head_commit`). If that differs from the PR list's head (a
+//! push landed between the two queries), den can't tell which head they
+//! were on relative to the PR's facts, and treats the reviews as unread.
+//!
 //! Two of GitHub's review lists are read, per reviewer:
 //! - the **standing** review (`latestOpinionatedReviews`): the approval or
 //!   change request that still stands, and the commit it was given on;
@@ -46,6 +51,9 @@ const FRESH_LOOK: &str = "workflow policy: feedback given on an older head needs
 const COMMENTS: &str = "workflow policy: comment reviews need re-review";
 const AT_HEAD: &str = "workflow policy: only changes requested at the current head need addressing";
 const DELETED_ACCOUNT: &str = "a deleted account";
+const NOT_EVERY_REVIEW: &str = "not every review was read";
+const HEAD_MOVED: &str = "the PR's head moved while den read its reviews";
+const REVIEWS_NOT_READ: &str = "the reviews could not be read";
 
 /// The workflow's review findings for one PR.
 pub(super) fn assess(pr: &PullRequest, policy: &ReviewPolicy) -> ReviewFindings {
@@ -99,12 +107,16 @@ struct Awaiting {
 impl<'a> WorkflowReview<'a> {
     fn assess(pr: &'a PullRequest, policy: &ReviewPolicy) -> Self {
         let exact_head = policy.exact_head_approval;
-        let Some(details) = &pr.details else {
+        let requests = pr
+            .details
+            .as_ref()
+            .map(|d| d.review_requests.items.as_slice());
+        let Some(details) = pr.details.as_ref().filter(|d| same_head(pr, d)) else {
             return Self {
                 pr,
                 exact_head,
                 read: ReviewsRead::default(),
-                suggested: suggested(&policy.reviewers, &[], pr, None),
+                suggested: suggested(&policy.reviewers, &[], pr, requests, &[]),
             };
         };
         let reading = Reading {
@@ -128,7 +140,8 @@ impl<'a> WorkflowReview<'a> {
                 &policy.reviewers,
                 &waiting_logins,
                 pr,
-                Some((details, &fresh_approvers)),
+                requests,
+                &fresh_approvers,
             ),
             read: ReviewsRead {
                 changes_at_head: reading.changes_requested(true),
@@ -141,22 +154,25 @@ impl<'a> WorkflowReview<'a> {
         }
     }
 
-    /// Every standing review was read.
-    fn standing_complete(&self) -> bool {
-        self.pr
-            .details
-            .as_ref()
-            .is_some_and(|d| d.latest_reviews.complete)
+    /// Why not every standing review counts as read, if so.
+    fn standing_unread(&self) -> Option<&'static str> {
+        match &self.pr.details {
+            None => Some(REVIEWS_NOT_READ),
+            Some(details) if !same_head(self.pr, details) => Some(HEAD_MOVED),
+            Some(details) if !details.latest_reviews.complete => Some(NOT_EVERY_REVIEW),
+            Some(_) => None,
+        }
     }
 
-    /// Every standing and every latest review was read.
-    fn reviews_complete(&self) -> bool {
-        self.standing_complete()
-            && self
-                .pr
+    /// Why not every standing and every latest review counts as read, if so.
+    fn reviews_unread(&self) -> Option<&'static str> {
+        self.standing_unread().or_else(|| {
+            self.pr
                 .details
                 .as_ref()
-                .is_some_and(|d| d.latest_reviews_with_comments.complete)
+                .is_some_and(|d| !d.latest_reviews_with_comments.complete)
+                .then_some(NOT_EVERY_REVIEW)
+        })
     }
 
     /// Whether the PR is approved under the workflow: with exact-head approval
@@ -183,7 +199,7 @@ impl<'a> WorkflowReview<'a> {
         if !self.read.fresh_approvers.is_empty() {
             return Approval::Approved;
         }
-        if !self.standing_complete() {
+        if self.standing_unread().is_some() {
             return Approval::Unknown;
         }
         let mut policies = vec![EXACT_HEAD];
@@ -231,8 +247,8 @@ impl<'a> WorkflowReview<'a> {
         if !details.threads_complete {
             return Finding::Unknown("not every review thread was read".to_owned());
         }
-        if !self.standing_complete() {
-            return Finding::Unknown("not every review was read".to_owned());
+        if let Some(why) = self.standing_unread() {
+            return Finding::Unknown(why.to_owned());
         }
         Finding::No
     }
@@ -265,10 +281,8 @@ impl<'a> WorkflowReview<'a> {
                 "whether to ask for review, since approval could not be established".to_owned(),
             );
         }
-        if !self.reviews_complete() {
-            return Finding::Unknown(
-                "not every review was read, so someone may be awaiting re-review".to_owned(),
-            );
+        if let Some(why) = self.reviews_unread() {
+            return Finding::Unknown(format!("{why}, so someone may be awaiting re-review"));
         }
         Finding::No
     }
@@ -278,9 +292,8 @@ impl<'a> WorkflowReview<'a> {
         let mut blockers: Vec<String> = self.changes_at_head_text().into_iter().collect();
         if let Some(awaiting) = self.awaiting_text() {
             blockers.push(awaiting);
-        } else if self.pr.details.is_some() && !self.reviews_complete() {
-            blockers
-                .push("not every review was read, so someone may be awaiting re-review".to_owned());
+        } else if let Some(why) = self.reviews_unread().filter(|_| self.pr.details.is_some()) {
+            blockers.push(format!("{why}, so someone may be awaiting re-review"));
         }
         blockers
     }
@@ -366,7 +379,10 @@ impl Reading<'_> {
     }
 
     fn requested(&self, login: &str) -> bool {
-        requested(self.details, &Reviewer::User(login.to_owned()))
+        requested(
+            &self.details.review_requests.items,
+            &Reviewer::User(login.to_owned()),
+        )
     }
 
     /// `login`'s latest review of any kind is on the current head.
@@ -506,14 +522,14 @@ fn push_login(logins: &mut Vec<String>, login: &str) {
 }
 
 /// The configured reviewers plus those awaiting re-review, minus fresh
-/// approvers, pending requests and the author. `read` is `None` when the
-/// details (requests and reviews) could not be read: then only the author is
-/// taken out.
+/// approvers, pending requests and the author. `requests` is `None` when the
+/// review requests could not be read.
 fn suggested(
     configured: &[Reviewer],
     awaiting: &[String],
     pr: &PullRequest,
-    read: Option<(&PrDetails, &[String])>,
+    requests: Option<&[Reviewer]>,
+    fresh: &[String],
 ) -> Vec<Reviewer> {
     let candidates = configured
         .iter()
@@ -524,17 +540,16 @@ fn suggested(
         if suggested.iter().any(|s| same_reviewer(s, &candidate)) {
             continue;
         }
-        let excluded = match &candidate {
-            Reviewer::User(login) => {
-                pr.author
-                    .as_deref()
-                    .is_some_and(|author| same_login(author, login))
-                    || read.is_some_and(|(details, fresh)| {
-                        fresh.iter().any(|f| same_login(f, login)) || requested(details, &candidate)
-                    })
-            }
-            Reviewer::Team(_) => read.is_some_and(|(details, _)| requested(details, &candidate)),
-        };
+        let excluded = requests.is_some_and(|requests| requested(requests, &candidate))
+            || match &candidate {
+                Reviewer::User(login) => {
+                    pr.author
+                        .as_deref()
+                        .is_some_and(|author| same_login(author, login))
+                        || fresh.iter().any(|f| same_login(f, login))
+                }
+                Reviewer::Team(_) => false,
+            };
         if !excluded {
             suggested.push(candidate);
         }
@@ -542,12 +557,18 @@ fn suggested(
     suggested
 }
 
-fn requested(details: &PrDetails, reviewer: &Reviewer) -> bool {
+/// `reviewer` has a pending review request among `requests`.
+fn requested(requests: &[Reviewer], reviewer: &Reviewer) -> bool {
+    requests.iter().any(|r| same_reviewer(r, reviewer))
+}
+
+/// The details were read at the PR list's head, so their reviews' commits can
+/// be compared against it.
+fn same_head(pr: &PullRequest, details: &PrDetails) -> bool {
     details
-        .review_requests
-        .items
-        .iter()
-        .any(|r| same_reviewer(r, reviewer))
+        .head_commit
+        .as_deref()
+        .is_some_and(|head| head.eq_ignore_ascii_case(&pr.head_commit))
 }
 
 fn same_reviewer(a: &Reviewer, b: &Reviewer) -> bool {

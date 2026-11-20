@@ -34,7 +34,8 @@ pub const CACHE_SUBDIR: &str = "cache";
 /// 6: the Linear part holds Linear viewers and Linear Issues, and coverage
 /// has Linear incompleteness reasons (#32).
 /// 7: a PR's reviews carry their commit and their author's kind of account,
-/// and a PR has its latest reviews of any kind, comments included (#36).
+/// a PR has its latest reviews of any kind, comments included, and its
+/// details carry the head they were read at (#36).
 pub const CACHE_FORMAT: u32 = 7;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;

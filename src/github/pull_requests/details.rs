@@ -1,6 +1,6 @@
 //! Each open PR's checks, review threads, review requests and latest reviews
 //! (the standing verdicts, and the latest review of any kind with its commit
-//! and its author's kind of account),
+//! and its author's kind of account), and its head as read in the same query,
 //! read in batches of [`PRS_PER_QUERY`] PRs per query (one aliased `node(id:)`
 //! per PR, since `isRequired` needs each PR's own ID).
 //!
@@ -228,6 +228,7 @@ fn numbered(numbers: &[u64]) -> String {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DetailsNode {
+    head_ref_oid: String,
     review_threads: Connection<ThreadNode>,
     review_requests: Connection<RequestNode>,
     latest_opinionated_reviews: Connection<ReviewNode>,
@@ -354,6 +355,7 @@ impl DetailsNode {
             !threads.page_info.has_next_page && threads.nodes.iter().all(Option::is_some);
         let unresolved = threads.nodes.iter().flatten().filter(|t| !t.is_resolved);
         PrDetails {
+            head_commit: Some(self.head_ref_oid),
             checks: checks(self.commits, response_complete),
             unresolved_threads: u32::try_from(unresolved.count()).unwrap_or(u32::MAX),
             threads_complete,

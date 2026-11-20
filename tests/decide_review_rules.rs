@@ -20,6 +20,7 @@ use den::{
 use support::build::{ME, ObservationBuilder, PrBuilder, now, pr, repo_id};
 
 const OLDER_HEAD: &str = "0ld0000000000000000000000000000000000000";
+const NEWER_HEAD: &str = "9e0000000000000000000000000000000000000f";
 const EXACT_HEAD: &str = "workflow policy: approval must be at the current head";
 
 struct Switches {
@@ -399,6 +400,24 @@ fn a_reviewer_who_since_commented_on_the_current_head_is_not_awaiting_re_review(
         let text = format!("{} {:?}", why(decision), decision.explanation);
         assert!(!text.contains("awaiting re-review: bob"), "{text}");
     }
+}
+
+#[test]
+fn reviews_read_after_a_push_are_not_judged_against_the_listed_head() {
+    // The PR list read the head 0x14; someone pushed before the details
+    // query, which read the new head with alice's approval of 0x14 still
+    // standing. That approval must not count as fresh.
+    let decision = decided(
+        ready(20)
+            .review_at_head("alice", ReviewVerdict::Approved)
+            .details_read_at(NEWER_HEAD),
+        &acme(BOTH_ON),
+    );
+    assert_ne!(decision.next_step, Some(NextStep::Merge), "{decision:#?}");
+    assert_says(
+        &decision,
+        &["the PR's head moved while den read its reviews"],
+    );
 }
 
 #[test]
