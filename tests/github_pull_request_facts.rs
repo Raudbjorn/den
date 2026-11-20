@@ -29,6 +29,7 @@ use den::{
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 use support::{
+    branch_graphql::only_default_branches,
     build::{now, repo_id},
     fakes::{ScriptedGraphQl, data, operation},
 };
@@ -123,31 +124,36 @@ fn octo_with_list_errors(
     details: Box<DetailsAnswer>,
 ) -> ScriptedGraphQl {
     let prs = Arc::new(prs);
-    ScriptedGraphQl::new(move |request| match operation(request).as_str() {
-        "Viewer" => Ok(data(json!({
-            "rateLimit": { "remaining": 4999, "resetAt": RESET_AT },
-            "viewer": { "login": "me" }
-        }))),
-        "ViewerTeams" => Ok(data(json!({ "viewer": { "organizations": {
-            "pageInfo": { "hasNextPage": false }, "nodes": []
-        }}}))),
-        "OwnerRepos" => Ok(data(json!({ "repositoryOwner": { "repositories": {
-            "pageInfo": page_info(false),
-            "nodes": [{ "name": "app", "url": "https://github.com/octo/app", "isFork": false,
-                        "isArchived": false, "defaultBranchRef": { "name": "main" }, "parent": null }]
-        }}}))),
-        "OwnerPullRequests" => Ok(GraphQlResponse {
-            data: Some(json!({ "repositoryOwner": { "repositories": {
+    ScriptedGraphQl::new(move |request| {
+        if let Some(answer) = only_default_branches(request) {
+            return answer;
+        }
+        match operation(request).as_str() {
+            "Viewer" => Ok(data(json!({
+                "rateLimit": { "remaining": 4999, "resetAt": RESET_AT },
+                "viewer": { "login": "me" }
+            }))),
+            "ViewerTeams" => Ok(data(json!({ "viewer": { "organizations": {
+                "pageInfo": { "hasNextPage": false }, "nodes": []
+            }}}))),
+            "OwnerRepos" => Ok(data(json!({ "repositoryOwner": { "repositories": {
                 "pageInfo": page_info(false),
-                "nodes": [{ "name": "app", "pullRequests": { "pageInfo": page_info(false), "nodes": *prs } }]
-            }}})),
-            errors: list_errors.clone(),
-        }),
-        "PullRequestDetails" => details(request),
-        "OwnerIssueCounts" => Ok(data(json!({ "repositoryOwner": { "repositories": {
-            "pageInfo": page_info(false), "nodes": []
-        }}}))),
-        other => panic!("unexpected {other}"),
+                "nodes": [{ "name": "app", "url": "https://github.com/octo/app", "isFork": false,
+                            "isArchived": false, "defaultBranchRef": { "name": "main" }, "parent": null }]
+            }}}))),
+            "OwnerPullRequests" => Ok(GraphQlResponse {
+                data: Some(json!({ "repositoryOwner": { "repositories": {
+                    "pageInfo": page_info(false),
+                    "nodes": [{ "name": "app", "pullRequests": { "pageInfo": page_info(false), "nodes": *prs } }]
+                }}})),
+                errors: list_errors.clone(),
+            }),
+            "PullRequestDetails" => details(request),
+            "OwnerIssueCounts" => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(false), "nodes": []
+            }}}))),
+            other => panic!("unexpected {other}"),
+        }
     })
 }
 

@@ -1,0 +1,7 @@
+# A candidate Branch: whether any PR (open, merged or closed, in any Repo) ever
+# used it as its head, and its last commit's time, headline and author (matched
+# to a GitHub login, or null when GitHub could not match the commit's email).
+fragment BranchCandidate on Ref {
+  associatedPullRequests(states: [OPEN, CLOSED, MERGED]) { totalCount }
+  target { ... on Commit { committedDate messageHeadline author { user { login } } } }
+}
