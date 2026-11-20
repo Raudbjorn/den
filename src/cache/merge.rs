@@ -81,7 +81,9 @@ pub fn merge(previous: Option<CachedObservation>, fresh: Observation) -> CachedO
     merged.branches = branches;
     merged.runs = runs;
     // `merged.linear` is the refresh's own: nothing fills it before #32, and
-    // #34 merges it per Linear source like the GitHub kinds above.
+    // #34 merges it per Linear source like the GitHub kinds above. Until then
+    // no Linear source is ever carried (`carried_sources`), so the header
+    // never says Linear data was kept.
     if !reading.viewer_read {
         for team in previous_observation.viewer.teams {
             if !merged.viewer.belongs_to(&team) {
@@ -196,6 +198,9 @@ fn keep_unread<T, K: Eq + Hash>(
 /// while its facts are still kept, even when the refresh recorded nothing for that
 /// Repo (its Owner's query failed before reaching it). Otherwise it would fall
 /// back to the Owner's age and read as newer than it is.
+///
+/// Linear sources are never carried: [`merge`] keeps no earlier Linear data
+/// (#34 adds that), so a failed Linear source has nothing kept to date.
 fn carried_sources(
     previous: &CachedObservation,
     fresh: &Observation,
@@ -204,6 +209,7 @@ fn carried_sources(
     let mut carried: Vec<Carried> = fresh
         .coverage
         .incomplete()
+        .filter(|entry| !is_linear(&entry.source))
         .filter_map(|entry| {
             data_age(previous, &entry.source).map(|observed_at| Carried {
                 source: entry.source.clone(),
@@ -258,6 +264,17 @@ fn data_age(previous: &CachedObservation, source: &Source) -> Option<Timestamp> 
             Source::Owner { .. } | Source::Viewer => None,
         },
     }
+}
+
+/// One of an Owner's Linear sources.
+fn is_linear(source: &Source) -> bool {
+    matches!(
+        source,
+        Source::Owner {
+            kind: SourceKind::Linear(_),
+            ..
+        }
+    )
 }
 
 /// A source's case-insensitive identity.
