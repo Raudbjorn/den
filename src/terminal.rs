@@ -19,11 +19,17 @@ impl TerminalSession {
                 terminal,
                 restored: false,
             }),
-            Err(init_error) => {
-                // Raw mode may already be on; undo whatever did happen.
-                let _ = ratatui::try_restore();
-                Err(init_error)
-            }
+            // Raw mode may already be on; undo whatever did happen, and report
+            // both failures if undoing it fails too.
+            Err(init_error) => match ratatui::try_restore() {
+                Ok(()) => Err(init_error),
+                Err(restore_error) => Err(io::Error::new(
+                    init_error.kind(),
+                    format!(
+                        "{init_error}; restoring the terminal afterwards also failed: {restore_error}"
+                    ),
+                )),
+            },
         }
     }
 
@@ -31,10 +37,12 @@ impl TerminalSession {
         &mut self.terminal
     }
 
-    /// Leaves raw mode and the alternate screen.
+    /// Leaves raw mode and the alternate screen. On failure, dropping the
+    /// session tries once more.
     pub fn finish(mut self) -> io::Result<()> {
-        self.restored = true;
-        ratatui::try_restore()
+        let restored = ratatui::try_restore();
+        self.restored = restored.is_ok();
+        restored
     }
 }
 

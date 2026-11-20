@@ -24,6 +24,12 @@ enum DenError {
     Ui(#[from] UiError),
     #[error("terminal: {0}")]
     Terminal(#[from] io::Error),
+    /// The session failed and then restoring the terminal failed as well.
+    #[error("{outcome}; restoring the terminal also failed: {restore}")]
+    RestoreAfter {
+        outcome: Box<DenError>,
+        restore: io::Error,
+    },
 }
 
 enum Mode {
@@ -60,9 +66,15 @@ fn run_interactive(theme: &Theme) -> Result<(), DenError> {
     let mut session = TerminalSession::start()?;
     let outcome = event_loop(&mut session, theme);
     let restored = session.finish();
-    outcome?;
-    restored?;
-    Ok(())
+    match (outcome, restored) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(restore)) => Err(DenError::Terminal(restore)),
+        (Err(error), Err(restore)) => Err(DenError::RestoreAfter {
+            outcome: Box::new(error),
+            restore,
+        }),
+    }
 }
 
 fn event_loop(session: &mut TerminalSession, theme: &Theme) -> Result<(), DenError> {
