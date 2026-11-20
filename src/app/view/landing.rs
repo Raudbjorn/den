@@ -103,9 +103,11 @@ fn own_next_step(state: &State<'_>, id: &WorkItemId) -> String {
         .find(|d| same_work_item(&d.item.id, id))
         .map_or_else(
             || "its Decision isn't shown".to_owned(),
-            |d| match d.next_step {
-                Some(step) => format!("Next Step {}", step.label()),
-                None => "no Next Step".to_owned(),
+            |d| match (d.next_step, &d.held_back) {
+                (Some(step), _) => format!("Next Step {}", step.label()),
+                // "lands with TEAM-1", "held for release" (#36, #37).
+                (None, Some(held)) => held.label(),
+                (None, None) => "no Next Step".to_owned(),
             },
         )
 }

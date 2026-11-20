@@ -41,7 +41,10 @@ pub const CACHE_SUBDIR: &str = "cache";
 /// attachments and whether they were all read (#35) and the Linear source
 /// that listed it (#34); the Linear part holds each Linear team's workflow
 /// states (#33) and its own survey time (#34).
-pub const CACHE_FORMAT: u32 = 8;
+/// 9: an Observation holds the states of Landing Group members den didn't find
+/// among the open Pull Requests (merged, closed, open again), read by number
+/// after the survey, and coverage has their source kind (#37).
+pub const CACHE_FORMAT: u32 = 9;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// Names the viewer whose cache startup shows.

@@ -84,8 +84,9 @@ pub struct LinearWorkflow {
 impl LinearWorkflow {
     /// The decision engine's policy for this workflow's Owner: which
     /// unassigned Linear Issues it offers to Start (#33), its review rules
-    /// (the two switches as configured, and the configured reviewers) and its
-    /// Held Repos (#36). The landing order arrives with #40.
+    /// (the two switches as configured, and the configured reviewers), its
+    /// Held Repos (#36) and its release state (#37). The landing order
+    /// arrives with #40.
     pub fn policy(&self) -> LinearWorkflowPolicy {
         LinearWorkflowPolicy {
             start: StartPolicy {
@@ -106,6 +107,7 @@ impl LinearWorkflow {
                     .collect(),
             }),
             held_repos: self.held_repos.clone(),
+            release_state: self.release_state.clone(),
         }
     }
 

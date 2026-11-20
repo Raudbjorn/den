@@ -5,6 +5,7 @@
 pub mod branch;
 pub mod issue;
 pub mod linear_issue;
+pub mod member_state;
 pub mod pull_request;
 pub mod run;
 
@@ -14,6 +15,7 @@ pub use linear_issue::{
     Attachment, Attachments, AttachmentsRead, LinearCycle, LinearIssue, LinearPriority,
     LinearState, LinearStateKind, LinearTeam, LinearUser, PullRequestRef,
 };
+pub use member_state::{MemberPullRequestState, PullRequestState};
 pub use pull_request::{
     ActorKind, Check, CheckOutcome, Listed, MergeState, Mergeability, PrDetails, PullRequest,
     Review, ReviewDecision, ReviewVerdict, Reviewer,

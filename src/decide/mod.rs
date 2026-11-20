@@ -11,6 +11,9 @@
 //! Before any rule runs, `correlation` builds the Observation's Landing
 //! Groups once (#35); the Linear Issue rules read them, and each Pull
 //! Request's and Linear Issue's Decision carries its part (`Decision.landing`).
+//! Pull Requests are decided first: a member that would Merge "lands with" its
+//! Linear Issue instead, and the Linear Issue rules then read the members'
+//! own Decisions to decide Land (#37).
 
 mod attribution;
 mod branch;
@@ -83,8 +86,8 @@ pub struct Decision {
     /// When the facts behind this Decision were observed.
     pub observed_at: Timestamp,
     /// Set when the Work Item would Merge but is held back, so it has no Next
-    /// Step (#36). `None` otherwise, and always for Owners without a Linear
-    /// Workflow.
+    /// Step: held for release (#36) or landing with its Linear Issue (#37).
+    /// `None` otherwise, and always for Owners without a Linear Workflow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_back: Option<HeldBack>,
     /// For a PR of an Owner with a Linear Workflow: who to ask on Request
@@ -111,13 +114,19 @@ pub struct Decision {
 pub enum HeldBack {
     /// The PR is in a Held Repo: it is held for a release, not merged (#36).
     ForRelease,
+    /// The PR is an attached member of these Linear Issues' Landing Groups
+    /// (their identifiers, `TEAM-123`): it lands with its group, through the
+    /// Linear Issue's Land, never by itself (#37).
+    LandsWith { identifiers: Vec<String> },
 }
 
 impl HeldBack {
-    /// The marker shown instead of a Next Step, e.g. "held for release".
+    /// The marker shown instead of a Next Step: "held for release", "lands
+    /// with TEAM-123".
     pub fn label(&self) -> String {
         match self {
             Self::ForRelease => "held for release".to_owned(),
+            Self::LandsWith { identifiers } => format!("lands with {}", identifiers.join(", ")),
         }
     }
 }
@@ -239,16 +248,18 @@ pub fn decide_with(
         correlation: &correlation,
     };
     let mut decisions = pull_request::decide_all(&ctx);
-    // A Pull Request's own Next Step doesn't depend on its groups (until
-    // Land, #37); its Decision carries them for the list and the detail.
+    // A Pull Request's groups only turn its Merge into "lands with" (#37);
+    // its Decision carries them for the list and the detail.
     for decision in &mut decisions {
         if let WorkItemId::PullRequest { repo, number } = &decision.item.id {
             decision.landing = correlation.for_pull_request(repo, *number);
         }
     }
+    // Land reads each member's own Decision.
+    let linear_issues = linear_issue::decide_all(&ctx, &decisions);
     decisions.extend(issue::decide_all(&ctx));
     decisions.extend(branch::decide_all(&ctx));
     decisions.extend(run::decide_all(&ctx));
-    decisions.extend(linear_issue::decide_all(&ctx));
+    decisions.extend(linear_issues);
     decisions
 }

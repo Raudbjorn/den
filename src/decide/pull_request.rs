@@ -24,20 +24,30 @@
 //! ([`workflow`]) change approval and Address review, and add **Request
 //! review** between Review and Merge (Waiting On the author). A PR that would
 //! Merge then passes [`held_back`], the one place "would Merge" becomes Merge:
-//! in a Held Repo it has no Next Step and is held for release. The empty
+//! in a Held Repo it has no Next Step and is held for release; an attached
+//! member of a Landing Group of its own Owner has no Next Step and "lands
+//! with" its Linear Issue (#37), which offers Land when the whole group is
+//! ready. When den couldn't read the Linear Issue lists of a Merge PR's Owner
+//! (or one of their issues' attachments) completely, the PR might be a member
+//! den didn't see: it still shows Merge, but those Linear sources join its
+//! coverage and the Explanation says what den couldn't establish. The empty
 //! policy (no Linear Workflow) changes none of this module's Decisions.
 
 mod workflow;
 
 use workflow::WorkflowReview;
 
-use super::{Attribution, Context, Decision, Explanation, HeldBack, WorkItem};
+use super::{
+    Attribution, Context, Decision, Explanation, HeldBack, WorkItem, correlation::GroupRef,
+};
 use crate::domain::{
-    LinearWorkflowPolicy, NextStep, Source, SourceState, Viewer,
+    CoverageEntry, LinearSourceKind, LinearWorkflowPolicy, NextStep, Source, SourceKind,
+    SourceState, Viewer,
     facts::{
-        Check, CheckOutcome, MergeState, Mergeability, PrDetails, PullRequest, ReviewDecision,
-        ReviewVerdict, Reviewer,
+        AttachmentsRead, Check, CheckOutcome, MergeState, Mergeability, PrDetails, PullRequest,
+        ReviewDecision, ReviewVerdict, Reviewer,
     },
+    ids::same_login,
 };
 
 const AUTHOR_ROLE: &str = "the PR author";
@@ -195,8 +205,9 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
             not_ruled_out.join(", ")
         )
     };
+    let groups = ctx.correlation.for_pull_request(&pr.repo, pr.number).groups;
     if step == NextStep::Merge
-        && let Some((held, why_held)) = held_back(policy, pr)
+        && let Some((held, why_held)) = held_back(policy, pr, &groups)
     {
         let mut decision = Decision::new(
             ctx,
@@ -217,6 +228,10 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         decision.suggested_reviewers = suggested_reviewers;
         return decision;
     }
+    let membership = (step == NextStep::Merge).then(|| membership_unread(ctx, pr));
+    if let Some((_, Some(unread))) = &membership {
+        unknowns.push(unread.clone());
+    }
     let mut decision = Decision::new(
         ctx,
         item,
@@ -229,14 +244,24 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
             ..Explanation::default()
         },
     );
+    if let Some((sources, _)) = membership {
+        decision.coverage.extend(sources);
+    }
     decision.suggested_reviewers = suggested_reviewers;
     decision
 }
 
 /// The one place a PR that would Merge is held back instead (spec 0002:
-/// "would Merge" is then filtered): in a Held Repo it is held for release.
-/// Landing Group members ("lands with", #37) join here. `None`: Merge.
-fn held_back(policy: &LinearWorkflowPolicy, pr: &PullRequest) -> Option<(HeldBack, String)> {
+/// "would Merge" is then filtered): in a Held Repo it is held for release;
+/// otherwise an attached member of a Landing Group of its own Owner lands
+/// with its Linear Issue (#37). A Pull Request attached to another Owner's
+/// Linear Issue is no member of that group (a Landing Group's Pull Requests
+/// are its Owner's; that issue reports it "not surveyed"). `None`: Merge.
+fn held_back(
+    policy: &LinearWorkflowPolicy,
+    pr: &PullRequest,
+    groups: &[GroupRef],
+) -> Option<(HeldBack, String)> {
     if policy.holds(&pr.repo) {
         return Some((
             HeldBack::ForRelease,
@@ -246,7 +271,67 @@ fn held_back(policy: &LinearWorkflowPolicy, pr: &PullRequest) -> Option<(HeldBac
             ),
         ));
     }
-    None
+    let identifiers: Vec<String> = groups
+        .iter()
+        .filter(|g| same_login(g.issue.owner(), &pr.repo.owner))
+        .map(|g| g.identifier.clone())
+        .collect();
+    if identifiers.is_empty() {
+        return None;
+    }
+    let why = format!(
+        "it is attached in Linear to {} (workflow policy: a Landing Group's Pull Requests land together, through its Linear Issue's Land, never by themselves)",
+        identifiers.join(", ")
+    );
+    Some((HeldBack::LandsWith { identifiers }, why))
+}
+
+/// For a PR that Merges in an Owner with a Linear Workflow: the Owner's
+/// Linear Issue lists that den didn't read completely (they say whether it is
+/// a Landing Group member), for its coverage; and, when those or an issue's
+/// attachments weren't all read, what den couldn't establish. Nothing when
+/// everything was read, and nothing for an Owner without a Linear Workflow,
+/// which records no Linear source.
+fn membership_unread(ctx: &Context<'_>, pr: &PullRequest) -> (Vec<CoverageEntry>, Option<String>) {
+    let owner = &pr.repo.owner;
+    let sources: Vec<CoverageEntry> = ctx
+        .observation
+        .coverage
+        .entries()
+        .iter()
+        .filter(|e| match &e.source {
+            Source::Owner {
+                owner: o,
+                kind:
+                    SourceKind::Linear(
+                        LinearSourceKind::AssignedIssues | LinearSourceKind::StartTeamIssues,
+                    ),
+            } => same_login(o, owner) && !e.state.is_complete(),
+            _ => false,
+        })
+        .cloned()
+        .collect();
+    let mut unread: Vec<String> = sources
+        .iter()
+        .map(|e| format!("{} {}", e.source.label(), e.state.describe()))
+        .collect();
+    unread.extend(
+        ctx.observation
+            .linear
+            .issues
+            .iter()
+            .filter(|issue| same_login(&issue.owner, owner))
+            .filter(|issue| matches!(issue.attachments.read, AttachmentsRead::Incomplete { .. }))
+            .map(|issue| format!("{}'s attachments weren't all read", issue.identifier)),
+    );
+    unread.dedup();
+    let unknown = (!unread.is_empty()).then(|| {
+        format!(
+            "whether it lands with a Linear Issue (a Landing Group member never merges by itself): {}",
+            unread.join("; ")
+        )
+    });
+    (sources, unknown)
 }
 
 fn waiting_on(step: NextStep, pr: &PullRequest, ctx: &Context<'_>) -> Attribution {

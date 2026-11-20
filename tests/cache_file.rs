@@ -12,7 +12,8 @@ use den::{
         LinearSourceKind, LinearTeamStates, Source, SourceKind, SourceState,
         facts::{
             ActorKind, Attachment, AttachmentsRead, LinearState, LinearStateKind, LinearTeam,
-            MergeState, PullRequestRef, ReviewDecision, ReviewVerdict,
+            MemberPullRequestState, MergeState, PullRequestRef, PullRequestState, ReviewDecision,
+            ReviewVerdict,
         },
     },
     ports::ObservationCache,
@@ -141,15 +142,22 @@ fn the_linear_part_and_its_ages_load_back_unchanged() {
     assert_eq!(cache.load(), Ok(Some(stored)));
 }
 
-/// Format 8 is milestone 2's merged shape. Every field #33, #34, #35 and #36
-/// added to the stored Observation survives a store and load, together:
-/// #33's `LinearPart.team_states`, #34's `LinearIssue.listed_by` and
+/// Format 8 was milestone 2's merged shape; 9 adds #37's Landing Group
+/// member states. Every field #33, #34, #35, #36 and #37 added to the stored
+/// Observation survives a store and load, together: #33's
+/// `LinearPart.team_states`, #34's `LinearIssue.listed_by` and
 /// `LinearPart.observed_at`, #35's attachments (a PR, a link, and an issue
-/// whose attachments weren't all read), and #36's review commit and author
-/// kind (a user's review on an older head, a bot's comment at the head).
+/// whose attachments weren't all read), #36's review commit and author kind
+/// (a user's review on an older head, a bot's comment at the head), and #37's
+/// member states (merged with its time, closed, open again) with their
+/// coverage.
+///
+/// (#37 renamed this test from `milestone_2_s_merged_shape_…` and moved its
+/// format assertion from 8 to 9: the stored Observation gained a field. Every
+/// earlier assertion is unchanged.)
 #[test]
-fn milestone_2_s_merged_shape_loads_back_unchanged() {
-    assert_eq!(CACHE_FORMAT, 8, "the merged milestone-2 shape");
+fn milestone_2_s_shape_loads_back_unchanged() {
+    assert_eq!(CACHE_FORMAT, 9, "milestone 2's shape with member states");
     let team_states = LinearTeamStates {
         owner: "acme".to_owned(),
         workspace: "acme".to_owned(),
@@ -188,6 +196,30 @@ fn milestone_2_s_merged_shape_loads_back_unchanged() {
         .build();
     observation.linear.team_states = vec![team_states.clone()];
     observation.linear.observed_at = Some(ts("2026-11-19T11:00:00Z"));
+    let member = |number: u64, state: PullRequestState| MemberPullRequestState {
+        pr: PullRequestRef::new(den::domain::RepoId::new("acme", "api"), number),
+        state,
+    };
+    let member_states = vec![
+        member(
+            5,
+            PullRequestState::Merged {
+                merged_at: Some(ts("2026-11-18T10:00:00Z")),
+            },
+        ),
+        member(6, PullRequestState::Closed),
+        member(7, PullRequestState::Open),
+    ];
+    observation.member_states = member_states.clone();
+    observation.coverage.record(
+        Source::Owner {
+            owner: "acme".to_owned(),
+            kind: SourceKind::MemberStates,
+        },
+        SourceState::Failed {
+            error: "timeout".to_owned(),
+        },
+    );
     let stored = CachedObservation::fresh(observation);
     let dir = tempfile::tempdir().unwrap();
     let cache = FileCache::in_state_dir(dir.path());
@@ -234,6 +266,16 @@ fn milestone_2_s_merged_shape_loads_back_unchanged() {
         .expect("the bot's comment");
     assert_eq!(bot.author_kind, ActorKind::Bot);
     assert_eq!(bot.verdict, ReviewVerdict::Commented);
+    assert_eq!(loaded.observation.member_states, member_states);
+    assert!(
+        loaded
+            .observation
+            .coverage
+            .entries()
+            .iter()
+            .any(|e| e.source.is_member_states()),
+        "the member states' coverage"
+    );
 }
 
 #[cfg(unix)]
