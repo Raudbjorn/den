@@ -370,7 +370,7 @@ impl Workspace for FakeWorkspace {
         Self::failure(&state, "fetch")?;
         let fake = state.clones.get_mut(clone).ok_or_else(|| no_clone(clone))?;
         // `+refs/heads/<b>:refs/remotes/<r>/<b>`, or a PR ref
-        // `+refs/pull/<n>/head:refs/remotes/<r>/pr/<n>` (kept whole as the key).
+        // `+refs/pull/<n>/head:refs/den/pull/<r>/<n>` (kept whole as the key).
         let (source, destination) = refspec
             .trim_start_matches('+')
             .split_once(':')

@@ -413,7 +413,7 @@ fn a_cross_repo_pr_head_is_fetched_by_its_pr_ref_from_the_target_repos_remote() 
         WorkspaceCall::Fetch {
             clone: CLONE.into(),
             remote: "origin".to_owned(),
-            refspec: "+refs/pull/7/head:refs/remotes/origin/pr/7".to_owned(),
+            refspec: "+refs/pull/7/head:refs/den/pull/origin/7".to_owned(),
         }
     );
     assert_eq!(
@@ -424,7 +424,7 @@ fn a_cross_repo_pr_head_is_fetched_by_its_pr_ref_from_the_target_repos_remote() 
                 path: "/home/me/dev/app/.claude/worktrees/feature-7".into(),
                 branch: "feature-7".to_owned(),
                 start: WorktreeStart::NewBranch {
-                    start: "refs/remotes/origin/pr/7".to_owned()
+                    start: "refs/den/pull/origin/7".to_owned()
                 },
             },
         }
@@ -629,4 +629,32 @@ fn an_edited_prompt_survives_a_target_round_trip_and_an_undone_edit_stays_undone
     press(&mut harness, Key::Char('u'));
     assert_eq!(sheet(&harness).status, LaunchStatus::Ready);
     assert_eq!(prompt_text(&harness), default_prompt);
+}
+
+#[test]
+fn an_edited_prompt_survives_a_moved_head_and_then_a_target_round_trip() {
+    let store = Arc::new(FakeUpstreams::default());
+    let mut harness = started_with(&store, forked());
+    fork_clone(&harness);
+    press(&mut harness, Key::Char('c'));
+    for key in [Key::Char('e'), Key::End, Key::Char('!'), Key::Esc] {
+        press(&mut harness, key);
+    }
+    let edited_prompt = prompt_text(&harness);
+    assert!(edited_prompt.ends_with('!'));
+
+    // The head moves before the launch: the sheet asks again, and the plan it
+    // holds now carries the edited prompt.
+    harness
+        .workspace
+        .set_remote_head(CLONE, "origin", "feature-7", &"1".repeat(40));
+    press(&mut harness, Key::Enter);
+    assert_eq!(sheet(&harness).status, LaunchStatus::HeadMoved);
+    assert_eq!(prompt_text(&harness), edited_prompt);
+
+    // To the Upstream and back: the edit is still the user's, not dropped as
+    // if it were the default.
+    press(&mut harness, Key::Char('u'));
+    press(&mut harness, Key::Char('u'));
+    assert_eq!(prompt_text(&harness), edited_prompt);
 }

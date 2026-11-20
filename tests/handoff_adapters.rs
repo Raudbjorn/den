@@ -593,7 +593,7 @@ fn a_cross_repo_head_is_fetched_by_its_pr_ref_and_the_branch_tracks_nothing() {
         "{report:#?}"
     );
     assert_eq!(
-        git(&clone, &["rev-parse", "refs/remotes/upstream/pr/7"]),
+        git(&clone, &["rev-parse", "refs/den/pull/upstream/7"]),
         head
     );
     assert_eq!(git(&plan.worktree, &["rev-parse", "HEAD"]), head);
@@ -656,4 +656,45 @@ fn dens_appending_job_records_at_once_keep_every_record() {
         .collect();
     numbers.sort_unstable();
     assert_eq!(numbers, (0..WRITERS * RECORDS_EACH).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_fetched_pr_head_never_overwrites_a_remote_branch_named_like_it() {
+    // The target has a real branch `pr/7`, already fetched; a cross-Repo PR #7
+    // must not be force-fetched over its remote-tracking ref.
+    let (temp, _dev, clone, url, head) = temp_repos();
+    let remote = temp.path().join("remote.git");
+    git(&remote, &["update-ref", "refs/pull/7/head", &head]);
+    git(&remote, &["update-ref", "-d", "refs/heads/feature/x"]);
+    let branch_tip = git(&remote, &["rev-parse", "refs/heads/main"]);
+    git(&remote, &["update-ref", "refs/heads/pr/7", &branch_tip]);
+    git(&clone, &["fetch", "upstream"]);
+    assert_eq!(
+        git(&clone, &["rev-parse", "refs/remotes/upstream/pr/7"]),
+        branch_tip
+    );
+
+    let workspace = GitWorkspace::new();
+    let mut plan = plan_for(&clone, &url, &head);
+    plan.base.reference = BaseRef::PullHead { number: 7 };
+    plan.branch.start = BranchStart::NewUntracked;
+    let launcher = RecordingLauncher::default();
+    let jobs = FileJobStore::new(temp.path().join("state").join("jobs.json"));
+    let report = handoff::execute(
+        &plan,
+        &workspace,
+        &launcher,
+        &jobs,
+        "2026-11-20T10:00:00Z".parse().unwrap(),
+    );
+    assert!(
+        matches!(report.outcome, LaunchOutcome::Launched { .. }),
+        "{report:#?}"
+    );
+    assert_eq!(
+        git(&clone, &["rev-parse", "refs/remotes/upstream/pr/7"]),
+        branch_tip,
+        "the branch pr/7's remote-tracking ref is untouched"
+    );
+    assert_eq!(git(&plan.worktree, &["rev-parse", "HEAD"]), head);
 }

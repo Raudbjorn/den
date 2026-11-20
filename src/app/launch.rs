@@ -50,6 +50,10 @@ pub(super) struct Sheet {
     /// The prompt the user edited before switching the target with `u`; kept
     /// instead of the new target's default prompt.
     pub edited_prompt: Option<String>,
+    /// The current target's default prompt, as the last inspection planned it.
+    /// A launch attempt puts the edited prompt into the plan, so the plan's
+    /// own prompt can't tell an edit from the default.
+    pub default_prompt: Option<String>,
 }
 
 /// The two targets a Work Item in a fork can have.
@@ -112,6 +116,7 @@ impl App {
             fork_choice,
             fork,
             edited_prompt: None,
+            default_prompt: None,
         };
         let effects = self.inspect_for(&mut sheet, "opened");
         self.overlay = Some(OverlayState::Launch(Box::new(sheet)));
@@ -181,7 +186,8 @@ impl App {
             // The prompt as it stands now wins: an edit undone back to the
             // default clears the saved one, so it can't come back later.
             let text = sheet.prompt.text();
-            sheet.edited_prompt = (text != plan.prompt).then_some(text);
+            let default = sheet.default_prompt.as_deref().unwrap_or(&plan.prompt);
+            sheet.edited_prompt = (text != default).then_some(text);
         }
         sheet.choice = sheet.choice.flipped();
         sheet.accepted_head = None;
@@ -313,6 +319,7 @@ impl App {
             Ok(plan) => {
                 sheet.prompt =
                     PromptEditor::new(sheet.edited_prompt.as_deref().unwrap_or(&plan.prompt));
+                sheet.default_prompt = Some(plan.prompt.clone());
                 sheet.state = SheetState::Ready {
                     plan: Box::new(plan),
                     view,
