@@ -60,6 +60,8 @@ fn decision(
         explanation: Explanation::default(),
         coverage: Vec::new(),
         observed_at: ts(support::build::NOW),
+        held_back: None,
+        suggested_reviewers: None,
     }
 }
 

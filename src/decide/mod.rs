@@ -20,7 +20,7 @@ pub use attribution::Attribution;
 
 use crate::domain::{
     CoverageEntry, LinearWorkflowPolicy, NextStep, Observation, Policies, UpstreamTargets, Viewers,
-    WaitingOn, WorkItemId,
+    WaitingOn, WorkItemId, facts::Reviewer,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -76,6 +76,34 @@ pub struct Decision {
     pub coverage: Vec<CoverageEntry>,
     /// When the facts behind this Decision were observed.
     pub observed_at: Timestamp,
+    /// Set when the Work Item would Merge but is held back, so it has no Next
+    /// Step (#36). `None` otherwise, and always for Owners without a Linear
+    /// Workflow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_back: Option<HeldBack>,
+    /// For a PR of an Owner with a Linear Workflow: who to ask on Request
+    /// review (#36). The configured reviewers plus those awaiting re-review,
+    /// minus fresh approvers, pending requests and the author. `None` for
+    /// every other Work Item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_reviewers: Option<Vec<Reviewer>>,
+}
+
+/// Why a PR that would Merge has no Next Step (spec 0002: "would Merge" is
+/// then filtered). Each reads in monochrome by its own text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HeldBack {
+    /// The PR is in a Held Repo: it is held for a release, not merged (#36).
+    ForRelease,
+}
+
+impl HeldBack {
+    /// The marker shown instead of a Next Step, e.g. "held for release".
+    pub fn label(&self) -> String {
+        match self {
+            Self::ForRelease => "held for release".to_owned(),
+        }
+    }
 }
 
 impl Decision {
@@ -97,6 +125,8 @@ impl Decision {
             explanation,
             coverage,
             observed_at: ctx.observation.observed_at,
+            held_back: None,
+            suggested_reviewers: None,
         }
     }
 }

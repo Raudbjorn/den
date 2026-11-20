@@ -16,5 +16,5 @@ pub use ids::{LinearIssueId, RepoId, WorkItemId, WorkItemKind, WorkflowId};
 pub use linear::{LinearPart, LinearViewer};
 pub use next_step::{NextStep, WaitingOn};
 pub use observation::{Observation, Repo, TeamRef, Viewer, Viewers};
-pub use policy::{LinearWorkflowPolicy, Policies};
+pub use policy::{LinearWorkflowPolicy, Policies, ReviewPolicy};
 pub use upstream::{Comparison, UpstreamTargets, comparison_for};
