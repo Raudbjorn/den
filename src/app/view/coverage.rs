@@ -152,10 +152,9 @@ pub fn scope_complete(observation: &Observation, scope: &Scope) -> bool {
 
 /// The sources behind one Repo's Work Items: its Owner's and its own.
 ///
-/// An Owner's Linear sources count too. A Repo Scope will show the Linear
-/// Issues with a member PR in that Repo (#35), so a Linear source den could
-/// not read may hide work there; and before #35 counting them is only
-/// cautious, never a false "complete".
+/// An Owner's Linear sources count too. A Repo Scope shows the Linear Issues
+/// with a member PR in that Repo (#35, `Scope::contains_decision`), so a
+/// Linear source den could not read may hide work there.
 fn applicable_to_repo<'o>(observation: &'o Observation, repo: &RepoId) -> Vec<&'o CoverageEntry> {
     observation
         .coverage
