@@ -18,7 +18,8 @@ const ROW_LINES: u16 = 1;
 const REPO_INDENT: &str = "  ";
 
 // The `SidebarRow` template's fixed columns, in cells (its `w-[n]` spans); the
-// label takes what is left.
+// label takes what is left. Every branch of the template has these same
+// columns, so the budget does not depend on which branch a row takes.
 /// The cursor tick, then the current-Scope glyph.
 const MARK_COLS: usize = 2;
 /// The "upstream →" label of a fork that targets its Upstream.
@@ -123,18 +124,15 @@ pub fn draw(
 }
 
 /// The cells a row's label may take in a row `width` cells wide: what the
-/// template's fixed columns for this kind of row leave.
+/// template's fixed columns leave.
 fn label_cols(row: &SidebarRow, width: usize) -> usize {
-    let fixed = if row.entry == SidebarEntry::Repo {
-        let upstream = if row.upstream.is_some() {
-            UPSTREAM_COLS
-        } else {
-            0
-        };
-        MARK_COLS + upstream + ICONS_GAP_COLS + ICONS_COLS + FLAG_COLS + COUNT_COLS + RAIL_GAP_COLS
+    let upstream = if row.upstream.is_some() {
+        UPSTREAM_COLS
     } else {
-        MARK_COLS + FLAG_COLS + COUNT_COLS + RAIL_GAP_COLS
+        0
     };
+    let fixed =
+        MARK_COLS + upstream + ICONS_GAP_COLS + ICONS_COLS + FLAG_COLS + COUNT_COLS + RAIL_GAP_COLS;
     width.saturating_sub(fixed)
 }
 

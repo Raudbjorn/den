@@ -11,8 +11,12 @@ Sentinels as in frame.crepus. Meaning never rides on colour alone:
   flag    incomplete coverage (filled by #8) is a glyph
   count   Work Items with a Next Step, or a faint dot for none; Rust
           right-aligns it in five cells (a blank always before it), and a
-          blank cell after it keeps it off the rail. Rust cuts the label to what the fixed columns leave
-          (`ui::sidebar`), so keep the two in step.
+          blank cell after it keeps it off the rail.
+
+Every SidebarRow branch has the same columns (a heading's icons are empty), so
+one budget is true whichever branch a row takes, the cursor's included. Rust
+cuts the label to what those fixed columns leave (`ui::sidebar`), so keep the
+two in step.
 
 --- Sidebar
 div w-full h-full flex-col bg-[#aa0001] pt-1
@@ -44,6 +48,10 @@ div w-full h-full flex-col bg-[#aa0001]
         span flex-1 font-bold text-[#aa0006] "{label}"
       else
         span flex-1 text-[#aa000a] "{label}"
+      if {has_upstream}
+        span w-[11] font-bold text-[#aa000b] "{upstream}"
+      span w-[1] " "
+      span w-[2] text-[#aa0016] "{icons}"
       span w-[1] text-[#aa000f] "{flag}"
       span w-[5] text-[#aa0007] "{count}"
       span w-[1] " "

@@ -10,18 +10,18 @@ mod support;
 use den::{
     app::{
         App, Event, Key, ViewModel,
-        view_model::{ELLIPSIS, ENTER_KEY, EmptyState, SEPARATOR},
+        view_model::{ELLIPSIS, ENTER_KEY, EmptyState, SEPARATOR, SidebarEntry},
     },
     palette::OXIDE_TRUECOLOR,
     ui::{Theme, frame},
 };
 use ratatui::{buffer::Buffer, layout::Rect};
-use unicode_width::UnicodeWidthStr;
 use raudbjorn_tui::profile::{ColorProfile, GlyphProfile, TerminalProfile};
 use support::{
     build::{ME, ObservationBuilder, pr},
     harness::{Harness, config},
 };
+use unicode_width::UnicodeWidthStr;
 
 const DESIGN_SIZE: (u16, u16) = (160, 45);
 const MINIMUM_SIZE: (u16, u16) = (80, 24);
@@ -796,18 +796,27 @@ fn ellipsis(glyphs: GlyphProfile) -> &'static str {
 /// rail at 80 columns).
 const WIDE_COUNT: usize = 1101;
 
+/// The sidebar rows the sweep puts the cursor on, in `many_repos`: All Owners,
+/// the Owner `octo` (both headings), and the Repo `octo/a-fork`. The template
+/// draws the cursor's row in a branch of its own, so each kind is swept there.
+const SIDEBAR_CURSORS: [usize; 3] = [0, 1, 2];
+
 /// At either size and in either glyph profile, a count as wide as its column
 /// keeps a blank cell before the sidebar's rail, and a label too long for what
 /// is left is cut with the profile's ellipsis instead of pushing into the
 /// count or losing its end unmarked. Swept over every label length up to the
-/// plate's width, so whichever length exactly fills the label column is hit.
+/// plate's width, so whichever length exactly fills the label column is hit,
+/// with the cursor on a heading and on a Repo.
 #[test]
 fn a_wide_sidebar_count_keeps_off_the_rail_and_long_labels_end_in_an_ellipsis() {
     let mut problems = Vec::new();
     for size in [MINIMUM_SIZE, DESIGN_SIZE] {
         let harness = many_repos(size);
         let (cols, rows) = size;
-        for glyphs in [GlyphProfile::Unicode, GlyphProfile::Ascii] {
+        for (glyphs, cursor) in [GlyphProfile::Unicode, GlyphProfile::Ascii]
+            .into_iter()
+            .flat_map(|glyphs| SIDEBAR_CURSORS.map(|cursor| (glyphs, cursor)))
+        {
             let theme =
                 Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
             let mark = ellipsis(glyphs);
@@ -817,19 +826,22 @@ fn a_wide_sidebar_count_keeps_off_the_rail_and_long_labels_end_in_an_ellipsis() 
             for cells in 1..=usize::from(width) {
                 let mut view = harness.view.clone();
                 view.sidebar.focused = true;
-                view.sidebar.cursor = Some(2);
+                view.sidebar.cursor = Some(cursor);
                 let label = hyphenated(cells);
                 for (i, row) in view.sidebar.rows.iter_mut().enumerate() {
                     row.label.clone_from(&label);
                     row.count = WIDE_COUNT;
                     // Every other Repo targets its Upstream: the widest row.
-                    if i % 2 == 1 && row.upstream.is_none() {
+                    // Only a Repo has an Upstream in a real ViewModel.
+                    if i % 2 == 1 && row.entry == SidebarEntry::Repo && row.upstream.is_none() {
                         row.upstream = Some("up/stream".to_owned());
                     }
                 }
                 let buffer = frame::render(&theme, &view, cols, rows).expect("renders");
                 let sidebar = frame::regions(buffer.area, &view.layout).sidebar;
-                let context = format!("{glyphs:?} {cols}x{rows}, label of {cells} cells");
+                let context = format!(
+                    "{glyphs:?} {cols}x{rows}, cursor on row {cursor}, label of {cells} cells"
+                );
                 let first_row = sidebar.y + 3;
                 for y in first_row..sidebar.bottom() {
                     let line: String = (sidebar.left()..sidebar.right())
