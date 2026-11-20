@@ -17,7 +17,9 @@
 //! where the base branch is, and the sheet shows (and the executor re-checks)
 //! that commit like a PR head.
 
-use super::{BaseRef, Refusal, RefusalReason, Target, TargetChoice, names};
+use super::{
+    BaseRef, Refusal, RefusalReason, Target, TargetChoice, landing::LandingGroupPlan, names,
+};
 use crate::{
     decide::Decision,
     domain::{NextStep, Observation, Repo, RepoId, WorkItemId},
@@ -46,6 +48,8 @@ pub(super) struct Facts {
     pub named_fresh: bool,
     /// A Linear Issue's identifier (`TEAM-123`), for its prompt and session.
     pub identifier: Option<String>,
+    /// Land (#40): the Landing Group the Job lands. `None` for every other kind.
+    pub landing: Option<LandingGroupPlan>,
 }
 
 /// The target a choice names, and whether it is archived.
@@ -185,6 +189,7 @@ pub(super) fn facts(
         new_branch,
         named_fresh: false,
         identifier: None,
+        landing: None,
     })
 }
 
@@ -266,6 +271,7 @@ fn linear_facts(
         named_fresh: !new_branch,
         new_branch,
         identifier: Some(issue.identifier.clone()),
+        landing: None,
     })
 }
 

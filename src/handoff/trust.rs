@@ -171,6 +171,7 @@ pub fn for_reopen(
     let checkout = match &job.subject {
         JobSubject::GitHub(item) => checkout(item, observation),
         JobSubject::LinearIssue { .. } => Checkout::RepoBranch,
+        JobSubject::LandingGroup(group) => checkout(&group.issue, observation),
     };
     project_settings(job.next_step, policy, checkout)
 }

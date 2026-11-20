@@ -39,6 +39,12 @@
 //! work: the only one, or none until `t` picks one when there are several.
 //! `Enter` re-reads the issue, then writes, then launches; any failure stops
 //! there, and nothing is undone.
+//!
+//! Land (#40): `c` on a Linear Issue whose Next Step is Land opens the Land
+//! sheet: the members to land in landing order (Repo, PR, head commit,
+//! checks) and the held members as "not landed: held". The Job is a
+//! coordination Job on the first member's head.
+//!
 //! Every ready sheet lists the slash commands its prompt invokes, as den
 //! found them in the user's and the target Repo's Claude command and skill
 //! directories, or "not found" with where den looked (#41). The inspection
@@ -47,9 +53,10 @@
 //!
 //! `Enter` plans again from the current Decision. When a survey that landed
 //! while the sheet was open changed what decides the Job (its Next Step, and
-//! so its permission mode and prompt template; its reviewers; den's prompt),
-//! nothing is launched: the sheet shows the new plan, says what changed, and
-//! asks again (spec 0001, "Re-verification"). Editing the reviewers checks
+//! so its permission mode and prompt template; its reviewers; a Landing
+//! Group's members, heads or held members; den's prompt), nothing is
+//! launched: the sheet shows the new plan, says what changed, and asks again
+//! (spec 0001, "Re-verification"). Editing the reviewers checks
 //! the shown plan the same way before it adopts the new list. The prompt and
 //! reviewer checks come after, so they always speak about the plan shown.
 
@@ -425,6 +432,7 @@ impl App {
                 sheet.choice,
                 &settings,
                 linear_repo,
+                self.policies.for_owner(sheet.item.owner()),
             ),
         };
         let request = match request {
@@ -660,6 +668,34 @@ impl App {
             return Vec::new();
         };
         let (shown, view, moved_from) = (shown.clone(), view.clone(), moved_from.clone());
+        // A different first Land member needs its own clone inspection before planning.
+        if shown.landing.is_some()
+            && let (Some(decision), Some(observed)) =
+                (self.decision_of(&sheet.item), self.shown.as_ref())
+        {
+            let settings = self.launch_settings();
+            let request = match handoff::inspect_request(
+                decision,
+                &observed.observation,
+                sheet.choice,
+                &settings,
+                sheet.linear.as_ref().and_then(LinearLaunch::repo),
+                self.policies.for_owner(sheet.item.owner()),
+            ) {
+                Ok(request) => request,
+                Err(refusal) => return refuse(sheet, refusal),
+            };
+            if !request.target.same(&shown.target.repo) {
+                sheet.notice = Some(format!(
+                    "Not launched: the Landing Group target changed from {} to {}. The prompt is rebuilt; check the updated sheet, then press Enter to launch",
+                    shown.target.repo, request.target
+                ));
+                sheet.accepted_head = None;
+                sheet.edited_prompt = None;
+                sheet.fresh = None;
+                return self.inspect_for(sheet, "Landing Group target changed");
+            }
+        }
         sync_reviewers(sheet, self.decision_of(&sheet.item));
         let planned = planned_reviewers(sheet, Some(&shown));
         // A Linear Issue's claim and move follow the survey too (#38).
@@ -746,6 +782,7 @@ impl App {
                     sheet.choice,
                     &settings,
                     sheet.linear.as_ref().and_then(LinearLaunch::repo),
+                    self.policies.for_owner(sheet.item.owner()),
                 )
             })
             .and_then(|request| {
@@ -1313,6 +1350,19 @@ fn what_changed(
         }
         (before, after) if before != after => {
             return Some("the announcement channel changed".to_owned());
+        }
+        _ => {}
+    }
+    // Land (#40): the members, their heads and the held members are what
+    // the user approved; any difference asks again.
+    match (&shown.landing, &now.landing) {
+        (Some(before), Some(after)) => {
+            if let Some(change) = after.change_from(before) {
+                return Some(change);
+            }
+        }
+        (before, after) if before != after => {
+            return Some("the Landing Group changed".to_owned());
         }
         _ => {}
     }

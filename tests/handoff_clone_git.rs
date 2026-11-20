@@ -266,6 +266,7 @@ fn clone_plan(root: &Path, url: &str, tip: &str) -> LaunchPlan {
         permission_mode: None,
         project_settings: den::handoff::ProjectSettings::Loaded,
         review_request: None,
+        landing: None,
         window: WindowMode::Kitty,
         command: String::new(),
     };

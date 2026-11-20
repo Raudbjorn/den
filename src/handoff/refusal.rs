@@ -2,7 +2,7 @@
 //! silently picks another target instead.
 
 use super::{Remote, short_commit};
-use crate::domain::RepoId;
+use crate::domain::{RepoId, facts::PullRequestRef};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf};
@@ -31,9 +31,7 @@ impl fmt::Display for Refusal {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RefusalReason {
     NoNextStep,
-    /// A Linear Issue whose Next Step isn't Start or Implement: den launches
-    /// a Job for a Linear Issue only to start or implement it (Land's Job is
-    /// #40's).
+    /// A Linear Issue whose Next Step is neither Start, Implement nor Land.
     LinearIssueNotLaunchable,
     /// A Linear Issue's Owner offers no Repos for new work, so its Job has
     /// nowhere to go (#38).
@@ -43,6 +41,27 @@ pub enum RefusalReason {
     /// The Linear Workflow offers several Repos for new work and none is
     /// chosen yet: den never guesses where code goes (#38).
     NewWorkRepoNotChosen,
+    /// Land (#40): no open member outside a Held Repo is left to land.
+    NothingToLand {
+        identifier: String,
+    },
+    /// Land (#40): a member den planned to land is no longer among the open
+    /// Pull Requests den surveyed.
+    LandingMemberGone {
+        pr: PullRequestRef,
+    },
+    /// Land (#40): just before launching, GitHub had a member's head at
+    /// another commit than the one approved on the sheet.
+    LandingMemberMoved {
+        pr: PullRequestRef,
+        approved: String,
+        now: String,
+    },
+    /// Land (#40): just before launching, GitHub had no head for a member
+    /// (`refs/pull/<n>/head`).
+    LandingMemberHeadGone {
+        pr: PullRequestRef,
+    },
     /// The Work Item is not in what den last observed.
     WorkItemGone,
     RepoUnknown {
@@ -229,7 +248,7 @@ impl fmt::Display for RefusalReason {
         match self {
             Self::NoNextStep => f.write_str("this Work Item has no Next Step to hand off"),
             Self::LinearIssueNotLaunchable => f.write_str(
-                "den launches a Job for a Linear Issue only to start or implement it",
+                "den launches a Job for a Linear Issue only to start, implement or land it",
             ),
             Self::NoNewWorkRepos { owner } => write!(
                 f,
@@ -237,6 +256,28 @@ impl fmt::Display for RefusalReason {
             ),
             Self::NewWorkRepoNotChosen => f.write_str(
                 "choose the target Repo with t: the Linear Workflow offers several, and den doesn't guess where code goes",
+            ),
+            Self::NothingToLand { identifier } => write!(
+                f,
+                "{identifier}'s Landing Group has no open member outside a Held Repo, so there is nothing to land"
+            ),
+            Self::LandingMemberGone { pr } => write!(
+                f,
+                "{}#{}, a member of the Landing Group, is no longer among the open Pull Requests den surveyed",
+                pr.repo, pr.number
+            ),
+            Self::LandingMemberMoved { pr, approved, now } => write!(
+                f,
+                "{}#{}'s head is now {} on GitHub, not the approved {}; nothing was done. Refresh (r) and open the Land sheet again to approve the new head",
+                pr.repo,
+                pr.number,
+                short_commit(now),
+                short_commit(approved)
+            ),
+            Self::LandingMemberHeadGone { pr } => write!(
+                f,
+                "GitHub has no head for {}#{} (refs/pull/{}/head); nothing was done",
+                pr.repo, pr.number, pr.number
             ),
             Self::WorkItemGone => f.write_str("this Work Item is no longer in the survey"),
             Self::RepoUnknown { repo } => write!(f, "den has no facts about the Repo {repo}"),
