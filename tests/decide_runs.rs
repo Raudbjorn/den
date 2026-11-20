@@ -9,6 +9,7 @@
 
 mod support;
 
+use den::domain::{Policies, Viewers};
 use den::{
     decide::{Decision, decide},
     domain::{
@@ -19,7 +20,12 @@ use den::{
 use support::build::{ME, ObservationBuilder, RunBuilder, now, repo_id, run, ts};
 
 fn decisions(observation: &Observation) -> Vec<Decision> {
-    decide(observation, &observation.viewer, now())
+    decide(
+        observation,
+        &Viewers::of(observation),
+        &Policies::default(),
+        now(),
+    )
 }
 
 fn run_id(repo: &str, workflow: &str) -> WorkItemId {

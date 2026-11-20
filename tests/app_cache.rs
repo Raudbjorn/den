@@ -9,9 +9,9 @@ mod support;
 
 use den::{
     app::{Effect, Event, Key, LogLevel, ViewModel},
-    cache::{CacheError, CachedObservation},
+    cache::{CACHE_SUBDIR, CacheError, CachedObservation, FileCache},
     domain::{Incompleteness, Observation, SourceKind, SourceState},
-    ports::SurveyFailure,
+    ports::{ObservationCache, SurveyFailure},
 };
 use std::path::PathBuf;
 use support::{
@@ -456,6 +456,49 @@ fn an_unreadable_cache_is_a_logged_warning_and_a_fresh_survey() {
         harness.cache.stored().len(),
         1,
         "the good survey replaces it"
+    );
+}
+
+#[test]
+fn a_cache_milestone_1_wrote_is_logged_as_another_format_and_surveyed_afresh() {
+    // What den's real cache answers for the file milestone 1 left on disk.
+    let state = tempfile::tempdir().unwrap();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/milestone-1")
+        .join(CACHE_SUBDIR);
+    let cache_dir = state.path().join(CACHE_SUBDIR);
+    std::fs::create_dir(&cache_dir).unwrap();
+    for name in ["last-viewer", "me.json"] {
+        std::fs::copy(fixture.join(name), cache_dir.join(name)).unwrap();
+    }
+    let refused = FileCache::in_state_dir(state.path()).load().unwrap_err();
+    assert!(
+        matches!(refused, CacheError::Format { found: 4, .. }),
+        "{refused}"
+    );
+
+    let cache = FakeCache::default();
+    cache.answer_load(Err(refused));
+    let mut harness = Harness::with_cache(Ok(config(&["alpha"])), cache);
+    harness.answer(Ok(ObservationBuilder::new()
+        .owner("alpha")
+        .pull_request(pr("alpha/app", 9))
+        .build()));
+    harness.start();
+
+    assert!(harness.effects.iter().any(|e| matches!(
+        e,
+        Effect::Log(r) if r.level == LogLevel::Warn
+            && r.message.contains("me.json")
+            && r.message.contains("format 4")
+    )));
+    // Nothing of the milestone-1 survey (octo/app#7, #12) is shown.
+    assert_eq!(references(&harness.view), ["alpha/app#9"]);
+    assert_eq!(harness.github.requests().len(), 1, "one fresh survey");
+    assert_eq!(
+        harness.cache.stored().len(),
+        1,
+        "the fresh survey replaces it"
     );
 }
 

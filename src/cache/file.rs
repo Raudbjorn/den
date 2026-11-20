@@ -29,7 +29,9 @@ pub const CACHE_SUBDIR: &str = "cache";
 /// (`NotRequired` and `Unknown` instead of null).
 /// 3: a fork's Upstream is a Repo (URL, default branch), not just its id.
 /// 4: PR detail coverage is separate from open-PR list coverage.
-pub const CACHE_FORMAT: u32 = 4;
+/// 5: an Observation has a Linear part, and coverage has Linear source kinds
+/// (milestone 2). A milestone-1 cache (4) is refused and surveyed afresh.
+pub const CACHE_FORMAT: u32 = 5;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// Names the viewer whose cache startup shows.

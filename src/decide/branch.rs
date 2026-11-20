@@ -115,7 +115,7 @@ fn decide(ctx: &Context<'_>, branch: &Branch) -> Decision {
         )
     };
     let attribution = Attribution::person(
-        ctx.viewer,
+        &ctx.viewers.github,
         branch.last_commit_author.as_deref(),
         AUTHOR_ROLE,
     );

@@ -5,6 +5,7 @@
 
 mod support;
 
+use den::domain::{Policies, Viewers};
 use den::{
     decide::{Decision, decide, decide_with},
     domain::{
@@ -16,7 +17,12 @@ use jiff::SignedDuration;
 use support::build::{ME, ObservationBuilder, branch, branch::fork, now, repo_id};
 
 fn decisions(observation: &Observation) -> Vec<Decision> {
-    decide(observation, &observation.viewer, now())
+    decide(
+        observation,
+        &Viewers::of(observation),
+        &Policies::default(),
+        now(),
+    )
 }
 
 fn branch_id(repo: &str, name: &str) -> WorkItemId {
@@ -236,7 +242,13 @@ fn a_forks_branch_is_judged_against_the_forks_own_default_branch() {
 /// Decisions with `forks` targeting their Upstream (#13).
 fn decide_targeting(observation: &Observation, forks: &[&str]) -> Vec<Decision> {
     let upstreams = UpstreamTargets::new(forks.iter().map(|f| repo_id(f)));
-    decide_with(observation, &observation.viewer, &upstreams, now())
+    decide_with(
+        observation,
+        &Viewers::of(observation),
+        &Policies::default(),
+        &upstreams,
+        now(),
+    )
 }
 
 /// A fork me/tool (own default `trunk`) of upstream/tool (default `main`),

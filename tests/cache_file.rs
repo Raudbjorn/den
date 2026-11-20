@@ -164,6 +164,35 @@ fn another_format_version_is_refused() {
     ));
 }
 
+/// A temp state directory holding the cache milestone 1 wrote (format 4).
+fn milestone_1_state_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/milestone-1")
+        .join(den::cache::CACHE_SUBDIR);
+    let cache_dir = dir.path().join(den::cache::CACHE_SUBDIR);
+    fs::create_dir(&cache_dir).unwrap();
+    for name in ["last-viewer", "me.json"] {
+        fs::copy(fixture.join(name), cache_dir.join(name)).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn a_cache_milestone_1_wrote_is_refused_by_its_format_version() {
+    let dir = milestone_1_state_dir();
+    let cache = FileCache::in_state_dir(dir.path());
+    assert!(matches!(
+        cache.load(),
+        Err(CacheError::Format { found: 4, expected, ref path })
+            if expected == CACHE_FORMAT && path.ends_with("me.json")
+    ));
+    // The next good survey replaces it.
+    let fresh = cached("me", 9);
+    cache.store(&fresh).unwrap();
+    assert_eq!(cache.load(), Ok(Some(fresh)));
+}
+
 #[test]
 fn an_oversized_cache_is_not_read() {
     let dir = tempfile::tempdir().unwrap();

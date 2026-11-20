@@ -80,6 +80,8 @@ pub fn merge(previous: Option<CachedObservation>, fresh: Observation) -> CachedO
     merged.issues = issues;
     merged.branches = branches;
     merged.runs = runs;
+    // `merged.linear` is the refresh's own: nothing fills it before #32, and
+    // #34 merges it per Linear source like the GitHub kinds above.
     if !reading.viewer_read {
         for team in previous_observation.viewer.teams {
             if !merged.viewer.belongs_to(&team) {

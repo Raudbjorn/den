@@ -5,7 +5,8 @@
 //! The deck below covers every milestone-1 Next Step, Waiting On me, someone
 //! else and nobody, two Owners with the same Repo name and PR number, and
 //! incomplete coverage. `tests/fixtures/milestone-1/decisions.json` holds what
-//! milestone 1's own `decide` (den at `ab5a940`) returned for it.
+//! milestone 1's own `decide` (den at `ab5a940`) returned for it: later tickets
+//! extend the policy, and these tests keep the empty one changing nothing.
 
 // Test code: helpers outside #[test] fns may fail loudly too (clippy.toml covers only #[test]).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -15,7 +16,8 @@ mod support;
 use den::{
     decide::{Decision, decide},
     domain::{
-        Incompleteness, Observation, SourceKind, SourceState,
+        Incompleteness, LinearWorkflowPolicy, Observation, Policies, SourceKind, SourceState,
+        Viewers,
         facts::{LinkKind, LinkedPrState, ReviewVerdict},
     },
 };
@@ -49,7 +51,12 @@ fn deck() -> Observation {
         .pull_request(pr("acme/app", 1).author(ME).draft().conflicting())
         .pull_request(pr("acme/app", 2).author(ME).conflicting())
         .pull_request(pr("acme/app", 3).author(ME).failing_required("ci"))
-        .pull_request(pr("acme/app", 4).author(ME).changes_requested().unresolved_threads(2))
+        .pull_request(
+            pr("acme/app", 4)
+                .author(ME)
+                .changes_requested()
+                .unresolved_threads(2),
+        )
         .pull_request(
             pr("acme/app", 5)
                 .author(OTHER)
@@ -57,8 +64,19 @@ fn deck() -> Observation {
                 .passing("ci"),
         )
         .pull_request(pr("acme/app", 6).author(ME).approved().passing("ci"))
-        .pull_request(pr("acme/app", 7).author(ME).approved().mergeability_unknown())
-        .pull_request(pr("acme/app", 8).author(ME).approved().passing("ci").queued())
+        .pull_request(
+            pr("acme/app", 7)
+                .author(ME)
+                .approved()
+                .mergeability_unknown(),
+        )
+        .pull_request(
+            pr("acme/app", 8)
+                .author(ME)
+                .approved()
+                .passing("ci")
+                .queued(),
+        )
         .pull_request(
             pr("acme/api", 9)
                 .author(OTHER)
@@ -80,7 +98,12 @@ fn deck() -> Observation {
         .issue(issue("octo/app", 1).assignee(ME).labels_unread())
         // Branches: Open PR and Prune or revive.
         .branch(branch("acme/app", "feature-x").author(ME).ahead(3))
-        .branch(branch("acme/app", "old-idea").author(ME).ahead(1).age_days(45))
+        .branch(
+            branch("acme/app", "old-idea")
+                .author(ME)
+                .ahead(1)
+                .age_days(45),
+        )
         .branch(branch("octo/app", "feature-x").unmatched_author().ahead(2))
         // Runs: a failing and a passing workflow on the default branch.
         .run(run("acme/app", "ci.yml", 100).failed().by(ME))
@@ -89,16 +112,31 @@ fn deck() -> Observation {
         .build()
 }
 
-fn milestone_1(observation: &Observation) -> Vec<Decision> {
-    decide(observation, &observation.viewer, now())
+/// What milestone 1's `decide` returned for [`deck`]. It was written once, by
+/// a generator run on milestone 1's code (commit e1ed9ed), and is never
+/// regenerated.
+fn milestone_1_decisions() -> Vec<Decision> {
+    let body = std::fs::read(milestone_1_decisions_file()).unwrap();
+    serde_json::from_slice(&body).unwrap()
 }
 
-/// Not a test of den: run once, by hand, on milestone 1's code to write the
-/// golden file. Kept so the deck and the file can be seen to match.
+fn decided_with(policies: &Policies) -> Vec<Decision> {
+    let observation = deck();
+    decide(&observation, &Viewers::of(&observation), policies, now())
+}
+
 #[test]
-#[ignore = "writes the golden file; run only on milestone 1's code"]
-fn write_milestone_1_decisions() {
-    let decisions = milestone_1(&deck());
-    let body = serde_json::to_vec_pretty(&decisions).unwrap();
-    std::fs::write(milestone_1_decisions_file(), body).unwrap();
+fn owners_without_a_linear_workflow_are_decided_exactly_as_in_milestone_1() {
+    let expected = milestone_1_decisions();
+    assert_eq!(expected.len(), 21, "the golden file holds the whole deck");
+    assert_eq!(decided_with(&Policies::default()), expected);
+}
+
+#[test]
+fn an_owner_given_the_empty_policy_is_decided_exactly_as_in_milestone_1() {
+    // Owners compare as GitHub logins do: "OCTO" is octo.
+    let policies = Policies::default()
+        .with("acme", LinearWorkflowPolicy::default())
+        .with("OCTO", LinearWorkflowPolicy::default());
+    assert_eq!(decided_with(&policies), milestone_1_decisions());
 }

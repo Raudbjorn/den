@@ -8,6 +8,7 @@
 
 mod support;
 
+use den::domain::{Policies, Viewers};
 use den::{
     decide::{Decision, decide},
     domain::{
@@ -21,7 +22,12 @@ use LinkKind::{ClosingReference, ManualLink};
 use LinkedPrState::{Closed, Merged, Open};
 
 fn decisions(observation: &Observation) -> Vec<Decision> {
-    decide(observation, &observation.viewer, now())
+    decide(
+        observation,
+        &Viewers::of(observation),
+        &Policies::default(),
+        now(),
+    )
 }
 
 fn issue_id(repo: &str, number: u64) -> WorkItemId {
