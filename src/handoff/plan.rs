@@ -182,7 +182,16 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     let mut reasons = Vec::new();
 
     let prompts = match input.prompts {
-        Ok(prompts) => Some(prompts),
+        // The file is usable, but not its template for this kind.
+        Ok(prompts) => match prompts.unusable(facts.step) {
+            Some(error) => {
+                reasons.push(RefusalReason::TemplateUnusable {
+                    error: error.to_string(),
+                });
+                None
+            }
+            None => Some(prompts),
+        },
         Err(error) => {
             reasons.push(RefusalReason::PromptsUnusable {
                 error: error.to_string(),

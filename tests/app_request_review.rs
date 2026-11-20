@@ -23,7 +23,7 @@ use den::{
     },
     handoff::{
         LaunchPlan, PermissionMode, ReviewRequest, SessionStart, coordination_mode,
-        prompts::{self, PromptFields},
+        prompts::{self, PromptFields, Prompts},
     },
     jobs::{JobRecord, JobSubject},
 };
@@ -68,7 +68,17 @@ fn started(slack: Option<&str>) -> Harness {
 
 /// Started with `config`, its first survey seeing `observation`.
 fn started_with(config: Config, observation: Observation) -> Harness {
-    let mut harness = Harness::new(Ok(config));
+    started_with_prompts(config, observation, Ok(Prompts::default()))
+}
+
+/// [`started_with`], with `prompts` as read from the prompts file.
+fn started_with_prompts(
+    config: Config,
+    observation: Observation,
+    prompts: Result<Prompts, prompts::PromptsError>,
+) -> Harness {
+    let mut harness = Harness::new(Ok(config.clone()));
+    harness.app = den::app::App::new(Ok(config)).with_launch_settings(prompts, None);
     harness
         .workspace
         .add_clone(CLONE, &[("origin", "git@github.com:acme/api.git")]);
@@ -1127,14 +1137,22 @@ fn reviewers_and_announcement_are_request_review_placeholders_only() {
         )
     );
 
+    // Review on #50: a template without {reviewers} no longer makes the whole
+    // file malformed (that refused every kind, after an upgrade, for a
+    // request_review written before #39); it makes Request review alone
+    // unusable, with the same message, file and line.
     let without = prompts::parse(path, "request_review = \"Ask for reviews of {url}.\"\n")
-        .expect_err("a request_review template must name the reviewers chosen on the sheet");
+        .expect("one kind's missing placeholder leaves the other kinds usable");
+    let unusable = without
+        .unusable(NextStep::RequestReview)
+        .expect("a request_review template must name the reviewers chosen on the sheet")
+        .to_string();
     assert!(
-        without
-            .to_string()
-            .contains("`request_review` must use {reviewers}"),
-        "{without}"
+        unusable.contains("prompts.toml, line 1")
+            && unusable.contains("`request_review` must use {reviewers}"),
+        "{unusable}"
     );
+    assert_eq!(without.unusable(NextStep::Review), None);
 
     let misplaced = prompts::parse(path, "review = \"/code-review {url} {reviewers}\"\n")
         .expect_err("another kind may not use {reviewers}");
@@ -1144,6 +1162,48 @@ fn reviewers_and_announcement_are_request_review_placeholders_only() {
             .contains("the request_review-only placeholder {reviewers}"),
         "{misplaced}"
     );
+}
+
+/// Review on #50: a request_review template written before #39 (without
+/// `{reviewers}`) refuses only Request review, with its file and line; every
+/// other kind launches with the file's own templates.
+#[test]
+fn a_request_review_template_without_reviewers_refuses_only_request_review() {
+    let prompts = prompts::parse(
+        std::path::Path::new("/cfg/den/prompts.toml"),
+        "address_review = \"/gh-resolve {url} carefully\"\nrequest_review = \"Ask me which reviewers to request on {url}.\"\n",
+    );
+    let mut harness = started_with_prompts(config(None), surveyed(pr_2(), pr_4()), prompts);
+
+    let refused = open_sheet(&mut harness, "#2");
+    assert_eq!(
+        refused.status,
+        LaunchStatus::Refused,
+        "{}",
+        messages(&refused)
+    );
+    let text = messages(&refused);
+    assert!(text.contains("/cfg/den/prompts.toml, line 2"), "{text}");
+    assert!(
+        text.contains("`request_review` must use {reviewers}"),
+        "{text}"
+    );
+    press(&mut harness, Key::Esc);
+
+    let address = open_sheet(&mut harness, "#3");
+    assert_eq!(
+        address.status,
+        LaunchStatus::Ready,
+        "{}",
+        messages(&address)
+    );
+    assert_eq!(
+        prompt(&address),
+        "/gh-resolve https://github.com/acme/api/pull/3 carefully"
+    );
+    press(&mut harness, Key::Esc);
+    let merge = open_sheet(&mut harness, "#4");
+    assert_eq!(merge.status, LaunchStatus::Ready, "{}", messages(&merge));
 }
 
 // ---- drawn ----

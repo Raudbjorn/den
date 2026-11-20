@@ -72,6 +72,11 @@ pub enum RefusalReason {
     PromptsUnusable {
         error: String,
     },
+    /// The prompts file's template for this Next Step kind can't be used; the
+    /// file's other templates can.
+    TemplateUnusable {
+        error: String,
+    },
     JobRecordsUnreadable {
         error: String,
     },
@@ -276,6 +281,10 @@ impl fmt::Display for RefusalReason {
                 "the Branch {branch} is in {repo}, not in {target}: den fetches a Branch only from the Repo it is in; press u to target {repo} for this Job"
             ),
             Self::PromptsUnusable { error } => write!(f, "the prompts file is unusable: {error}"),
+            Self::TemplateUnusable { error } => write!(
+                f,
+                "the prompts file's template for this kind is unusable: {error}"
+            ),
             Self::JobRecordsUnreadable { error } => write!(
                 f,
                 "den can't read its Job records, so it can't tell whether this Work Item already has a Job: {error}"
