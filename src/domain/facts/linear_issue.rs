@@ -3,7 +3,10 @@
 //! Nothing decided. Attachments (the PRs Linear recorded) arrive with Landing
 //! Groups (#35).
 
-use crate::domain::ids::{LinearIssueId, WorkItemId};
+use crate::domain::{
+    coverage::LinearSourceKind,
+    ids::{LinearIssueId, WorkItemId},
+};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +16,10 @@ pub struct LinearIssue {
     pub owner: String,
     /// The identity: workspace + Linear's permanent ID.
     pub id: LinearIssueId,
+    /// The Linear source whose list it came from (assigned issues, or a start
+    /// team's). The cache keeps or replaces it with that source: a list read
+    /// completely drops an issue it no longer has, any other keeps it (#34).
+    pub listed_by: LinearSourceKind,
     /// `TEAM-123`: an attribute, never the identity.
     pub identifier: String,
     pub title: String,

@@ -118,6 +118,17 @@ impl Source {
         }
     }
 
+    /// One of an Owner's Linear sources.
+    pub fn is_linear(&self) -> bool {
+        matches!(
+            self,
+            Self::Owner {
+                kind: SourceKind::Linear(_),
+                ..
+            }
+        )
+    }
+
     pub fn label(&self) -> String {
         match self {
             Self::Viewer => "viewer and teams".to_owned(),

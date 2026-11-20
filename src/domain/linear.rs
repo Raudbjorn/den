@@ -17,6 +17,7 @@
 //! survey read as incomplete.
 
 use super::facts::LinearIssue;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 /// What den read from Linear in one survey.
@@ -26,6 +27,11 @@ pub struct LinearPart {
     pub viewers: Vec<LinearViewer>,
     /// The Linear Issues read, of every Owner with a Linear Workflow.
     pub issues: Vec<LinearIssue>,
+    /// When the Linear survey that read this part started; `None` before any
+    /// Linear survey answered. Linear is surveyed apart from GitHub, so its
+    /// data has its own age: the cache labels Linear data it keeps with it
+    /// (#34), never with the GitHub survey's time.
+    pub observed_at: Option<Timestamp>,
 }
 
 /// Who the Linear API key belongs to, in one workspace: "me" for Linear

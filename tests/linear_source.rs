@@ -112,6 +112,19 @@ fn reads_the_viewer_and_every_page_of_assigned_issues() {
         .map(|i| i.identifier.as_str())
         .collect();
     assert_eq!(identifiers, ["TEAM-1", "TEAM-2", "TEAM-3"]);
+    assert!(
+        survey
+            .part
+            .issues
+            .iter()
+            .all(|i| i.listed_by == LinearSourceKind::AssignedIssues),
+        "each issue names the list it came from, for the cache (#34)"
+    );
+    assert_eq!(
+        survey.part.observed_at,
+        Some(now()),
+        "dated when the survey started, like a GitHub survey"
+    );
     let first = &survey.part.issues[0];
     assert_eq!(first.id, LinearIssueId::new("acme", "id-1"));
     assert_eq!(first.owner, "acme");

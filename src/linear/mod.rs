@@ -79,6 +79,11 @@ impl LinearApi {
 impl LinearSource for LinearApi {
     fn survey(&self, request: &LinearSurveyRequest) -> LinearSurvey {
         let mut survey = LinearSurvey::default();
+        if request.workflows.is_empty() {
+            return survey;
+        }
+        // Like a GitHub survey, its data is dated from when it started.
+        survey.part.observed_at = Some(self.clock.now());
         for workflow in &request.workflows {
             self.survey_workflow(workflow, &mut survey);
         }
@@ -283,7 +288,9 @@ fn assigned_issues(
         };
         for node in page.nodes {
             match serde_json::from_value::<RawIssue>(node) {
-                Ok(raw) if seen.insert(raw.id.clone()) => issues.push(raw.into_issue(workflow)),
+                Ok(raw) if seen.insert(raw.id.clone()) => {
+                    issues.push(raw.into_issue(workflow, LinearSourceKind::AssignedIssues))
+                }
                 Ok(_) => {}
                 Err(e) => unreadable.push(e.to_string()),
             }
@@ -355,10 +362,12 @@ struct RawCycle {
 }
 
 impl RawIssue {
-    fn into_issue(self, workflow: &LinearWorkflow) -> LinearIssue {
+    /// The issue, as listed by `listed_by`.
+    fn into_issue(self, workflow: &LinearWorkflow, listed_by: LinearSourceKind) -> LinearIssue {
         LinearIssue {
             owner: workflow.owner.clone(),
             id: LinearIssueId::new(workflow.workspace.clone(), self.id),
+            listed_by,
             identifier: self.identifier,
             title: self.title,
             url: self.url,

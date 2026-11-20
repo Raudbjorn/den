@@ -4,9 +4,12 @@
 //! - [`CachedObservation`]: the Observation den shows, plus the age of any data it
 //!   carried over from an earlier survey because the latest one could not read
 //!   that source.
-//! - [`merge`]: pure. A source the refresh read completely is replaced; a source it
-//!   could not read (failed, partial, not fetched) keeps the earlier data, marked
-//!   with that data's own age. One error never wipes the list.
+//! - [`merge`] (a GitHub survey) and [`merge_linear`] (a Linear survey): pure. A
+//!   source the refresh read completely is replaced; a source it could not read
+//!   (failed, partial, not fetched) keeps the earlier data, marked with that
+//!   data's own age. One error never wipes the list, and a refresh of one service
+//!   never touches the other's data. Linear data is dropped when the Linear
+//!   viewer behind it changes.
 //! - [`FileCache`]: the real [`ObservationCache`](crate::ports::ObservationCache),
 //!   one versioned JSON file per viewer under `$XDG_STATE_HOME/den/cache/`.
 //!
@@ -17,7 +20,7 @@ mod file;
 mod merge;
 
 pub use file::{CACHE_FORMAT, CACHE_SUBDIR, FileCache, MAX_CACHE_BYTES};
-pub use merge::merge;
+pub use merge::{changed_linear_viewers, merge, merge_linear};
 
 use crate::domain::{Observation, Source, SourceKind, SourceState};
 use jiff::Timestamp;
@@ -28,7 +31,8 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Carried {
     pub source: Source,
-    /// When the kept data was observed (older than the Observation's own time).
+    /// When the kept data was observed: older than the survey of its service
+    /// (the Observation's own time for GitHub, its Linear part's for Linear).
     pub observed_at: Timestamp,
 }
 
@@ -38,7 +42,9 @@ pub struct Carried {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CachedObservation {
     pub observation: Observation,
-    /// One entry per source whose shown data is older than `observation.observed_at`.
+    /// One entry per source whose shown data is older than its service's latest
+    /// survey (`observation.observed_at`, or `observation.linear.observed_at`
+    /// for a Linear source).
     pub carried: Vec<Carried>,
 }
 
@@ -106,6 +112,45 @@ impl CachedObservation {
         observation.owners = owners.to_vec();
         self.carried
             .retain(|c| source_owner(&c.source).is_none_or(watched));
+        self
+    }
+}
+
+impl CachedObservation {
+    /// Fits a cached Linear part to the configured Linear Workflows, given each
+    /// one's `(Owner, workspace)`: drops the Linear facts, Linear coverage and
+    /// Linear ages of an Owner that has no Linear Workflow now, or whose
+    /// workflow names another workspace than the cached data was read in.
+    pub fn restricted_to_linear(mut self, workflows: &[(&str, &str)]) -> Self {
+        let workspace_of = |owner: &str| {
+            workflows
+                .iter()
+                .find(|(o, _)| o.eq_ignore_ascii_case(owner))
+                .map(|(_, w)| *w)
+        };
+        let part = &self.observation.linear;
+        let mut dropped: Vec<String> = Vec::new();
+        let read_elsewhere = part
+            .viewers
+            .iter()
+            .map(|v| (&v.owner, &v.workspace))
+            .chain(part.issues.iter().map(|i| (&i.owner, &i.id.workspace)));
+        for (owner, workspace) in read_elsewhere {
+            let fits = workspace_of(owner).is_some_and(|w| w.eq_ignore_ascii_case(workspace));
+            if !fits && !dropped.iter().any(|d| d.eq_ignore_ascii_case(owner)) {
+                dropped.push(owner.clone());
+            }
+        }
+        let keep = |owner: &str| {
+            workspace_of(owner).is_some() && !dropped.iter().any(|d| d.eq_ignore_ascii_case(owner))
+        };
+        let part = &mut self.observation.linear;
+        part.viewers.retain(|v| keep(&v.owner));
+        part.issues.retain(|i| keep(&i.owner));
+        let linear_kept =
+            |source: &Source| !source.is_linear() || source_owner(source).is_some_and(keep);
+        self.observation.coverage.retain(|e| linear_kept(&e.source));
+        self.carried.retain(|c| linear_kept(&c.source));
         self
     }
 }
