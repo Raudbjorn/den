@@ -42,11 +42,11 @@ use super::{
     Attribution, Context, Decision, Explanation, HeldBack, WorkItem, correlation::GroupRef,
 };
 use crate::domain::{
-    CoverageEntry, LinearSourceKind, LinearWorkflowPolicy, NextStep, ReviewPolicy, Source,
-    SourceKind, SourceState, Viewer,
+    CoverageEntry, Incompleteness, LinearSourceKind, LinearWorkflowPolicy, NextStep, ReviewPolicy,
+    Source, SourceKind, SourceState, Viewer,
     facts::{
-        AttachmentsRead, Check, CheckOutcome, MergeState, Mergeability, PrDetails, PullRequest,
-        ReviewDecision, ReviewVerdict, Reviewer,
+        AttachmentsRead, Check, CheckOutcome, LinearIssue, MergeState, Mergeability, PrDetails,
+        PullRequest, ReviewDecision, ReviewVerdict, Reviewer,
     },
     ids::same_login,
 };
@@ -337,14 +337,14 @@ fn held_back(
 }
 
 /// For a PR that Merges in an Owner with a Linear Workflow: the Owner's
-/// Linear Issue lists that den didn't read completely (they say whether it is
-/// a Landing Group member), for its coverage; and, when those or an issue's
-/// attachments weren't all read, what den couldn't establish. Nothing when
+/// Linear Issue lists that den didn't read completely, or whose issues'
+/// attachments it didn't read in full (they say whether it is a Landing
+/// Group member), for its coverage; and what den couldn't establish. Nothing when
 /// everything was read, and nothing for an Owner without a Linear Workflow,
 /// which records no Linear source.
 fn membership_unread(ctx: &Context<'_>, pr: &PullRequest) -> (Vec<CoverageEntry>, Option<String>) {
     let owner = &pr.repo.owner;
-    let sources: Vec<CoverageEntry> = ctx
+    let mut sources: Vec<CoverageEntry> = ctx
         .observation
         .coverage
         .entries()
@@ -365,16 +365,32 @@ fn membership_unread(ctx: &Context<'_>, pr: &PullRequest) -> (Vec<CoverageEntry>
         .iter()
         .map(|e| format!("{} {}", e.source.label(), e.state.describe()))
         .collect();
+    let partly_attached: Vec<&LinearIssue> = ctx
+        .observation
+        .linear
+        .issues
+        .iter()
+        .filter(|issue| same_login(&issue.owner, owner))
+        .filter(|issue| matches!(issue.attachments.read, AttachmentsRead::Incomplete { .. }))
+        .collect();
     unread.extend(
-        ctx.observation
-            .linear
-            .issues
+        partly_attached
             .iter()
-            .filter(|issue| same_login(&issue.owner, owner))
-            .filter(|issue| matches!(issue.attachments.read, AttachmentsRead::Incomplete { .. }))
             .map(|issue| format!("{}'s attachments weren't all read", issue.identifier)),
     );
     unread.dedup();
+    // An issue's attachments are read with the list that listed it: that
+    // list's follow-up is what den didn't read in full, so it joins the
+    // coverage too, and the row reads incomplete (#35's gap b).
+    for entry in attachments_unread(&partly_attached) {
+        match sources.iter_mut().find(|e| e.source.same(&entry.source)) {
+            Some(existing) => {
+                let earlier = std::mem::replace(&mut existing.state, SourceState::Complete);
+                existing.state = earlier.worst(entry.state);
+            }
+            None => sources.push(entry),
+        }
+    }
     let unknown = (!unread.is_empty()).then(|| {
         format!(
             "whether it lands with a Linear Issue (a Landing Group member never merges by itself): {}",
@@ -382,6 +398,35 @@ fn membership_unread(ctx: &Context<'_>, pr: &PullRequest) -> (Vec<CoverageEntry>
         )
     });
     (sources, unknown)
+}
+
+/// One partial entry per Linear source that listed `issues`, each naming
+/// the issues whose attachments den didn't read in full, and why.
+fn attachments_unread(issues: &[&LinearIssue]) -> Vec<CoverageEntry> {
+    let mut entries: Vec<(Source, Vec<String>)> = Vec::new();
+    for issue in issues {
+        let AttachmentsRead::Incomplete { why } = &issue.attachments.read else {
+            continue;
+        };
+        let source = Source::Owner {
+            owner: issue.owner.clone(),
+            kind: SourceKind::Linear(issue.listed_by),
+        };
+        let what = format!("{} ({why})", issue.identifier);
+        match entries.iter_mut().find(|(s, _)| s.same(&source)) {
+            Some((_, whats)) => whats.push(what),
+            None => entries.push((source, vec![what])),
+        }
+    }
+    entries
+        .into_iter()
+        .map(|(source, whats)| CoverageEntry {
+            source,
+            state: SourceState::Partial(Incompleteness::FollowUpTruncated {
+                what: format!("the attachments of {}", whats.join(", ")),
+            }),
+        })
+        .collect()
 }
 
 fn waiting_on(step: NextStep, pr: &PullRequest, ctx: &Context<'_>) -> Attribution {

@@ -765,3 +765,41 @@ fn a_member_not_asked_yet_after_a_complete_read_is_not_blamed_on_github() {
         said(issue)
     );
 }
+
+/// With the Linear Issue lists read completely but one issue's attachments
+/// not, a Merge PR might be a member den didn't see: the list that listed
+/// that issue joins its coverage as partial, naming the issue, so its row
+/// reads incomplete, not just its unknowns.
+#[test]
+fn a_merge_pr_is_incomplete_when_an_issues_attachments_were_not_all_read() {
+    let observation = acme_owner()
+        .owner_coverage(
+            "acme",
+            SourceKind::Linear(LinearSourceKind::AssignedIssues),
+            SourceState::Complete,
+        )
+        .pull_request(ready("acme/api", 1))
+        .linear_issue(
+            linear_issue("acme", "id-3", "TEAM-3")
+                .attachments_incomplete("more than 50 attachments"),
+        )
+        .build();
+    let decisions = decide_all(&observation, &acme());
+    let merge = pull_request(&decisions, "acme/api", 1);
+    assert_eq!(merge.next_step, Some(NextStep::Merge), "{merge:#?}");
+    let assigned = Source::Owner {
+        owner: "acme".to_owned(),
+        kind: SourceKind::Linear(LinearSourceKind::AssignedIssues),
+    };
+    let entry = merge
+        .coverage
+        .iter()
+        .find(|c| c.source == assigned)
+        .unwrap_or_else(|| panic!("{:?}", merge.coverage));
+    assert_eq!(
+        entry.state,
+        SourceState::Partial(Incompleteness::FollowUpTruncated {
+            what: "the attachments of TEAM-3 (more than 50 attachments)".to_owned(),
+        })
+    );
+}
