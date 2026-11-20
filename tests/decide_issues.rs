@@ -350,6 +350,35 @@ fn unread_linked_prs_are_an_unknown() {
 }
 
 #[test]
+fn unread_labels_or_assignees_are_unknowns_and_the_rule_runs_on_what_was_read() {
+    let complete = decide_one(issue("o/r", 1));
+    assert!(
+        complete.explanation.unknowns.is_empty(),
+        "{:?}",
+        complete.explanation.unknowns
+    );
+
+    // Nothing read says labelled or assigned, so the rule still gives Triage;
+    // the unknowns say the Issue may be labelled or assigned after all.
+    let unread = decide_one(issue("o/r", 1).labels_unread().assignees_unread());
+    assert_eq!(unread.next_step, Some(NextStep::Triage));
+    for unknown in ["the Issue's labels", "the Issue's assignees"] {
+        assert!(
+            has(&unread.explanation.unknowns, unknown),
+            "{unknown:?} in {:?}",
+            unread.explanation.unknowns
+        );
+    }
+
+    let only_labels = decide_one(issue("o/r", 1).assignee(ME).labels_unread());
+    assert_eq!(only_labels.next_step, Some(NextStep::Implement));
+    assert_eq!(
+        only_labels.explanation.unknowns,
+        ["den could not read all of the Issue's labels"]
+    );
+}
+
+#[test]
 fn an_assigned_and_labelled_issue_mentions_its_labels() {
     let decision = decide_one(issue("o/r", 1).assignee(ME).label("bug"));
     assert_eq!(decision.next_step, Some(NextStep::Implement));

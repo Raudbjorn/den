@@ -334,6 +334,49 @@ fn more_links_than_read_or_unreadable_links_mark_the_links_incomplete() {
 }
 
 #[test]
+fn unreadable_labels_or_assignees_are_marked_unread_not_read_as_none() {
+    let gql = ScriptedGraphQl::new(|request| {
+        if let Some(answer) = non_issue_answers(request) {
+            return answer;
+        }
+        let with = |number: u64, field: &str, value: Value| {
+            let mut node = plain_issue(number);
+            node[field] = value;
+            node
+        };
+        match operation(request).as_str() {
+            "OwnerIssueCounts" => counts(vec![("app", 4)], None),
+            "RepoIssues" => Ok(GraphQlResponse {
+                data: Some(json!({ "repository": { "issues": {
+                    "pageInfo": page_info(None),
+                    "nodes": [
+                        plain_issue(1),
+                        with(2, "labels", Value::Null),
+                        with(3, "assignees", json!({ "nodes": [{ "login": "me" }, Value::Null] })),
+                        with(4, "labels", json!({ "nodes": [Value::Null] })),
+                    ]
+                }}})),
+                errors: vec![den::github::graphql::GraphQlError {
+                    message: "Resource not accessible by integration".to_owned(),
+                    kind: Some("FORBIDDEN".to_owned()),
+                }],
+            }),
+            other => panic!("unexpected {other}"),
+        }
+    });
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    let read = |number| {
+        let issue = find(&observation, "octo/app", number);
+        (issue.labels_complete, issue.assignees_complete)
+    };
+    assert_eq!(read(1), (true, true));
+    assert_eq!(read(2), (false, true));
+    assert_eq!(read(3), (true, false));
+    assert_eq!(read(4), (false, true));
+    assert_eq!(find(&observation, "octo/app", 3).assignees, ["me"]);
+}
+
+#[test]
 fn a_repo_whose_issues_cannot_be_read_fails_alone() {
     let gql = ScriptedGraphQl::new(|request| {
         if let Some(answer) = non_issue_answers(request) {

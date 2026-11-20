@@ -69,10 +69,17 @@ struct Nodes<T> {
     nodes: Vec<Option<T>>,
 }
 
-impl<T> Nodes<T> {
-    fn into_items(self) -> impl Iterator<Item = T> {
-        self.nodes.into_iter().flatten()
-    }
+/// A list's items, and whether every one was read: false when GitHub left the
+/// list out or some entries were null (both come next to an error).
+fn read_list<T, U>(list: Option<Nodes<T>>, item: impl Fn(T) -> U) -> (Vec<U>, bool) {
+    let Some(list) = list else {
+        return (Vec::new(), false);
+    };
+    let complete = list.nodes.iter().all(Option::is_some);
+    (
+        list.nodes.into_iter().flatten().map(item).collect(),
+        complete,
+    )
 }
 
 #[derive(Deserialize)]
@@ -141,19 +148,17 @@ impl IssueNode {
                 },
             }));
         }
+        let (labels, labels_complete) = read_list(self.labels, |n| n.name);
+        let (assignees, assignees_complete) = read_list(self.assignees, |n| n.login);
         Issue {
             repo: repo.clone(),
             number: self.number,
             title: self.title,
             url: self.url,
-            labels: self
-                .labels
-                .map(|l| l.into_items().map(|n| n.name).collect())
-                .unwrap_or_default(),
-            assignees: self
-                .assignees
-                .map(|a| a.into_items().map(|n| n.login).collect())
-                .unwrap_or_default(),
+            labels,
+            labels_complete,
+            assignees,
+            assignees_complete,
             updated_at: self.updated_at,
             linked_prs,
             linked_prs_complete,
