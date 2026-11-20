@@ -49,8 +49,12 @@ A GitHub Actions workflow run. Only ever means this.
 _Avoid_: Pending run (for anything that is not a workflow run), job (for workflow runs)
 
 **Linear Issue**:
-An issue in the Linear workspace of an Owner's Linear Workflow. "Issue" alone always means a GitHub Issue.
+An issue in the Linear workspace of an Owner's Linear Workflow. "Issue" alone always means a GitHub Issue. It is identified by its workspace and Linear's permanent ID; its identifier (`TEAM-123`) changes when it moves to another team.
 _Avoid_: Ticket, task, Issue (unqualified)
+
+**Linear viewer**:
+The Linear account a Linear Workflow's API key belongs to, in that workspace. A Linear Issue is Waiting On you when its assignee is the Linear viewer; a Linear account is never matched to a GitHub login.
+_Avoid_: Linear user (for the viewer), Linear me
 
 **Landing Group**:
 A Linear Issue together with the Pull Requests, in any of its Owner's Repos, that implement it and land together. Each Pull Request keeps its own Next Step; the group decides when they may land.
@@ -91,7 +95,7 @@ Each Work Item has at most one. An Issue with a linked open Pull Request has non
 - **Review**: a Pull Request is waiting for a requested review.
 - **Merge**: a Pull Request is approved, passing and mergeable.
 - **Triage**: an Issue has neither labels nor an assignee.
-- **Implement**: an Issue is ready to be worked on.
+- **Implement**: an Issue is ready to be worked on, or a Linear Issue is assigned and has no Pull Request yet.
 - **Open PR**: a Branch has unmerged commits and no Pull Request.
 - **Prune or revive**: a Stale Branch needs a decision.
 

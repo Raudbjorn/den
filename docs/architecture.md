@@ -14,10 +14,18 @@ config.toml ─► config ─► App::new
   operations (Events)      │                          │            │
                            │                   ui::frame::draw   runtime ─► ports::perform
                            │                                                 │
-                           └───────────── Event::SurveyFinished ◄── GitHubSource::survey
-                                                                     (github: gh api graphql)
+                           ├───────────── Event::SurveyFinished ◄── GitHubSource::survey
+                           │                                         (github: gh api graphql)
+                           └───────────── Event::LinearSurveyFinished ◄── LinearSource::survey
+                                                                     (linear: HTTPS GraphQL; only for
+                                                                      Owners with a Linear Workflow)
 App, on Started:         Effect::LoadCache (before Effect::Survey) ─► Event::CacheLoaded ─► shown with its age
-App, on SurveyFinished:  cache::merge(shown, Observation) ─► decide::decide_with(Observation,
+App, on Started / `r`:   Effect::SurveyLinear (only when the config has Linear Workflows; before
+                         Effect::Survey, so its answer is in hand when GitHub's arrives)
+App, on LinearSurveyFinished: App.linear = the answer ─► spliced into shown (Linear part + Linear
+                         coverage) ─► decide again ─► Effect::StoreCache
+App, on SurveyFinished:  cache::merge(shown, Observation) ─► App::with_linear (the latest Linear
+                         answer, or Linear sources not yet fetched) ─► decide::decide_with(Observation,
                          Viewers::of(Observation), App.policies, upstreams, now) ─► ordering::order ─► view
                          ─► Effect::StoreCache
 App, on `u` (sidebar, fork row): UpstreamTargets toggled ─► decide again ─► Effect::StoreUpstreams ─► Event::UpstreamsStored
@@ -40,6 +48,13 @@ the empty policy changes nothing), and a Job record's subject is a
 `JobSubject` (a GitHub Work Item). The milestone-2 table below says where each
 later ticket fills them in.
 
+#32 (the Linear tracer) fills in the first of them: a Linear Workflow block
+per Owner in the config, the read-only `LinearSource` port and its HTTPS
+adapter, the Linear viewer and assigned Linear Issues in the Linear part,
+`Viewers.linear`, `WorkItemId::LinearIssue` (workspace + permanent ID, under
+its Owner), Implement for an assigned Linear Issue, and the Linear glyph and
+workflow markers. The policy is still empty for every Owner.
+
 `main` only wires: XDG paths, log, config, ports, and the terminal loop. The
 loop checks for a termination signal (SIGTERM, SIGHUP, SIGINT, SIGQUIT) before
 every input wait, so the terminal is always restored, and hands Effects to a background `runtime::Worker` thread so the UI stays
@@ -51,18 +66,19 @@ responsive while `gh` runs; `den --dump COLSxROWS` and the tests use
 
 | Module | Role |
 |---|---|
-| `domain/` | Glossary types. `ids` (RepoId, WorkItemId qualified by Owner and Repo), `next_step` (all ten Next Steps, Waiting On), `observation` (Observation, Viewer with teams, `Viewers`, Repo), `coverage` (Source, SourceKind incl. the reserved `SourceKind::Linear(LinearSourceKind)`, SourceState: complete / partial(why) / failed(error) / not yet fetched), `facts/` one file per Work Item kind, `linear` (`LinearPart`, the Observation's Linear part; empty until #32), `policy` (`LinearWorkflowPolicy`, `Policies`: per Owner, the empty policy when it has none). |
-| `decide/` | **Seam 1.** `decide(&Observation, &Viewers, &Policies, now) -> Vec<Decision>` (`decide_with` adds the Upstream choices). Pure. `Context` carries the viewers and `Context::policy(owner)`. `mod.rs` defines Decision (Next Step, Waiting On + reason, `unattributed`, Explanation {winning rule, no-step reason, other conditions, unknowns}, applicable coverage) and dispatches to one module per kind: `pull_request.rs`, `issue.rs`, `branch.rs`, `run.rs`. `attribution.rs` resolves people/teams to me / someone else / nobody (+unattributed). |
+| `domain/` | Glossary types. `ids` (RepoId, WorkItemId qualified by Owner and Repo; `WorkItemId::LinearIssue { owner, issue: LinearIssueId { workspace, id } }`, whose `repo()` is `None` and `owner()` its Owner), `next_step` (all ten Next Steps, Waiting On), `observation` (Observation, Viewer with teams, `Viewers`, Repo), `coverage` (Source, SourceKind incl. the reserved `SourceKind::Linear(LinearSourceKind)`, SourceState: complete / partial(why) / failed(error) / not yet fetched), `facts/` one file per Work Item kind (`linear_issue.rs`: team, state and its type, assignee, priority, cycle, branch name), `linear` (`LinearPart`: the Linear viewers, one per workspace read, and the Linear Issues), `policy` (`LinearWorkflowPolicy`, `Policies`: per Owner, the empty policy when it has none). |
+| `decide/` | **Seam 1.** `decide(&Observation, &Viewers, &Policies, now) -> Vec<Decision>` (`decide_with` adds the Upstream choices). Pure. `Context` carries the viewers and `Context::policy(owner)`. `mod.rs` defines Decision (Next Step, Waiting On + reason, `unattributed`, Explanation {winning rule, no-step reason, other conditions, unknowns}, applicable coverage) and dispatches to one module per kind: `pull_request.rs`, `issue.rs`, `branch.rs`, `run.rs`, `linear_issue.rs`. `attribution.rs` resolves people/teams to me / someone else / nobody (+unattributed); `Attribution::linear_person` compares a Linear user with the workspace's Linear viewer by Linear user ID only. `WorkItem.identifier` carries a Linear identifier for display. |
 | `ordering.rs` | Pure: `Scope` (All Owners / Owner / Repo), `in_scope` (the Decisions a Scope covers), and `order` (Waiting On, kind rank, newest first). Owner and Repo names compare case-insensitively, as GitHub's do (`Scope::same`, `same_repo`); the cache merge folds the same way. |
 | `app/` | **Seam 2.** `App::handle(Event) -> (ViewModel, Vec<Effect>)`. No I/O, no clock (time arrives in events). `view_model.rs` has one type per screen section; `view/` has one builder per section (`header`, `sidebar`, `list`, `detail`, `footer`; `scope` builds the header's Scope sentence and segments). `scope.rs` holds the Scope, the sidebar's focus and cursor, and the sidebar's rows. |
 | `cache/` | The last Observation per viewer. `CachedObservation` = Observation + `carried` (per source, the age of data kept from an earlier survey). `merge.rs` (pure, generic over sources): a source read completely is replaced, any other keeps the earlier facts, marked with their own age (a Repo's own, when older than its Owner's); sources and facts are matched by case-folded Owner and Repo; never merged across viewers. `file.rs`: `FileCache`, `$XDG_STATE_HOME/den/cache/<login>.json` + `last-viewer`, versioned (`CACHE_FORMAT`, bumped whenever a cached type's stored shape changes), size-bounded, atomic, 0600; unreadable = error value, logged, fresh survey. `survey_complete` gates "Nothing needs you". |
-| `ports/` | Traits: `GitHubSource` (read-only), `ObservationCache` (#8), `Workspace` (git + filesystem: find clones, remotes, path state, resolve, ls-remote of a branch or a PR ref, worktree list, fetch, worktree add), `Launcher` (kitty window or clipboard), `JobStore` (#11), `UpstreamStore` (#13), `Clock`. `Ports` bundles them; `perform(&Effect, &Ports) -> Vec<Event>`. `SurveyFailure` = no Observation at all (gh missing, logged out, viewer unreadable). |
+| `ports/` | Traits: `GitHubSource` (read-only), `LinearSource` (read-only; `LinearSurveyRequest` = the config's Linear Workflows, `LinearSurvey` = Linear part + Linear coverage; never fails, every trouble is coverage), `ObservationCache` (#8), `Workspace` (git + filesystem: find clones, remotes, path state, resolve, ls-remote of a branch or a PR ref, worktree list, fetch, worktree add), `Launcher` (kitty window or clipboard), `JobStore` (#11), `UpstreamStore` (#13), `Clock`. `Ports` bundles them; `perform(&Effect, &Ports) -> Vec<Event>`. `SurveyFailure` = no Observation at all (gh missing, logged out, viewer unreadable). |
 | `github/` | The real `GitHubSource`. `graphql.rs`: `GraphQl` transport trait and `GhCli` (`gh api graphql --input -`, `GH_TIMEOUT_SECS`, error classification). `session.rs`: query → `SourceState`, `Pager` (bounded by `MAX_PAGES`), rate-limit memo (once the limit is hit the survey stops fetching; the reset time comes from responses or one `gh api rate_limit`). One fetcher per source: `viewer`, `repos`, `pull_requests`, `issues`, `branches`, `runs`; queries in `queries/*.graphql`. `mod.rs::survey` runs the viewer, then each Owner on its own thread, merged in config order. |
+| `linear/` | The real `LinearSource` (#32). `transport.rs`: `LinearTransport` trait (the scripted-transport seam), `HttpsTransport` (ureq + rustls, `LINEAR_TIMEOUT_SECS` per call, no redirects, HTTPS only; the `ApiKey` lives only here and in the `Authorization` header; keeps only status, rate-limit headers and body). `session.rs`: reply → `SourceState` (errors next to data partial; `RATELIMITED` or HTTP 429 partial with the latest reset header or `Retry-After`, then nothing more is sent; 401/403 or an auth error code failed, naming the key's variable), `Pager` bounded by `MAX_LINEAR_PAGES`. `mod.rs::LinearApi`: per workflow, in order: the key from the named variable (missing: both sources failed, nothing sent), the viewer (its workspace must match the config's), the viewer's assigned issues not completed or canceled; queries in `queries/*.graphql`. |
 | `handoff/` | Launching a Job (#11). `inspect` gathers a `WorkspaceView` through the ports (Main Clone candidates and remotes, the chosen clone's state, the worktree path, the local branch, registered worktrees, kitty or not, Job records). `plan` is pure: `PlanInput` (Decision, Observation, `TargetChoice`, WorkspaceView, prompts) → `LaunchPlan` or `Refusal` (every reason, as `RefusalReason`). `execute` runs a confirmed plan step by step (`LaunchStep`), stops at the first failure, never deletes. `clone` (remote URL matching, Main Clone choice), `names` (safe worktree/session names, `suffixed`), `command` (the exact kitty / clipboard command, shared with the Launcher; `SessionStart::Resume` for `claude --resume`), `prompts` (`prompts.toml`, defaults, placeholders), `live` (#14: a recorded Job's worktree is present / missing / unknown; the bounded check; reopening; fresh-start suffixes). |
 | `workspace.rs`, `launcher.rs`, `jobs.rs`, `upstreams.rs` | The real adapters: `GitWorkspace` (git with `GIT_TERMINAL_PROMPT=0`, timeouts), `KittyLauncher` (`kitty --detach`, or `wl-copy`/`xclip`/`xsel`; choices are pure functions), `FileJobStore` (`$XDG_STATE_HOME/den/jobs.json`, versioned, append-only, 0600; `JobRecord.subject` is a `JobSubject`, today only `GitHub(WorkItemId)`, matched by `JobSubject::covers`; format 2, and milestone 1's format 1 still loads), `FileUpstreamStore` (`$XDG_STATE_HOME/den/upstreams.json`: the forks targeting their Upstream; versioned, 0600, read once at startup by `main`). |
 | `ui/` | Draws a ViewModel, nothing else. `frame.rs` lays out plates; `header`, `list` (windowed), `detail`, `footer` each draw one; templates in `templates/{frame,list,detail}.crepus`. `glyphs.rs` gives every glyph an ASCII form, including the ViewModel's sentence separator, ellipsis and Enter key (`view_model::SEPARATOR`, `ELLIPSIS`, `ENTER_KEY`), which `Glyphs::text` swaps in where ViewModel text is drawn. Footer hints take their own width, so all of them fit 80 columns. |
 | `layout.rs` | Pure responsive layout (#10): from the terminal size (`Event::Resized`), the sidebar width (22%, 30–40 cols), the detail pane width or none below 110 cols (then `Enter` opens `Overlay::DetailSheet`), and the 80×24 minimum. The App puts it in `ViewModel.layout`; `ui::frame` turns it into rectangles. `ui::bear` draws the bear (kitty graphics or half-blocks, one protocol state per placement; skipped under overlays). |
-| `config.rs`, `paths.rs`, `logging.rs`, `process.rs`, `files.rs` | Config with file+line errors; XDG paths (config, prompts, state, default Main Clone root `~/dev`); JSON log in the state dir; external commands as `Invocation` values with a timeout (and a bounded wait for output a detached child keeps open); atomic private writes. |
+| `config.rs`, `config/linear.rs`, `paths.rs`, `logging.rs`, `process.rs`, `files.rs` | Config with file+line errors (`[linear.<owner>]`: a Linear Workflow per watched Owner, every spec setting validated, Repos only the Owner's, a workspace bound to one Owner; `Config::check_linear_keys` names an unset key variable and its line; `Config::policies`); XDG paths (config, prompts, state, default Main Clone root `~/dev`); JSON log in the state dir; external commands as `Invocation` values with a timeout (and a bounded wait for output a detached child keeps open); atomic private writes. |
 
 ## Rules of the road
 
@@ -95,9 +111,10 @@ PR list coverage (`PullRequests`) and follow-up coverage (`PullRequestDetails`)
 are separate. Missing checks or reviews still mark the item incomplete, but a
 fully read open-PR list can remove closed PRs from the cache. Successful Branch
 and Run reads record complete per-Repo entries even when the Owner list is
-partial. Cache format 5 (milestone 2: the Linear part and Linear source
-kinds) rejects older snapshots, milestone 1's format 4 included, and rebuilds
-them with a fresh survey. Job records are format 2 (a `JobSubject`) and still
+partial. Cache format 6 (milestone 2: the Linear part with Linear viewers and
+Linear Issues, Linear source kinds and Linear incompleteness reasons) rejects
+older snapshots, milestone 1's format 4 included, and rebuilds them with a
+fresh survey. Job records are format 2 (a `JobSubject`) and still
 read milestone 1's format 1; the Upstream state format is unchanged. Files
 milestone 1 wrote are kept as fixtures in `tests/fixtures/milestone-1/`.
 
@@ -108,7 +125,14 @@ coverage, `survey_complete`) apply to them unchanged. They are not in
 `SourceKind::WORK_ITEMS` (an incomplete Repo list never marks them partial)
 and `Coverage::applicable_to` never gives them to a GitHub Work Item. An Owner
 without a Linear Workflow records none, so it can't make "Nothing needs you"
-false; a recorded one that isn't complete does.
+false; a recorded one that isn't complete does. An Owner with one always has
+its Linear viewer and assigned-issues sources recorded once a survey answers
+(`App::with_linear` records not yet fetched when the Linear source said
+nothing), and a GitHub answer's own Linear coverage, if any, is dropped. A
+Linear Issue's applicable coverage is its Owner's Linear sources, without the
+GitHub viewer. Until #34, Linear facts are never kept across surveys: the
+latest Linear answer replaces the Linear part, and no age is carried for a
+Linear source.
 
 ## Where each ticket plugs in
 
@@ -148,9 +172,9 @@ keeps the default a policy that changes nothing, and keeps
 | Ticket | Adds / edits |
 |---|---|
 | #31 groundwork (this) | `domain/policy.rs` (`LinearWorkflowPolicy` with no fields, `Policies::for_owner`), `domain/linear.rs` (`LinearPart {}`), `Observation.linear`, `Viewers { github }` + `Viewers::of`, `SourceKind::Linear(LinearSourceKind::{Viewer, AssignedIssues, StartTeamIssues, TeamStates})`, `decide`/`decide_with` signatures, `App.policies` (empty), `CACHE_FORMAT` 5, `jobs::JobSubject` + `JOBS_FORMAT` 2 with format-1 loading. Tests: `tests/decide_policies.rs`, `tests/jobs_file.rs`, milestone-1 fixtures, `app_survey::linear_sources_count_toward_nothing_needs_you_only_when_recorded`. |
-| #32 tracer: assigned Linear Issues | `config.rs`: a Linear Workflow block per Owner (file+line errors; key from the named env var) → `App.policies` and a list of workflows in `SurveyRequest`. New read-only port `LinearSource` in `ports/` (fake in `tests/support/fakes.rs`) and a `linear/` adapter (HTTPS GraphQL, timeout per call, bounded paging, scripted-transport checks like `tests/github_source.rs`). `LinearPart` gains the Linear viewer per workspace and Linear Issue facts (`domain/facts/linear_issue.rs`, identity workspace + permanent ID); `Viewers` gains the Linear viewers, filled in `Viewers::of`. A Linear Issue identity joins `WorkItemId` (or a sibling id the list and Decision use; `WorkItemId::repo` assumes a Repo today). Records `Linear(Viewer)` and `Linear(AssignedIssues)`. `decide/linear_issue.rs` (Implement). New Effect/Event pair for the Linear survey. List glyph, detail pane, sidebar/header workflow marker. |
+| #32 tracer: assigned Linear Issues (done) | `config.rs` + `config/linear.rs`: `[linear.<owner>]` (every spec setting parsed and validated; the switches default on in the config; `check_linear_keys` in `main`) → `Config::policies` → `App.policies`, and the workflows in `LinearSurveyRequest` (not `SurveyRequest`: GitHub and Linear are separate Effects). Port `LinearSource` (`FakeLinear`, `ScriptedLinear` in `tests/support/fakes.rs`), adapter `linear/`. `LinearPart { viewers, issues }`, `domain/facts/linear_issue.rs`, `LinearIssueId`, `WorkItemId::LinearIssue` (`repo()` now `Option`, `owner()`), `WorkItemKind::LinearIssue`, `Viewers.linear`. Records `Linear(Viewer)` and `Linear(AssignedIssues)`; `Incompleteness::{LinearErrorsAlongsideData, LinearRateLimited}`. `decide/linear_issue.rs` (Implement; unknown "PR attachments unread" until #35). `Effect::SurveyLinear` / `Event::LinearSurveyFinished`. `RefusalReason::LinearIssueNotLaunchable` (`c` refuses until #38). View: `Row.kind` draws the Linear glyph (`glyphs.linear`, ASCII `[L]`), `DetailContent.facts`, `SidebarRow.linear_workflow`, `ScopeSegment.linear_workflow`, "Linear Workflow" in the Scope sentence. `CachedObservation::restricted_to` drops unwatched Owners' Linear facts. `CACHE_FORMAT` 6. Tests: `tests/config.rs`, `decide_linear_issues.rs`, `app_linear.rs`, `linear_source.rs`, `frame.rs::linear_markers_are_glyphs_that_read_in_monochrome`, `app_survey::linear_sources_count_toward_nothing_needs_you_only_when_recorded` (now through the Linear port). |
 | #33 Start | `LinearPart`: start-team issues and team states; records `Linear(StartTeamIssues)`, `Linear(TeamStates)` (Failed naming a config value Linear lacks). `decide/linear_issue.rs` (Start), new `NextStep` variants, `ordering::kind_rank` gains the milestone-2 kinds, Start ordered by priority, cycle, age. |
-| #34 Linear data in the cache | `cache/merge.rs`: merge `Observation.linear` per Linear source (today the refresh's part is taken as is), drop it when the Linear viewer changes; `CachedObservation::restricted_to` drops Linear facts of unwatched Owners (their coverage already goes); decide whether `app/view/coverage::applicable_to_repo` should count an Owner's Linear sources for a Repo (it does today, as for any Owner source). Bump `CACHE_FORMAT`. |
+| #34 Linear data in the cache | `cache/merge.rs` and `App::with_linear`: merge `Observation.linear` per Linear source (today the latest Linear answer is taken as is, and a failed Linear source shows no Linear Issues), drop it when the Linear viewer changes; decide whether `app/view/coverage::applicable_to_repo` should count an Owner's Linear sources for a Repo (it does today, as for any Owner source). Bump `CACHE_FORMAT`. |
 | #35 Landing Groups | Linear Issue attachments in `LinearPart` (PR identity Owner + Repo + number, or unrecognized link); a pure correlation step before the per-kind rules (attached vs hint, ambiguous, not surveyed); `ordering::in_scope` gives a Repo Scope the Linear Issues with a member there; decide whether attachment coverage joins a member PR's `Coverage::applicable_to`. |
 | #36 workflow review rules | `LinearWorkflowPolicy` gains Held Repos, exact-head approval, comment re-review and reviewers (all off/empty by default); `decide/pull_request.rs` reads `ctx.policy(owner)`; PR facts gain each latest review's commit and reviewer type (GitHub source); `NextStep::RequestReview`. |
 | #37 Land and Mark for release | `decide/` gate over the correlation from #35 and the policy from #36; `NextStep::{Land, MarkForRelease}`; member PRs that would Merge get "lands with". |
