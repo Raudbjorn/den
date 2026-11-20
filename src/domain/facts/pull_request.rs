@@ -95,9 +95,13 @@ pub enum ReviewDecision {
 }
 
 /// The facts read by the follow-up query. The default is "read completely,
-/// nothing found".
+/// nothing found", at an unknown head.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrDetails {
+    /// The PR's head commit as this query read it. A push between the PR list
+    /// and this query makes it differ from [`PullRequest::head_commit`]; the
+    /// reviews' commits are only comparable to this one. `None`: not known.
+    pub head_commit: Option<String>,
     /// Checks on the head commit (check runs and commit statuses).
     pub checks: Listed<Check>,
     /// Review threads not yet resolved, among those read.
@@ -119,6 +123,7 @@ pub struct PrDetails {
 impl Default for PrDetails {
     fn default() -> Self {
         Self {
+            head_commit: None,
             checks: Listed::default(),
             unresolved_threads: 0,
             threads_complete: true,
@@ -171,6 +176,16 @@ pub enum CheckOutcome {
 pub enum Reviewer {
     User(String),
     Team(TeamRef),
+}
+
+impl Reviewer {
+    /// How den names the reviewer: the login, or "team org/slug".
+    pub fn label(&self) -> String {
+        match self {
+            Self::User(login) => login.clone(),
+            Self::Team(team) => format!("team {}/{}", team.org, team.slug),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

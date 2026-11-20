@@ -19,12 +19,12 @@ pub use scope::Focus;
 pub use view_model::ViewModel;
 
 use crate::{
-    cache::{self, CacheError, CachedObservation},
+    cache::{self, CacheError, CachedObservation, LinearReads},
     config::{Config, ConfigError},
     decide::{self, Decision},
     domain::{
-        Coverage, Observation, Policies, Source, SourceKind, SourceState, UpstreamTargets, Viewers,
-        WorkItemId,
+        Coverage, Observation, Policies, Source, SourceKind, SourceState, UpstreamTargets, Viewer,
+        Viewers, WorkItemId,
     },
     handoff::{
         JobCheck, JobsCheck,
@@ -97,11 +97,16 @@ pub struct App {
     linear_running: Option<SurveyId>,
     /// The latest Linear survey's answer this session, dated: merged into what
     /// is shown when it arrives, and again into a GitHub survey that starts
-    /// afresh (no earlier Observation of its viewer to merge into).
+    /// afresh (no earlier Observation of its viewer to merge into). Merges
+    /// borrow it.
     linear: Option<LinearSurvey>,
     /// The read of Landing Group members' states in flight, if any (#37),
     /// by the survey round it follows.
     member_states_running: Option<SurveyId>,
+    /// A Linear answer was shown but not yet saved: the GitHub answer of the
+    /// same survey was still to come, and saves both (or, if it fails, the
+    /// failure does).
+    linear_unsaved: bool,
 }
 
 impl App {
@@ -131,6 +136,7 @@ impl App {
             linear_running: None,
             linear: None,
             member_states_running: None,
+            linear_unsaved: false,
             upstreams_unreadable: None,
             upstream_problem: None,
         }
@@ -257,10 +263,15 @@ impl App {
                 "save Upstream choices"
             }
             Effect::SurveyLinear { id, .. } => {
+                let mut effects = vec![Effect::log(
+                    LogLevel::Error,
+                    format!("could not queue Linear survey: {reason}"),
+                )];
                 if self.linear_running == Some(id) {
                     self.linear_running = None;
+                    effects.extend(self.linear_not_asked(id, &reason));
                 }
-                "Linear survey"
+                return effects;
             }
             Effect::ReadMemberStates { id, .. } => {
                 if self.member_states_running == Some(id) {
@@ -280,9 +291,33 @@ impl App {
         )]
     }
 
-    /// Starts a survey: Linear first when any Owner has a Linear Workflow (its
-    /// answer is then in hand when GitHub's arrives on the one worker), then
-    /// GitHub. Without Linear Workflows den asks Linear nothing.
+    /// The Linear survey `id` couldn't be queued: Linear wasn't asked, so
+    /// every Linear source reads as failed for this survey (never as the
+    /// previous answer, complete and current).
+    fn linear_not_asked(&mut self, id: SurveyId, reason: &str) -> Vec<Effect> {
+        let mut survey = LinearSurvey::default();
+        for source in self.linear_sources() {
+            survey.coverage.record(
+                source,
+                SourceState::Failed {
+                    error: format!("den could not ask Linear: {reason}"),
+                },
+            );
+        }
+        match self.now {
+            Some(now) => self.linear_answered(id, survey, now),
+            None => {
+                self.linear = Some(survey);
+                Vec::new()
+            }
+        }
+    }
+
+    /// Starts a survey: Linear when any Owner has a Linear Workflow, and
+    /// GitHub. The worker runs the Linear survey on its own lane, so a slow
+    /// Linear never holds GitHub's answer back; either may answer first.
+    /// (Run in order, as `settle` does, Linear's answer is in hand when
+    /// GitHub's arrives.) Without Linear Workflows den asks Linear nothing.
     fn begin_survey(&mut self, request: SurveyRequest) -> Vec<Effect> {
         let id = SurveyId(self.next_survey);
         self.next_survey += 1;
@@ -403,24 +438,24 @@ impl App {
         self.running = None;
         match outcome {
             Ok(observation) => {
-                let log = survey_log(id, &observation);
-                let previous = self.shown.take();
-                let afresh = !previous
-                    .as_ref()
-                    .is_some_and(|p| p.observation.viewer.is(&observation.viewer.login));
-                let mut merged = cache::merge(previous, *observation);
+                let mut effects = vec![survey_log(id, &observation)];
+                let merge = cache::merge(self.shown.take(), *observation);
+                let mut merged = merge.cached;
                 // Starting afresh, the merge kept no Linear part: give it this
-                // session's Linear answer (otherwise it is in `previous` already).
-                if afresh && let Some(latest) = &self.linear {
-                    merged = cache::merge_linear(merged, latest.clone());
+                // session's Linear answer (otherwise it is in the earlier
+                // Observation already).
+                if merge.afresh
+                    && let Some(latest) = &self.linear
+                {
+                    merged = merge_linear_logged(merged, latest, &mut effects);
                 }
                 self.record_unanswered_linear(&mut merged.observation.coverage);
-                let carried = carried_log(&merged);
+                // Linear's kept data was logged when its answer arrived.
+                effects.extend(carried_log(&merged, |source| !source.is_linear()));
                 self.show(merged.clone(), now);
                 self.from_cache = false;
                 self.failure = None;
-                let mut effects = vec![log];
-                effects.extend(carried);
+                self.linear_unsaved = false;
                 effects.push(Effect::StoreCache {
                     cached: Box::new(merged),
                 });
@@ -433,8 +468,21 @@ impl App {
                     format!("survey {} failed: {failure}", id.0),
                 );
                 // The last good Observation, if any, stays on screen.
+                let mut effects = vec![log];
+                match &self.shown {
+                    // A Linear answer shown since the last save is saved now.
+                    Some(shown) if self.linear_unsaved && has_github_viewer(shown) => {
+                        effects.push(Effect::StoreCache {
+                            cached: Box::new(shown.clone()),
+                        });
+                    }
+                    Some(_) => {}
+                    // Nothing shown yet: Linear's answer, if any, still shows.
+                    None => self.show_linear_only(&failure, now),
+                }
+                self.linear_unsaved = false;
                 self.failure = Some(failure);
-                vec![log]
+                effects
             }
         }
     }
@@ -492,29 +540,33 @@ impl App {
         let Ok(config) = &self.config else {
             return Vec::new();
         };
-        let workflows: Vec<(&str, &str)> = config
+        let workflows: Vec<LinearReads<'_>> = config
             .linear
             .iter()
-            .map(|w| (w.owner.as_str(), w.workspace.as_str()))
+            .map(|w| LinearReads {
+                owner: &w.owner,
+                workspace: &w.workspace,
+                sources: w.linear_sources(),
+            })
             .collect();
         let mut cached = cached
             .restricted_to(&config.owners)
             .restricted_to_linear(&workflows);
-        if let Some(latest) = &self.linear {
-            cached = cache::merge_linear(cached, latest.clone());
-        }
-        self.record_unanswered_linear(&mut cached.observation.coverage);
-        let log = Effect::log(
+        let mut effects = vec![Effect::log(
             LogLevel::Info,
             format!(
                 "showing the cached Observation of {} from {}",
                 cached.observation.viewer.login, cached.observation.observed_at
             ),
-        );
+        )];
+        if let Some(latest) = &self.linear {
+            cached = merge_linear_logged(cached, latest, &mut effects);
+        }
+        self.record_unanswered_linear(&mut cached.observation.coverage);
         let now = self.now.unwrap_or(cached.observation.observed_at);
         self.show(cached, now);
         self.from_cache = true;
-        vec![log]
+        effects
     }
 
     /// Shows `shown`, deciding its Work Items as of `now`, keeping the selection.
@@ -643,7 +695,7 @@ impl App {
     fn linear_survey_finished(
         &mut self,
         id: SurveyId,
-        mut survey: LinearSurvey,
+        survey: LinearSurvey,
         now: Timestamp,
     ) -> Vec<Effect> {
         if self.linear_running != Some(id) {
@@ -656,30 +708,49 @@ impl App {
             )];
         }
         self.linear_running = None;
+        self.linear_answered(id, survey, now)
+    }
+
+    /// Takes the Linear answer of survey `id` into what is shown, merged
+    /// Linear source by Linear source. It is saved at once unless the same
+    /// survey's GitHub answer is still to come (that one saves both, so a
+    /// refresh writes the cache once).
+    fn linear_answered(
+        &mut self,
+        id: SurveyId,
+        mut survey: LinearSurvey,
+        now: Timestamp,
+    ) -> Vec<Effect> {
         // A Linear source that didn't date its answer: dated when it arrived.
         survey.part.observed_at.get_or_insert(now);
         self.record_unanswered_linear(&mut survey.coverage);
         let mut effects = vec![linear_log(id, &survey)];
-        self.linear = Some(survey.clone());
+        self.linear = Some(survey);
         let Some(shown) = self.shown.take() else {
+            // GitHub already failed with nothing shown: show Linear's answer.
+            if self.running.is_none()
+                && let Some(failure) = self.failure.clone()
+            {
+                self.show_linear_only(&failure, now);
+            }
             return effects;
         };
-        let changed = cache::changed_linear_viewers(&shown.observation.linear, &survey.part);
-        if !changed.is_empty() {
-            effects.push(Effect::log(
-                LogLevel::Warn,
-                format!(
-                    "the Linear viewer of {} is not the one den's Linear data was read as; dropped that data",
-                    changed.join(", ")
-                ),
-            ));
-        }
-        let merged = cache::merge_linear(shown, survey);
-        effects.extend(carried_log(&merged));
+        let merged = match &self.linear {
+            Some(latest) => merge_linear_logged(shown, latest, &mut effects),
+            None => shown,
+        };
+        // GitHub's kept data was logged when its answer arrived.
+        effects.extend(carried_log(&merged, Source::is_linear));
         self.show(merged.clone(), now);
-        effects.push(Effect::StoreCache {
-            cached: Box::new(merged),
-        });
+        if !has_github_viewer(&merged) {
+            // The Linear-only stand-in: never saved.
+        } else if self.running == Some(id) {
+            self.linear_unsaved = true;
+        } else {
+            effects.push(Effect::StoreCache {
+                cached: Box::new(merged),
+            });
+        }
         effects.extend(self.read_member_states(id));
         effects
     }
@@ -757,31 +828,102 @@ impl App {
         };
         let merged = cache::merge_member_states(shown, read);
         self.show(merged.clone(), now);
-        effects.push(Effect::StoreCache {
-            cached: Box::new(merged),
-        });
+        // The Linear-only stand-in is never saved (no GitHub viewer).
+        if has_github_viewer(&merged) {
+            effects.push(Effect::StoreCache {
+                cached: Box::new(merged),
+            });
+        }
         effects
+    }
+
+    /// With no GitHub answer to show, shows the Linear answer alone, if it
+    /// holds Linear Issues. GitHub's viewer is unknown and its failure is
+    /// coverage, so nothing reads as complete. It is never saved (the cache
+    /// is per GitHub viewer); the next GitHub answer starts afresh, and so
+    /// takes this session's Linear answer again.
+    fn show_linear_only(&mut self, failure: &SurveyFailure, now: Timestamp) {
+        let Ok(config) = &self.config else {
+            return;
+        };
+        let Some(latest) = self.linear.as_ref().filter(|l| !l.part.issues.is_empty()) else {
+            return;
+        };
+        let unknown = Viewer {
+            login: String::new(),
+            teams: Vec::new(),
+        };
+        let mut observation = Observation::empty(now, unknown, config.owners.clone());
+        observation.coverage.record(
+            Source::Viewer,
+            SourceState::Failed {
+                error: failure.to_string(),
+            },
+        );
+        // Nothing earlier to merge into, so no Linear viewer can have changed.
+        let mut shown = cache::merge_linear(CachedObservation::fresh(observation), latest).cached;
+        self.record_unanswered_linear(&mut shown.observation.coverage);
+        self.show(shown, now);
     }
 
     /// Records every Linear source of each Linear Workflow that `coverage`
     /// has no word on as not yet fetched, so that one den hasn't heard from
     /// never reads as complete. Without Linear Workflows, records nothing.
     fn record_unanswered_linear(&self, coverage: &mut Coverage) {
-        let Ok(config) = &self.config else {
-            return;
-        };
-        for workflow in &config.linear {
-            for kind in workflow.linear_sources() {
-                let source = Source::Owner {
-                    owner: workflow.owner.clone(),
-                    kind: SourceKind::Linear(kind),
-                };
-                if !coverage.entries().iter().any(|e| e.source.same(&source)) {
-                    coverage.record(source, SourceState::NotYetFetched);
-                }
+        for source in self.linear_sources() {
+            if !coverage.entries().iter().any(|e| e.source.same(&source)) {
+                coverage.record(source, SourceState::NotYetFetched);
             }
         }
     }
+
+    /// Every Linear source of every configured Linear Workflow
+    /// ([`crate::config::LinearWorkflow::linear_sources`] per workflow).
+    fn linear_sources(&self) -> Vec<Source> {
+        let Ok(config) = &self.config else {
+            return Vec::new();
+        };
+        config
+            .linear
+            .iter()
+            .flat_map(|workflow| {
+                workflow
+                    .linear_sources()
+                    .into_iter()
+                    .map(|kind| Source::Owner {
+                        owner: workflow.owner.clone(),
+                        kind: SourceKind::Linear(kind),
+                    })
+            })
+            .collect()
+    }
+}
+
+/// Whether `shown` holds a GitHub answer (or a cached one): only then does
+/// it have a GitHub viewer to be saved under. GitHub logins are never
+/// empty; the Linear-only stand-in's is.
+fn has_github_viewer(shown: &CachedObservation) -> bool {
+    !shown.observation.viewer.login.is_empty()
+}
+
+/// Merges `survey` into `cached`, logging any Owner whose earlier Linear data
+/// was dropped because its Linear viewer changed.
+fn merge_linear_logged(
+    cached: CachedObservation,
+    survey: &LinearSurvey,
+    effects: &mut Vec<Effect>,
+) -> CachedObservation {
+    let merge = cache::merge_linear(cached, survey);
+    if !merge.viewer_changed.is_empty() {
+        effects.push(Effect::log(
+            LogLevel::Warn,
+            format!(
+                "the Linear viewer of {} is not the one den's Linear data was read as; dropped that data",
+                merge.viewer_changed.join(", ")
+            ),
+        ));
+    }
+    merge.cached
 }
 
 /// The Landing Group members whose state den should read: attached to a
@@ -838,16 +980,18 @@ fn cache_stored(outcome: Result<(), CacheError>) -> Vec<Effect> {
     }
 }
 
-/// Logs which sources show data kept from an earlier survey.
-fn carried_log(merged: &CachedObservation) -> Option<Effect> {
-    if merged.carried.is_empty() {
-        return None;
-    }
+/// Logs which of the sources `of` picks show data kept from an earlier
+/// survey: a survey of one service logs its own.
+fn carried_log(merged: &CachedObservation, of: impl Fn(&Source) -> bool) -> Option<Effect> {
     let kept: Vec<String> = merged
         .carried
         .iter()
+        .filter(|c| of(&c.source))
         .map(|c| format!("{} from {}", c.source.label(), c.observed_at))
         .collect();
+    if kept.is_empty() {
+        return None;
+    }
     Some(Effect::log(
         LogLevel::Warn,
         format!("kept earlier data for: {}", kept.join("; ")),

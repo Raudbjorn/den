@@ -16,12 +16,21 @@
 //! [`keep_unread`]): a fact names its source, a GitHub fact by its kind and
 //! Repo, a Linear fact by its Owner and the Linear source that listed it. A
 //! Linear fact list added later (a start team's states, say) is one more
-//! [`keep_unread`] call in [`merge_linear`].
+//! [`keep_unread`] call in [`merge_linear`], and one more `retain` by its
+//! source in [`CachedObservation::restricted_to_linear`].
+//!
+//! A Linear survey speaks for exactly the Linear sources it records (the App
+//! records every one its config asks for, as not yet fetched when the survey
+//! said nothing). A Linear source it doesn't record is no longer read: its
+//! coverage, its age and the facts it listed are dropped, so it never stays
+//! "not yet fetched" nor keeps its facts for good. The rule is the one above,
+//! by source, so it holds for every Linear source kind.
 //!
 //! Linear data is kept only for the Linear viewer it was read as. When a Linear
 //! refresh reads another Linear viewer for an Owner (another account behind the
 //! key, or another workspace), all of that Owner's earlier Linear data is
-//! dropped, whatever its sources' coverage says.
+//! dropped, whatever its sources' coverage says, and [`LinearMerge`] names the
+//! Owner so the App can say so.
 //!
 //! GitHub Owner and Repo names are case-insensitive, and a fact's Repo carries
 //! the Owner as configured. So sources and facts are matched by their folded
@@ -32,25 +41,48 @@ use super::{CachedObservation, Carried, source_owner};
 use crate::{
     domain::{
         Coverage, LinearPart, LinearSourceKind, Observation, RepoId, Source, SourceKind,
-        SourceState, WorkItemId, ids::same_login,
+        SourceState, ids::same_login,
     },
     ports::{LinearSurvey, MemberStatesRead},
 };
 use jiff::Timestamp;
 use std::{collections::HashSet, hash::Hash};
 
+/// A GitHub survey merged into what den showed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitHubMerge {
+    pub cached: CachedObservation,
+    /// Nothing earlier was merged: there was none, or it was another viewer's
+    /// (the cache is per viewer). Its Linear part went with it, so the App
+    /// gives the merge this session's Linear answer.
+    pub afresh: bool,
+}
+
+/// A Linear survey merged into what den showed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinearMerge {
+    pub cached: CachedObservation,
+    /// The Owners whose Linear viewer the survey read as someone else than
+    /// the earlier Linear data was read as: all of their earlier Linear data
+    /// was dropped.
+    pub viewer_changed: Vec<String>,
+}
+
 /// Merges a GitHub survey `fresh` into `previous`. A previous Observation of
 /// another viewer is never merged: the cache is per viewer. Whatever Linear
 /// part or Linear coverage `fresh` carries is ignored: a GitHub survey says
 /// nothing about Linear.
-pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> CachedObservation {
+pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> GitHubMerge {
     fresh.linear = LinearPart::default();
     fresh.member_states.clear();
     fresh
         .coverage
         .retain(|e| !e.source.is_linear() && !e.source.is_member_states());
     let Some(previous) = previous.filter(|p| p.observation.viewer.is(&fresh.viewer.login)) else {
-        return CachedObservation::fresh(fresh);
+        return GitHubMerge {
+            cached: CachedObservation::fresh(fresh),
+            afresh: true,
+        };
     };
     let reading = Reading::of(fresh.owners.clone(), &fresh.coverage);
     let mut carried = carried_sources(&previous, &fresh, &reading);
@@ -71,7 +103,7 @@ pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> Cac
         previous_observation.repos,
         |reading, r| reading.keeps_repo_fact(&r.id, SourceKind::Repos),
         |r| &mut r.id.owner,
-        |r| fold_repo(&r.id),
+        |r| r.id.folded(),
     );
     let mut pull_requests = std::mem::take(&mut merged.pull_requests);
     keep_unread(
@@ -80,7 +112,7 @@ pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> Cac
         previous_observation.pull_requests,
         |reading, i| reading.keeps_repo_fact(&i.repo, SourceKind::PullRequests),
         |i| &mut i.repo.owner,
-        |i| fold_item(i.id()),
+        |i| i.id().folded(),
     );
     let mut issues = std::mem::take(&mut merged.issues);
     keep_unread(
@@ -89,7 +121,7 @@ pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> Cac
         previous_observation.issues,
         |reading, i| reading.keeps_repo_fact(&i.repo, SourceKind::Issues),
         |i| &mut i.repo.owner,
-        |i| fold_item(i.id()),
+        |i| i.id().folded(),
     );
     let mut branches = std::mem::take(&mut merged.branches);
     keep_unread(
@@ -98,7 +130,7 @@ pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> Cac
         previous_observation.branches,
         |reading, i| reading.keeps_repo_fact(&i.repo, SourceKind::Branches),
         |i| &mut i.repo.owner,
-        |i| fold_item(i.id()),
+        |i| i.id().folded(),
     );
     // A workflow has many Runs; each Run attempt is its own fact.
     let mut runs = std::mem::take(&mut merged.runs);
@@ -108,7 +140,7 @@ pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> Cac
         previous_observation.runs,
         |reading, i| reading.keeps_repo_fact(&i.repo, SourceKind::Runs),
         |i| &mut i.repo.owner,
-        |i| (fold_repo(&i.repo), i.run_id, i.attempt),
+        |i| (i.repo.folded(), i.run_id, i.attempt),
     );
     merged.repos = repos;
     merged.pull_requests = pull_requests;
@@ -134,9 +166,12 @@ pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> Cac
             }
         }
     }
-    CachedObservation {
-        observation: merged,
-        carried,
+    GitHubMerge {
+        cached: CachedObservation {
+            observation: merged,
+            carried,
+        },
+        afresh: false,
     }
 }
 
@@ -179,21 +214,19 @@ pub fn merge_member_states(
 /// Merges a Linear survey into `previous`, Linear source by Linear source;
 /// GitHub's part, coverage and ages stay as they were.
 ///
-/// The survey speaks for the Owners it records a Linear source for (the App
-/// records every configured one, as not yet fetched when the survey said
-/// nothing): earlier Linear data of any other Owner is dropped, as it no
-/// longer has a Linear Workflow. A Linear source of such an Owner that was
-/// recorded before but not now is not yet fetched, so data kept for it never
-/// reads as complete.
-pub fn merge_linear(previous: CachedObservation, survey: LinearSurvey) -> CachedObservation {
-    let LinearSurvey {
-        part: fresh,
-        coverage: answered,
-    } = survey;
-    let coverage = linear_coverage(&previous.observation.coverage, &answered);
+/// The survey speaks for the Linear sources it records, and only those: the
+/// App records every one its config asks for (as not yet fetched when the
+/// survey said nothing). Earlier Linear data of a source it doesn't record,
+/// and so of an Owner it records nothing for, is no longer read and is
+/// dropped with that source's coverage and age.
+///
+/// Borrows the survey: the App keeps it for a GitHub survey that starts
+/// afresh. The survey's facts are copied once, into the merged Observation.
+pub fn merge_linear(previous: CachedObservation, survey: &LinearSurvey) -> LinearMerge {
+    let coverage = linear_coverage(&survey.coverage);
     let workflow_owners = linear_owners(&coverage);
-    let changed = changed_linear_viewers(&previous.observation.linear, &fresh);
-    let reread = |owner: &str| changed.iter().any(|o| same_login(o, owner));
+    let viewer_changed = changed_linear_viewers(&previous.observation.linear, &survey.part);
+    let reread = |owner: &str| viewer_changed.iter().any(|o| same_login(o, owner));
     let reading = Reading::of(workflow_owners, &coverage);
     let linear_carried: Vec<Carried> = coverage
         .incomplete()
@@ -214,7 +247,7 @@ pub fn merge_linear(previous: CachedObservation, survey: LinearSurvey) -> Cached
     earlier.viewers.retain(|v| !reread(&v.owner));
     earlier.issues.retain(|i| !reread(&i.owner));
     earlier.team_states.retain(|t| !reread(&t.owner));
-    let mut merged = fresh;
+    let mut merged = survey.part.clone();
     keep_unread(
         &reading,
         &mut merged.viewers,
@@ -231,7 +264,7 @@ pub fn merge_linear(previous: CachedObservation, survey: LinearSurvey) -> Cached
         earlier.issues,
         |reading, i| reading.keeps_owner_fact(&i.owner, SourceKind::Linear(i.listed_by)),
         |i| &mut i.owner,
-        |i| fold_item(i.work_item_id()),
+        |i| i.work_item_id().folded(),
     );
     // #33's team states: one list per Owner, keyed by Linear's team ID. A
     // team-states source that failed on a config mismatch still carries the
@@ -258,18 +291,21 @@ pub fn merge_linear(previous: CachedObservation, survey: LinearSurvey) -> Cached
         .filter(|c| !c.source.is_linear())
         .collect();
     carried.extend(linear_carried);
-    CachedObservation {
-        observation,
-        carried,
+    LinearMerge {
+        cached: CachedObservation {
+            observation,
+            carried,
+        },
+        viewer_changed,
     }
 }
 
 /// The Owners whose Linear viewer a Linear refresh read as someone else than
 /// `previous` holds: another Linear user, or another workspace (also when only
 /// an earlier Linear Issue or team's states name the other workspace). Their
-/// earlier Linear data
-/// was read for another account, so none of it may be kept.
-pub fn changed_linear_viewers(previous: &LinearPart, fresh: &LinearPart) -> Vec<String> {
+/// earlier Linear data was read for another account, so none of it may be
+/// kept.
+fn changed_linear_viewers(previous: &LinearPart, fresh: &LinearPart) -> Vec<String> {
     fresh
         .viewers
         .iter()
@@ -298,25 +334,12 @@ pub fn changed_linear_viewers(previous: &LinearPart, fresh: &LinearPart) -> Vec<
         .collect()
 }
 
-/// The Linear coverage after `answered`: its entries, plus, for each Owner it
-/// answered for, any Linear source `previous` recorded and it didn't, as not
-/// yet fetched.
-fn linear_coverage(previous: &Coverage, answered: &Coverage) -> Coverage {
+/// The Linear entries of a Linear survey's coverage: the sources it speaks
+/// for.
+fn linear_coverage(answered: &Coverage) -> Coverage {
     let mut coverage = Coverage::default();
     for entry in answered.entries().iter().filter(|e| e.source.is_linear()) {
         coverage.record(entry.source.clone(), entry.state.clone());
-    }
-    let owners = linear_owners(&coverage);
-    for entry in previous.entries().iter().filter(|e| e.source.is_linear()) {
-        let answered_for_owner = source_owner(&entry.source)
-            .is_some_and(|owner| owners.iter().any(|o| same_login(o, owner)));
-        let unanswered = !coverage
-            .entries()
-            .iter()
-            .any(|e| e.source.same(&entry.source));
-        if answered_for_owner && unanswered {
-            coverage.record(entry.source.clone(), SourceState::NotYetFetched);
-        }
     }
     coverage
 }
@@ -337,25 +360,17 @@ fn linear_owners(coverage: &Coverage) -> Vec<String> {
 /// What the refresh read completely.
 struct Reading {
     owners: Vec<String>,
-    /// Sources the refresh read completely (folded).
-    complete: HashSet<Source>,
-    /// Sources the refresh recorded, in any state (folded).
-    recorded: HashSet<Source>,
+    /// The refresh's coverage.
+    coverage: Coverage,
     viewer_read: bool,
 }
 
 impl Reading {
     /// What a refresh of `owners` that recorded `coverage` read.
     fn of(owners: Vec<String>, coverage: &Coverage) -> Self {
-        let entries = coverage.entries();
         Self {
             owners,
-            complete: entries
-                .iter()
-                .filter(|e| e.state.is_complete())
-                .map(|e| fold_source(&e.source))
-                .collect(),
-            recorded: entries.iter().map(|e| fold_source(&e.source)).collect(),
+            coverage: coverage.clone(),
             viewer_read: coverage.get(&Source::Viewer) == Some(&SourceState::Complete),
         }
     }
@@ -372,39 +387,41 @@ impl Reading {
     /// refresh, be kept? Yes unless the refresh read its source completely, or
     /// no longer watches its Owner.
     ///
-    /// A Repo the refresh recorded a source for is judged by that source alone:
-    /// read completely, its facts are all there even if a later page of its
-    /// Owner's list was lost. A Repo with no source of its own was read (or not)
-    /// as part of its Owner's list, so only a complete Owner says it is all there.
+    /// "Read completely" is [`Coverage::read_completely`]: a Repo the refresh
+    /// recorded a source for is judged by that source alone, any other by its
+    /// Owner's. The Landing Groups' "merged or closed" uses the same rule.
     fn keeps_repo_fact(&self, repo: &RepoId, kind: SourceKind) -> bool {
         if !self.owners.iter().any(|o| same_login(o, &repo.owner)) {
             return false;
         }
-        let repo = fold_repo(repo);
-        let owner_source = Source::Owner {
-            owner: repo.owner.clone(),
-            kind,
-        };
-        let repo_source = Source::Repo { repo, kind };
-        let read_completely = if self.recorded.contains(&repo_source) {
-            self.complete.contains(&repo_source)
-        } else {
-            self.complete.contains(&owner_source)
-        };
-        !read_completely
+        !self.coverage.read_completely(repo, kind)
     }
 
     /// Should an earlier fact read for `owner` by its `kind` source (a Linear
-    /// fact), absent from the refresh, be kept? Yes unless the refresh read that
-    /// source completely, or no longer reads for that Owner.
+    /// fact), absent from the refresh, be kept? Only when the refresh recorded
+    /// that source and could not read it completely: a source it read
+    /// completely has all its facts in the refresh, and one it didn't record
+    /// is no longer read at all.
     fn keeps_owner_fact(&self, owner: &str, kind: SourceKind) -> bool {
         if self.owner_as_watched(owner).is_none() {
             return false;
         }
-        !self.complete.contains(&Source::Owner {
-            owner: owner.to_ascii_lowercase(),
-            kind,
-        })
+        self.owner_source(owner, kind)
+            .is_some_and(|state| !state.is_complete())
+    }
+
+    /// How the refresh read `owner`'s `kind` source, if it recorded it.
+    /// Matched case-insensitively, as the config may spell an Owner either way.
+    fn owner_source(&self, owner: &str, kind: SourceKind) -> Option<&SourceState> {
+        self.coverage
+            .entries()
+            .iter()
+            .find_map(|e| match &e.source {
+                Source::Owner { owner: o, kind: k } if *k == kind && same_login(o, owner) => {
+                    Some(&e.state)
+                }
+                _ => None,
+            })
     }
 }
 
@@ -520,14 +537,6 @@ fn observed_at(previous: &CachedObservation, source: &Source) -> Timestamp {
     }
 }
 
-/// A Repo's case-insensitive identity.
-fn fold_repo(repo: &RepoId) -> RepoId {
-    RepoId::new(
-        repo.owner.to_ascii_lowercase(),
-        repo.name.to_ascii_lowercase(),
-    )
-}
-
 /// A source's case-insensitive identity.
 fn fold_source(source: &Source) -> Source {
     match source {
@@ -537,35 +546,8 @@ fn fold_source(source: &Source) -> Source {
             kind: *kind,
         },
         Source::Repo { repo, kind } => Source::Repo {
-            repo: fold_repo(repo),
+            repo: repo.folded(),
             kind: *kind,
-        },
-    }
-}
-
-/// A Work Item's identity with its Repo folded. Branch and workflow names stay
-/// as they are: git branch names are case-sensitive.
-fn fold_item(id: WorkItemId) -> WorkItemId {
-    match id {
-        WorkItemId::Issue { repo, number } => WorkItemId::Issue {
-            repo: fold_repo(&repo),
-            number,
-        },
-        WorkItemId::PullRequest { repo, number } => WorkItemId::PullRequest {
-            repo: fold_repo(&repo),
-            number,
-        },
-        WorkItemId::Branch { repo, name } => WorkItemId::Branch {
-            repo: fold_repo(&repo),
-            name,
-        },
-        WorkItemId::Run { repo, workflow } => WorkItemId::Run {
-            repo: fold_repo(&repo),
-            workflow,
-        },
-        WorkItemId::LinearIssue { owner, issue } => WorkItemId::LinearIssue {
-            owner: owner.to_ascii_lowercase(),
-            issue,
         },
     }
 }

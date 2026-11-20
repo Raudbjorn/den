@@ -26,9 +26,10 @@
 //! two policy switches have defaults, and those are the config's (on), not
 //! the policy type's (whose empty default changes nothing).
 
-use super::{Location, is_valid_login, location_of};
+use super::{Location, location_of};
 use crate::domain::{
-    LinearSourceKind, LinearWorkflowPolicy, RepoId, ReviewPolicy, StartPolicy, TeamRef, facts,
+    LinearSourceKind, LinearWorkflowPolicy, RepoId, ReviewPolicy, StartPolicy, TeamRef,
+    ids::{is_valid_login, is_valid_repo_name},
 };
 use serde::Deserialize;
 use std::{collections::BTreeMap, ops::Range};
@@ -40,8 +41,6 @@ const MAX_WORKSPACE_CHARS: usize = 64;
 const MAX_ENV_NAME_CHARS: usize = 128;
 /// den's bound on a Linear team key, in characters.
 const MAX_TEAM_KEY_CHARS: usize = 32;
-/// GitHub's longest Repo name, in characters.
-const MAX_REPO_NAME_CHARS: usize = 100;
 /// den's bound on a team slug, in characters.
 const MAX_TEAM_SLUG_CHARS: usize = 100;
 /// den's bound on a state name or Slack channel, in characters.
@@ -97,14 +96,7 @@ impl LinearWorkflow {
             review: Some(ReviewPolicy {
                 exact_head_approval: self.exact_head_approval,
                 comment_reviews_need_rereview: self.comment_reviews_need_rereview,
-                reviewers: self
-                    .reviewers
-                    .iter()
-                    .map(|reviewer| match reviewer {
-                        Reviewer::User(login) => facts::Reviewer::User(login.clone()),
-                        Reviewer::Team(team) => facts::Reviewer::Team(team.clone()),
-                    })
-                    .collect(),
+                reviewers: self.reviewers.clone(),
             }),
             held_repos: self.held_repos.clone(),
             release_state: self.release_state.clone(),
@@ -114,10 +106,12 @@ impl LinearWorkflow {
     /// The Linear sources this workflow reads, in survey order: always the
     /// viewer and its assigned issues; the team states when the workflow names
     /// a start team or a state to check against Linear; the start teams'
-    /// issues when it names a start team.
+    /// issues when it names a start team. Every Linear source den records
+    /// for the workflow comes from here, so one it no longer reads is dropped
+    /// from the cache (`CachedObservation::restricted_to_linear`).
     pub fn linear_sources(&self) -> Vec<LinearSourceKind> {
         let mut sources = vec![LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues];
-        if !self.start_teams.is_empty() || !self.state_names().is_empty() {
+        if !self.start_teams.is_empty() || self.state_names().next().is_some() {
             sources.push(LinearSourceKind::TeamStates);
         }
         if !self.start_teams.is_empty() {
@@ -128,23 +122,19 @@ impl LinearWorkflow {
 
     /// The state names the config gives (setting, name), to check against
     /// Linear's team states.
-    pub fn state_names(&self) -> Vec<(&'static str, &str)> {
+    pub fn state_names(&self) -> impl Iterator<Item = (&'static str, &str)> {
         [
             ("in_progress_state", self.in_progress_state.as_deref()),
             ("release_state", self.release_state.as_deref()),
         ]
         .into_iter()
         .filter_map(|(setting, name)| name.map(|n| (setting, n)))
-        .collect()
     }
 }
 
-/// A configured reviewer: a GitHub login or a team.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Reviewer {
-    User(String),
-    Team(TeamRef),
-}
+/// A configured reviewer is the domain's: a GitHub login or a team, parsed
+/// from `"login"` or `"org/team"` (`reviewer`).
+pub use crate::domain::facts::Reviewer;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -258,27 +248,55 @@ fn workflow(owner: &str, raw: RawLinearWorkflow, text: &str) -> Result<LinearWor
     })
 }
 
-/// Validates each entry and refuses duplicates (compared case-insensitively).
-fn unique<T: PartialEq>(
+/// Validates each entry and refuses duplicates. Entries are compared once
+/// validated, case-insensitively, so two spellings of one value (`api` and
+/// `acme/api`) are a duplicate too.
+fn unique<T: Folded>(
     entries: Vec<Spanned<String>>,
     field: &str,
     check: impl Fn(Spanned<String>) -> Result<T, Invalid>,
 ) -> Result<Vec<T>, Invalid> {
-    let mut seen: Vec<String> = Vec::new();
+    let mut seen: Vec<String> = Vec::with_capacity(entries.len());
     let mut values = Vec::with_capacity(entries.len());
     for entry in entries {
         let span = entry.span();
-        let folded = entry.get_ref().to_ascii_lowercase();
+        let written = entry.get_ref().clone();
+        let value = check(entry)?;
+        let folded = value.folded();
         if seen.contains(&folded) {
-            return Err((
-                span,
-                format!("{:?} is listed twice in `{field}`", entry.get_ref()),
-            ));
+            return Err((span, format!("{written:?} is listed twice in `{field}`")));
         }
         seen.push(folded);
-        values.push(check(entry)?);
+        values.push(value);
     }
     Ok(values)
+}
+
+/// A validated list entry's identity for the duplicate check: GitHub and
+/// Linear compare these names case-insensitively.
+trait Folded {
+    fn folded(&self) -> String;
+}
+
+impl Folded for String {
+    fn folded(&self) -> String {
+        self.to_ascii_lowercase()
+    }
+}
+
+impl Folded for RepoId {
+    fn folded(&self) -> String {
+        self.to_string().to_ascii_lowercase()
+    }
+}
+
+impl Folded for Reviewer {
+    fn folded(&self) -> String {
+        match self {
+            Self::User(login) => login.to_ascii_lowercase(),
+            Self::Team(team) => format!("{}/{}", team.org, team.slug).to_ascii_lowercase(),
+        }
+    }
 }
 
 fn workspace(value: Spanned<String>) -> Result<String, Invalid> {
@@ -351,13 +369,7 @@ fn repo(owner: &str, field: &str, value: Spanned<String>) -> Result<RepoId, Inva
             ),
         ));
     }
-    let ok = (1..=MAX_REPO_NAME_CHARS).contains(&name.chars().count())
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-        && name != "."
-        && name != "..";
-    if !ok {
+    if !is_valid_repo_name(name) {
         return Err((
             span,
             format!("{value:?} in `{field}` is not a Repo name (`name` or `{owner}/name`)"),

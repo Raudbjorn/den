@@ -2,17 +2,17 @@
 //! Request belongs to, or is possibly for; and a Linear Issue's members, each
 //! with its Repo, number, state, own Next Step and Job.
 
-use super::{State, jobs};
+use super::{State, detail::linear_issue, jobs};
 use crate::{
     app::view_model::{JobMarker, LandingDetail, LandingLine, RowLanding, SEPARATOR},
     decide::{
         Decision,
-        correlation::{Member, MemberStatus},
+        correlation::{Member, MemberStatus, PullRequestKey},
     },
-    domain::WorkItemId,
+    domain::{WorkItemId, facts::AttachmentsRead},
     handoff::live,
-    ordering::same_work_item,
 };
+use std::collections::HashMap;
 
 const LABEL: &str = "LANDING GROUP";
 
@@ -47,13 +47,24 @@ pub fn detail(state: &State<'_>, decision: &Decision) -> Option<LandingDetail> {
 
 fn issue_group(state: &State<'_>, decision: &Decision) -> LandingDetail {
     let landing = &decision.landing;
+    let decisions = pull_request_decisions(state.all_decisions, &landing.members);
     let mut lines: Vec<LandingLine> = landing
         .members
         .iter()
-        .map(|member| member_line(state, member))
+        .map(|member| member_line(state, &decisions, member))
         .collect();
-    if lines.is_empty() {
-        lines.push(plain("no Pull Request attached in Linear"));
+    // den never reads a partial attachment list as "no Pull Request", so
+    // the section agrees with the Explanation's "couldn't establish whether
+    // a PR exists".
+    match unread_attachments(state, decision) {
+        Some(why) if lines.is_empty() => lines.push(caution(&format!(
+            "den couldn't read all of its attachments in Linear ({why}): it can't tell whether a Pull Request is attached"
+        ))),
+        Some(why) => lines.push(caution(&format!(
+            "den couldn't read all of its attachments in Linear ({why}): more Pull Requests may be attached"
+        ))),
+        None if lines.is_empty() => lines.push(plain("no Pull Request attached in Linear")),
+        None => {}
     }
     let identifier = decision.item.reference();
     lines.extend(landing.hints.iter().map(|hint| {
@@ -69,25 +80,54 @@ fn issue_group(state: &State<'_>, decision: &Decision) -> LandingDetail {
     }
 }
 
+/// Why den didn't read every attachment of the decided Linear Issue, if it
+/// didn't. An issue missing from the Observation is unread too: den can't
+/// say its list is whole.
+fn unread_attachments(state: &State<'_>, decision: &Decision) -> Option<String> {
+    match linear_issue(state, &decision.item.id).map(|issue| &issue.attachments.read) {
+        Some(AttachmentsRead::Complete) => None,
+        Some(AttachmentsRead::Incomplete { why }) => Some(why.clone()),
+        None => Some("den has no record of them".to_owned()),
+    }
+}
+
+/// The members' own Decisions, by Pull Request: one pass over the
+/// Decisions per frame, however many members there are. The first one wins.
+fn pull_request_decisions<'d>(
+    all: &'d [Decision],
+    members: &[Member],
+) -> HashMap<PullRequestKey, &'d Decision> {
+    let mut decisions = HashMap::new();
+    if members.is_empty() {
+        return decisions;
+    }
+    for decision in all {
+        if let WorkItemId::PullRequest { repo, number } = &decision.item.id {
+            decisions
+                .entry(PullRequestKey::of(repo, *number))
+                .or_insert(decision);
+        }
+    }
+    decisions
+}
+
 /// `acme/api #4 · open · Merge · Live Job`.
-fn member_line(state: &State<'_>, member: &Member) -> LandingLine {
+fn member_line(
+    state: &State<'_>,
+    decisions: &HashMap<PullRequestKey, &Decision>,
+    member: &Member,
+) -> LandingLine {
     let id = member.pr.id();
     let mut parts = vec![member.reference(), member.status.describe()];
     if let MemberStatus::Open { .. } = member.status {
-        parts.push(own_next_step(state, &id));
+        let own = decisions.get(&PullRequestKey::of(&member.pr.repo, member.pr.number));
+        parts.push(own_next_step(own.copied()));
     }
     let job = live::most_telling(state.job_checks, &id).map(|c| jobs::marker(&c.state));
     if let Some(marker) = job {
         parts.push(job_words(marker).to_owned());
     }
-    if member.ambiguous() {
-        let others: Vec<&str> = member
-            .also_attached_to
-            .iter()
-            .map(|g| g.identifier.as_str())
-            .collect();
-        parts.push(format!("ambiguous, also attached to {}", others.join(", ")));
-    }
+    parts.extend(member.ambiguity());
     LandingLine {
         text: parts.join(&format!(" {SEPARATOR} ")),
         job,
@@ -96,20 +136,17 @@ fn member_line(state: &State<'_>, member: &Member) -> LandingLine {
 }
 
 /// The member's own Next Step, from its own Decision.
-fn own_next_step(state: &State<'_>, id: &WorkItemId) -> String {
-    state
-        .all_decisions
-        .iter()
-        .find(|d| same_work_item(&d.item.id, id))
-        .map_or_else(
-            || "its Decision isn't shown".to_owned(),
-            |d| match (d.next_step, &d.held_back) {
-                (Some(step), _) => format!("Next Step {}", step.label()),
-                // "lands with TEAM-1", "held for release" (#36, #37).
-                (None, Some(held)) => held.label(),
-                (None, None) => "no Next Step".to_owned(),
-            },
-        )
+fn own_next_step(own: Option<&Decision>) -> String {
+    own.map_or_else(
+        || "its Decision isn't shown".to_owned(),
+        |d| match (d.next_step, &d.held_back) {
+            (Some(step), _) => format!("Next Step {}", step.label()),
+            // As the list and the detail say it: "lands with TEAM-1", "held
+            // for release" (#36, #37).
+            (None, Some(held)) => held.label(),
+            (None, None) => "no Next Step".to_owned(),
+        },
+    )
 }
 
 fn job_words(marker: JobMarker) -> &'static str {
@@ -165,5 +202,12 @@ fn plain(text: &str) -> LandingLine {
         text: text.to_owned(),
         job: None,
         caution: false,
+    }
+}
+
+fn caution(text: &str) -> LandingLine {
+    LandingLine {
+        caution: true,
+        ..plain(text)
     }
 }

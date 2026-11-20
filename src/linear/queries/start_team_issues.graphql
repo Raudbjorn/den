@@ -4,7 +4,7 @@ query LinearStartTeamIssues(
   $filter: IssueFilter!
   $attachmentsPerIssue: Int!
 ) {
-  issues(first: $first, after: $after, orderBy: createdAt, filter: $filter) {
+  issues(first: $first, after: $after, sort: [{ createdAt: { order: Ascending } }], filter: $filter) {
     nodes {
       ...LinearIssueFields
     }

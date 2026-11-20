@@ -7,6 +7,7 @@ use super::{
 };
 use crate::{
     domain::{CoverageEntry, Incompleteness, Source, SourceState},
+    paging::{self, PagedService},
     ports::SurveyFailure,
 };
 use jiff::Timestamp;
@@ -205,82 +206,24 @@ impl<'a> Session<'a> {
     }
 }
 
-/// Tracks one paginated connection: pages read and the worst state so far.
-pub struct Pager {
-    pub cursor: Option<String>,
-    pages_read: u32,
-    state: SourceState,
+/// GitHub, as a paged service: lists of up to [`MAX_PAGES`] pages.
+pub struct GitHub;
+
+impl PagedService for GitHub {
+    const MAX_PAGES: u32 = MAX_PAGES;
+    const NAME: &'static str = "GitHub";
+    const LIST: &'static str = "list";
 }
 
+/// Tracks one paginated GitHub list (the shared [`paging::Pager`]).
+pub type Pager = paging::Pager<GitHub>;
+
 impl Pager {
-    pub fn new(cursor: Option<String>) -> Self {
-        Self {
-            cursor,
-            pages_read: 0,
-            state: SourceState::Complete,
-        }
-    }
-
-    /// False once [`MAX_PAGES`] pages were read; the bound is recorded as partial.
-    pub fn may_continue(&mut self) -> bool {
-        if self.pages_read < MAX_PAGES {
-            return true;
-        }
-        self.note(SourceState::Partial(Incompleteness::PaginationStopped {
-            pages_read: self.pages_read,
-            reason: format!("den reads at most {MAX_PAGES} pages per list"),
-        }));
-        false
-    }
-
-    /// A page arrived with this state.
-    pub fn page_read(&mut self, state: SourceState) {
-        self.pages_read += 1;
-        self.note(state);
-    }
-
-    /// A page was lost. After earlier pages, that makes the list partial.
-    pub fn page_lost(&mut self, state: SourceState) {
-        let state = match (self.pages_read, state) {
-            (0, state) => state,
-            (_, SourceState::Partial(Incompleteness::RateLimited { resets_at })) => {
-                SourceState::Partial(Incompleteness::RateLimited { resets_at })
-            }
-            (pages_read, state) => SourceState::Partial(Incompleteness::PaginationStopped {
-                pages_read,
-                reason: state.describe(),
-            }),
-        };
-        self.note(state);
-    }
-
-    pub fn note(&mut self, state: SourceState) {
-        let previous = std::mem::replace(&mut self.state, SourceState::Complete);
-        self.state = previous.worst(state);
-    }
-
-    /// Moves to the next page, or returns false when there is none.
-    pub fn advance(&mut self, has_next_page: bool, end_cursor: Option<String>) -> bool {
-        match (has_next_page, end_cursor) {
-            (true, Some(cursor)) => {
-                self.cursor = Some(cursor);
-                true
-            }
-            (true, None) => {
-                self.note(SourceState::Partial(Incompleteness::PaginationStopped {
-                    pages_read: self.pages_read,
-                    reason: "GitHub reported more pages but no cursor".to_owned(),
-                }));
-                false
-            }
-            (false, _) => false,
-        }
-    }
-
+    /// The list's coverage, as `source`.
     pub fn finish(self, source: Source) -> CoverageEntry {
         CoverageEntry {
             source,
-            state: self.state,
+            state: self.into_state(),
         }
     }
 }

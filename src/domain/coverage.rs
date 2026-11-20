@@ -77,11 +77,6 @@ impl SourceKind {
         }
     }
 
-    /// One of the Linear sources.
-    pub fn is_linear(self) -> bool {
-        matches!(self, Self::Linear(_))
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             Self::Repos => "Repos",
@@ -174,13 +169,41 @@ pub enum Incompleteness {
     /// The Owner's Repo list was not read completely, so Work Items in the
     /// Repos den missed may be missing too (whatever this kind's own fetch said).
     RepoListIncomplete { owner: String },
-    /// Linear's GraphQL response carried errors next to data.
-    LinearErrorsAlongsideData { errors: Vec<String> },
+    /// Linear's GraphQL responses carried errors next to data: the first
+    /// [`MAX_KEPT_LINEAR_ERRORS`] messages, and how many more there were
+    /// (counted, not kept, so one reply can't grow coverage, the cache or
+    /// the log without bound).
+    LinearErrorsAlongsideData {
+        errors: Vec<String>,
+        #[serde(default)]
+        more: usize,
+    },
     /// Linear's rate limit was hit; `resets_at` when Linear said.
     LinearRateLimited { resets_at: Option<Timestamp> },
 }
 
+/// The most Linear error messages one source keeps; the rest are counted.
+pub const MAX_KEPT_LINEAR_ERRORS: usize = 5;
+
 impl Incompleteness {
+    /// Linear's errors alongside data: the first [`MAX_KEPT_LINEAR_ERRORS`]
+    /// of `messages`, the rest counted with `more` (messages already dropped).
+    pub fn linear_errors(messages: impl IntoIterator<Item = String>, more: usize) -> Self {
+        let mut errors = Vec::new();
+        let mut dropped = more;
+        for message in messages {
+            if errors.len() < MAX_KEPT_LINEAR_ERRORS {
+                errors.push(message);
+            } else {
+                dropped = dropped.saturating_add(1);
+            }
+        }
+        Self::LinearErrorsAlongsideData {
+            errors,
+            more: dropped,
+        }
+    }
+
     /// Ranks reasons so that combining two keeps the more telling one: a rate
     /// limit (which also stops pagination, and says when it resets) over whole
     /// items missing (a stopped pagination, or a Repo list read only in part)
@@ -215,12 +238,15 @@ impl Incompleteness {
                 }
             }
             (
-                Self::LinearErrorsAlongsideData { mut errors },
-                Self::LinearErrorsAlongsideData { errors: more },
-            ) => {
-                errors.extend(more);
-                Self::LinearErrorsAlongsideData { errors }
-            }
+                Self::LinearErrorsAlongsideData { errors, more },
+                Self::LinearErrorsAlongsideData {
+                    errors: next,
+                    more: next_more,
+                },
+            ) => Self::linear_errors(
+                errors.into_iter().chain(next),
+                more.saturating_add(next_more),
+            ),
             (
                 Self::LinearRateLimited { resets_at: first },
                 Self::LinearRateLimited { resets_at: second },
@@ -263,14 +289,15 @@ impl Incompleteness {
                     "the Repo list of {owner} was not read completely, so some of its Repos may be missing"
                 )
             }
-            Self::LinearErrorsAlongsideData { errors } => match errors.as_slice() {
-                [] => "Linear returned errors alongside data".to_owned(),
-                [only] => format!("Linear returned an error alongside data: {only}"),
-                [first, rest @ ..] => format!(
-                    "Linear returned {} errors alongside data, first: {first}",
-                    rest.len() + 1
-                ),
-            },
+            Self::LinearErrorsAlongsideData { errors, more } => {
+                match (errors.as_slice(), errors.len().saturating_add(*more)) {
+                    ([], _) => "Linear returned errors alongside data".to_owned(),
+                    ([only], 1) => format!("Linear returned an error alongside data: {only}"),
+                    ([first, ..], total) => {
+                        format!("Linear returned {total} errors alongside data, first: {first}")
+                    }
+                }
+            }
             Self::LinearRateLimited {
                 resets_at: Some(at),
             } => format!("rate limited by Linear until {at}"),
@@ -435,6 +462,32 @@ impl Coverage {
     /// dropping an entry never changes another).
     pub fn retain(&mut self, keep: impl FnMut(&CoverageEntry) -> bool) {
         self.entries.retain(keep);
+    }
+
+    /// Whether den read every `kind` fact of `repo`: the one rule for "is a
+    /// fact of this Repo that den didn't see really gone?", shared by the
+    /// cache merge and the Landing Groups' "merged or closed".
+    ///
+    /// A Repo with a source of its own is judged by that source alone: read
+    /// completely, its facts are all there even if a later page of its
+    /// Owner's list was lost. A Repo without one was read (or not) as part of
+    /// its Owner's list, so only a complete Owner source says it is all
+    /// there. Matched case-insensitively, as GitHub names are.
+    pub fn read_completely(&self, repo: &RepoId, kind: SourceKind) -> bool {
+        let mut own = self.entries.iter().filter(|e| match &e.source {
+            Source::Repo { repo: r, kind: k } => *k == kind && r.same(repo),
+            _ => false,
+        });
+        if let Some(first) = own.next() {
+            return first.state.is_complete() && own.all(|e| e.state.is_complete());
+        }
+        let mut owner = self.entries.iter().filter(|e| match &e.source {
+            Source::Owner { owner, kind: k } => *k == kind && same_login(owner, &repo.owner),
+            _ => false,
+        });
+        owner
+            .next()
+            .is_some_and(|first| first.state.is_complete() && owner.all(|e| e.state.is_complete()))
     }
 
     /// The sources whose completeness bears on one Work Item: the viewer (for

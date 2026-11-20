@@ -19,7 +19,10 @@ pub mod linear;
 
 pub use linear::{LinearWorkflow, Reviewer};
 
-use crate::domain::Policies;
+use crate::domain::{
+    Policies,
+    ids::{MAX_LOGIN_CHARS, is_valid_login},
+};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -29,9 +32,6 @@ use std::{
     path::{Path, PathBuf},
 };
 use toml::Spanned;
-
-/// GitHub's longest login, in characters.
-const MAX_LOGIN_CHARS: usize = 39;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -230,14 +230,6 @@ fn absolute(path: Spanned<PathBuf>, what: &str) -> Result<PathBuf, (Range<usize>
             path.display().to_string()
         ),
     ))
-}
-
-pub(crate) fn is_valid_login(login: &str) -> bool {
-    let len = login.chars().count();
-    (1..=MAX_LOGIN_CHARS).contains(&len)
-        && login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-        && !login.starts_with('-')
-        && !login.ends_with('-')
 }
 
 pub(crate) fn location_of(text: &str, offset: usize) -> Location {

@@ -130,6 +130,37 @@ fn the_detail_shows_the_suggested_reviewers_of_a_workflow_pr_only() {
 }
 
 #[test]
+fn the_detail_says_when_the_suggested_reviewers_are_not_filtered_in_full() {
+    let mut harness = Harness::new(Ok(config()));
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("acme")
+        .repo("acme/api")
+        .pull_request(
+            pr("acme/api", 3)
+                .author(ME)
+                .passing("ci")
+                .approved()
+                .review_requests_truncated(),
+        )
+        .build()));
+    harness.start();
+    let view = select(&mut harness, "acme/api", "#3");
+    let facts = view
+        .detail
+        .content
+        .expect("selected")
+        .facts
+        .expect("a workflow section");
+    assert_eq!(
+        facts.lines,
+        [
+            "suggested reviewers: alice, team acme/backend",
+            "(may include someone already asked or approved: not every review request was read)",
+        ]
+    );
+}
+
+#[test]
 fn c_on_request_review_refuses_without_touching_the_workspace() {
     let mut harness = started();
     let view = select(&mut harness, "acme/api", "#2");

@@ -3,6 +3,11 @@
 //! Linear Workflow reach this module; every other PR keeps milestone 1's
 //! rules in the parent module.
 //!
+//! Reviews are judged against the head read in the same query as they were
+//! (`PrDetails::head_commit`). If that differs from the PR list's head (a
+//! push landed between the two queries), den can't tell which head they
+//! were on relative to the PR's facts, and treats the reviews as unread.
+//!
 //! Two of GitHub's review lists are read, per reviewer:
 //! - the **standing** review (`latestOpinionatedReviews`): the approval or
 //!   change request that still stands, and the commit it was given on;
@@ -14,21 +19,30 @@
 //!   standing approval given on the current head. With it off: GitHub's review
 //!   decision, as in milestone 1. A comment after an approval at the same head
 //!   doesn't withdraw it, as it doesn't on GitHub.
+//! - **Approved**, with exact-head approval on: a fresh approval, and GitHub's
+//!   own review decision not asking for more (not REVIEW_REQUIRED, not
+//!   CHANGES_REQUESTED). The switch tightens GitHub's decision; it never
+//!   replaces it, so a second required approval or a code owner's is still
+//!   asked for. With it off: GitHub's review decision, as in milestone 1.
 //! - **Awaiting re-review**: a user other than the author, not currently
-//!   requested and not a fresh approver, whose standing or latest review
-//!   requested changes on an older head, or whose latest review only commented
-//!   on an older head when comment reviews need re-review. A review whose
-//!   commit GitHub no longer has counts as on an older head.
+//!   requested, not a fresh approver and whose latest review of any kind is
+//!   not on the current head, whose standing or latest review requested
+//!   changes on an older head, or whose latest review only commented on an
+//!   older head when comment reviews need re-review. A review whose commit
+//!   GitHub no longer has counts as on an older head. Someone who has since
+//!   reviewed the current head has had the fresh look, even if their older
+//!   change request still stands on GitHub.
 //! - **Address review** holds on unresolved threads, or on changes requested
 //!   at the current head (by anyone); changes requested on an older head fall
-//!   through.
+//!   through. Changes requested at the current head also stop Merge.
 //! - **Suggested reviewers**: the configured reviewers plus those awaiting
-//!   re-review, minus fresh approvers, pending requests and the author.
+//!   re-review, minus fresh approvers, pending requests and the author. When
+//!   den didn't read all of the requests or reviews, the set says so.
 
-use super::{Approval, Finding, approval as github_approval, unresolved_threads};
+use super::{Approval, Finding, ReviewFindings, approval as github_approval, unresolved_threads};
 use crate::domain::{
-    ReviewPolicy, TeamRef,
-    facts::{ActorKind, PrDetails, PullRequest, Review, ReviewVerdict, Reviewer},
+    ReviewPolicy,
+    facts::{ActorKind, PrDetails, PullRequest, Review, ReviewDecision, ReviewVerdict, Reviewer},
     ids::same_login,
 };
 
@@ -38,16 +52,40 @@ const FRESH_LOOK: &str = "workflow policy: feedback given on an older head needs
 const COMMENTS: &str = "workflow policy: comment reviews need re-review";
 const AT_HEAD: &str = "workflow policy: only changes requested at the current head need addressing";
 const DELETED_ACCOUNT: &str = "a deleted account";
+const NOT_EVERY_REVIEW: &str = "not every review was read";
+const HEAD_MOVED: &str = "the PR's head moved while den read its reviews";
+const REVIEWS_NOT_READ: &str = "the reviews could not be read";
+
+/// The workflow's review findings for one PR.
+pub(super) fn assess(pr: &PullRequest, policy: &ReviewPolicy) -> ReviewFindings {
+    let review = WorkflowReview::assess(pr, policy);
+    let approval = review.approval();
+    let approved = review.approved_text(&approval);
+    ReviewFindings {
+        address_review: review.address_review(),
+        request_review: Some(review.request_review(&approval)),
+        merge: format!("{approved}, nobody awaiting re-review ({FRESH_LOOK})"),
+        approved,
+        merge_blockers: review.merge_blockers(),
+        notes: review.notes(),
+        suggested_reviewers_unread: review.suggested_unread(),
+        suggested_reviewers: Some(review.suggested),
+        approval,
+    }
+}
 
 /// What the workflow's review rules found for one PR.
-pub(super) struct WorkflowReview {
+struct WorkflowReview<'a> {
+    pr: &'a PullRequest,
     exact_head: bool,
-    /// The details query was read (checks, threads, requests and reviews).
-    details_read: bool,
-    /// Every standing review was read.
-    standing_complete: bool,
-    /// Every standing and every latest review was read.
-    reviews_complete: bool,
+    read: ReviewsRead,
+    suggested: Vec<Reviewer>,
+}
+
+/// What the PR's reviews say under the workflow; nothing when they were not
+/// read.
+#[derive(Default)]
+struct ReviewsRead {
     fresh_approvers: Vec<String>,
     /// Approvals that don't count with exact-head approval on, each saying why
     /// ("alice approved an older head").
@@ -58,9 +96,9 @@ pub(super) struct WorkflowReview {
     /// Who requested changes at the current head.
     changes_at_head: Vec<String>,
     /// Who requested changes on an older head and isn't awaiting re-review
-    /// (a bot, the author, or someone asked again).
+    /// (a bot, the author, someone asked again, or someone who has since
+    /// reviewed the current head).
     changes_earlier: Vec<String>,
-    suggested: Vec<Reviewer>,
 }
 
 /// A user whose feedback needs a fresh look.
@@ -69,88 +107,114 @@ struct Awaiting {
     commented_only: bool,
 }
 
-impl WorkflowReview {
-    pub(super) fn assess(pr: &PullRequest, policy: &ReviewPolicy) -> Self {
-        let Some(details) = &pr.details else {
+impl<'a> WorkflowReview<'a> {
+    fn assess(pr: &'a PullRequest, policy: &ReviewPolicy) -> Self {
+        let exact_head = policy.exact_head_approval;
+        let requests = pr
+            .details
+            .as_ref()
+            .map(|d| d.review_requests.items.as_slice());
+        let Some(details) = pr.details.as_ref().filter(|d| same_head(pr, d)) else {
             return Self {
-                exact_head: policy.exact_head_approval,
-                details_read: false,
-                standing_complete: false,
-                reviews_complete: false,
-                fresh_approvers: Vec::new(),
-                discounted: Vec::new(),
-                bot_discounted: false,
-                awaiting: Vec::new(),
-                changes_at_head: Vec::new(),
-                changes_earlier: Vec::new(),
-                suggested: suggested(&policy.reviewers, &[], pr, None),
+                pr,
+                exact_head,
+                read: ReviewsRead::default(),
+                suggested: suggested(&policy.reviewers, &[], pr, requests, &[]),
             };
         };
-        let read = Reading {
+        let reading = Reading {
             pr,
             details,
-            exact_head: policy.exact_head_approval,
+            exact_head,
         };
-        let fresh_approvers = read.fresh_approvers();
-        let (discounted, bot_discounted) = read.discounted(&fresh_approvers);
-        let awaiting = read.awaiting(&fresh_approvers, policy.comment_reviews_need_rereview);
-        let changes_earlier = read
+        let fresh_approvers = reading.fresh_approvers();
+        let (discounted, bot_discounted) = reading.discounted(&fresh_approvers);
+        let awaiting = reading.awaiting(&fresh_approvers, policy.comment_reviews_need_rereview);
+        let changes_earlier = reading
             .changes_requested(false)
             .into_iter()
             .filter(|login| !awaiting.iter().any(|a| same_login(&a.login, login)))
             .collect();
         let waiting_logins: Vec<String> = awaiting.iter().map(|a| a.login.clone()).collect();
         Self {
-            exact_head: policy.exact_head_approval,
-            details_read: true,
-            standing_complete: details.latest_reviews.complete,
-            reviews_complete: details.latest_reviews.complete
-                && details.latest_reviews_with_comments.complete,
-            changes_at_head: read.changes_requested(true),
-            changes_earlier,
+            pr,
+            exact_head,
             suggested: suggested(
                 &policy.reviewers,
                 &waiting_logins,
                 pr,
-                Some((details, &fresh_approvers)),
+                requests,
+                &fresh_approvers,
             ),
-            fresh_approvers,
-            discounted,
-            bot_discounted,
-            awaiting,
+            read: ReviewsRead {
+                changes_at_head: reading.changes_requested(true),
+                changes_earlier,
+                fresh_approvers,
+                discounted,
+                bot_discounted,
+                awaiting,
+            },
         }
     }
 
-    /// The suggested-reviewers set.
-    pub(super) fn suggested_reviewers(&self) -> Vec<Reviewer> {
-        self.suggested.clone()
+    /// Why not every standing review counts as read, if so.
+    fn standing_unread(&self) -> Option<&'static str> {
+        match &self.pr.details {
+            None => Some(REVIEWS_NOT_READ),
+            Some(details) if !same_head(self.pr, details) => Some(HEAD_MOVED),
+            Some(details) if !details.latest_reviews.complete => Some(NOT_EVERY_REVIEW),
+            Some(_) => None,
+        }
     }
 
-    /// Whether the PR is approved under the workflow: a fresh approval with
-    /// exact-head approval on, GitHub's review decision with it off.
-    pub(super) fn approval(&self, pr: &PullRequest) -> Approval {
+    /// Why not every standing and every latest review counts as read, if so.
+    fn reviews_unread(&self) -> Option<&'static str> {
+        self.standing_unread().or_else(|| {
+            self.pr
+                .details
+                .as_ref()
+                .is_some_and(|d| !d.latest_reviews_with_comments.complete)
+                .then_some(NOT_EVERY_REVIEW)
+        })
+    }
+
+    /// Whether the PR is approved under the workflow: with exact-head approval
+    /// on, a fresh approval that GitHub's own review decision doesn't
+    /// contradict; GitHub's review decision as in milestone 1 with it off.
+    fn approval(&self) -> Approval {
         if !self.exact_head {
-            return github_approval(pr);
+            return github_approval(self.pr);
         }
-        if !self.details_read {
-            return Approval::Unknown;
+        match (self.exact_head_approval(), github_decision(self.pr)) {
+            (Approval::NotApproved(ours), Approval::NotApproved(github)) => {
+                Approval::NotApproved(format!("{ours}; {github}"))
+            }
+            (Approval::NotApproved(why), _) | (_, Approval::NotApproved(why)) => {
+                Approval::NotApproved(why)
+            }
+            (Approval::Unknown, _) | (_, Approval::Unknown) => Approval::Unknown,
+            _ => Approval::Approved,
         }
-        if !self.fresh_approvers.is_empty() {
+    }
+
+    /// Whether some user approved at the current head.
+    fn exact_head_approval(&self) -> Approval {
+        if !self.read.fresh_approvers.is_empty() {
             return Approval::Approved;
         }
-        if !self.standing_complete {
+        if self.standing_unread().is_some() {
             return Approval::Unknown;
         }
         let mut policies = vec![EXACT_HEAD];
-        if self.bot_discounted {
+        if self.read.bot_discounted {
             policies.push(NO_BOTS);
         }
-        let why = if self.discounted.is_empty() {
+        let why = if self.read.discounted.is_empty() {
             format!("no approval at the current head ({})", policies.join("; "))
         } else {
             format!(
                 "no approval at the current head: {} ({})",
-                self.discounted.join(", "),
+                self.read.discounted.join(", "),
                 policies.join("; ")
             )
         };
@@ -159,11 +223,11 @@ impl WorkflowReview {
 
     /// "approved at the current head by alice (workflow policy: …)", or
     /// milestone 1's words when exact-head approval is off.
-    pub(super) fn approved_text(&self, approval: &Approval) -> String {
+    fn approved_text(&self, approval: &Approval) -> String {
         if self.exact_head {
             return format!(
                 "approved at the current head by {} ({EXACT_HEAD})",
-                self.fresh_approvers.join(", ")
+                self.read.fresh_approvers.join(", ")
             );
         }
         match approval {
@@ -172,27 +236,13 @@ impl WorkflowReview {
         }
     }
 
-    /// The review half of Merge's winning rule.
-    pub(super) fn merge_text(&self, approval: &Approval) -> String {
-        format!(
-            "{}, nobody awaiting re-review ({FRESH_LOOK})",
-            self.approved_text(approval)
-        )
-    }
-
     /// Address review: unresolved threads, or changes requested at the
     /// current head. Changes requested on an older head fall through.
-    pub(super) fn address_review(&self, pr: &PullRequest) -> Finding {
-        let Some(details) = &pr.details else {
+    fn address_review(&self) -> Finding {
+        let Some(details) = &self.pr.details else {
             return Finding::Unknown("review threads could not be read".to_owned());
         };
-        let mut reasons = Vec::new();
-        if !self.changes_at_head.is_empty() {
-            reasons.push(format!(
-                "changes requested at the current head by {} ({AT_HEAD})",
-                self.changes_at_head.join(", ")
-            ));
-        }
+        let mut reasons: Vec<String> = self.changes_at_head_text().into_iter().collect();
         reasons.extend(unresolved_threads(details));
         if !reasons.is_empty() {
             return Finding::Holds(reasons.join(", "));
@@ -200,16 +250,16 @@ impl WorkflowReview {
         if !details.threads_complete {
             return Finding::Unknown("not every review thread was read".to_owned());
         }
-        if !self.standing_complete {
-            return Finding::Unknown("not every review was read".to_owned());
+        if let Some(why) = self.standing_unread() {
+            return Finding::Unknown(why.to_owned());
         }
         Finding::No
     }
 
     /// Request review: no fresh approval, or someone awaiting re-review, and
     /// no review request pending.
-    pub(super) fn request_review(&self, pr: &PullRequest, approval: &Approval) -> Finding {
-        let Some(details) = &pr.details else {
+    fn request_review(&self, approval: &Approval) -> Finding {
+        let Some(details) = &self.pr.details else {
             return Finding::Unknown("review requests could not be read".to_owned());
         };
         let requests = &details.review_requests;
@@ -234,47 +284,71 @@ impl WorkflowReview {
                 "whether to ask for review, since approval could not be established".to_owned(),
             );
         }
-        if !self.reviews_complete {
-            return Finding::Unknown(
-                "not every review was read, so someone may be awaiting re-review".to_owned(),
-            );
+        if let Some(why) = self.reviews_unread() {
+            return Finding::Unknown(format!("{why}, so someone may be awaiting re-review"));
         }
         Finding::No
     }
 
     /// What stops Merge under the workflow, beyond milestone 1's blockers.
-    pub(super) fn merge_blockers(&self) -> Vec<String> {
+    fn merge_blockers(&self) -> Vec<String> {
+        let mut blockers: Vec<String> = self.changes_at_head_text().into_iter().collect();
         if let Some(awaiting) = self.awaiting_text() {
-            return vec![awaiting];
+            blockers.push(awaiting);
+        } else if let Some(why) = self.reviews_unread().filter(|_| self.pr.details.is_some()) {
+            blockers.push(format!("{why}, so someone may be awaiting re-review"));
         }
-        if self.details_read && !self.reviews_complete {
-            return vec![
-                "not every review was read, so someone may be awaiting re-review".to_owned(),
-            ];
-        }
-        Vec::new()
+        blockers
+    }
+
+    /// What den did not read that the suggested reviewers are filtered by
+    /// (review requests, and the reviews that say who approved and who is
+    /// awaiting re-review), if anything.
+    fn suggested_unread(&self) -> Option<String> {
+        let Some(details) = &self.pr.details else {
+            return Some("the review requests and reviews could not be read".to_owned());
+        };
+        let unread: Vec<&str> = [
+            (!details.review_requests.complete).then_some("not every review request was read"),
+            self.reviews_unread(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        (!unread.is_empty()).then(|| unread.join("; "))
+    }
+
+    /// "changes requested at the current head by bob (workflow policy: …)".
+    fn changes_at_head_text(&self) -> Option<String> {
+        let by = &self.read.changes_at_head;
+        (!by.is_empty()).then(|| {
+            format!(
+                "changes requested at the current head by {} ({AT_HEAD})",
+                by.join(", ")
+            )
+        })
     }
 
     /// Context that is no rule of its own: changes requested on an older head
     /// by someone not awaiting re-review.
-    pub(super) fn notes(&self) -> Vec<String> {
-        if self.changes_earlier.is_empty() {
+    fn notes(&self) -> Vec<String> {
+        if self.read.changes_earlier.is_empty() {
             return Vec::new();
         }
         vec![format!(
             "changes requested on an older head by {} ({AT_HEAD})",
-            self.changes_earlier.join(", ")
+            self.read.changes_earlier.join(", ")
         )]
     }
 
     /// "awaiting re-review: bob requested changes on an older head, carol
     /// commented on an older head, and neither was asked again (…)".
     fn awaiting_text(&self) -> Option<String> {
-        if self.awaiting.is_empty() {
+        let awaiting = &self.read.awaiting;
+        if awaiting.is_empty() {
             return None;
         }
-        let entries: Vec<String> = self
-            .awaiting
+        let entries: Vec<String> = awaiting
             .iter()
             .map(|a| {
                 let what = if a.commented_only {
@@ -286,10 +360,10 @@ impl WorkflowReview {
             })
             .collect();
         let mut policies = vec![FRESH_LOOK];
-        if self.awaiting.iter().any(|a| a.commented_only) {
+        if awaiting.iter().any(|a| a.commented_only) {
             policies.push(COMMENTS);
         }
-        let asked = if self.awaiting.len() == 1 {
+        let asked = if awaiting.len() == 1 {
             "and hasn't been asked again"
         } else {
             "and none has been asked again"
@@ -325,11 +399,21 @@ impl Reading<'_> {
     }
 
     fn requested(&self, login: &str) -> bool {
-        self.details
-            .review_requests
-            .items
-            .iter()
-            .any(|r| matches!(r, Reviewer::User(user) if same_login(user, login)))
+        requested(
+            &self.details.review_requests.items,
+            &Reviewer::User(login.to_owned()),
+        )
+    }
+
+    /// `login`'s latest review of any kind is on the current head.
+    fn looked_at_head(&self, login: &str) -> bool {
+        self.latest().iter().any(|review| {
+            review
+                .author
+                .as_deref()
+                .is_some_and(|author| same_login(author, login))
+                && self.at_head(review)
+        })
     }
 
     fn standing(&self) -> &[Review] {
@@ -399,6 +483,7 @@ impl Reading<'_> {
                 || self.is_author(login)
                 || self.requested(login)
                 || fresh.iter().any(|f| same_login(f, login))
+                || self.looked_at_head(login)
             {
                 continue;
             }
@@ -433,6 +518,23 @@ impl Reading<'_> {
     }
 }
 
+/// GitHub's own review decision, which exact-head approval tightens but never
+/// overrules: REVIEW_REQUIRED means branch protection wants an approval den's
+/// rules don't see (a second one, or a code owner's).
+fn github_decision(pr: &PullRequest) -> Approval {
+    match pr.review_decision {
+        ReviewDecision::Approved | ReviewDecision::NotRequired => Approval::Approved,
+        ReviewDecision::ReviewRequired => Approval::NotApproved(
+            "GitHub reports that a review is still required (for example a second approval or a code owner's)"
+                .to_owned(),
+        ),
+        ReviewDecision::ChangesRequested => {
+            Approval::NotApproved("GitHub reports changes requested".to_owned())
+        }
+        ReviewDecision::Unknown => Approval::Unknown,
+    }
+}
+
 fn push_login(logins: &mut Vec<String>, login: &str) {
     if !logins.iter().any(|l| same_login(l, login)) {
         logins.push(login.to_owned());
@@ -440,14 +542,14 @@ fn push_login(logins: &mut Vec<String>, login: &str) {
 }
 
 /// The configured reviewers plus those awaiting re-review, minus fresh
-/// approvers, pending requests and the author. `read` is `None` when the
-/// details (requests and reviews) could not be read: then only the author is
-/// taken out.
+/// approvers, pending requests and the author. `requests` is `None` when the
+/// review requests could not be read.
 fn suggested(
     configured: &[Reviewer],
     awaiting: &[String],
     pr: &PullRequest,
-    read: Option<(&PrDetails, &[String])>,
+    requests: Option<&[Reviewer]>,
+    fresh: &[String],
 ) -> Vec<Reviewer> {
     let candidates = configured
         .iter()
@@ -458,17 +560,16 @@ fn suggested(
         if suggested.iter().any(|s| same_reviewer(s, &candidate)) {
             continue;
         }
-        let excluded = match &candidate {
-            Reviewer::User(login) => {
-                pr.author
-                    .as_deref()
-                    .is_some_and(|author| same_login(author, login))
-                    || read.is_some_and(|(details, fresh)| {
-                        fresh.iter().any(|f| same_login(f, login)) || requested(details, &candidate)
-                    })
-            }
-            Reviewer::Team(_) => read.is_some_and(|(details, _)| requested(details, &candidate)),
-        };
+        let excluded = requests.is_some_and(|requests| requested(requests, &candidate))
+            || match &candidate {
+                Reviewer::User(login) => {
+                    pr.author
+                        .as_deref()
+                        .is_some_and(|author| same_login(author, login))
+                        || fresh.iter().any(|f| same_login(f, login))
+                }
+                Reviewer::Team(_) => false,
+            };
         if !excluded {
             suggested.push(candidate);
         }
@@ -476,22 +577,24 @@ fn suggested(
     suggested
 }
 
-fn requested(details: &PrDetails, reviewer: &Reviewer) -> bool {
+/// `reviewer` has a pending review request among `requests`.
+fn requested(requests: &[Reviewer], reviewer: &Reviewer) -> bool {
+    requests.iter().any(|r| same_reviewer(r, reviewer))
+}
+
+/// The details were read at the PR list's head, so their reviews' commits can
+/// be compared against it.
+fn same_head(pr: &PullRequest, details: &PrDetails) -> bool {
     details
-        .review_requests
-        .items
-        .iter()
-        .any(|r| same_reviewer(r, reviewer))
+        .head_commit
+        .as_deref()
+        .is_some_and(|head| head.eq_ignore_ascii_case(&pr.head_commit))
 }
 
 fn same_reviewer(a: &Reviewer, b: &Reviewer) -> bool {
     match (a, b) {
         (Reviewer::User(a), Reviewer::User(b)) => same_login(a, b),
-        (Reviewer::Team(a), Reviewer::Team(b)) => same_team(a, b),
+        (Reviewer::Team(a), Reviewer::Team(b)) => a.same(b),
         _ => false,
     }
-}
-
-fn same_team(a: &TeamRef, b: &TeamRef) -> bool {
-    same_login(&a.org, &b.org) && a.slug.eq_ignore_ascii_case(&b.slug)
 }

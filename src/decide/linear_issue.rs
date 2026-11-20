@@ -637,16 +637,8 @@ fn group_conditions(issue: &LinearIssue, landing: &Landing) -> Vec<String> {
                 member.reference(),
                 member.status.describe()
             );
-            if member.ambiguous() {
-                let others: Vec<&str> = member
-                    .also_attached_to
-                    .iter()
-                    .map(|g| g.identifier.as_str())
-                    .collect();
-                line.push_str(&format!(
-                    "; ambiguous, also attached to {}",
-                    others.join(", ")
-                ));
+            if let Some(ambiguity) = member.ambiguity() {
+                line.push_str(&format!("; {ambiguity}"));
             }
             line
         })

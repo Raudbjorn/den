@@ -91,7 +91,7 @@ fn reference(decision: &Decision) -> String {
     }
 }
 
-fn linear_issue<'s>(state: &State<'s>, id: &WorkItemId) -> Option<&'s LinearIssue> {
+pub(super) fn linear_issue<'s>(state: &State<'s>, id: &WorkItemId) -> Option<&'s LinearIssue> {
     let issue = id.linear_issue()?;
     state
         .observation?
@@ -124,7 +124,8 @@ fn linear_facts(issue: &LinearIssue) -> DetailFacts {
 
 /// A PR of an Owner with a Linear Workflow (#36): the hold, if any, and the
 /// suggested reviewers (configured plus awaiting re-review, minus fresh
-/// approvers, pending requests and the author).
+/// approvers, pending requests and the author), with what den did not read
+/// to filter them, if anything.
 fn workflow_facts(decision: &Decision) -> Option<DetailFacts> {
     let suggested = decision.suggested_reviewers.as_ref()?;
     let mut lines = Vec::new();
@@ -134,15 +135,14 @@ fn workflow_facts(decision: &Decision) -> Option<DetailFacts> {
     lines.push(if suggested.is_empty() {
         "suggested reviewers: none".to_owned()
     } else {
-        let names: Vec<String> = suggested
-            .iter()
-            .map(|reviewer| match reviewer {
-                Reviewer::User(login) => login.clone(),
-                Reviewer::Team(team) => format!("team {}/{}", team.org, team.slug),
-            })
-            .collect();
+        let names: Vec<String> = suggested.iter().map(Reviewer::label).collect();
         format!("suggested reviewers: {}", names.join(", "))
     });
+    if let Some(unread) = &decision.suggested_reviewers_unread {
+        lines.push(format!(
+            "(may include someone already asked or approved: {unread})"
+        ));
+    }
     Some(DetailFacts {
         label: "LINEAR WORKFLOW".to_owned(),
         lines,
