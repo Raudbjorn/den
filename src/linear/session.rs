@@ -5,7 +5,10 @@
 //! failed; no invented counts).
 
 use super::transport::{HttpReply, LinearRequest, LinearTransport};
-use crate::domain::{Incompleteness, SourceState, coverage::MAX_KEPT_LINEAR_ERRORS};
+use crate::{
+    domain::{Incompleteness, SourceState, coverage::MAX_KEPT_LINEAR_ERRORS},
+    ports::Clock,
+};
 use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -75,18 +78,19 @@ pub struct Session<'a> {
     transport: &'a dyn LinearTransport,
     /// The variable the key came from, to name in errors (never the key).
     key_env: &'a str,
-    now: Timestamp,
+    /// Read when a reply arrives: a `Retry-After` counts from then.
+    clock: &'a dyn Clock,
     /// Once Linear rate-limited this workflow: when it resets, if it said.
     /// Every later query is then recorded as rate limited without being sent.
     limited: Cell<Option<Option<Timestamp>>>,
 }
 
 impl<'a> Session<'a> {
-    pub fn new(transport: &'a dyn LinearTransport, key_env: &'a str, now: Timestamp) -> Self {
+    pub fn new(transport: &'a dyn LinearTransport, key_env: &'a str, clock: &'a dyn Clock) -> Self {
         Self {
             transport,
             key_env,
-            now,
+            clock,
             limited: Cell::new(None),
         }
     }
@@ -154,7 +158,7 @@ impl<'a> Session<'a> {
                 .iter()
                 .any(|e| e.code() == Some(RATE_LIMITED_CODE));
         if rate_limited {
-            self.limited.set(Some(resets_at(reply, self.now)));
+            self.limited.set(Some(resets_at(reply, self.clock.now())));
         }
         let refused = matches!(reply.status, HTTP_UNAUTHORIZED | HTTP_FORBIDDEN)
             || body

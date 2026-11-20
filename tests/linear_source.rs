@@ -28,10 +28,11 @@ use std::{
 };
 use support::{
     build::now,
-    fakes::{FixedClock, ScriptedLinear, SharedLinear},
+    fakes::{FixedClock, MovingClock, ScriptedLinear, SharedLinear},
     harness::linear_workflow,
     linear_replies::{
-        KEY, KEY_ENV, is_viewer, issue_node, issues_page, ok, reply, source, viewer_body,
+        KEY, KEY_ENV, is_viewer, issue_node, issues_page, ok, reply, source, source_with_clock,
+        viewer_body,
     },
 };
 
@@ -294,6 +295,32 @@ fn http_429_with_retry_after_is_partial_with_its_reset() {
         state(&survey, LinearSourceKind::AssignedIssues),
         SourceState::Partial(Incompleteness::LinearRateLimited {
             resets_at: Some(now() + SignedDuration::from_secs(90)),
+        })
+    );
+}
+
+#[test]
+fn retry_after_counts_from_when_the_reply_arrived() {
+    // Each call takes a while; the 429 arrives well after the survey began.
+    let call_time = SignedDuration::from_secs(15);
+    let clock = Arc::new(MovingClock(Mutex::new(now())));
+    let moved = clock.clone();
+    let transport = Arc::new(ScriptedLinear::new(move |request| {
+        moved.advance(call_time);
+        if is_viewer(request) {
+            return Ok(ok(viewer_body("acme")));
+        }
+        Ok(reply(
+            429,
+            json!({ "errors": [{ "message": "Too many requests" }] }),
+            &[("retry-after", "90")],
+        ))
+    }));
+    let survey = source_with_clock(transport, Arc::default(), clock).survey(&request());
+    assert_eq!(
+        state(&survey, LinearSourceKind::AssignedIssues),
+        SourceState::Partial(Incompleteness::LinearRateLimited {
+            resets_at: Some(now() + call_time * 2 + SignedDuration::from_secs(90)),
         })
     );
 }
