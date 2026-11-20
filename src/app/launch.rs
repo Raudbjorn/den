@@ -417,6 +417,18 @@ impl App {
                     effects = self.start_fresh(&mut sheet, check, &view);
                 }
             },
+            (Key::Enter, SheetState::ReopenReady { plan })
+                if plan.project_settings != self.reopen_settings(&plan.job) =>
+            {
+                let mut plan = plan.clone();
+                plan.project_settings = self.reopen_settings(&plan.job);
+                plan.command = handoff::command::display(&plan.window, &plan.window_command());
+                sheet.state = SheetState::ReopenReady { plan };
+                sheet.notice = Some(
+                    "Not reopened: project settings changed; check the command and press Enter again"
+                        .to_owned(),
+                );
+            }
             (Key::Enter, SheetState::ReopenReady { plan }) => {
                 let plan = plan.clone();
                 effects = vec![
