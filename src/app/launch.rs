@@ -395,31 +395,29 @@ impl App {
         let Some(decision) = self.decision_of(&sheet.item) else {
             return gone(sheet);
         };
-        if let Some(linear) = &sheet.linear {
-            if linear.repos.is_empty() {
-                let refusal = Refusal::one(RefusalReason::NoNewWorkRepos {
-                    owner: sheet.item.owner().to_owned(),
-                });
-                let log = refused_log(sheet.id, &sheet.item, &refusal);
-                sheet.state = SheetState::Refused(refusal);
-                return vec![log];
-            }
-            if linear.repo.is_none() {
-                sheet.state = SheetState::ChooseRepo;
-                return Vec::new();
-            }
-        }
         let settings =
             LaunchSettings::from_config(self.config.as_ref().ok(), self.default_clone_root.clone());
         sheet.launch_refused = None;
         let linear_repo = sheet.linear.as_ref().and_then(LinearLaunch::repo);
-        let request = match handoff::inspect_request(
-            decision,
-            observation,
-            sheet.choice,
-            &settings,
-            linear_repo,
-        ) {
+        let request = match &sheet.linear {
+            Some(linear) if linear.repos.is_empty() => {
+                Err(Refusal::one(RefusalReason::NoNewWorkRepos {
+                    owner: sheet.item.owner().to_owned(),
+                }))
+            }
+            Some(linear) if linear.repo.is_none() => {
+                sheet.state = SheetState::ChooseRepo;
+                return Vec::new();
+            }
+            _ => handoff::inspect_request(
+                decision,
+                observation,
+                sheet.choice,
+                &settings,
+                linear_repo,
+            ),
+        };
+        let request = match request {
             Ok(request) => Ok((
                 format!(
                     "launch sheet {} {what} for {}, targeting {}",

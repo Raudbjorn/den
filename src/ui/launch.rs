@@ -4,9 +4,9 @@
 //! When the sheet has more lines than rows, sections give way in this order:
 //! the fields' notes move onto their value's line, then go, then fields are cut,
 //! then the command, then the prompt, then a Request review's reviewers; the
-//! Work Item, its status, the messages (refusals, what a launch did) and the
-//! Linear writes (#38: one teal line each, above the command, never wrapped)
-//! stay.
+//! Work Item, its status and the Linear writes (#38: one teal line each,
+//! above the command, never wrapped) get space before the messages (refusals,
+//! evidence, what a launch did).
 
 use super::{
     Theme, UiError, glyphs, templates,
@@ -124,8 +124,8 @@ pub fn lines(sheet: &LaunchSheet, width: usize, rows: usize, glyphs: glyphs::Gly
     let spacer = || (String::new(), String::new(), LineStyle::Plain);
     let mut left = rows;
     let head = take(&head, usize::MAX, &mut left);
-    let messages = take(&messages, usize::MAX, &mut left);
     let linear_writes = take(&linear_writes, usize::MAX, &mut left);
+    let messages = take(&messages, usize::MAX, &mut left);
     let reviewers = take(&reviewers, REVIEWERS_MAX_ROWS, &mut left);
     let prompt = take(&prompt, PROMPT_MAX_ROWS, &mut left);
     let command = take(&command, COMMAND_MAX_ROWS, &mut left);

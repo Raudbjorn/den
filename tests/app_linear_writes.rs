@@ -16,7 +16,7 @@ mod support;
 use den::{
     app::{
         Effect, Event, Key,
-        view_model::{LaunchSheet, LaunchStatus, Overlay},
+        view_model::{LaunchSheet, LaunchStatus, Overlay, SheetMessage, Tone},
     },
     config::{Config, LinearWorkflow},
     domain::{
@@ -27,7 +27,7 @@ use den::{
         },
     },
     handoff::{BaseRef, BranchStart, LaunchPlan},
-    jobs::JobSubject,
+    jobs::{JobRecord, JobSubject},
     ports::{LinearIssueNow, LinearIssueRead, LinearSurvey, LinearWriteOutcome, MemberStatesRead},
 };
 use std::{collections::BTreeMap, path::PathBuf};
@@ -833,6 +833,47 @@ fn no_repos_for_new_work_refuses_without_touching_the_workspace() {
 }
 
 #[test]
+fn no_new_work_repos_keeps_an_existing_linear_job_reopenable() {
+    let mut empty = workflow(false);
+    empty.new_work_repos.clear();
+    let mut harness = started(empty);
+    let worktree = format!("{API_CLONE}/.claude/worktrees/implement-team-7");
+    let job = JobRecord {
+        subject: JobSubject::of(&team_7().work_item_id()),
+        next_step: NextStep::Implement,
+        target: RepoId::new("acme", "api"),
+        main_clone: API_CLONE.into(),
+        worktree: worktree.clone().into(),
+        branch: "implement-team-7".to_owned(),
+        session: "api-team-7-implement".to_owned(),
+        launched_at: support::build::now(),
+        permission_mode: None,
+    };
+    harness.jobs.holding(job.clone());
+    harness.workspace.add_existing(&worktree);
+    harness
+        .workspace
+        .register_worktree(API_CLONE, &worktree, Some(&job.branch));
+    harness.perform(&Effect::CheckJobs);
+
+    open(&mut harness, "TEAM-7");
+    assert_eq!(sheet(&harness).status, LaunchStatus::LiveJob);
+    assert!(messages(sheet(&harness)).contains("offers no Repos for new work"));
+    harness.settle(Event::Key(Key::Char('f')));
+    assert_eq!(sheet(&harness).status, LaunchStatus::LiveJob);
+    harness.settle(Event::Key(Key::Char('o')));
+    assert_eq!(sheet(&harness).status, LaunchStatus::ReopenReady);
+    assert_eq!(field(sheet(&harness), "WORKTREE").0, worktree);
+    enter(&mut harness);
+    assert_eq!(sheet(&harness).status, LaunchStatus::Reopened);
+    assert_eq!(harness.launcher.windows()[0].session, job.session);
+    assert_eq!(harness.jobs.records(), [job]);
+    assert!(launch_plans(&harness).is_empty());
+    assert!(harness.workspace.calls().is_empty());
+    assert!(!harness.effects.iter().any(is_linear));
+}
+
+#[test]
 fn an_unsafe_linear_branch_name_is_replaced_by_dens_own() {
     let mut harness = Harness::new(Ok(config(workflow(false))));
     harness.answer(Ok(ObservationBuilder::new()
@@ -913,6 +954,43 @@ fn the_linear_writes_are_drawn_as_text_on_both_sheets() {
     let text = drawn(&mut harness, (160, 45));
     assert!(text.contains("M A R K   F O R   R E L E A S E"), "{text}");
     assert!(text.contains("Linear: move TEAM-3"), "{text}");
+}
+
+#[test]
+fn release_evidence_cannot_hide_the_linear_write_preview() {
+    use den::ui::{Theme, frame};
+    use raudbjorn_tui::profile::{ColorProfile, GlyphProfile, TerminalProfile};
+
+    let mut harness = started(workflow(false));
+    open(&mut harness, "TEAM-3");
+    let evidence = (1..=100)
+        .map(|n| format!("acme/api#{n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let theme = Theme::new(TerminalProfile::new(
+        ColorProfile::Mono,
+        GlyphProfile::Unicode,
+    ))
+    .unwrap();
+    for (cols, rows) in [(160, 45), (80, 24)] {
+        harness.send(Event::Resized { cols, rows });
+        let mut view = harness.view.clone();
+        let Some(Overlay::LaunchSheet(sheet)) = &mut view.overlay else {
+            panic!("release sheet")
+        };
+        sheet.messages.push(SheetMessage {
+            text: format!("evidence: merged {evidence}"),
+            tone: Tone::Plain,
+        });
+        let buffer = frame::render(&theme, &view, cols, rows).unwrap();
+        let text = frame::buffer_text(&buffer);
+        assert!(text.contains("LINEAR"), "{text}");
+        assert!(text.contains("Linear: move TEAM-3"), "{text}");
+        assert!(
+            text.contains(RELEASE),
+            "the move destination stays visible: {text}"
+        );
+    }
 }
 
 #[test]
