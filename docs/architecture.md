@@ -19,15 +19,20 @@ config.toml ─► config ─► App::new
                            └───────────── Event::LinearSurveyFinished ◄── LinearSource::survey
                                                                      (linear: HTTPS GraphQL; only for
                                                                       Owners with a Linear Workflow)
-App, on Started:         Effect::LoadCache (before Effect::Survey) ─► Event::CacheLoaded ─► shown with its age
-App, on Started / `r`:   Effect::SurveyLinear (only when the config has Linear Workflows; before
-                         Effect::Survey, so its answer is in hand when GitHub's arrives)
+App, on Started:         Effect::LoadCache (before Effect::Survey) ─► Event::CacheLoaded ─► Linear part fitted
+                         to each Owner's Linear Workflow and workspace, missing Linear sources not yet
+                         fetched ─► shown with its age
+App, on Started / `r`:   Effect::SurveyLinear (only when the config has Linear Workflows) and
+                         Effect::Survey; the worker runs them concurrently, so either may answer first.
+                         Refused (queue full): every Linear source failed for that survey
 App, on LinearSurveyFinished: App.linear = the answer ─► spliced into shown (Linear part + Linear
-                         coverage) ─► decide again ─► Effect::StoreCache
+                         coverage) ─► decide again ─► Effect::StoreCache, unless the same survey's GitHub
+                         answer is still to come (it saves both; if it fails, the failure saves).
+                         Nothing shown and GitHub failed: shown alone (unknown GitHub viewer, never saved)
 App, on SurveyFinished:  cache::merge(shown, Observation) ─► App::with_linear (the latest Linear
                          answer, or Linear sources not yet fetched) ─► decide::decide_with(Observation,
                          Viewers::of(Observation), App.policies, upstreams, now) ─► ordering::order ─► view
-                         ─► Effect::StoreCache
+                         ─► Effect::StoreCache. Failed with nothing shown: Linear's answer alone, if any
 App, on `u` (sidebar, fork row): UpstreamTargets toggled ─► decide again ─► Effect::StoreUpstreams ─► Event::UpstreamsStored
 App, on `c` (launch):    handoff::inspect_request ─► Effect::InspectLaunch ─► handoff::inspect (Workspace,
                          Launcher, JobStore; reads only) ─► Event::LaunchInspected ─► handoff::plan (pure)
@@ -57,8 +62,9 @@ workflow markers. The policy is still empty for every Owner.
 
 `main` only wires: XDG paths, log, config, ports, and the terminal loop. The
 loop checks for a termination signal (SIGTERM, SIGHUP, SIGINT, SIGQUIT) before
-every input wait, so the terminal is always restored, and hands Effects to a background `runtime::Worker` thread so the UI stays
-responsive while `gh` runs; `den --dump COLSxROWS` and the tests use
+every input wait, so the terminal is always restored, and hands Effects to a background `runtime::Worker` so the UI stays
+responsive while `gh` runs. The worker has two lanes, one thread each: Linear surveys run on their own (so a hung
+Linear call never holds back GitHub's answer), everything else in order on the main lane; `den --dump COLSxROWS` and the tests use
 `runtime::settle`, which performs Effects synchronously through the same
 `ports::perform`.
 

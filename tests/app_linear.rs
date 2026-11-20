@@ -424,3 +424,207 @@ fn a_refresh_replaces_the_linear_part() {
     harness.settle(Event::Key(Key::Char('r')));
     assert_eq!(linear_rows(&harness), 0);
 }
+
+/// Performs `effects` in order, refusing each Linear survey as a full
+/// worker queue does.
+fn perform_refusing_linear(harness: &mut Harness, effects: Vec<Effect>) {
+    for effect in effects {
+        if matches!(effect, Effect::SurveyLinear { .. }) {
+            harness.send(Event::EffectRejected {
+                effect: Box::new(effect),
+                reason: "den is still busy with earlier requests; try again shortly".to_owned(),
+            });
+        } else {
+            harness.perform(&effect);
+        }
+    }
+}
+
+/// A refused Linear survey asked Linear nothing: its sources read as
+/// failed for that survey, never as the previous answer, complete.
+#[test]
+fn a_refused_linear_survey_reads_as_failed_not_as_the_last_answer() {
+    let mut harness = workflow_harness();
+    harness.answer(Ok(github_answer(&["acme", "octo"])));
+    harness.answer(Ok(github_answer(&["acme", "octo"])));
+    harness.linear.push_answer(linear_answer(Vec::new()));
+    harness.start();
+    assert!(
+        harness.view.header.coverage_complete,
+        "the first survey read everything"
+    );
+
+    let effects = harness.key(Key::Char('r'));
+    perform_refusing_linear(&mut harness, effects);
+
+    let header = &harness.view.header;
+    assert!(!header.coverage_complete, "{}", header.coverage);
+    assert!(
+        header.coverage.contains("assigned Linear Issues of acme")
+            && header.coverage.contains("could not ask Linear"),
+        "{}",
+        header.coverage
+    );
+    assert_eq!(harness.linear.requests().len(), 1, "Linear was asked once");
+}
+
+/// The cache's Linear facts are fitted to the Linear Workflows configured
+/// now, per Owner and workspace: an Owner whose workflow is gone, or names
+/// another workspace, loses its cached Linear Issues.
+#[test]
+fn the_cached_linear_part_is_fitted_to_each_owners_workflow() {
+    let cached = ObservationBuilder::new()
+        .fully_read_owner("acme")
+        .fully_read_owner("octo")
+        .fully_read_owner("ursa")
+        .linear_viewer("acme", "acme")
+        .linear_viewer("octo", "octo")
+        .linear_viewer("ursa", "ursa")
+        .linear_issue(linear_issue("acme", "id-1", "TEAM-1"))
+        .linear_issue(linear_issue("octo", "id-2", "TEAM-2").workspace("octo"))
+        .linear_issue(linear_issue("ursa", "id-3", "TEAM-3").workspace("ursa"))
+        .build();
+    // acme keeps its workflow; octo's is gone; ursa's names a new workspace.
+    let config = config_with_linear(
+        &["acme", "octo", "ursa"],
+        &[("acme", "acme"), ("ursa", "ursa-two")],
+    );
+    let mut harness = Harness::with_cache(
+        Ok(config),
+        support::fakes::FakeCache::holding(den::cache::CachedObservation::fresh(cached)),
+    );
+    let effects = harness.send(Event::Started { now: now() });
+    let load = effects
+        .iter()
+        .find(|e| matches!(e, Effect::LoadCache))
+        .expect("the cache is read");
+    harness.perform(load);
+
+    let shown: Vec<String> = harness
+        .view
+        .list
+        .rows
+        .iter()
+        .filter(|r| r.kind == WorkItemKind::LinearIssue)
+        .map(|r| r.reference.clone())
+        .collect();
+    assert_eq!(
+        shown,
+        vec!["TEAM-1".to_owned()],
+        "{:#?}",
+        harness.view.list.rows
+    );
+    let coverage = &harness.view.header.coverage;
+    assert!(!harness.view.header.coverage_complete, "{coverage}");
+    assert!(
+        coverage.contains("not fetched yet"),
+        "ursa's new workspace: {coverage}"
+    );
+}
+
+/// A Linear Workflow added since a complete GitHub-only cache was saved:
+/// until Linear answers, its sources are not yet fetched, so the cached
+/// Observation never says "Nothing needs you".
+#[test]
+fn a_new_linear_workflow_is_not_yet_fetched_in_a_github_only_cache() {
+    let cached = ObservationBuilder::new()
+        .fully_read_owner("acme")
+        .fully_read_owner("octo")
+        .build();
+    let mut harness = Harness::with_cache(
+        Ok(config_with_linear(&["acme", "octo"], &[("acme", "acme")])),
+        support::fakes::FakeCache::holding(den::cache::CachedObservation::fresh(cached)),
+    );
+    let effects = harness.send(Event::Started { now: now() });
+    let load = effects
+        .iter()
+        .find(|e| matches!(e, Effect::LoadCache))
+        .expect("the cache is read");
+    harness.perform(load);
+
+    let view = &harness.view;
+    assert!(!view.header.coverage_complete, "{}", view.header.coverage);
+    assert!(
+        view.header.coverage.contains("not fetched yet"),
+        "{}",
+        view.header.coverage
+    );
+    assert_ne!(
+        view.list.empty.as_ref().expect("empty").title,
+        "Nothing needs you."
+    );
+}
+
+fn not_logged_in() -> den::ports::SurveyFailure {
+    den::ports::SurveyFailure::NotLoggedIn {
+        detail: "gh auth status: not logged in".to_owned(),
+    }
+}
+
+/// On a first run (nothing cached), Linear's answer shows even when the
+/// GitHub survey fails, whichever answers first; it is never saved (the
+/// cache is per GitHub viewer, and den doesn't know who that is).
+#[test]
+fn linear_issues_show_when_the_first_github_survey_fails() {
+    for github_first in [false, true] {
+        let mut harness = workflow_harness();
+        harness.answer(Err(not_logged_in()));
+        harness.linear.push_answer(linear_answer(vec![
+            linear_issue("acme", "id-7", "TEAM-7").build(),
+        ]));
+        let mut effects = harness.send(Event::Started { now: now() });
+        if github_first {
+            effects.sort_by_key(|e| matches!(e, Effect::SurveyLinear { .. }));
+        }
+        for effect in effects {
+            harness.perform(&effect);
+        }
+
+        let view = &harness.view;
+        let linear_rows: Vec<&str> = view
+            .list
+            .rows
+            .iter()
+            .filter(|r| r.kind == WorkItemKind::LinearIssue)
+            .map(|r| r.reference.as_str())
+            .collect();
+        assert_eq!(linear_rows, vec!["TEAM-7"], "github first: {github_first}");
+        assert!(!view.header.coverage_complete);
+        assert!(
+            view.header.status.contains("not logged in"),
+            "{}",
+            view.header.status
+        );
+        assert!(harness.cache.stored().is_empty(), "nothing saved");
+    }
+}
+
+/// One refresh writes the cache once: Linear's answer, when GitHub's is
+/// still to come, is saved with it. If that GitHub survey fails, the
+/// failure saves the Linear answer instead.
+#[test]
+fn a_refresh_saves_the_cache_once() {
+    let mut harness = workflow_harness();
+    harness.answer(Ok(github_answer(&["acme", "octo"])));
+    harness.answer(Ok(github_answer(&["acme", "octo"])));
+    harness.answer(Err(not_logged_in()));
+    harness.linear.push_answer(linear_answer(Vec::new()));
+    harness.linear.push_answer(linear_answer(Vec::new()));
+    harness.linear.push_answer(linear_answer(vec![
+        linear_issue("acme", "id-7", "TEAM-7").build(),
+    ]));
+    harness.start();
+    assert_eq!(harness.cache.stored().len(), 1);
+
+    harness.settle(Event::Key(Key::Char('r')));
+    assert_eq!(harness.cache.stored().len(), 2, "one write for the refresh");
+
+    harness.settle(Event::Key(Key::Char('r')));
+    let stored = harness.cache.stored();
+    assert_eq!(
+        stored.len(),
+        3,
+        "the failed refresh saved Linear's answer once"
+    );
+    assert_eq!(stored[2].observation.linear.issues.len(), 1);
+}
