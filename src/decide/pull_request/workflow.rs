@@ -36,7 +36,8 @@
 //!   at the current head (by anyone); changes requested on an older head fall
 //!   through. Changes requested at the current head also stop Merge.
 //! - **Suggested reviewers**: the configured reviewers plus those awaiting
-//!   re-review, minus fresh approvers, pending requests and the author.
+//!   re-review, minus fresh approvers, pending requests and the author. When
+//!   den didn't read all of the requests or reviews, the set says so.
 
 use super::{Approval, Finding, ReviewFindings, approval as github_approval, unresolved_threads};
 use crate::domain::{
@@ -67,6 +68,7 @@ pub(super) fn assess(pr: &PullRequest, policy: &ReviewPolicy) -> ReviewFindings 
         approved,
         merge_blockers: review.merge_blockers(),
         notes: review.notes(),
+        suggested_reviewers_unread: review.suggested_unread(),
         suggested_reviewers: Some(review.suggested),
         approval,
     }
@@ -296,6 +298,23 @@ impl<'a> WorkflowReview<'a> {
             blockers.push(format!("{why}, so someone may be awaiting re-review"));
         }
         blockers
+    }
+
+    /// What den did not read that the suggested reviewers are filtered by
+    /// (review requests, and the reviews that say who approved and who is
+    /// awaiting re-review), if anything.
+    fn suggested_unread(&self) -> Option<String> {
+        let Some(details) = &self.pr.details else {
+            return Some("the review requests and reviews could not be read".to_owned());
+        };
+        let unread: Vec<&str> = [
+            (!details.review_requests.complete).then_some("not every review request was read"),
+            self.reviews_unread(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        (!unread.is_empty()).then(|| unread.join("; "))
     }
 
     /// "changes requested at the current head by bob (workflow policy: …)".

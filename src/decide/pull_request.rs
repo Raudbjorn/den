@@ -97,6 +97,9 @@ struct ReviewFindings {
     notes: Vec<String>,
     /// Who to ask on Request review ([`Decision::suggested_reviewers`]).
     suggested_reviewers: Option<Vec<Reviewer>>,
+    /// What den did not read to filter them
+    /// ([`Decision::suggested_reviewers_unread`]).
+    suggested_reviewers_unread: Option<String>,
 }
 
 impl ReviewFindings {
@@ -125,6 +128,7 @@ impl ReviewFindings {
             merge_blockers: Vec::new(),
             notes: Vec::new(),
             suggested_reviewers: None,
+            suggested_reviewers_unread: None,
         }
     }
 }
@@ -147,7 +151,14 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         merge_blockers: review_blockers,
         notes: review_notes,
         suggested_reviewers,
+        suggested_reviewers_unread,
     } = ReviewFindings::assess(pr, policy.review.as_ref());
+    // Every Decision below carries the suggested reviewers, whatever its step.
+    let with_reviewers = move |mut decision: Decision| {
+        decision.suggested_reviewers = suggested_reviewers;
+        decision.suggested_reviewers_unread = suggested_reviewers_unread;
+        decision
+    };
     let merge_blockers = merge_blockers(pr, &approval, review_blockers);
     let mut rules = vec![
         (NextStep::FinishDraft, draft(pr)),
@@ -207,7 +218,7 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
     unknowns.dedup();
 
     let Some((index, step, why)) = winner else {
-        let mut decision = Decision::new(
+        let decision = Decision::new(
             ctx,
             item,
             None,
@@ -219,8 +230,7 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
                 ..Explanation::default()
             },
         );
-        decision.suggested_reviewers = suggested_reviewers;
-        return decision;
+        return with_reviewers(decision);
     };
     let not_ruled_out: Vec<String> = rules[..index]
         .iter()
@@ -256,10 +266,9 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
             },
         );
         decision.held_back = Some(held);
-        decision.suggested_reviewers = suggested_reviewers;
-        return decision;
+        return with_reviewers(decision);
     }
-    let mut decision = Decision::new(
+    with_reviewers(Decision::new(
         ctx,
         item,
         Some(step),
@@ -270,9 +279,7 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
             unknowns,
             ..Explanation::default()
         },
-    );
-    decision.suggested_reviewers = suggested_reviewers;
-    decision
+    ))
 }
 
 /// The one place a PR that would Merge is held back instead (spec 0002:

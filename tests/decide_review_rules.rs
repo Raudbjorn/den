@@ -521,6 +521,52 @@ fn suggested_reviewers_are_configured_plus_awaiting_minus_approvers_requests_and
 }
 
 #[test]
+fn suggested_reviewers_say_when_den_could_not_filter_them_in_full() {
+    let user = |login: &str| Reviewer::User(login.to_owned());
+    let policies = Policies::default().with(
+        "acme",
+        workflow(BOTH_ON, vec![user("alice"), user("bob")], &[]),
+    );
+    // alice approved at the head, so she is out once den reads that.
+    let pr = || ready(21).review_at_head("alice", ReviewVerdict::Approved);
+
+    let exact = decided(pr(), &policies);
+    assert_eq!(exact.suggested_reviewers, Some(vec![user("bob")]));
+    assert_eq!(exact.suggested_reviewers_unread, None);
+
+    // Nothing read: only the author is taken out, and the set says so.
+    let unread = decided(pr().details_unread(), &policies);
+    assert_eq!(
+        unread.suggested_reviewers,
+        Some(vec![user("alice"), user("bob")])
+    );
+    assert_eq!(
+        unread.suggested_reviewers_unread.as_deref(),
+        Some("the review requests and reviews could not be read")
+    );
+
+    let cases = [
+        (
+            pr().review_requests_truncated(),
+            "not every review request was read",
+        ),
+        (pr().reviews_truncated(), "not every review was read"),
+        (
+            pr().details_read_at(NEWER_HEAD),
+            "the PR's head moved while den read its reviews",
+        ),
+    ];
+    for (pr, unread) in cases {
+        let decision = decided(pr, &policies);
+        assert_eq!(
+            decision.suggested_reviewers_unread.as_deref(),
+            Some(unread),
+            "{decision:#?}"
+        );
+    }
+}
+
+#[test]
 fn the_same_facts_under_an_owner_without_a_workflow_give_milestone_1_decisions() {
     // The same PRs under `acme` (with a workflow) and `octo` (without one).
     let deck = |owner: &str| -> Vec<PrBuilder> {
@@ -583,6 +629,7 @@ fn the_same_facts_under_an_owner_without_a_workflow_give_milestone_1_decisions()
     );
     for decision in octo(&with) {
         assert_eq!(decision.suggested_reviewers, None);
+        assert_eq!(decision.suggested_reviewers_unread, None);
         assert_eq!(decision.held_back, None);
     }
     // Under acme's workflow the same facts decide differently.
