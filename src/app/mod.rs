@@ -674,18 +674,9 @@ impl App {
 /// source (until #34 merges Linear per source, den never keeps Linear facts
 /// across surveys, so no Linear data is older than its survey).
 fn without_linear(shown: &mut CachedObservation) {
-    let is_linear = |source: &Source| {
-        matches!(
-            source,
-            Source::Owner {
-                kind: SourceKind::Linear(_),
-                ..
-            }
-        )
-    };
     shown.observation.linear = Default::default();
-    shown.observation.coverage.retain(|e| !is_linear(&e.source));
-    shown.carried.retain(|c| !is_linear(&c.source));
+    shown.observation.coverage.retain(|e| !e.source.is_linear());
+    shown.carried.retain(|c| !c.source.is_linear());
 }
 
 fn linear_log(id: SurveyId, survey: &LinearSurvey) -> Effect {

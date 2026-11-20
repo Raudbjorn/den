@@ -72,11 +72,6 @@ impl SourceKind {
         }
     }
 
-    /// One of the Linear sources.
-    pub fn is_linear(self) -> bool {
-        matches!(self, Self::Linear(_))
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             Self::Repos => "Repos",
@@ -116,6 +111,17 @@ impl Source {
             }
             _ => false,
         }
+    }
+
+    /// One of an Owner's Linear sources.
+    pub fn is_linear(&self) -> bool {
+        matches!(
+            self,
+            Self::Owner {
+                kind: SourceKind::Linear(_),
+                ..
+            }
+        )
     }
 
     pub fn label(&self) -> String {
