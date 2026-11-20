@@ -342,3 +342,51 @@ fn a_default_branch_that_moved_before_cloning_is_reported_and_nothing_is_cloned(
     assert!(report.done.is_empty());
     assert!(!root.join("app").exists());
 }
+
+#[test]
+fn a_pr_on_the_default_branch_can_launch_from_a_clone_created_for_it() {
+    let (temp, root, url, tip) = hosted_repo();
+    let mut plan = clone_plan(&root, &url, &tip);
+    plan.work_item = WorkItemId::PullRequest {
+        repo: RepoId::new("octo", "app"),
+        number: 7,
+    };
+    plan.base.reference = BaseRef::HeadBranch("main".into());
+    plan.branch = JobBranch {
+        name: "main".into(),
+        start: BranchStart::New {
+            tracking: "origin/main".into(),
+        },
+    };
+    plan.worktree = handoff::worktree_path(&plan.main_clone.path, "main");
+    let launcher = RecordingLauncher::default();
+    let jobs = FileJobStore::new(temp.path().join("state/jobs.json"));
+    let report = handoff::execute(
+        &plan,
+        &GitWorkspace::new(),
+        &launcher,
+        &jobs,
+        "2026-11-20T10:00:00Z".parse().unwrap(),
+    );
+    assert!(
+        matches!(report.outcome, LaunchOutcome::Launched { .. }),
+        "{report:?}"
+    );
+    assert_eq!(git(&plan.worktree, &["rev-parse", "HEAD"]), tip);
+    assert_eq!(
+        git(
+            &plan.worktree,
+            &["rev-parse", "--abbrev-ref", "@{upstream}"]
+        ),
+        "origin/main"
+    );
+    assert_eq!(
+        git(
+            &plan.main_clone.path,
+            &["rev-parse", "--abbrev-ref", "HEAD"]
+        ),
+        "HEAD"
+    );
+    assert_eq!(launcher.windows.lock().unwrap().len(), 1);
+    assert_eq!(jobs.load().unwrap().len(), 1);
+}

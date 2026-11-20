@@ -72,6 +72,18 @@ responsive while `gh` runs; `den --dump COLSxROWS` and the tests use
 
 ## Where each ticket plugs in
 
+Launch verification refuses to reuse a PR or Branch's local branch unless its
+configured Git upstream is the selected remote and head branch. A restricted
+fetch mapping (for example, a single-branch clone) gains the specific mapping
+needed by a new tracking branch; existing mappings are retained. If cloning for
+a launch already created the requested branch, execution verifies its commit
+and tracking, detaches only that newly created Main Clone, and reuses the branch
+in the Job worktree. No branch or clone is deleted.
+
+Job history appends must fit the same byte limit as reads; an oversized append
+leaves the previous file intact. CLI prompts are validated before the editor
+can truncate them, and prompt wrapping and cursor scrolling use terminal cells.
+
 | Ticket | Adds / edits |
 |---|---|
 | #4 PR rules, Explanation, Waiting On | `domain/facts/pull_request.rs` (mergeability, checks, reviews, queue), `github/queries/pull_request_facts.graphql` + `github/pull_requests.rs`, `decide/pull_request.rs`, `tests/support/build/pull_request.rs`, its seam-1 deck. |

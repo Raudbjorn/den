@@ -218,3 +218,28 @@ fn an_upstream_target_reads_as_upstream_in_monochrome_on_the_sheet_and_in_the_si
         );
     }
 }
+
+#[test]
+fn wide_prompts_wrap_and_keep_the_edit_cursor_visible_at_the_minimum_size() {
+    use den::app::view_model::Overlay;
+    for (profile, cursor_glyph) in [(GlyphProfile::Unicode, "▏"), (GlyphProfile::Ascii, "|")] {
+        for count in [40, 400] {
+            let mut harness = sheet_open((80, 24));
+            let Some(Overlay::LaunchSheet(sheet)) = &mut harness.view.overlay else {
+                panic!("sheet");
+            };
+            let prompt = sheet.prompt.as_mut().expect("prompt");
+            prompt.text = "界".repeat(count);
+            prompt.cursor = count;
+            prompt.editing = true;
+            let theme =
+                Theme::new(TerminalProfile::new(ColorProfile::Mono, profile)).expect("theme");
+            let rendered =
+                frame::buffer_text(&frame::render(&theme, &harness.view, 80, 24).expect("render"));
+            assert!(rendered.contains(cursor_glyph), "{rendered}");
+            if count == 40 && profile == GlyphProfile::Unicode {
+                assert_eq!(rendered.matches('界').count(), count, "{rendered}");
+            }
+        }
+    }
+}

@@ -218,7 +218,8 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     let mut writable = Writability::Unknown("not inspected".to_owned());
     match &found {
         Some((clone, remote)) if matches!(clone.source, CloneSource::ToClone { .. }) => {
-            // A fresh clone has no worktrees and no local branches yet.
+            // Execution reuses the branch if cloning creates it, detaching
+            // only the Main Clone created by this launch before worktree add.
             writable = clone.writable.clone();
             branch_start = Some(new_branch_start(&facts, remote));
         }

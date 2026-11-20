@@ -282,6 +282,45 @@ impl Workspace for GitWorkspace {
         }))
     }
 
+    fn check_tracking(
+        &self,
+        clone: &Path,
+        branch: &str,
+        remote: &str,
+        remote_branch: &str,
+    ) -> Result<(), WorkspaceError> {
+        let operation = || format!("check the upstream of {branch}");
+        for (setting, expected) in [
+            ("remote", remote.to_owned()),
+            ("merge", format!("refs/heads/{remote_branch}")),
+        ] {
+            let output = self.run(
+                &self.git(clone).args([
+                    "config",
+                    "--get-all",
+                    &format!("branch.{branch}.{setting}"),
+                ]),
+                operation,
+                GIT_TIMEOUT_SECS,
+            )?;
+            if !output.status.success() && output.status.code() != Some(1) {
+                return Err(WorkspaceError {
+                    operation: operation(),
+                    detail: failure_detail(&output),
+                });
+            }
+            if !output.status.success() || output.stdout_text() != expected {
+                return Err(WorkspaceError {
+                    operation: operation(),
+                    detail: format!(
+                        "the branch must track {remote}/{remote_branch}; its {setting} is not {expected:?}; tracking was not changed"
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn worktrees(&self, clone: &Path) -> Result<Vec<RegisteredWorktree>, WorkspaceError> {
         let invocation = self.git(clone).args(["worktree", "list", "--porcelain"]);
         let output = self.run_ok(
@@ -312,11 +351,80 @@ impl Workspace for GitWorkspace {
             )
         };
         let invocation = match &add.start {
-            WorktreeStart::NewBranchTracking { start } => self
-                .git(clone)
-                .args(["worktree", "add", "--track", "-b", add.branch.as_str()])
-                .arg(&add.path)
-                .arg(start),
+            WorktreeStart::NewBranchTracking { start }
+            | WorktreeStart::ClonedBranchTracking { start } => {
+                let remote = start
+                    .strip_prefix("refs/remotes/")
+                    .and_then(|r| r.strip_suffix(&format!("/{}", add.branch)))
+                    .ok_or_else(|| WorkspaceError {
+                        operation: operation(),
+                        detail: "the tracking ref does not name the Job's branch".to_owned(),
+                    })?;
+                let remote = checked_remote(remote, operation)?;
+                // Explicit fetches do not extend a single-branch clone's mapping.
+                let mapping = format!("+refs/heads/{}:{start}", add.branch);
+                let mappings = self.run(
+                    &self.git(clone).args([
+                        "config",
+                        "--get-all",
+                        &format!("remote.{remote}.fetch"),
+                    ]),
+                    operation,
+                    GIT_TIMEOUT_SECS,
+                )?;
+                if !mappings.status.success() && mappings.status.code() != Some(1) {
+                    return Err(WorkspaceError {
+                        operation: operation(),
+                        detail: failure_detail(&mappings),
+                    });
+                }
+                let wildcard = format!("+refs/heads/*:refs/remotes/{remote}/*");
+                if !mappings
+                    .stdout_text()
+                    .lines()
+                    .any(|m| m == mapping || m == wildcard)
+                {
+                    self.run_ok(
+                        &self.git(clone).args([
+                            "remote",
+                            "set-branches",
+                            "--add",
+                            remote,
+                            &add.branch,
+                        ]),
+                        operation,
+                        GIT_TIMEOUT_SECS,
+                    )?;
+                }
+                let existing = if matches!(add.start, WorktreeStart::ClonedBranchTracking { .. }) {
+                    self.resolve(clone, &format!("refs/heads/{}", add.branch))?
+                } else {
+                    None
+                };
+                if let Some(commit) = existing {
+                    if self.resolve(clone, start)?.as_ref() != Some(&commit) {
+                        return Err(WorkspaceError {
+                            operation: operation(),
+                            detail: "the cloned branch differs from the fetched head".to_owned(),
+                        });
+                    }
+                    self.check_tracking(clone, &add.branch, remote, &add.branch)?;
+                    self.run_ok(
+                        &self.git(clone).args(["switch", "--detach"]),
+                        operation,
+                        GIT_TIMEOUT_SECS,
+                    )?;
+                    self.git(clone)
+                        .args(["worktree", "add"])
+                        .arg(&add.path)
+                        .arg(&add.branch)
+                } else {
+                    self.git(clone)
+                        .args(["worktree", "add", "--track", "-b", add.branch.as_str()])
+                        .arg(&add.path)
+                        .arg(start)
+                }
+            }
             WorktreeStart::ExistingBranch => self
                 .git(clone)
                 .args(["worktree", "add"])

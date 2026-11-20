@@ -95,6 +95,14 @@ pub trait Workspace: Send + Sync {
     /// The commit `reference` (a full ref name such as `refs/heads/x`) points
     /// at in the clone; `Ok(None)` when it doesn't exist.
     fn resolve(&self, clone: &Path, reference: &str) -> Result<Option<String>, WorkspaceError>;
+    /// Refuses reuse unless the branch tracks the selected remote and branch.
+    fn check_tracking(
+        &self,
+        clone: &Path,
+        branch: &str,
+        remote: &str,
+        remote_branch: &str,
+    ) -> Result<(), WorkspaceError>;
     /// The commit `branch` points at on `remote` right now (asks the remote,
     /// changes nothing locally); `Ok(None)` when the remote has no such branch.
     fn remote_branch_head(
@@ -146,6 +154,9 @@ pub struct WorktreeAdd {
 pub enum WorktreeStart {
     /// Create `branch` at `start` (a remote-tracking ref), tracking it.
     NewBranchTracking { start: String },
+    /// Like NewBranchTracking, but a clone just created by this launch may
+    /// already have this branch checked out; detach that clone and reuse it.
+    ClonedBranchTracking { start: String },
     /// Check out the existing local `branch`.
     ExistingBranch,
     /// Create `branch` at `start` tracking nothing: a new `<type>_<slug>`
