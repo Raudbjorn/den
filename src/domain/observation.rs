@@ -16,6 +16,14 @@ pub struct TeamRef {
     pub slug: String,
 }
 
+impl TeamRef {
+    /// The same team on GitHub, whose organization logins and team slugs are
+    /// case-insensitive.
+    pub fn same(&self, other: &TeamRef) -> bool {
+        same_login(&self.org, &other.org) && self.slug.eq_ignore_ascii_case(&other.slug)
+    }
+}
+
 /// Who is looking: Waiting On "me" means this login, or a team it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Viewer {
@@ -29,34 +37,35 @@ impl Viewer {
     }
 
     pub fn belongs_to(&self, team: &TeamRef) -> bool {
-        self.teams
-            .iter()
-            .any(|t| same_login(&t.org, &team.org) && t.slug.eq_ignore_ascii_case(&team.slug))
+        self.teams.iter().any(|t| t.same(team))
     }
 }
 
 /// Everyone den decides "me" by: the GitHub viewer, and the Linear viewer of
 /// each Linear Workflow's workspace. A Linear viewer is never matched to a
 /// GitHub login (spec 0002, "Waiting On").
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Viewers {
-    pub github: Viewer,
+///
+/// It borrows the viewers from where they are recorded (the Observation), so
+/// deciding copies nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Viewers<'a> {
+    pub github: &'a Viewer,
     /// One per workspace whose Linear viewer den read.
-    pub linear: Vec<LinearViewer>,
+    pub linear: &'a [LinearViewer],
 }
 
-impl Viewers {
+impl<'a> Viewers<'a> {
     /// The viewers an Observation recorded: its GitHub viewer and the Linear
     /// viewers in its Linear part.
-    pub fn of(observation: &Observation) -> Self {
+    pub fn of(observation: &'a Observation) -> Self {
         Self {
-            github: observation.viewer.clone(),
-            linear: observation.linear.viewers.clone(),
+            github: &observation.viewer,
+            linear: &observation.linear.viewers,
         }
     }
 
     /// The Linear viewer of `workspace`, if den read it.
-    pub fn linear(&self, workspace: &str) -> Option<&LinearViewer> {
+    pub fn linear(&self, workspace: &str) -> Option<&'a LinearViewer> {
         self.linear
             .iter()
             .find(|v| v.workspace.eq_ignore_ascii_case(workspace))

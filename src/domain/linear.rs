@@ -47,12 +47,3 @@ impl LinearViewer {
         self.id == id
     }
 }
-
-impl LinearPart {
-    /// The Linear viewer of `workspace`, if den read it.
-    pub fn viewer(&self, workspace: &str) -> Option<&LinearViewer> {
-        self.viewers
-            .iter()
-            .find(|v| v.workspace.eq_ignore_ascii_case(workspace))
-    }
-}

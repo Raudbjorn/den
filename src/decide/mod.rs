@@ -87,6 +87,12 @@ pub struct Decision {
     /// every other Work Item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_reviewers: Option<Vec<Reviewer>>,
+    /// Set when [`Self::suggested_reviewers`] could not be filtered in full,
+    /// saying what den did not read ("not every review request was read"):
+    /// someone listed may already have approved or been asked. `None` when
+    /// the set is exact, and for every Work Item without suggested reviewers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_reviewers_unread: Option<String>,
 }
 
 /// Why a PR that would Merge has no Next Step (spec 0002: "would Merge" is
@@ -127,6 +133,7 @@ impl Decision {
             observed_at: ctx.observation.observed_at,
             held_back: None,
             suggested_reviewers: None,
+            suggested_reviewers_unread: None,
         }
     }
 }
@@ -134,7 +141,7 @@ impl Decision {
 /// Everything a kind's rules may look at.
 pub struct Context<'a> {
     pub observation: &'a Observation,
-    pub viewers: &'a Viewers,
+    pub viewers: &'a Viewers<'a>,
     /// Each Owner's Linear Workflow policy; read it through [`Context::policy`].
     pub policies: &'a Policies,
     pub now: Timestamp,

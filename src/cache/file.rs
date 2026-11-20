@@ -34,7 +34,8 @@ pub const CACHE_SUBDIR: &str = "cache";
 /// 6: the Linear part holds Linear viewers and Linear Issues, and coverage
 /// has Linear incompleteness reasons (#32).
 /// 7: a PR's reviews carry their commit and their author's kind of account,
-/// and a PR has its latest reviews of any kind, comments included (#36).
+/// a PR has its latest reviews of any kind, comments included, and its
+/// details carry the head they were read at (#36).
 pub const CACHE_FORMAT: u32 = 7;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
@@ -210,9 +211,16 @@ impl FileCache {
     }
 
     /// When the Observation already stored at `path` was made; `None` when there
-    /// is none, or it can't be read (an unreadable file is overwritten anyway).
+    /// is none, or it can't be read (an unreadable file is overwritten anyway),
+    /// or it is an older format, which no den of this format reads again: its
+    /// age must not keep a survey from replacing it (after a clock change, say).
+    /// A newer format's age still counts: that is a newer den's survey.
     fn stored_observed_at(&self, path: &Path) -> Option<Timestamp> {
         let bytes = self.read_bounded(path).ok()??;
+        let format = serde_json::from_slice::<FormatOnly>(&bytes).ok()?.format;
+        if format < CACHE_FORMAT {
+            return None;
+        }
         serde_json::from_slice::<StoredAge>(&bytes)
             .ok()
             .map(|stored| stored.cached.observation.observed_at)

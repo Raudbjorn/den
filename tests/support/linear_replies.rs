@@ -6,7 +6,10 @@ use super::{
     build::now,
     fakes::{FixedClock, ScriptedLinear, SharedLinear},
 };
-use den::linear::{ApiKey, HttpReply, LinearApi, LinearRequest};
+use den::{
+    linear::{ApiKey, HttpReply, LinearApi, LinearRequest},
+    ports::Clock,
+};
 use serde_json::{Value, json};
 use std::{
     ffi::OsString,
@@ -70,12 +73,21 @@ pub fn is_viewer(request: &LinearRequest) -> bool {
 /// A Linear source whose env has [`KEY`] under [`KEY_ENV`], whose transport
 /// is `transport`, and which records every key it was asked to connect with.
 pub fn source(transport: Arc<ScriptedLinear>, keys: Arc<Mutex<Vec<String>>>) -> LinearApi {
+    source_with_clock(transport, keys, Arc::new(FixedClock(now())))
+}
+
+/// [`source`], reading the time from `clock`.
+pub fn source_with_clock(
+    transport: Arc<ScriptedLinear>,
+    keys: Arc<Mutex<Vec<String>>>,
+    clock: Arc<dyn Clock>,
+) -> LinearApi {
     LinearApi::with(
         Box::new(|name| (name == KEY_ENV).then(|| OsString::from(KEY))),
         Box::new(move |key: ApiKey| {
             keys.lock().unwrap().push(key.expose().to_owned());
             Box::new(SharedLinear(transport.clone()))
         }),
-        Arc::new(FixedClock(now())),
+        clock,
     )
 }

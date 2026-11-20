@@ -172,6 +172,30 @@ fn a_linear_issue_keeps_its_identity_when_it_moves_between_teams() {
     assert!(!same_work_item(&id_before, &elsewhere));
 }
 
+/// A Linear Issue's Owner folds like a login (#44's identity rules in
+/// `domain/ids.rs`); its workspace and Linear's ID are compared as they are.
+/// `same` and `folded` agree.
+#[test]
+fn a_linear_issue_is_the_same_under_another_casing_of_its_owner() {
+    let issue = |owner: &str, id: &str| WorkItemId::LinearIssue {
+        owner: owner.to_owned(),
+        issue: LinearIssueId::new("acme", id),
+    };
+    let (lower, upper, other) = (
+        issue("acme", "id-1"),
+        issue("ACME", "id-1"),
+        issue("acme", "ID-1"),
+    );
+    assert!(lower.same(&upper) && same_work_item(&upper, &lower));
+    assert_eq!(lower.folded(), upper.folded());
+    assert!(!lower.same(&other));
+    assert_ne!(lower.folded(), other.folded());
+    assert!(!lower.same(&WorkItemId::Issue {
+        repo: den::domain::RepoId::new("acme", "id-1"),
+        number: 1
+    }));
+}
+
 /// A Linear Issue's coverage is its Owner's Linear sources; the GitHub
 /// viewer doesn't bear on it, and its sources don't bear on GitHub items.
 #[test]

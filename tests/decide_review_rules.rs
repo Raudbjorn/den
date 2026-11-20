@@ -14,12 +14,13 @@ use den::{
     domain::{
         LinearWorkflowPolicy, NextStep, Observation, Policies, ReviewPolicy, TeamRef, Viewers,
         WaitingOn,
-        facts::{ReviewVerdict, Reviewer},
+        facts::{MergeState, ReviewDecision, ReviewVerdict, Reviewer},
     },
 };
 use support::build::{ME, ObservationBuilder, PrBuilder, now, pr, repo_id};
 
 const OLDER_HEAD: &str = "0ld0000000000000000000000000000000000000";
+const NEWER_HEAD: &str = "9e0000000000000000000000000000000000000f";
 const EXACT_HEAD: &str = "workflow policy: approval must be at the current head";
 
 struct Switches {
@@ -312,6 +313,114 @@ fn the_author_replying_on_an_older_head_is_not_awaiting_re_review() {
 }
 
 #[test]
+fn a_fresh_approval_github_still_wants_more_review_for_is_request_review() {
+    // Branch protection wants a second approval (or a code owner's): GitHub's
+    // decision stays REVIEW_REQUIRED and its merge state BLOCKED. The
+    // workflow's switches tighten approval; they don't overrule GitHub.
+    let decision = decided(
+        ready(17)
+            .decision(ReviewDecision::ReviewRequired)
+            .merge_state(MergeState::Blocked)
+            .review_at_head("alice", ReviewVerdict::Approved),
+        &acme(BOTH_ON),
+    );
+    assert_eq!(
+        decision.next_step,
+        Some(NextStep::RequestReview),
+        "{decision:#?}"
+    );
+    assert_says(
+        &decision,
+        &["GitHub reports that a review is still required"],
+    );
+
+    // GitHub's decision unread (a response with errors): not known approved.
+    let unread = decided(
+        ready(17)
+            .decision(ReviewDecision::Unknown)
+            .review_at_head("alice", ReviewVerdict::Approved),
+        &acme(BOTH_ON),
+    );
+    assert_ne!(unread.next_step, Some(NextStep::Merge), "{unread:#?}");
+    assert_says(&unread, &["approval could not be established"]);
+}
+
+#[test]
+fn changes_requested_at_the_current_head_also_stop_merge() {
+    // No branch protection, so GitHub gives no decision and reports CLEAN.
+    let decision = decided(
+        ready(18)
+            .no_review_required()
+            .review_at_head("alice", ReviewVerdict::Approved)
+            .review_at_head("bob", ReviewVerdict::ChangesRequested),
+        &acme(BOTH_ON),
+    );
+    assert_eq!(decision.next_step, Some(NextStep::AddressReview));
+    let merge_holds = decision
+        .explanation
+        .other_conditions
+        .iter()
+        .any(|c| c.contains("mergeable into"));
+    assert!(!merge_holds, "Merge must not hold: {decision:#?}");
+}
+
+#[test]
+fn a_reviewer_who_since_commented_on_the_current_head_is_not_awaiting_re_review() {
+    // bob asked for changes, the author pushed, and bob commented on the new
+    // head without approving: he has looked, so asking him again is redundant.
+    let pr = || {
+        ready(19)
+            .review_at_head("alice", ReviewVerdict::Approved)
+            .review_on("bob", ReviewVerdict::ChangesRequested, OLDER_HEAD)
+            .review_at_head("bob", ReviewVerdict::Commented)
+    };
+    let policies = Policies::default().with(
+        "acme",
+        workflow(BOTH_ON, vec![Reviewer::User("carol".to_owned())], &[]),
+    );
+
+    // No branch protection: his older change request no longer stops Merge.
+    let unprotected = decided(pr().no_review_required(), &policies);
+    assert_eq!(
+        unprotected.next_step,
+        Some(NextStep::Merge),
+        "{unprotected:#?}"
+    );
+    assert_says(&unprotected, &["changes requested on an older head by bob"]);
+    assert_eq!(
+        unprotected.suggested_reviewers,
+        Some(vec![Reviewer::User("carol".to_owned())])
+    );
+
+    // Branch protection: GitHub still counts his change request, and says so.
+    let protected = decided(pr().changes_requested(), &policies);
+    assert_eq!(protected.next_step, Some(NextStep::RequestReview));
+    assert_says(&protected, &["GitHub reports changes requested"]);
+    for decision in [&unprotected, &protected] {
+        let text = format!("{} {:?}", why(decision), decision.explanation);
+        assert!(!text.contains("awaiting re-review: bob"), "{text}");
+    }
+}
+
+#[test]
+fn reviews_read_after_a_push_are_not_judged_against_the_listed_head() {
+    // The PR list read the head 0x14; someone pushed before the details
+    // query, which read the new head with alice's approval of 0x14 still
+    // standing. That approval must not count as fresh.
+    let decision = decided(
+        ready(20)
+            .review_at_head("alice", ReviewVerdict::Approved)
+            .details_read_at(NEWER_HEAD),
+        &acme(BOTH_ON),
+    );
+    assert_ne!(decision.next_step, Some(NextStep::Merge), "{decision:#?}");
+    assert_says(
+        &decision,
+        &["the PR's head moved while den read its reviews"],
+    );
+}
+
+#[test]
 fn reviews_den_could_not_read_never_give_merge() {
     let unread = decided(ready(12).details_unread(), &acme(BOTH_ON));
     assert_ne!(unread.next_step, Some(NextStep::Merge));
@@ -412,6 +521,52 @@ fn suggested_reviewers_are_configured_plus_awaiting_minus_approvers_requests_and
 }
 
 #[test]
+fn suggested_reviewers_say_when_den_could_not_filter_them_in_full() {
+    let user = |login: &str| Reviewer::User(login.to_owned());
+    let policies = Policies::default().with(
+        "acme",
+        workflow(BOTH_ON, vec![user("alice"), user("bob")], &[]),
+    );
+    // alice approved at the head, so she is out once den reads that.
+    let pr = || ready(21).review_at_head("alice", ReviewVerdict::Approved);
+
+    let exact = decided(pr(), &policies);
+    assert_eq!(exact.suggested_reviewers, Some(vec![user("bob")]));
+    assert_eq!(exact.suggested_reviewers_unread, None);
+
+    // Nothing read: only the author is taken out, and the set says so.
+    let unread = decided(pr().details_unread(), &policies);
+    assert_eq!(
+        unread.suggested_reviewers,
+        Some(vec![user("alice"), user("bob")])
+    );
+    assert_eq!(
+        unread.suggested_reviewers_unread.as_deref(),
+        Some("the review requests and reviews could not be read")
+    );
+
+    let cases = [
+        (
+            pr().review_requests_truncated(),
+            "not every review request was read",
+        ),
+        (pr().reviews_truncated(), "not every review was read"),
+        (
+            pr().details_read_at(NEWER_HEAD),
+            "the PR's head moved while den read its reviews",
+        ),
+    ];
+    for (pr, unread) in cases {
+        let decision = decided(pr, &policies);
+        assert_eq!(
+            decision.suggested_reviewers_unread.as_deref(),
+            Some(unread),
+            "{decision:#?}"
+        );
+    }
+}
+
+#[test]
 fn the_same_facts_under_an_owner_without_a_workflow_give_milestone_1_decisions() {
     // The same PRs under `acme` (with a workflow) and `octo` (without one).
     let deck = |owner: &str| -> Vec<PrBuilder> {
@@ -474,6 +629,7 @@ fn the_same_facts_under_an_owner_without_a_workflow_give_milestone_1_decisions()
     );
     for decision in octo(&with) {
         assert_eq!(decision.suggested_reviewers, None);
+        assert_eq!(decision.suggested_reviewers_unread, None);
         assert_eq!(decision.held_back, None);
     }
     // Under acme's workflow the same facts decide differently.

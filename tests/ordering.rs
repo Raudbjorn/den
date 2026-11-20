@@ -62,6 +62,7 @@ fn decision(
         observed_at: ts(support::build::NOW),
         held_back: None,
         suggested_reviewers: None,
+        suggested_reviewers_unread: None,
     }
 }
 
