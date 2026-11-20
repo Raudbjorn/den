@@ -41,6 +41,12 @@ pub struct RunBuilder {
 }
 
 impl RunBuilder {
+    /// The workflow's display name (by default its file name without `.yml`).
+    pub fn named(mut self, name: &str) -> Self {
+        self.run.workflow_name = name.to_owned();
+        self
+    }
+
     pub fn failed(self) -> Self {
         self.concluded(RunConclusion::Failure)
     }

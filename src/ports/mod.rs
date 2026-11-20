@@ -105,7 +105,15 @@ pub trait Workspace: Send + Sync {
     fn fetch(&self, clone: &Path, remote: &str, refspec: &str) -> Result<(), WorkspaceError>;
     /// Adds a worktree to the clone.
     fn add_worktree(&self, clone: &Path, add: &WorktreeAdd) -> Result<(), WorkspaceError>;
-    // #12 adds `clone_repo` (into a folder that doesn't exist yet).
+    /// The commit `branch` points at in the Repo at `url` right now, asked
+    /// without a clone (for a Repo den is about to clone); `Ok(None)` when it
+    /// has no such branch.
+    fn url_branch_head(&self, url: &str, branch: &str) -> Result<Option<String>, WorkspaceError>;
+    /// Clones the Repo at `url` into `into`, a folder that must not exist yet:
+    /// the adapter refuses rather than clone into anything already there. The
+    /// clone's remote for `url` is named `remote`, whatever the user's git
+    /// config would name it, so the fetch that follows finds it.
+    fn clone_repo(&self, url: &str, remote: &str, into: &Path) -> Result<(), WorkspaceError>;
 }
 
 /// A worktree to add: where, on which branch, starting how.
@@ -122,6 +130,9 @@ pub enum WorktreeStart {
     NewBranchTracking { start: String },
     /// Check out the existing local `branch`.
     ExistingBranch,
+    /// Create `branch` at `start` tracking nothing (a new `<type>_<slug>`
+    /// branch must not track the default branch it starts from).
+    NewBranch { start: String },
 }
 
 /// A Workspace operation that failed: what den tried, and what went wrong.

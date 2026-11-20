@@ -4,7 +4,7 @@
 //!
 //! ```toml
 //! address_review = "/gh-resolve {url}"
-//! fix_ci = "/diagnosing-bugs CI fails on {url} (branch {branch}). Find out why and fix it."
+//! fix_ci = "/diagnosing-bugs CI fails on {url}; you are on {branch}. Find out why and fix it."
 //! ```
 //!
 //! Placeholders: `{repo}` (`owner/name`), `{number}`, `{url}`, `{title}`,
@@ -39,7 +39,7 @@ pub fn default_template(step: NextStep) -> &'static str {
         NextStep::AddressReview => "/gh-resolve {url}",
         NextStep::Review => "/code-review {url}",
         NextStep::FixCi => {
-            "/diagnosing-bugs CI is failing for {url} (branch {branch}). Find out why and fix it."
+            "/diagnosing-bugs CI is failing for {url}. You are on branch {branch}. Find out why and fix it."
         }
         NextStep::Implement => "/implement {url}",
         NextStep::Triage => "/triage {url}",

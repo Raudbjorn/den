@@ -315,7 +315,7 @@ fn finished_log(id: LaunchId, report: &LaunchReport) -> Effect {
         LaunchOutcome::HeadMoved { from, to } => (
             LogLevel::Warn,
             format!(
-                "the PR head moved from {} to {}; asking again",
+                "the base moved from {} to {}; asking again",
                 short_commit(from),
                 short_commit(to)
             ),

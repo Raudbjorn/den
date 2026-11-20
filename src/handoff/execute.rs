@@ -1,11 +1,12 @@
-//! Carrying out a confirmed LaunchPlan, step by step: re-verify, fetch, add the
-//! worktree, open the window (or copy the command), record the Job. It stops at
+//! Carrying out a confirmed LaunchPlan, step by step: re-verify, clone the Main
+//! Clone when there is none yet, fetch, add the worktree, open the window (or
+//! copy the command), record the Job. It stops at
 //! the first failure and reports what was already done. It never undoes an
 //! earlier step by deleting anything.
 
 use super::{
-    BranchStart, LaunchPlan, PathState, Refusal, RefusalReason, WindowMode, check_prompt, clone,
-    command, short_commit,
+    BranchStart, CloneSource, LaunchPlan, PathState, Refusal, RefusalReason, WindowMode,
+    check_prompt, clone, command, short_commit,
 };
 use crate::{
     jobs::JobRecord,
@@ -18,6 +19,7 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaunchStep {
     Verify,
+    Clone,
     Fetch,
     AddWorktree,
     OpenWindow,
@@ -29,6 +31,7 @@ impl fmt::Display for LaunchStep {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Verify => "re-verify",
+            Self::Clone => "clone the Repo",
             Self::Fetch => "fetch",
             Self::AddWorktree => "add the worktree",
             Self::OpenWindow => "open the kitty window",
@@ -44,8 +47,8 @@ pub enum LaunchOutcome {
     Launched { job: JobRecord },
     /// Re-verification found a mismatch; nothing was done.
     Refused(Refusal),
-    /// The PR head moved since the sheet showed it; nothing was done. The sheet
-    /// asks again on the new commit.
+    /// The base (a PR head, a Branch, the default branch) moved since the sheet
+    /// showed it; nothing was done. The sheet asks again on the new commit.
     HeadMoved { from: String, to: String },
     /// `step` failed; the steps in `done` had already run and were left as they are.
     Failed { step: LaunchStep, error: String },
@@ -85,6 +88,13 @@ fn run(
 
     // 1. Re-verify, changing nothing.
     match verify(plan, workspace) {
+        Ok(()) if plan.clones() => done.push(format!(
+            "re-verified: {} is free; {} has {} at {}",
+            plan.main_clone.path.display(),
+            plan.target.repo,
+            plan.base.reference.branch(),
+            short_commit(&plan.base.commit)
+        )),
         Ok(()) => done.push(format!(
             "re-verified: {} → {} at {}; the worktree path is free",
             plan.remote.name,
@@ -101,7 +111,15 @@ fn run(
         Err(Verification::Failed(error)) => return failed(LaunchStep::Verify, error),
     }
 
-    // 2. Fetch from the remote whose URL is the target, and check what arrived.
+    // 2. Clone the Main Clone when there is none yet.
+    if let CloneSource::ToClone { url, .. } = &plan.main_clone.source {
+        if let Err(e) = workspace.clone_repo(url, &plan.remote.name, clone_path) {
+            return failed(LaunchStep::Clone, e.to_string());
+        }
+        done.push(format!("cloned {url} into {}", clone_path.display()));
+    }
+
+    // 3. Fetch from the remote whose URL is the target, and check what arrived.
     let refspec = plan.fetch_refspec();
     if let Err(e) = workspace.fetch(clone_path, &plan.remote.name, &refspec) {
         return failed(LaunchStep::Fetch, e.to_string());
@@ -126,10 +144,11 @@ fn run(
         Err(e) => return failed(LaunchStep::Fetch, e.to_string()),
     }
 
-    // 3. Add the worktree with git itself (not Claude Code's worktree options).
+    // 4. Add the worktree with git itself (not Claude Code's worktree options).
     let start = match &plan.branch.start {
         BranchStart::New { .. } => WorktreeStart::NewBranchTracking { start: tracking },
         BranchStart::Existing => WorktreeStart::ExistingBranch,
+        BranchStart::Fresh => WorktreeStart::NewBranch { start: tracking },
     };
     let add = WorktreeAdd {
         path: plan.worktree.clone(),
@@ -145,7 +164,7 @@ fn run(
         plan.branch.name
     ));
 
-    // 4. Open the window, or put the command on the clipboard.
+    // 5. Open the window, or put the command on the clipboard.
     let window = plan.window_command();
     match &plan.window {
         WindowMode::Kitty => {
@@ -165,7 +184,7 @@ fn run(
         }
     }
 
-    // 5. Record the Job.
+    // 6. Record the Job.
     let job = JobRecord {
         work_item: plan.work_item.clone(),
         next_step: plan.next_step,
@@ -191,10 +210,15 @@ enum Verification {
 
 /// Just before anything changes: the Main Clone still has a remote whose URL is
 /// the target, the worktree path is free, the local branch is as planned, the
-/// prompt is passable, and the PR head is still the commit the sheet showed.
+/// prompt is passable, and the base is still the commit the sheet showed. For
+/// a clone den is about to make: its folder is still free and the target's
+/// base branch is still where the sheet said.
 fn verify(plan: &LaunchPlan, workspace: &dyn Workspace) -> Result<(), Verification> {
     let clone_path = &plan.main_clone.path;
     check_prompt(&plan.prompt).map_err(|e| Verification::Failed(e.to_string()))?;
+    if let CloneSource::ToClone { url, .. } = &plan.main_clone.source {
+        return verify_new_clone(plan, workspace, url);
+    }
     let remotes = workspace
         .remotes(clone_path)
         .map_err(|e| Verification::Failed(e.to_string()))?;
@@ -227,7 +251,7 @@ fn verify(plan: &LaunchPlan, workspace: &dyn Workspace) -> Result<(), Verificati
         .resolve(clone_path, &format!("refs/heads/{}", plan.branch.name))
         .map_err(|e| Verification::Failed(e.to_string()))?;
     let as_planned = match (&plan.branch.start, &local) {
-        (BranchStart::New { .. }, None) => true,
+        (BranchStart::New { .. } | BranchStart::Fresh, None) => true,
         (BranchStart::Existing, Some(commit)) => *commit == plan.base.commit,
         _ => false,
     };
@@ -236,14 +260,52 @@ fn verify(plan: &LaunchPlan, workspace: &dyn Workspace) -> Result<(), Verificati
             branch: plan.branch.name.clone(),
         }));
     }
-    let super::BaseRef::HeadBranch(branch) = &plan.base.reference;
-    match workspace
+    let branch = plan.base.reference.branch();
+    let tip = workspace
         .remote_branch_head(clone_path, &plan.remote.name, branch)
-        .map_err(|e| Verification::Failed(e.to_string()))?
-    {
-        None => Err(Verification::Refused(RefusalReason::HeadBranchGone {
-            remote: plan.remote.name.clone(),
-            branch: branch.clone(),
+        .map_err(|e| Verification::Failed(e.to_string()))?;
+    still_at_base(plan, tip, &plan.remote.name)
+}
+
+fn verify_new_clone(
+    plan: &LaunchPlan,
+    workspace: &dyn Workspace,
+    url: &str,
+) -> Result<(), Verification> {
+    let folder = &plan.main_clone.path;
+    match workspace.path_state(folder) {
+        PathState::Missing => {}
+        PathState::Exists { .. } => {
+            return Err(Verification::Refused(RefusalReason::CloneFolderAppeared {
+                path: folder.clone(),
+            }));
+        }
+        PathState::Unknown(error) => {
+            return Err(Verification::Refused(RefusalReason::CloneFolderUnknown {
+                path: folder.clone(),
+                error,
+            }));
+        }
+    }
+    let tip = workspace
+        .url_branch_head(url, plan.base.reference.branch())
+        .map_err(|e| Verification::Failed(e.to_string()))?;
+    still_at_base(plan, tip, url)
+}
+
+/// The base branch's tip (as `from` reports it) is the commit the sheet showed.
+fn still_at_base(plan: &LaunchPlan, tip: Option<String>, from: &str) -> Result<(), Verification> {
+    let branch = plan.base.reference.branch().to_owned();
+    match tip {
+        None if plan.work_item.kind() == crate::domain::WorkItemKind::PullRequest => {
+            Err(Verification::Refused(RefusalReason::HeadBranchGone {
+                remote: from.to_owned(),
+                branch,
+            }))
+        }
+        None => Err(Verification::Refused(RefusalReason::BaseBranchGone {
+            from: from.to_owned(),
+            branch,
         })),
         Some(commit) if commit == plan.base.commit => Ok(()),
         Some(commit) => Err(Verification::Moved(commit)),
