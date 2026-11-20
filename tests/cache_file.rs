@@ -9,13 +9,13 @@ mod support;
 use den::{
     cache::{CACHE_FORMAT, CacheError, CachedObservation, Carried, FileCache},
     domain::{
-        Source,
+        LinearSourceKind, Source, SourceKind, SourceState,
         facts::{MergeState, ReviewDecision},
     },
     ports::ObservationCache,
 };
 use std::{fs, time::Duration};
-use support::build::{ObservationBuilder, issue, pr, ts};
+use support::build::{ObservationBuilder, issue, linear_issue, pr, ts};
 
 fn cached(viewer: &str, number: u64) -> CachedObservation {
     let mut cached = CachedObservation::fresh(
@@ -95,6 +95,43 @@ fn every_issue_and_pr_shape_loads_back_unchanged() {
         );
     }
     let stored = CachedObservation::fresh(builder.build());
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCache::in_state_dir(dir.path());
+    cache.store(&stored).unwrap();
+    assert_eq!(cache.load(), Ok(Some(stored)));
+}
+
+/// The Linear part survives the file with what the merge needs (#34): its
+/// own survey time, the source that listed each Linear Issue, and the age
+/// of Linear data kept from an earlier survey.
+#[test]
+fn the_linear_part_and_its_ages_load_back_unchanged() {
+    let mut observation = ObservationBuilder::new()
+        .owner("acme")
+        .linear_viewer("acme", "acme")
+        .linear_issue(linear_issue("acme", "id-7", "TEAM-7"))
+        .linear_issue(
+            linear_issue("acme", "id-9", "TEAM-9")
+                .unassigned()
+                .listed_by(LinearSourceKind::StartTeamIssues),
+        )
+        .owner_coverage(
+            "acme",
+            SourceKind::Linear(LinearSourceKind::StartTeamIssues),
+            SourceState::Failed {
+                error: "timeout".to_owned(),
+            },
+        )
+        .build();
+    observation.linear.observed_at = Some(ts("2026-11-19T11:00:00Z"));
+    let mut stored = CachedObservation::fresh(observation);
+    stored.carried.push(Carried {
+        source: Source::Owner {
+            owner: "acme".to_owned(),
+            kind: SourceKind::Linear(LinearSourceKind::StartTeamIssues),
+        },
+        observed_at: ts("2026-11-19T09:00:00Z"),
+    });
     let dir = tempfile::tempdir().unwrap();
     let cache = FileCache::in_state_dir(dir.path());
     cache.store(&stored).unwrap();

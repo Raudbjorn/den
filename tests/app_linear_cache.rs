@@ -269,7 +269,9 @@ fn a_failed_linear_refresh_keeps_the_last_good_linear_data_with_its_age() {
             .at(EARLIER)
             .survey(),
     );
-    harness.answer(Ok(github(EARLIER, &[1])));
+    // GitHub answered later than Linear: the kept Linear data's age is
+    // Linear's own, not the GitHub survey's.
+    harness.answer(Ok(github("2026-11-19T11:00:00Z", &[1])));
     harness.linear.push_answer(Answer::unreachable().survey());
     harness.answer(Ok(github(support::build::NOW, &[2])));
     harness.start();
