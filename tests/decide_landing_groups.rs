@@ -387,6 +387,38 @@ fn a_repo_read_completely_on_its_own_decides_its_members_whatever_its_owner() {
     );
 }
 
+/// A Repo Scope is part of its Owner's Scope, so whatever a Repo Scope
+/// shows, its Owner's shows too. A Linear Issue's group holds its own
+/// Owner's Pull Requests only (CONTEXT.md, "Landing Group"): an attachment
+/// in another Owner's Repo is "not surveyed" and doesn't put the issue in
+/// that Repo's Scope.
+#[test]
+fn a_repo_scope_never_shows_what_its_owner_scope_hides() {
+    let observation = two_owners()
+        .pull_request(pr("acme/app", 1).author(ME))
+        .pull_request(pr("octo/app", 1).author(ME))
+        .linear_issue(linear_issue("acme", "id-1", "TEAM-1").attached("octo/app", 1))
+        .linear_issue(linear_issue("acme", "id-2", "TEAM-2").attached("acme/app", 1))
+        .build();
+    let decisions = decide_all(&observation);
+    let repos: Vec<RepoId> = observation.repos.iter().map(|r| r.id.clone()).collect();
+    for repo in &repos {
+        let repo_scope = Scope::Repo(repo.clone());
+        let owner_scope = Scope::Owner(repo.owner.clone());
+        for decision in &decisions {
+            assert!(
+                !repo_scope.contains_decision(decision) || owner_scope.contains_decision(decision),
+                "{repo_scope} shows {} but {owner_scope} doesn't",
+                decision.item.reference()
+            );
+        }
+    }
+    let other_owners = Scope::Repo(RepoId::new("octo", "app"));
+    assert!(!other_owners.contains_decision(linear(&decisions, "TEAM-1")));
+    let own = Scope::Repo(RepoId::new("acme", "app"));
+    assert!(own.contains_decision(linear(&decisions, "TEAM-2")));
+}
+
 /// Story 16 with a group: the issue moves to another team (new
 /// identifier, same permanent ID); it is the same Work Item with the same
 /// members, and its Pull Request names the same Linear Issue.
