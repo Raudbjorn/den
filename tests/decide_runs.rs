@@ -288,6 +288,24 @@ fn fix_ci_is_waiting_on_the_triggering_actor() {
         }],
     );
     check(
+        "no triggering actor on a first attempt: whoever started the Run triggered it",
+        vec![run("o/r", "ci.yml", 10).failed().started_by_only("alice")],
+        &[fix_ci("o/r", "ci.yml", WaitingOn::SomeoneElse)],
+    );
+    check(
+        "no triggering actor on a retry: the first attempt's actor may not have re-run it",
+        vec![
+            run("o/r", "ci.yml", 10)
+                .attempt(2)
+                .failed()
+                .started_by_only(ME),
+        ],
+        &[Expect {
+            unattributed: true,
+            ..fix_ci("o/r", "ci.yml", WaitingOn::Nobody)
+        }],
+    );
+    check(
         "GitHub reported no actor: Waiting On nobody, unattributed, kept visible",
         vec![run("o/r", "ci.yml", 10).failed().no_actor()],
         &[Expect {
@@ -323,6 +341,32 @@ fn an_unattributed_run_says_what_is_unknown_and_why_it_waits() {
     );
     assert_eq!(decision.item.title, "ci");
     assert_eq!(decision.item.url, "https://github.com/o/r/actions/runs/10");
+}
+
+#[test]
+fn an_unattributed_retry_names_only_who_started_the_first_attempt() {
+    let observation = ObservationBuilder::new()
+        .fully_read_owner("o")
+        .run(
+            run("o/r", "ci.yml", 10)
+                .attempt(3)
+                .failed()
+                .started_by_only("alice"),
+        )
+        .build();
+    let decided = decisions(&observation);
+    let [decision] = decided.as_slice() else {
+        panic!("one decision, got {decided:?}");
+    };
+    assert!(
+        decision
+            .explanation
+            .unknowns
+            .iter()
+            .any(|u| u.contains("who triggered attempt 3") && u.contains("alice")),
+        "{:?}",
+        decision.explanation.unknowns
+    );
 }
 
 #[test]
