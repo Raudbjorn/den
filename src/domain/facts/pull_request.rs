@@ -178,6 +178,16 @@ pub enum Reviewer {
     Team(TeamRef),
 }
 
+impl Reviewer {
+    /// How den names the reviewer: the login, or "team org/slug".
+    pub fn label(&self) -> String {
+        match self {
+            Self::User(login) => login.clone(),
+            Self::Team(team) => format!("team {}/{}", team.org, team.slug),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Review {
     /// `None` when GitHub has no author (a deleted account).

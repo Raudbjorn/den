@@ -424,11 +424,8 @@ fn review(details: Option<&PrDetails>, viewer: &Viewer) -> Finding {
         .iter()
         .map(|reviewer| match reviewer {
             Reviewer::User(login) if viewer.is(login) => "you".to_owned(),
-            Reviewer::User(login) => login.clone(),
-            Reviewer::Team(team) if viewer.belongs_to(team) => {
-                format!("your team {}/{}", team.org, team.slug)
-            }
-            Reviewer::Team(team) => format!("team {}/{}", team.org, team.slug),
+            Reviewer::Team(team) if viewer.belongs_to(team) => format!("your {}", reviewer.label()),
+            other => other.label(),
         })
         .collect();
     Finding::Holds(format!("review requested from {}", names.join(", ")))
