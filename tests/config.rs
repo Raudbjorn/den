@@ -252,14 +252,22 @@ fn owners_without_a_linear_workflow_get_the_empty_policy() {
 }
 
 /// #36: a Linear Workflow's review settings and Held Repos reach the decision
-/// engine as the Owner's policy, the switches as configured.
+/// engine as the Owner's policy, the switches as configured; so do its start
+/// teams and their two switches (#33). `Config::policies` maps every field.
 #[test]
 fn a_linear_workflows_review_settings_become_its_owners_policy() {
-    use den::domain::{LinearWorkflowPolicy, RepoId, ReviewPolicy, TeamRef, facts::Reviewer};
+    use den::domain::{
+        LinearWorkflowPolicy, RepoId, ReviewPolicy, StartPolicy, TeamRef, facts::Reviewer,
+    };
     let config = parse(FULL_WORKFLOW).expect("valid");
     assert_eq!(
         config.policies().for_owner("ACME"),
         &LinearWorkflowPolicy {
+            start: StartPolicy {
+                teams: vec!["TEAM".to_owned(), "OPS".to_owned()],
+                include_backlog: true,
+                active_cycle_only: true,
+            },
             review: Some(ReviewPolicy {
                 exact_head_approval: false,
                 comment_reviews_need_rereview: false,
@@ -286,8 +294,10 @@ fn a_linear_workflows_review_settings_become_its_owners_policy() {
         .expect("review rules");
     assert!(review.exact_head_approval && review.comment_reviews_need_rereview);
     assert!(review.reviewers.is_empty());
-    // The empty policy keeps every switch off and holds nothing.
+    // The empty policy keeps every switch off, offers no Start and holds
+    // nothing.
     let empty = LinearWorkflowPolicy::default();
+    assert_eq!(empty.start, StartPolicy::NONE);
     assert_eq!(empty.review, None);
     assert!(empty.held_repos.is_empty());
 }

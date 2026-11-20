@@ -23,8 +23,8 @@ use crate::{
     config::{Config, ConfigError},
     decide::{self, Decision},
     domain::{
-        LinearSourceKind, Observation, Policies, Source, SourceKind, SourceState, UpstreamTargets,
-        Viewers, WorkItemId,
+        Observation, Policies, Source, SourceKind, SourceState, UpstreamTargets, Viewers,
+        WorkItemId,
     },
     handoff::{
         JobCheck, JobsCheck,
@@ -655,7 +655,7 @@ impl App {
         // Workflow's sources are recorded: one den has no word on is not
         // yet fetched, never silently complete.
         for workflow in &config.linear {
-            for kind in [LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues] {
+            for kind in workflow.linear_sources() {
                 let source = Source::Owner {
                     owner: workflow.owner.clone(),
                     kind: SourceKind::Linear(kind),

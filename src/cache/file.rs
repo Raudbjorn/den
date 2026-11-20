@@ -36,7 +36,7 @@ pub const CACHE_SUBDIR: &str = "cache";
 /// 7: a PR's reviews carry their commit and their author's kind of account,
 /// and a PR has its latest reviews of any kind, comments included (#36); a
 /// Linear Issue carries its attachments and whether they were all read
-/// (#35).
+/// (#35); the Linear part holds each Linear team's workflow states (#33).
 pub const CACHE_FORMAT: u32 = 7;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;

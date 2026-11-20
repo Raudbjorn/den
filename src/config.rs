@@ -19,7 +19,7 @@ pub mod linear;
 
 pub use linear::{LinearWorkflow, Reviewer};
 
-use crate::domain::{LinearWorkflowPolicy, Policies, ReviewPolicy, facts};
+use crate::domain::Policies;
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -55,11 +55,11 @@ impl Config {
     }
 
     /// Each Owner's Linear Workflow policy for the decision engine; the empty
-    /// policy for Owners without a Linear Workflow. Each rule is mapped from
-    /// the workflow here as its ticket arrives (the landing order with #40).
+    /// policy for Owners without a Linear Workflow. Each workflow maps its own
+    /// ([`LinearWorkflow::policy`]).
     pub fn policies(&self) -> Policies {
         self.linear.iter().fold(Policies::default(), |policies, w| {
-            policies.with(w.owner.clone(), policy_of(w))
+            policies.with(w.owner.clone(), w.policy())
         })
     }
 
@@ -83,27 +83,6 @@ impl Config {
             }
         }
         Ok(())
-    }
-}
-
-/// The decision engine's policy for one Linear Workflow: its review rules
-/// (the two switches as configured, and the configured reviewers) and its
-/// Held Repos.
-fn policy_of(workflow: &LinearWorkflow) -> LinearWorkflowPolicy {
-    LinearWorkflowPolicy {
-        review: Some(ReviewPolicy {
-            exact_head_approval: workflow.exact_head_approval,
-            comment_reviews_need_rereview: workflow.comment_reviews_need_rereview,
-            reviewers: workflow
-                .reviewers
-                .iter()
-                .map(|reviewer| match reviewer {
-                    Reviewer::User(login) => facts::Reviewer::User(login.clone()),
-                    Reviewer::Team(team) => facts::Reviewer::Team(team.clone()),
-                })
-                .collect(),
-        }),
-        held_repos: workflow.held_repos.clone(),
     }
 }
 

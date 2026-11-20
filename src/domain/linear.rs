@@ -16,7 +16,7 @@
 //! Observation of Owners without a Linear Workflow holds; it never makes the
 //! survey read as incomplete.
 
-use super::facts::LinearIssue;
+use super::facts::{LinearIssue, LinearState, LinearTeam};
 use serde::{Deserialize, Serialize};
 
 /// What den read from Linear in one survey.
@@ -24,8 +24,27 @@ use serde::{Deserialize, Serialize};
 pub struct LinearPart {
     /// The Linear viewer of each Linear Workflow whose viewer den could read.
     pub viewers: Vec<LinearViewer>,
-    /// The Linear Issues read, of every Owner with a Linear Workflow.
+    /// The Linear Issues read, of every Owner with a Linear Workflow: those
+    /// assigned to the Linear viewer and the start teams' unassigned ones.
     pub issues: Vec<LinearIssue>,
+    /// Each team's workflow states, per Linear Workflow that names a start
+    /// team or a state (#33).
+    #[serde(default)]
+    pub team_states: Vec<LinearTeamStates>,
+}
+
+/// One Linear team and its workflow states, as one Linear Workflow read them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinearTeamStates {
+    /// The Owner whose Linear Workflow read it.
+    pub owner: String,
+    /// The workspace's URL key, as the config names it.
+    pub workspace: String,
+    pub team: LinearTeam,
+    /// The team's display name.
+    pub name: String,
+    /// The team's workflow states, in the order Linear listed them.
+    pub states: Vec<LinearState>,
 }
 
 /// Who the Linear API key belongs to, in one workspace: "me" for Linear

@@ -118,6 +118,7 @@ fn harness() -> Harness {
                     .build(),
                 linear_issue("octo", "id-3", "TEAM-3").build(),
             ],
+            ..LinearPart::default()
         },
         coverage,
     });

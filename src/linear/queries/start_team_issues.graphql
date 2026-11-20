@@ -1,0 +1,16 @@
+query LinearStartTeamIssues(
+  $first: Int!
+  $after: String
+  $filter: IssueFilter!
+  $attachmentsPerIssue: Int!
+) {
+  issues(first: $first, after: $after, orderBy: createdAt, filter: $filter) {
+    nodes {
+      ...LinearIssueFields
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}

@@ -1,0 +1,23 @@
+query LinearTeamStates($first: Int!, $after: String, $statesFirst: Int!) {
+  teams(first: $first, after: $after) {
+    nodes {
+      id
+      key
+      name
+      states(first: $statesFirst) {
+        nodes {
+          id
+          name
+          type
+        }
+        pageInfo {
+          hasNextPage
+        }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}

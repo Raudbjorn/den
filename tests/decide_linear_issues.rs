@@ -105,17 +105,26 @@ fn without_a_linear_viewer_den_cannot_say_whose_it_is() {
     );
 }
 
+/// Changed by #33. Under #32 an unassigned Linear Issue had a Decision with
+/// no Next Step ("Start is #33"). Now Start is decided from the Owner's start
+/// teams (`decide_start.rs`), and an unassigned issue the workflow doesn't
+/// offer is not den's to show: the Linear source never asks for one, and
+/// one kept from an earlier survey gets no Decision. Under the empty policy
+/// (no start teams) that is every unassigned issue.
 #[test]
-fn an_unassigned_linear_issue_has_no_next_step_yet() {
+fn an_unassigned_linear_issue_no_start_team_offers_gets_no_decision() {
     let observation = ObservationBuilder::new()
         .fully_read_owner("acme")
         .linear_viewer("acme", "acme")
         .linear_issue(linear_issue("acme", "id-1", "TEAM-1").unassigned())
         .build();
     let decisions = decide_all(&observation);
-    let decision = decision_for(&decisions, "TEAM-1");
-    assert_eq!(decision.next_step, None);
-    assert_eq!(decision.waiting_on, WaitingOn::Nobody);
+    assert!(
+        decisions
+            .iter()
+            .all(|d| d.item.identifier.as_deref() != Some("TEAM-1")),
+        "{decisions:#?}"
+    );
 }
 
 /// #32 said, as an unknown, that a PR might exist, because it didn't read
