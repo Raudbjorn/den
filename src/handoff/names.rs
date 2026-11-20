@@ -162,22 +162,35 @@ pub fn suffixed(name: &str, n: u32, max_chars: usize) -> String {
     format!("{base}{suffix}")
 }
 
+/// A name no other Work Item's Job has.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FreeName {
+    pub name: String,
+    /// The suffix added to the wanted name (`None`: it was free), so the
+    /// Job's other names can carry the same one.
+    pub suffix: Option<u32>,
+    /// The Work Items whose Jobs held the names passed over.
+    pub passed_over: Vec<WorkItemId>,
+}
+
 /// The first of `wanted`, `wanted-2`, `wanted-3`, … that `taken` doesn't
 /// claim, with the Work Items that claimed the ones passed over; `None` when
 /// every name up to [`MAX_NAME_SUFFIX`] is taken. `taken` says which other
 /// Work Items' Jobs hold a name (empty when it is free).
-pub fn free_name(
-    wanted: &str,
-    taken: impl Fn(&str) -> Vec<WorkItemId>,
-) -> Option<(String, Vec<WorkItemId>)> {
+pub fn free_name(wanted: &str, taken: impl Fn(&str) -> Vec<WorkItemId>) -> Option<FreeName> {
     let mut passed_over: Vec<WorkItemId> = Vec::new();
-    let candidates = std::iter::once(wanted.to_owned()).chain(
-        (FIRST_NAME_SUFFIX..=MAX_NAME_SUFFIX).map(|n| suffixed(wanted, n, MAX_WORKTREE_NAME_CHARS)),
+    let candidates = std::iter::once((wanted.to_owned(), None)).chain(
+        (FIRST_NAME_SUFFIX..=MAX_NAME_SUFFIX)
+            .map(|n| (suffixed(wanted, n, MAX_WORKTREE_NAME_CHARS), Some(n))),
     );
-    for candidate in candidates {
+    for (candidate, suffix) in candidates {
         let holders = taken(&candidate);
         if holders.is_empty() {
-            return Some((candidate, passed_over));
+            return Some(FreeName {
+                name: candidate,
+                suffix,
+                passed_over,
+            });
         }
         for holder in holders {
             if !passed_over.contains(&holder) {
@@ -191,8 +204,8 @@ pub fn free_name(
 /// The worktree name for `item`'s Job in `clone`: `wanted`, or the first
 /// suffixed name no other Work Item's Job has (spec, "Launch handoff"). A Job
 /// holds a name when its worktree is `clone`'s `.claude/worktrees/<name>`, or,
-/// for a new branch (`new_branch`: its name is the worktree name), when its branch in
-/// `clone` is named so. This Work Item's own Jobs never count: an existing
+/// for a new branch (`new_branch`: named like its worktree), when its branch
+/// in `clone` is named so. This Work Item's own Jobs never count: an existing
 /// Job of the same Work Item is the Live Job question (#14), not a collision.
 pub fn free_worktree_name(
     wanted: &str,
@@ -200,7 +213,7 @@ pub fn free_worktree_name(
     item: &WorkItemId,
     new_branch: bool,
     jobs: &[JobRecord],
-) -> Option<(String, Vec<WorkItemId>)> {
+) -> Option<FreeName> {
     free_name(wanted, |name| {
         let path = worktree_path(clone, name);
         jobs.iter()

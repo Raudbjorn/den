@@ -215,7 +215,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     });
     let worktree_name = named
         .as_ref()
-        .map_or_else(|| wanted.clone(), |(name, _)| name.clone());
+        .map_or_else(|| wanted.clone(), |free| free.name.clone());
     // A new `<type>_<slug>` branch is named like its worktree. Otherwise a
     // fresh start's local branch is new, beside the Live Job's, and still
     // tracks the same branch on the target's remote.
@@ -296,13 +296,22 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             },
         },
     );
+    // One suffix rule for the Job's names: the session carries the suffix the
+    // worktree got, whether for a fresh start or a name another Job has.
     let session = fresh(
         names::session_name(item, facts.step),
         names::MAX_SESSION_NAME_CHARS,
     );
+    let session = match named.as_ref().and_then(|free| free.suffix) {
+        Some(n) => names::suffixed(&session, n, names::MAX_SESSION_NAME_CHARS),
+        None => session,
+    };
     let renamed = named
-        .filter(|(name, _)| *name != wanted)
-        .map(|(_, taken_by)| Renamed { wanted, taken_by });
+        .filter(|free| free.suffix.is_some())
+        .map(|free| Renamed {
+            wanted,
+            taken_by: free.passed_over,
+        });
     let mut plan = LaunchPlan {
         work_item: decision.item.id.clone(),
         title: decision.item.title.clone(),

@@ -699,6 +699,9 @@ fn a_worktree_name_another_work_items_job_has_gets_a_numeric_suffix_shown_on_the
         )
     );
     assert_eq!(field(&ready, "BRANCH").0, "fix-ci_ci-2");
+    // Integration (decision a): the session carries the same suffix as the
+    // worktree, by the one rule shared with #14's fresh start.
+    assert_eq!(field(&ready, "SESSION").0, "app-nightly-fix-ci-2");
     assert!(
         ready
             .prompt
@@ -738,6 +741,59 @@ fn the_same_work_items_own_job_is_never_suffixed_around() {
     let unsuffixed = worktree(CLONE, "fix-ci_ci");
     assert_eq!(field(again, "JOB").0, unsuffixed.to_str().unwrap());
     assert_eq!(field(again, "SESSION").0, "app-ci-fix-ci");
+}
+
+#[test]
+fn one_suffix_rule_names_a_collision_and_a_fresh_start_alike() {
+    // Decision a: a name another Work Item's Job has (#12) and a fresh start
+    // beside this Work Item's Live Job (#14) are both `<name>-<n>`, on the
+    // worktree, the branch and the session alike.
+    let mut harness = started(two_ci_workflows());
+    with_clone(&harness);
+    open_sheet(&mut harness, "octo/app workflow .github/workflows/ci.yml");
+    press(&mut harness, Key::Enter);
+    press(&mut harness, Key::Esc);
+    open_sheet(
+        &mut harness,
+        "octo/app workflow .github/workflows/nightly.yml",
+    );
+    press(&mut harness, Key::Enter);
+    press(&mut harness, Key::Esc);
+    let collision = launch_plans(&harness).last().cloned().expect("a plan");
+    assert_eq!(
+        (
+            collision.worktree,
+            collision.branch.name.as_str(),
+            collision.session.as_str()
+        ),
+        (
+            worktree(CLONE, "fix-ci_ci-2"),
+            "fix-ci_ci-2",
+            "app-nightly-fix-ci-2"
+        )
+    );
+
+    // ci.yml's Job is live; start fresh skips -2 (nightly's) and takes -3.
+    open_sheet(&mut harness, "octo/app workflow .github/workflows/ci.yml");
+    assert_eq!(sheet(&harness).status, LaunchStatus::LiveJob);
+    press(&mut harness, Key::Char('f'));
+    assert_ready(&harness);
+    press(&mut harness, Key::Enter);
+    let fresh = launch_plans(&harness).last().cloned().expect("a plan");
+    assert_eq!(
+        (
+            fresh.worktree,
+            fresh.branch.name.as_str(),
+            fresh.session.as_str()
+        ),
+        (
+            worktree(CLONE, "fix-ci_ci-3"),
+            "fix-ci_ci-3",
+            "app-ci-fix-ci-3"
+        )
+    );
+    assert_eq!(fresh.renamed, None);
+    assert_eq!(sheet(&harness).status, LaunchStatus::Launched);
 }
 
 // ---- prompts ----

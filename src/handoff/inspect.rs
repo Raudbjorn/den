@@ -198,7 +198,7 @@ fn look_at_clone(
         request.new_branch,
         records,
     )
-    .map_or_else(|| request.worktree_name.clone(), |(name, _)| name);
+    .map_or_else(|| request.worktree_name.clone(), |free| free.name);
     let branch = if request.new_branch {
         &worktree_name
     } else {
