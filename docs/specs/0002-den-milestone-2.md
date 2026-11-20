@@ -189,7 +189,7 @@ Owners without a Linear Workflow are not affected: no Linear requests, no Linear
   - the Linear viewer (ID and name);
   - per workspace, the active Linear Issues assigned to the viewer, and the unassigned issues in the start teams whose state type is unstarted (plus backlog when enabled);
   - each team's workflow states (ID, name, type).
-  
+
   It records coverage for each of these sources with the same rules as the GitHub source. Errors next to data make a source partial. A rate limit is partial and records the reset time. Auth or network failure is failed. It never invents counts.
 - **Facts: Linear Issue.** Workspace and permanent ID (the identity), identifier, title, URL, team (ID, key), state (ID, name, type), assignee (ID, name) or none, priority, cycle and whether it's active, created and updated times, the suggested branch name, and **attachments**. Each attachment is reduced to a validated, fully qualified GitHub PR identity (Owner, Repo, number) when its URL parses as one, and is otherwise kept as an unrecognized link. Raw metadata isn't carried, because its keys depend on the integration.
 - **Facts: PR additions** (GitHub source, for Owners with a Linear Workflow; cheap enough to fetch for all). The head commit each latest review was given on, each reviewer's type (user or bot), and the commit times needed to tell whether the head moved after a review. These come from GitHub's latest-reviews-per-user field, which already excludes pending reviews.
@@ -329,7 +329,7 @@ No organization-specific slash commands are defaults. A user can point a kind at
   - **Linear viewer**;
   - **attached** versus **hint** membership;
   - **coordination Job**.
-  
+
   Also widen **Implement** to cover a Linear Issue.
 - **ADR-0004 and the Linear terms in `CONTEXT.md`** are written but not committed. They should land with or before this spec. ADR-0004's reasoning is the assistant's wording and still needs the user's confirmation.
 - **Not verified:**

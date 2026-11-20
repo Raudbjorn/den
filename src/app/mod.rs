@@ -3,15 +3,18 @@
 //! The App holds den's state and decides what to show and what to ask the ports
 //! for. It does no I/O and reads no clock: time arrives in events.
 
+mod editor;
 mod effect;
 mod event;
+mod launch;
 mod overlay;
 mod scope;
+mod upstream;
 mod view;
 pub mod view_model;
 
 pub use effect::{Effect, LogLevel, LogRecord};
-pub use event::{Event, Key, SurveyId};
+pub use event::{Event, Key, LaunchId, SurveyId};
 pub use scope::Focus;
 pub use view_model::ViewModel;
 
@@ -19,14 +22,24 @@ use crate::{
     cache::{self, CacheError, CachedObservation},
     config::{Config, ConfigError},
     decide::{self, Decision},
-    domain::{Observation, SourceState, WorkItemId},
+    domain::{Observation, SourceState, UpstreamTargets, WorkItemId},
+    handoff::prompts::{Prompts, PromptsError},
     layout::{Layout, TerminalSize},
     ordering,
     ports::{SurveyFailure, SurveyRequest},
 };
 use jiff::Timestamp;
 use scope::ScopeState;
-use view_model::Overlay;
+use std::path::PathBuf;
+
+/// The sheet over the screen, if any, with its state.
+#[derive(Debug, Clone)]
+enum OverlayState {
+    /// The detail as a sheet on narrow terminals (#10).
+    DetailSheet,
+    /// The launch sheet (#11).
+    Launch(Box<launch::Sheet>),
+}
 
 pub struct App {
     config: Result<Config, ConfigError>,
@@ -51,7 +64,19 @@ pub struct App {
     /// The terminal's size, as last reported (`Event::Resized`).
     size: TerminalSize,
     /// The sheet drawn over the screen, if any.
-    overlay: Option<Overlay>,
+    overlay: Option<OverlayState>,
+    /// The prompts file's templates, or why it is unusable.
+    prompts: Result<Prompts, PromptsError>,
+    /// Where to search for Main Clones when the config sets no `main_clone_root`.
+    default_clone_root: Option<PathBuf>,
+    next_launch: u64,
+    /// The forks whose target is their Upstream (#13).
+    upstreams: UpstreamTargets,
+    /// Why the stored Upstream choices couldn't be read at startup, if they
+    /// couldn't; `u` then changes nothing.
+    upstreams_unreadable: Option<String>,
+    /// The last thing that went wrong with a `u` (not saved, Upstream not visible).
+    upstream_problem: Option<String>,
 }
 
 impl App {
@@ -70,7 +95,25 @@ impl App {
             now: None,
             size: TerminalSize::DESIGN,
             overlay: None,
+            prompts: Ok(Prompts::default()),
+            default_clone_root: None,
+            next_launch: 0,
+            upstreams: UpstreamTargets::default(),
+            upstreams_unreadable: None,
+            upstream_problem: None,
         }
+    }
+
+    /// Sets the launch settings that don't come from the config: the prompts
+    /// file (or why it is unusable) and the default Main Clone search root.
+    pub fn with_launch_settings(
+        mut self,
+        prompts: Result<Prompts, PromptsError>,
+        default_clone_root: Option<PathBuf>,
+    ) -> Self {
+        self.prompts = prompts;
+        self.default_clone_root = default_clone_root;
+        self
     }
 
     pub fn handle(&mut self, event: Event) -> (ViewModel, Vec<Effect>) {
@@ -81,7 +124,7 @@ impl App {
             }
             Event::Tick { now } => {
                 self.now = Some(now);
-                self.redecide(now);
+                self.decide_shown(now);
                 Vec::new()
             }
             Event::Key(key) => self.key(key),
@@ -92,6 +135,9 @@ impl App {
             }
             Event::CacheLoaded { outcome } => self.cache_loaded(outcome),
             Event::CacheStored { outcome } => cache_stored(outcome),
+            Event::LaunchInspected { id, view } => self.launch_inspected(id, view),
+            Event::LaunchFinished { id, report } => self.launch_finished(id, report),
+            Event::UpstreamsStored { outcome } => self.upstreams_stored(outcome),
         };
         (self.view(), effects)
     }
@@ -114,6 +160,8 @@ impl App {
             now: self.now,
             layout: Layout::for_size(self.size),
             overlay: self.overlay.as_ref(),
+            upstreams: &self.upstreams,
+            upstream_note: self.upstream_note(),
         })
     }
 
@@ -122,9 +170,16 @@ impl App {
             Ok(config) => {
                 let request = SurveyRequest {
                     owners: config.owners.clone(),
+                    upstreams: self.upstreams.clone(),
                 };
                 // The cache is read first, so it shows before the survey answers.
                 let mut effects = vec![Effect::LoadCache];
+                if let Some(error) = &self.upstreams_unreadable {
+                    effects.push(Effect::log(
+                        LogLevel::Warn,
+                        format!("ignored the Upstream choices: {error}; every fork targets itself"),
+                    ));
+                }
                 effects.extend(self.begin_survey(request));
                 effects
             }
@@ -151,6 +206,12 @@ impl App {
     }
 
     fn key(&mut self, key: Key) -> Vec<Effect> {
+        // The launch sheet claims every key.
+        if let Some(OverlayState::Launch(_)) = &self.overlay
+            && let Some(OverlayState::Launch(sheet)) = self.overlay.take()
+        {
+            return self.launch_key(sheet, key);
+        }
         // An open sheet claims its keys before anything else.
         if self.overlay.is_some()
             && let Some(effects) = self.overlay_key(key)
@@ -182,7 +243,18 @@ impl App {
                 Vec::new()
             }
             Key::Char('r') => self.refresh(),
-            Key::Enter | Key::Esc | Key::Char(_) | Key::Left | Key::Right | Key::Tab => Vec::new(),
+            Key::Char('c') => self.open_launch_sheet(),
+            Key::Char('u') if self.scope.focus == Focus::Sidebar => self.toggle_upstream(),
+            Key::Enter
+            | Key::Esc
+            | Key::Char(_)
+            | Key::Left
+            | Key::Right
+            | Key::Tab
+            | Key::Backspace
+            | Key::Delete
+            | Key::Home
+            | Key::End => Vec::new(),
         }
     }
 
@@ -241,6 +313,7 @@ impl App {
             Ok(config) => {
                 let request = SurveyRequest {
                     owners: config.owners.clone(),
+                    upstreams: self.upstreams.clone(),
                 };
                 self.begin_survey(request)
             }
@@ -296,15 +369,30 @@ impl App {
     /// Shows `shown`, deciding its Work Items as of `now`, keeping the selection.
     fn show(&mut self, shown: CachedObservation, now: Timestamp) {
         self.shown = Some(shown);
-        self.redecide(now);
+        self.decide_shown(now);
     }
 
-    fn redecide(&mut self, now: Timestamp) {
+    /// Decides what is shown again (the Upstream choices changed).
+    fn redecide(&mut self) {
+        if let Some(now) = self
+            .now
+            .or_else(|| self.shown.as_ref().map(|s| s.observation.observed_at))
+        {
+            self.decide_shown(now);
+        }
+    }
+
+    fn decide_shown(&mut self, now: Timestamp) {
         let Some(shown) = &self.shown else {
             return;
         };
         let observation = &shown.observation;
-        self.ordered = ordering::order(decide::decide(observation, &observation.viewer, now));
+        self.ordered = ordering::order(decide::decide_with(
+            observation,
+            &observation.viewer,
+            &self.upstreams,
+            now,
+        ));
         self.apply_scope();
     }
 

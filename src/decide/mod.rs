@@ -12,7 +12,9 @@ mod run;
 
 pub use attribution::Attribution;
 
-use crate::domain::{CoverageEntry, NextStep, Observation, Viewer, WaitingOn, WorkItemId};
+use crate::domain::{
+    CoverageEntry, NextStep, Observation, UpstreamTargets, Viewer, WaitingOn, WorkItemId,
+};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -83,16 +85,33 @@ pub struct Context<'a> {
     pub observation: &'a Observation,
     pub viewer: &'a Viewer,
     pub now: Timestamp,
+    /// The forks whose target is their Upstream (#13): their Branches must have
+    /// been compared against the Upstream's default branch.
+    pub upstreams: &'a UpstreamTargets,
 }
 
 /// Decides every Work Item in the Observation, in kind order (Pull Requests,
 /// Issues, Branches, Runs) and source order within a kind. Sorting for display
 /// is `crate::ordering`'s job.
+///
+/// Every fork is its own target (ADR-0003); [`decide_with`] takes the forks
+/// whose target is their Upstream.
 pub fn decide(observation: &Observation, viewer: &Viewer, now: Timestamp) -> Vec<Decision> {
+    decide_with(observation, viewer, &UpstreamTargets::default(), now)
+}
+
+/// [`decide`], with `upstreams` naming the forks whose target is their Upstream.
+pub fn decide_with(
+    observation: &Observation,
+    viewer: &Viewer,
+    upstreams: &UpstreamTargets,
+    now: Timestamp,
+) -> Vec<Decision> {
     let ctx = Context {
         observation,
         viewer,
         now,
+        upstreams,
     };
     let mut decisions = pull_request::decide_all(&ctx);
     decisions.extend(issue::decide_all(&ctx));

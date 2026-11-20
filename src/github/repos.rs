@@ -37,10 +37,30 @@ struct Named {
     name: String,
 }
 
+/// The fork's Upstream: enough to compare against its default branch and to
+/// target it (its URL), never its own parent.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Parent {
     name: String,
     owner: super::session::Actor,
+    url: String,
+    is_fork: bool,
+    is_archived: bool,
+    default_branch_ref: Option<Named>,
+}
+
+impl Parent {
+    fn into_repo(self) -> Repo {
+        Repo {
+            id: RepoId::new(self.owner.login, self.name),
+            url: self.url,
+            is_fork: self.is_fork,
+            is_archived: self.is_archived,
+            default_branch: self.default_branch_ref.map(|r| r.name),
+            parent: None,
+        }
+    }
 }
 
 pub fn fetch(session: &Session<'_>, owner: &str) -> Result<KindFetch<Repo>, SurveyFailure> {
@@ -70,7 +90,7 @@ pub fn fetch(session: &Session<'_>, owner: &str) -> Result<KindFetch<Repo>, Surv
                 is_fork: node.is_fork,
                 is_archived: node.is_archived,
                 default_branch: node.default_branch_ref.map(|r| r.name),
-                parent: node.parent.map(|p| RepoId::new(p.owner.login, p.name)),
+                parent: node.parent.map(|p| Box::new(p.into_repo())),
             }));
         if !pager.advance(repos.page_info.has_next_page, repos.page_info.end_cursor) {
             break;

@@ -14,6 +14,8 @@ pub struct Glyphs {
     pub unattributed: &'static str,
     pub complete: &'static str,
     pub chamfer: &'static str,
+    /// The text cursor in an input field.
+    pub cursor: &'static str,
     /// The ViewModel's [`SEPARATOR`] in this profile.
     pub separator: &'static str,
     /// The ViewModel's [`ELLIPSIS`] in this profile.
@@ -50,6 +52,7 @@ pub fn for_profile(profile: GlyphProfile) -> Glyphs {
             unattributed: "?",
             complete: "✓",
             chamfer: "◢",
+            cursor: "▏",
             separator: "·",
             ellipsis: "…",
             enter: "⏎",
@@ -60,6 +63,7 @@ pub fn for_profile(profile: GlyphProfile) -> Glyphs {
             unattributed: "?",
             complete: "+",
             chamfer: "/",
+            cursor: "|",
             separator: "-",
             ellipsis: "...",
             enter: "RET",

@@ -9,6 +9,7 @@ mod footer;
 pub mod frame;
 mod glyphs;
 mod header;
+pub mod launch;
 pub mod list;
 pub mod sidebar;
 pub mod templates;

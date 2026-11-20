@@ -104,7 +104,15 @@ fn repo_node(name: &str) -> Value {
         "isFork": name == "fork",
         "isArchived": false,
         "defaultBranchRef": { "name": "main" },
-        "parent": if name == "fork" { json!({ "name": "up", "owner": { "login": "upstream" } }) } else { Value::Null }
+        "parent": if name == "fork" {
+            json!({
+                "name": "up", "owner": { "login": "upstream" },
+                "url": "https://github.com/upstream/up", "isFork": false, "isArchived": false,
+                "defaultBranchRef": { "name": "trunk" }
+            })
+        } else {
+            Value::Null
+        }
     })
 }
 
@@ -195,7 +203,10 @@ fn open_prs_are_paginated_to_completion_and_qualified_by_owner_and_repo() {
     assert_eq!(repos, ["octo/busy", "octo/fork", "octo/quiet"]);
     let fork = observation.repo(&repo_id("octo/fork")).expect("fork");
     assert!(fork.is_fork);
-    assert_eq!(fork.parent, Some(repo_id("upstream/up")));
+    let upstream = fork.upstream().expect("the fork's Upstream");
+    assert_eq!(upstream.id, repo_id("upstream/up"));
+    assert_eq!(upstream.url, "https://github.com/upstream/up");
+    assert_eq!(upstream.default_branch.as_deref(), Some("trunk"));
 
     for source in [
         Source::Viewer,
@@ -220,6 +231,7 @@ fn open_prs_are_paginated_to_completion_and_qualified_by_owner_and_repo() {
             "{kind:?}"
         );
     }
+    // Runs are read over REST, which this GraphQL-only script has none of.
     assert_eq!(
         state(&observation, owner_source(SourceKind::Runs)),
         SourceState::NotYetFetched
@@ -328,12 +340,16 @@ fn octo_two_pr_pages(
     second: impl Fn() -> Result<GraphQlResponse, TransportError> + Send + Sync + 'static,
 ) -> ScriptedGraphQl {
     ScriptedGraphQl::new(move |request| {
+        // The same answers as `octo_prs_answer` for everything but the PR list.
         if let Some(viewer) = viewer_answers(request).or_else(|| only_default_branches(request)) {
             return viewer;
         }
         match (operation(request).as_str(), after(request).as_deref()) {
             ("OwnerRepos", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
                 "pageInfo": page_info(None), "nodes": [repo_node("app")]
+            }}}))),
+            ("OwnerIssueCounts", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": []
             }}}))),
             ("OwnerPullRequests", None) => Ok(GraphQlResponse {
                 data: Some(json!({ "repositoryOwner": { "repositories": {
@@ -346,9 +362,6 @@ fn octo_two_pr_pages(
                 }],
             }),
             ("OwnerPullRequests", Some("p2")) => second(),
-            ("OwnerIssueCounts", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
-                "pageInfo": page_info(None), "nodes": []
-            }}}))),
             other => panic!("unexpected {other:?}"),
         }
     })
@@ -399,60 +412,6 @@ fn errors_alongside_data_on_several_pages_are_all_kept() {
                 "second page error".to_owned()
             ]
         })
-    );
-}
-
-/// The Repo's first PR page arrives inside the Owner's page, so an error on
-/// that page may have nulled some of its PRs. Its own later pages reading
-/// cleanly must not make the Repo complete: a merge trusts a complete Repo
-/// and would drop cached PRs the first page lost.
-#[test]
-fn errors_on_the_owner_page_make_a_repo_read_on_its_own_pages_partial() {
-    let gql = ScriptedGraphQl::new(|request| {
-        if let Some(viewer) = viewer_answers(request).or_else(|| only_default_branches(request)) {
-            return viewer;
-        }
-        match (operation(request).as_str(), after(request).as_deref()) {
-            ("OwnerRepos", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
-                "pageInfo": page_info(None), "nodes": [repo_node("app")]
-            }}}))),
-            ("OwnerPullRequests", None) => Ok(GraphQlResponse {
-                data: Some(json!({ "repositoryOwner": { "repositories": {
-                    "pageInfo": page_info(None),
-                    "nodes": [ { "name": "app", "pullRequests": { "pageInfo": page_info(Some("a2")), "nodes": [pr_node(1, false), null] } } ]
-                }}})),
-                errors: vec![GraphQlError {
-                    message: "first page error".to_owned(),
-                    kind: None,
-                }],
-            }),
-            ("RepoPullRequests", Some("a2")) => Ok(data(json!({ "repository": { "pullRequests": {
-                "pageInfo": page_info(None), "nodes": [pr_node(3, false)]
-            }}}))),
-            ("OwnerIssueCounts", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
-                "pageInfo": page_info(None), "nodes": []
-            }}}))),
-            other => panic!("unexpected {other:?}"),
-        }
-    });
-    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
-    assert_eq!(observation.pull_requests.len(), 2);
-    let first_page_error = SourceState::Partial(Incompleteness::ErrorsAlongsideData {
-        errors: vec!["first page error".to_owned()],
-    });
-    assert_eq!(
-        state(
-            &observation,
-            Source::Repo {
-                repo: repo_id("octo/app"),
-                kind: SourceKind::PullRequests,
-            }
-        ),
-        first_page_error
-    );
-    assert_eq!(
-        state(&observation, owner_source(SourceKind::PullRequests)),
-        first_page_error
     );
 }
 
@@ -667,6 +626,60 @@ fn other_gh_failures_are_values_with_context() {
         let error = run_fake_gh(script, SHORT_TIMEOUT).expect_err(script);
         assert!(check(&error), "{script}: {error:?}");
     }
+}
+
+/// The Repo's first PR page arrives inside the Owner's page, so an error on
+/// that page may have nulled some of its PRs. Its own later pages reading
+/// cleanly must not make the Repo complete: a merge trusts a complete Repo
+/// and would drop cached PRs the first page lost.
+#[test]
+fn errors_on_the_owner_page_make_a_repo_read_on_its_own_pages_partial() {
+    let gql = ScriptedGraphQl::new(|request| {
+        if let Some(viewer) = viewer_answers(request).or_else(|| only_default_branches(request)) {
+            return viewer;
+        }
+        match (operation(request).as_str(), after(request).as_deref()) {
+            ("OwnerRepos", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": [repo_node("app")]
+            }}}))),
+            ("OwnerPullRequests", None) => Ok(GraphQlResponse {
+                data: Some(json!({ "repositoryOwner": { "repositories": {
+                    "pageInfo": page_info(None),
+                    "nodes": [ { "name": "app", "pullRequests": { "pageInfo": page_info(Some("a2")), "nodes": [pr_node(1, false), null] } } ]
+                }}})),
+                errors: vec![GraphQlError {
+                    message: "first page error".to_owned(),
+                    kind: None,
+                }],
+            }),
+            ("RepoPullRequests", Some("a2")) => Ok(data(json!({ "repository": { "pullRequests": {
+                "pageInfo": page_info(None), "nodes": [pr_node(3, false)]
+            }}}))),
+            ("OwnerIssueCounts", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": []
+            }}}))),
+            other => panic!("unexpected {other:?}"),
+        }
+    });
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    assert_eq!(observation.pull_requests.len(), 2);
+    let first_page_error = SourceState::Partial(Incompleteness::ErrorsAlongsideData {
+        errors: vec!["first page error".to_owned()],
+    });
+    assert_eq!(
+        state(
+            &observation,
+            Source::Repo {
+                repo: repo_id("octo/app"),
+                kind: SourceKind::PullRequests,
+            }
+        ),
+        first_page_error
+    );
+    assert_eq!(
+        state(&observation, owner_source(SourceKind::PullRequests)),
+        first_page_error
+    );
 }
 
 /// Branches are read Repo by Repo from the Owner's Repo list, so a list that

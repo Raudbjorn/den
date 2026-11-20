@@ -45,6 +45,12 @@ pub struct PrBuilder {
 }
 
 impl PrBuilder {
+    /// The head branch lives in another Repo ("owner/name"): a cross-Repo PR.
+    pub fn head_from(mut self, repo: &str) -> Self {
+        self.pr.head_repo = Some(repo_id(repo));
+        self
+    }
+
     pub fn draft(mut self) -> Self {
         self.pr.is_draft = true;
         self

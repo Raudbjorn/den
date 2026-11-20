@@ -1,7 +1,12 @@
 //! Effects: what the App asks the ports to do. The App never does I/O itself.
 
-use super::event::SurveyId;
-use crate::{cache::CachedObservation, ports::SurveyRequest};
+use super::event::{LaunchId, SurveyId};
+use crate::{
+    cache::CachedObservation,
+    domain::UpstreamTargets,
+    handoff::{InspectRequest, LaunchPlan},
+    ports::SurveyRequest,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
@@ -28,6 +33,17 @@ pub enum Effect {
     LoadCache,
     /// Write what den shows to the cache; answered by `Event::CacheStored`.
     StoreCache { cached: Box<CachedObservation> },
+    /// Look at the workspace for a launch sheet (reads only); answered by
+    /// `Event::LaunchInspected` with the same id.
+    InspectLaunch {
+        id: LaunchId,
+        request: Box<InspectRequest>,
+    },
+    /// Carry out a confirmed LaunchPlan; answered by `Event::LaunchFinished`.
+    Launch { id: LaunchId, plan: Box<LaunchPlan> },
+    /// Save which forks target their Upstream (#13); answered by
+    /// `Event::UpstreamsStored`.
+    StoreUpstreams { upstreams: UpstreamTargets },
     /// Leave den.
     Quit,
     /// Write to den's structured log.

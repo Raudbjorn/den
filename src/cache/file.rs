@@ -8,15 +8,14 @@
 //! afresh. It never crashes den, and is overwritten by the next good survey.
 
 use super::{CacheError, CachedObservation};
-use crate::ports::ObservationCache;
+use crate::{files, ports::ObservationCache};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
-    io::{Read, Write},
+    io::Read,
     path::{Path, PathBuf},
-    thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 /// The cache directory, under den's state directory (`$XDG_STATE_HOME/den/`).
@@ -28,26 +27,18 @@ pub const CACHE_SUBDIR: &str = "cache";
 /// 2: an Issue says whether its labels and assignees were read completely; a
 /// PR carries GitHub's merge state, and its review decision is always present
 /// (`NotRequired` and `Unknown` instead of null).
-pub const CACHE_FORMAT: u32 = 2;
+/// 3: a fork's Upstream is a Repo (URL, default branch), not just its id.
+pub const CACHE_FORMAT: u32 = 3;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// Names the viewer whose cache startup shows.
 const LAST_VIEWER_FILE: &str = "last-viewer";
 const CACHE_EXTENSION: &str = "json";
-/// Beside each viewer's cache file: held while a den checks and replaces it.
+/// Beside each viewer's cache file: held while checking and replacing it.
 const LOCK_EXTENSION: &str = "lock";
-/// How long a store waits for another den to finish storing the same viewer's
-/// cache, in milliseconds. A store holds the lock for one read and two renames.
 const STORE_LOCK_WAIT_MS: u64 = 2_000;
-/// How long to wait between attempts to take a busy lock, in milliseconds.
-const LOCK_RETRY_MS: u64 = 25;
 /// GitHub's longest login, in characters.
 const MAX_LOGIN_CHARS: usize = 39;
-/// Owner-only read and write.
-#[cfg(unix)]
-const FILE_MODE: u32 = 0o600;
-#[cfg(unix)]
-const DIR_MODE: u32 = 0o700;
 
 #[derive(Serialize)]
 struct EnvelopeOut<'a> {
@@ -139,43 +130,9 @@ impl FileCache {
             .join(format!("{}.{CACHE_EXTENSION}", login.to_ascii_lowercase())))
     }
 
-    /// The lock file den holds while it checks and replaces `login`'s cache.
+    /// The lock file held while checking and replacing this viewer's cache.
     pub fn lock_for(&self, login: &str) -> Result<PathBuf, CacheError> {
         Ok(self.file_for(login)?.with_extension(LOCK_EXTENSION))
-    }
-
-    /// Takes the exclusive lock at `path` (an owner-only file, created if
-    /// missing), waiting at most `lock_wait` for another den, in this process or
-    /// another, to let go. The OS drops it when the holder exits, even by a crash.
-    /// The lock lasts until the returned file is dropped.
-    fn lock(&self, path: &Path) -> Result<fs::File, CacheError> {
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(FILE_MODE);
-        }
-        let file = options.open(path).map_err(|e| write_error(path, &e))?;
-        let deadline = Instant::now() + self.lock_wait;
-        loop {
-            match file.try_lock() {
-                Ok(()) => return Ok(file),
-                Err(fs::TryLockError::Error(e)) => return Err(write_error(path, &e)),
-                Err(fs::TryLockError::WouldBlock) if Instant::now() >= deadline => {
-                    return Err(CacheError::Write {
-                        path: path.to_owned(),
-                        detail: format!(
-                            "stayed locked by another den for {} ms",
-                            self.lock_wait.as_millis()
-                        ),
-                    });
-                }
-                Err(fs::TryLockError::WouldBlock) => {
-                    thread::sleep(Duration::from_millis(LOCK_RETRY_MS));
-                }
-            }
-        }
     }
 
     /// Reads a cache file of at most `max_bytes`. Only a regular file is read
@@ -242,23 +199,7 @@ impl FileCache {
     /// Creates the cache directory, owner-only. A directory that already exists
     /// is made owner-only too: its mode is only set by `create` when it is new.
     fn ensure_dir(&self) -> Result<(), CacheError> {
-        let mut builder = fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(DIR_MODE);
-        }
-        builder
-            .create(&self.dir)
-            .map_err(|e| write_error(&self.dir, &e))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&self.dir, fs::Permissions::from_mode(DIR_MODE))
-                .map_err(|e| write_error(&self.dir, &e))?;
-        }
-        Ok(())
+        files::ensure_private_dir(&self.dir).map_err(|e| write_error(&self.dir, &e))
     }
 
     /// When the Observation already stored at `path` was made; `None` when there
@@ -311,11 +252,11 @@ impl ObservationCache for FileCache {
         // A file den would refuse to read back is not worth writing.
         self.check_size(&path, u64::try_from(body.len()).unwrap_or(u64::MAX))?;
         // Another den sharing this state directory may have stored a newer survey
-        // while this one ran: never replace it with an older one. The check and
-        // the replacement happen under the viewer's lock, so two dens storing at
-        // once can't both pass the check and leave the older survey in place.
+        // while this one ran: the age check and both replacements share a lock.
         self.ensure_dir()?;
-        let _lock = self.lock(&self.lock_for(login)?)?;
+        let lock_path = self.lock_for(login)?;
+        let _lock = files::lock_exclusive(&lock_path, self.lock_wait)
+            .map_err(|e| write_error(&lock_path, &e))?;
         let offered = cached.observation.observed_at;
         if let Some(stored) = self.stored_observed_at(&path)
             && stored > offered
@@ -331,39 +272,8 @@ impl ObservationCache for FileCache {
     }
 }
 
-/// Writes `body` to a temp file beside `path`, then renames it over `path`, so a
-/// crash mid-write never leaves a half-written cache. The renamed file keeps the
-/// temp file's owner-only mode, whatever mode the file it replaces had.
 fn write_atomically(path: &Path, body: &[u8]) -> Result<(), CacheError> {
-    let temp = path.with_extension(format!("tmp-{}", std::process::id()));
-    // A temp file left by a crashed den of the same pid. Removing a symlink planted
-    // there removes the link, not its target; a missing file is the usual case.
-    if let Err(e) = fs::remove_file(&temp)
-        && e.kind() != io::ErrorKind::NotFound
-    {
-        return Err(write_error(&temp, &e));
-    }
-    let written = write_private(&temp, body).and_then(|()| fs::rename(&temp, path));
-    written.map_err(|e| {
-        // Best effort: the temp file is den's own and useless after a failure.
-        let _ = fs::remove_file(&temp);
-        write_error(path, &e)
-    })
-}
-
-fn write_private(path: &Path, body: &[u8]) -> io::Result<()> {
-    let mut options = fs::OpenOptions::new();
-    // `create_new` fails on anything already there, a symlink included, so den
-    // only ever writes into a file it just created with its own mode.
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(FILE_MODE);
-    }
-    let mut file = options.open(path)?;
-    file.write_all(body)?;
-    file.sync_all()
+    files::write_atomically(path, body).map_err(|e| write_error(path, &e))
 }
 
 fn not_a_file(path: &Path) -> CacheError {

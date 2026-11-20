@@ -100,7 +100,8 @@ impl BranchBuilder {
     }
 }
 
-/// A fork `full_name` of `parent`, with its own default branch.
+/// A fork `full_name` of `parent` (whose default branch is `main`), with its
+/// own default branch.
 pub fn fork(full_name: &str, parent: &str, default_branch: &str) -> Repo {
     let id = repo_id(full_name);
     Repo {
@@ -109,6 +110,6 @@ pub fn fork(full_name: &str, parent: &str, default_branch: &str) -> Repo {
         is_fork: true,
         is_archived: false,
         default_branch: Some(default_branch.to_owned()),
-        parent: Some(repo_id(parent)),
+        parent: Some(Box::new(super::upstream_repo(parent))),
     }
 }

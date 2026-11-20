@@ -3,13 +3,19 @@
 use crate::{
     cache::{CacheError, CachedObservation},
     domain::Observation,
+    handoff::{LaunchReport, WorkspaceView},
     ports::SurveyFailure,
+    upstreams::UpstreamStoreError,
 };
 use jiff::Timestamp;
 
 /// Identifies one survey, so a late answer to an older one is recognised.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SurveyId(pub u64);
+
+/// Identifies one launch sheet, so a late answer for a closed sheet is recognised.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LaunchId(pub u64);
 
 /// A key, already translated from the terminal's encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +27,10 @@ pub enum Key {
     Tab,
     Enter,
     Esc,
+    Backspace,
+    Delete,
+    Home,
+    End,
     Char(char),
     /// Ctrl-C.
     Interrupt,
@@ -56,5 +66,19 @@ pub enum Event {
     /// The cache was written, or why not.
     CacheStored {
         outcome: Result<(), CacheError>,
+    },
+    /// The workspace was inspected for a launch sheet.
+    LaunchInspected {
+        id: LaunchId,
+        view: Box<WorkspaceView>,
+    },
+    /// A launch ran (or stopped); what it did.
+    LaunchFinished {
+        id: LaunchId,
+        report: Box<LaunchReport>,
+    },
+    /// The Upstream choices were saved, or why not.
+    UpstreamsStored {
+        outcome: Result<(), UpstreamStoreError>,
     },
 }

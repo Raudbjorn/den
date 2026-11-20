@@ -61,6 +61,16 @@ fn malformed_config_names_the_file_and_line() {
         ),
         ("duplicate", "owners = [\"Octo\",\n \"octo\"]\n", 2),
         ("empty", "\n\nowners = []\n", 3),
+        (
+            "relative clone root",
+            "owners = [\"a\"]\nmain_clone_root = \"dev\"\n",
+            2,
+        ),
+        (
+            "relative Main Clone",
+            "owners = [\"a\"]\n\n[main_clones]\n\"a/b\" = \"~/dev/b\"\n",
+            4,
+        ),
     ];
     for (name, text, line) in cases {
         let error = parse(text).expect_err(name);
@@ -76,6 +86,19 @@ fn malformed_config_names_the_file_and_line() {
             "{name}: {message}"
         );
     }
+}
+
+#[test]
+fn a_relative_main_clone_path_is_refused_with_why() {
+    let error =
+        parse("owners = [\"a\"]\n\n[main_clones]\n\"a/b\" = \"b\"\n").expect_err("relative");
+    let message = error.to_string();
+    assert!(
+        message.ends_with(
+            "the Main Clone of a/b must be an absolute path, not \"b\" (den doesn't expand ~ or resolve paths against the folder it runs in)"
+        ),
+        "{message}"
+    );
 }
 
 #[test]

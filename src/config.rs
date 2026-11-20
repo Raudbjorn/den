@@ -5,8 +5,9 @@
 //!
 //! ```toml
 //! owners = ["Raudbjorn", "massif-network"]
-//! # main_clone_root = "/home/me/dev"            (Job handoff, #12)
-//! # [main_clones]                                (Job handoff, #12)
+//! # main_clone_root = "/home/me/dev"   where to look for Main Clones (default ~/dev)
+//! # [main_clones]                      per-Repo Main Clone overrides
+//! # Both take absolute paths only.
 //! # "Raudbjorn/den" = "/home/me/dev/den"
 //! ```
 
@@ -26,9 +27,9 @@ const MAX_LOGIN_CHARS: usize = 39;
 pub struct Config {
     /// Watched Owners, in the order written, without duplicates.
     pub owners: Vec<String>,
-    /// Where to search for Main Clones. Read by the Job handoff ticket.
+    /// Where to search for Main Clones. Read by the launch handoff (#11).
     pub main_clone_root: Option<PathBuf>,
-    /// Per-Repo Main Clone overrides keyed by `owner/name`. Read by the Job handoff ticket.
+    /// Per-Repo Main Clone overrides keyed by `owner/name`. Read by the launch handoff (#11).
     pub main_clones: BTreeMap<String, PathBuf>,
 }
 
@@ -36,9 +37,9 @@ pub struct Config {
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     owners: Spanned<Vec<Spanned<String>>>,
-    main_clone_root: Option<PathBuf>,
+    main_clone_root: Option<Spanned<PathBuf>>,
     #[serde(default)]
-    main_clones: BTreeMap<String, PathBuf>,
+    main_clones: BTreeMap<String, Spanned<PathBuf>>,
 }
 
 /// A 1-based line and column in the config file.
@@ -125,11 +126,40 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
         }
         owners.push(login);
     }
+    let main_clone_root = raw
+        .main_clone_root
+        .map(|root| absolute(root, "main_clone_root"))
+        .transpose()
+        .map_err(|(span, message)| malformed(Some(span), message))?;
+    let mut main_clones = BTreeMap::new();
+    for (repo, clone) in raw.main_clones {
+        let clone = absolute(clone, &format!("the Main Clone of {repo}"))
+            .map_err(|(span, message)| malformed(Some(span), message))?;
+        main_clones.insert(repo, clone);
+    }
     Ok(Config {
         owners,
-        main_clone_root: raw.main_clone_root,
-        main_clones: raw.main_clones,
+        main_clone_root,
+        main_clones,
     })
+}
+
+/// A configured folder, which must be absolute: a relative one would mean
+/// something different to den, to git (run inside the Main Clone) and to the
+/// launched window.
+fn absolute(path: Spanned<PathBuf>, what: &str) -> Result<PathBuf, (Range<usize>, String)> {
+    let span = path.span();
+    let path = path.into_inner();
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    Err((
+        span,
+        format!(
+            "{what} must be an absolute path, not {:?} (den doesn't expand ~ or resolve paths against the folder it runs in)",
+            path.display().to_string()
+        ),
+    ))
 }
 
 fn is_valid_login(login: &str) -> bool {
@@ -140,7 +170,7 @@ fn is_valid_login(login: &str) -> bool {
         && !login.ends_with('-')
 }
 
-fn location_of(text: &str, offset: usize) -> Location {
+pub(crate) fn location_of(text: &str, offset: usize) -> Location {
     let before = text.get(..offset).unwrap_or(text);
     let line = before.matches('\n').count() + 1;
     let column = before

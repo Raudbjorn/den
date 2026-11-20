@@ -15,9 +15,11 @@ pub const LIST: TemplateFile = TemplateFile::new("list");
 pub const DETAIL_FILE: TemplateFile = TemplateFile::new("detail");
 /// The sidebar plate (Repos and Scopes).
 pub const SIDEBAR_FILE: TemplateFile = TemplateFile::new("sidebar");
+/// The launch sheet (#11).
+pub const LAUNCH_FILE: TemplateFile = TemplateFile::new("launch");
 
 /// Every template file den registers.
-pub fn sources() -> [TemplateSource; 4] {
+pub fn sources() -> [TemplateSource; 5] {
     [
         TemplateSource {
             file: FRAME,
@@ -34,6 +36,10 @@ pub fn sources() -> [TemplateSource; 4] {
         TemplateSource {
             file: SIDEBAR_FILE,
             content: include_str!("../../templates/sidebar.crepus"),
+        },
+        TemplateSource {
+            file: LAUNCH_FILE,
+            content: include_str!("../../templates/launch.crepus"),
         },
     ]
 }
@@ -79,3 +85,10 @@ pub const NOTICE: TemplateRef = section(FRAME, "Notice");
 
 /// The sections the responsive frame adds (also checked by the template tests).
 pub const LAYOUT_SECTIONS: [TemplateRef; 3] = [MARK_PLATE, SPLASH, NOTICE];
+
+// The launch sheet (#11).
+/// The launch sheet's plate.
+pub const LAUNCH_SHEET: TemplateRef = section(LAUNCH_FILE, "LaunchSheet");
+
+/// The sections the launch sheet adds (also checked by the template tests).
+pub const LAUNCH_SECTIONS: [TemplateRef; 1] = [LAUNCH_SHEET];
