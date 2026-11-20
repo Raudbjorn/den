@@ -729,3 +729,234 @@ fn a_github_survey_of_another_viewer_keeps_this_session_s_linear_answer() {
         harness.view.header.coverage
     );
 }
+
+/// A start-team Linear Issue, as #33's start-team source lists it.
+fn start_team_issue(id: &str, identifier: &str) -> LinearIssue {
+    linear_issue("acme", id, identifier)
+        .unassigned()
+        .listed_by(LinearSourceKind::StartTeamIssues)
+        .build()
+}
+
+/// A Linear source den no longer reads (its config stopped asking for it)
+/// goes with its facts: it is neither "not yet fetched" forever nor are its
+/// Linear Issues kept forever, so "Nothing needs you" is reachable again.
+#[test]
+fn a_linear_source_no_longer_surveyed_is_dropped_with_its_facts() {
+    let mut harness = Harness::new(Ok(workflow_config()));
+    harness.linear.push_answer(
+        Answer::complete(vec![start_team_issue("id-9", "TEAM-9")])
+            .state(LinearSourceKind::StartTeamIssues, SourceState::Complete)
+            .at(EARLIER)
+            .survey(),
+    );
+    harness.answer(Ok(github(EARLIER, &[])));
+    // The next survey reads only what this config asks for.
+    harness
+        .linear
+        .push_answer(Answer::complete(Vec::new()).survey());
+    harness.answer(Ok(github(support::build::NOW, &[])));
+    harness.start();
+    assert_eq!(linear_rows(&harness.view), ["TEAM-9"]);
+    harness.settle(Event::Key(Key::Char('r')));
+
+    assert!(
+        linear_rows(&harness.view).is_empty(),
+        "{:?}",
+        harness.rows()
+    );
+    let stored = last_stored(&harness);
+    let start_team = acme_linear(LinearSourceKind::StartTeamIssues);
+    assert!(
+        stored.observation.coverage.get(&start_team).is_none(),
+        "{:?}",
+        stored.observation.coverage
+    );
+    assert_eq!(
+        harness.view.list.empty.as_ref().expect("empty").title,
+        "Nothing needs you."
+    );
+}
+
+/// The same for a cache written under a config that read more Linear
+/// sources: what this config doesn't ask for is dropped when it loads, and a
+/// cached Linear Issue whose source was never recorded is not kept forever
+/// behind a complete coverage.
+#[test]
+fn a_cached_linear_source_this_config_does_not_read_is_dropped_on_load() {
+    for (case, recorded) in [("recorded", true), ("never recorded", false)] {
+        let mut observation = github(EARLIER, &[]);
+        observation.linear = LinearPart {
+            viewers: vec![linear_viewer("acme", "acme")],
+            issues: vec![start_team_issue("id-9", "TEAM-9")],
+            observed_at: Some(ts(EARLIER)),
+        };
+        for kind in [LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues] {
+            observation
+                .coverage
+                .record(acme_linear(kind), SourceState::Complete);
+        }
+        if recorded {
+            observation.coverage.record(
+                acme_linear(LinearSourceKind::StartTeamIssues),
+                SourceState::Complete,
+            );
+        }
+        let cache = FakeCache::holding(CachedObservation::fresh(observation));
+        let mut harness = Harness::with_cache(Ok(workflow_config()), cache);
+        harness
+            .linear
+            .push_answer(Answer::complete(Vec::new()).survey());
+        harness.answer(Ok(github(support::build::NOW, &[])));
+        let effects = harness.send(Event::Started { now: now() });
+        harness.perform(&Effect::LoadCache);
+        assert!(
+            linear_rows(&harness.view).is_empty(),
+            "{case}: dropped on load: {:?}",
+            harness.rows()
+        );
+
+        for effect in &effects {
+            perform_all(&mut harness, effect);
+        }
+        assert!(
+            linear_rows(&harness.view).is_empty(),
+            "{case}: {:?}",
+            harness.rows()
+        );
+        let stored = last_stored(&harness);
+        assert!(
+            stored
+                .observation
+                .coverage
+                .get(&acme_linear(LinearSourceKind::StartTeamIssues))
+                .is_none(),
+            "{case}: {:?}",
+            stored.observation.coverage
+        );
+        assert_eq!(
+            harness.view.list.empty.as_ref().expect("empty").title,
+            "Nothing needs you.",
+            "{case}"
+        );
+    }
+}
+
+/// A Linear Issue read completely is dated by the Linear survey that read
+/// it, never by the GitHub survey, whichever of the two is newer.
+#[test]
+fn a_linear_issue_shows_when_linear_read_it() {
+    for (case, linear_at, github_at, shown) in [
+        (
+            "Linear older",
+            Some(EARLIER),
+            support::build::NOW,
+            "10:00 UTC",
+        ),
+        ("GitHub older", None, EARLIER, "12:00 UTC"),
+    ] {
+        let mut harness = Harness::new(Ok(workflow_config()));
+        let mut answer = Answer::complete(vec![linear_issue("acme", "id-7", "TEAM-7").build()]);
+        if let Some(at) = linear_at {
+            answer = answer.at(at);
+        }
+        harness.linear.push_answer(answer.survey());
+        harness.answer(Ok(github(github_at, &[])));
+        harness.start();
+
+        let detail = select(&mut harness, "TEAM-7")
+            .detail
+            .content
+            .expect("a detail");
+        assert!(
+            detail.observed.starts_with(shown),
+            "{case}: {}",
+            detail.observed
+        );
+    }
+}
+
+/// The Linear answer can arrive before the cache loads: a changed Linear
+/// viewer still drops the cached Linear data, and says so.
+#[test]
+fn a_changed_linear_viewer_found_when_the_cache_loads_is_logged() {
+    let cache = cached_with_linear(
+        linear_viewer("acme", "acme"),
+        vec![linear_issue("acme", "id-7", "TEAM-7").build()],
+    );
+    let mut harness = Harness::with_cache(Ok(workflow_config()), cache);
+    let someone_else = LinearViewer {
+        id: "user-other".to_owned(),
+        ..linear_viewer("acme", "acme")
+    };
+    harness.linear.push_answer(
+        Answer::complete(Vec::new())
+            .viewer(someone_else)
+            .state(LinearSourceKind::AssignedIssues, failed(NO_NETWORK))
+            .survey(),
+    );
+    let effects = harness.send(Event::Started { now: now() });
+    let linear = effects
+        .iter()
+        .find(|e| matches!(e, Effect::SurveyLinear { .. }))
+        .unwrap();
+    perform_all(&mut harness, linear);
+    harness.perform(&Effect::LoadCache);
+
+    assert!(
+        linear_rows(&harness.view).is_empty(),
+        "{:?}",
+        harness.rows()
+    );
+    assert!(logged(&harness, "Linear viewer of acme"));
+}
+
+/// A Linear answer logs the Linear data it kept, not GitHub's again.
+#[test]
+fn a_linear_answer_logs_only_the_linear_data_it_kept() {
+    let mut harness = Harness::new(Ok(workflow_config()));
+    harness.linear.push_answer(
+        Answer::complete(vec![linear_issue("acme", "id-7", "TEAM-7").build()])
+            .at(EARLIER)
+            .survey(),
+    );
+    harness.answer(Ok(github(EARLIER, &[1])));
+    harness.linear.push_answer(Answer::unreachable().survey());
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("acme")
+        .fully_read_owner("octo")
+        .repo("acme/api")
+        .owner_coverage("acme", SourceKind::PullRequests, failed("timeout"))
+        .build()));
+    harness.start();
+    let effects = harness.send(Event::Key(Key::Char('r')));
+    let github = effects
+        .iter()
+        .find(|e| matches!(e, Effect::Survey { .. }))
+        .unwrap();
+    perform_all(&mut harness, github);
+    assert!(logged(
+        &harness,
+        "kept earlier data for: Pull Requests of acme"
+    ));
+    let linear = effects
+        .iter()
+        .find(|e| matches!(e, Effect::SurveyLinear { .. }))
+        .unwrap();
+    let linear_log = harness.perform(linear);
+    let kept: Vec<&str> = linear_log
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Log(record) if record.message.starts_with("kept earlier data") => {
+                Some(record.message.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(!kept.is_empty(), "the Linear data kept is logged");
+    assert!(
+        kept.iter()
+            .all(|m| m.contains("Linear") && !m.contains("Pull Requests")),
+        "{kept:?}"
+    );
+}
