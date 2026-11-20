@@ -290,12 +290,21 @@ fn c_then_enter_on_request_review_launches_a_coordination_job_on_the_pr_head_in_
         ready.command.as_deref(),
         Some(
             format!(
-                "kitty --detach --hold --directory {WORKTREE_2} claude --permission-mode manual -n {SESSION_2} '{}'",
+                "kitty --detach --hold --directory {WORKTREE_2} claude --permission-mode manual --setting-sources user -n {SESSION_2} '{}'",
                 prompt_without_slack("alice, acme/backend")
             )
             .as_str()
         ),
-        "the mode is in the exact command den shows"
+        // `--setting-sources user` since the untrusted-PR-heads fix: a
+        // coordination Job never loads the PR head's project settings, so a
+        // hook committed in the PR can't run as the user.
+        "the mode and the setting sources are in the exact command den shows"
+    );
+    assert_eq!(
+        field(&ready, "PROJECT SETTINGS").map(|f| f.0),
+        Some(
+            "off: a Request review Job doesn't need the repo's settings (hooks in the PR could run as you)"
+        )
     );
 
     press(&mut harness, Key::Enter);
@@ -686,9 +695,17 @@ fn reopening_a_request_review_job_passes_the_approval_required_mode_again() {
         ready.command.as_deref(),
         Some(
             format!(
-                "kitty --detach --hold --directory {WORKTREE_2} claude --permission-mode manual --resume {SESSION_2}"
+                "kitty --detach --hold --directory {WORKTREE_2} claude --permission-mode manual --setting-sources user --resume {SESSION_2}"
             )
             .as_str()
+        ),
+        // A resumed session runs SessionStart hooks too, so reopening a
+        // coordination Job keeps the PR head's project settings off.
+    );
+    assert_eq!(
+        field(&ready, "PROJECT SETTINGS").map(|f| f.0),
+        Some(
+            "off: a Request review Job doesn't need the repo's settings (hooks in the PR could run as you)"
         )
     );
     press(&mut harness, Key::Enter);

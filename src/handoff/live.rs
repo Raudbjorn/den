@@ -17,7 +17,8 @@
 //! and nothing is ever deleted.
 
 use super::{
-    PathState, Refusal, RefusalReason, RegisteredWorktree, WORKTREES_DIR, WindowMode,
+    PathState, ProjectSettings, Refusal, RefusalReason, RegisteredWorktree, WORKTREES_DIR,
+    WindowMode,
     command::{self, SessionStart, WindowCommand},
     execute::{LaunchOutcome, LaunchReport, LaunchStep},
     inspect::WorkspaceView,
@@ -230,6 +231,9 @@ pub fn fresh_suffix(view: &WorkspaceView, worktree_name: &str, branch: &str) -> 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReopenPlan {
     pub job: JobRecord,
+    /// Decided again on reopening, from the survey den shows then
+    /// ([`super::trust::for_reopen`]): a resumed session runs hooks too.
+    pub project_settings: ProjectSettings,
     pub window: WindowMode,
     /// The exact command, as shown on the sheet.
     pub command: String,
@@ -248,6 +252,7 @@ impl ReopenPlan {
             prompt: String::new(),
             start: SessionStart::Resume,
             permission_mode: self.job.reopen_mode(),
+            setting_sources: self.project_settings.sources(),
         }
     }
 }
@@ -264,7 +269,12 @@ fn session_usable(session: &str) -> bool {
 /// Plans reopening `check`'s Job, or refuses: it must be a Live Job, its
 /// worktree must be inside the Main Clone's `.claude/worktrees/` (never the
 /// Main Clone itself), and its session name must be one den would make.
-pub fn plan_reopen(check: &JobCheck, view: &WorkspaceView) -> Result<ReopenPlan, Refusal> {
+/// `project_settings` is [`super::trust::for_reopen`]'s for the Job.
+pub fn plan_reopen(
+    check: &JobCheck,
+    view: &WorkspaceView,
+    project_settings: ProjectSettings,
+) -> Result<ReopenPlan, Refusal> {
     let job = &check.job;
     let mut reasons = Vec::new();
     if !is_job_worktree_path(job) {
@@ -297,6 +307,7 @@ pub fn plan_reopen(check: &JobCheck, view: &WorkspaceView) -> Result<ReopenPlan,
     }
     let mut plan = ReopenPlan {
         job: job.clone(),
+        project_settings,
         window: view.window.clone(),
         command: String::new(),
     };

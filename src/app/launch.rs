@@ -49,9 +49,10 @@ use crate::{
     domain::{NextStep, Observation, RepoId, WorkItemId, facts::Reviewer},
     handoff::{
         self, InspectRequest, JobCheck, LaunchOutcome, LaunchPlan, LaunchReport, LaunchSettings,
-        PlanInput, Refusal, RefusalReason, ReopenPlan, TargetChoice, WorkspaceView, WorktreeState,
-        check_prompt, live, names, reviewers, short_commit,
+        PlanInput, ProjectSettings, Refusal, RefusalReason, ReopenPlan, TargetChoice,
+        WorkspaceView, WorktreeState, check_prompt, live, names, reviewers, short_commit, trust,
     },
+    jobs::{JobRecord, JobSubject},
 };
 
 /// One open launch sheet.
@@ -391,7 +392,8 @@ impl App {
             (Key::Enter, SheetState::Ready { .. }) => effects = self.launch(&mut sheet),
             (Key::Char('o'), SheetState::LiveJob { check, view }) => {
                 let (check, view) = (check.clone(), view.clone());
-                effects = open_existing(&mut sheet, &check, &view);
+                let settings = self.reopen_settings(&check.job);
+                effects = open_existing(&mut sheet, &check, &view, settings);
             }
             (
                 Key::Char('f'),
@@ -617,6 +619,23 @@ impl App {
         Vec::new()
     }
 
+    /// The Linear Workflow of `item`'s Owner, if it has one.
+    fn linear_workflow_of(&self, item: &WorkItemId) -> Option<&crate::config::LinearWorkflow> {
+        let repo = item.repo()?;
+        self.config.as_ref().ok()?.linear_workflow(&repo.owner)
+    }
+
+    /// Whether reopening `job` loads the worktree's project settings, decided
+    /// again from the survey shown now ([`trust::for_reopen`]).
+    fn reopen_settings(&self, job: &JobRecord) -> ProjectSettings {
+        let JobSubject::GitHub(item) = &job.subject;
+        trust::for_reopen(
+            job,
+            self.shown.as_ref().map(|s| &s.observation),
+            self.linear_workflow_of(item).is_some(),
+        )
+    }
+
     /// The current Decision for `item`, if it is still surveyed.
     fn decision_of(&self, item: &WorkItemId) -> Option<&Decision> {
         self.ordered.iter().find(|d| &d.item.id == item)
@@ -637,11 +656,8 @@ impl App {
             .as_ref()
             .map(|s| &s.observation)
             .ok_or_else(gone)?;
-        let slack_channel = sheet
-            .item
-            .repo()
-            .and_then(|repo| self.config.as_ref().ok()?.linear_workflow(&repo.owner))
-            .and_then(|workflow| workflow.slack_channel.as_deref());
+        let workflow = self.linear_workflow_of(&sheet.item);
+        let slack_channel = workflow.and_then(|workflow| workflow.slack_channel.as_deref());
         let plan = handoff::plan(&PlanInput {
             decision,
             observation,
@@ -651,6 +667,7 @@ impl App {
             fresh: sheet.fresh.as_ref().map(|(n, _)| *n),
             reviewers,
             slack_channel,
+            linear_workflow: workflow.is_some(),
         })?;
         Ok(match &sheet.accepted_head {
             Some(commit) => plan.on_commit(commit),
@@ -831,6 +848,10 @@ fn what_changed(
     if shown.permission_mode != now.permission_mode {
         return Some("the permission mode changed".to_owned());
     }
+    // The viewer or the PR's author can differ in a newer survey.
+    if shown.project_settings != now.project_settings {
+        return Some("whether the repo's settings load changed".to_owned());
+    }
     match (&shown.review_request, &now.review_request) {
         (Some(before), Some(after)) if before.reviewers != after.reviewers => {
             return Some("the suggested reviewers changed".to_owned());
@@ -934,8 +955,13 @@ fn live_job_request(
 }
 
 /// `o` on a Live Job: plans the reopen, or refuses (never in the Main Clone).
-fn open_existing(sheet: &mut Sheet, check: &JobCheck, view: &WorkspaceView) -> Vec<Effect> {
-    match live::plan_reopen(check, view) {
+fn open_existing(
+    sheet: &mut Sheet,
+    check: &JobCheck,
+    view: &WorkspaceView,
+    settings: ProjectSettings,
+) -> Vec<Effect> {
+    match live::plan_reopen(check, view, settings) {
         Ok(plan) => {
             sheet.state = SheetState::ReopenReady {
                 plan: Box::new(plan),

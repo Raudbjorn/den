@@ -15,7 +15,7 @@ use den::{
     config::Config,
     domain::Observation,
     handoff::{
-        BranchStart, LaunchPlan, SessionStart, WindowCommand,
+        BranchStart, LaunchPlan, SessionStart, SettingSources, WindowCommand,
         prompts::{self, Prompts},
     },
     jobs::JobStoreError,
@@ -154,6 +154,12 @@ fn c_then_enter_on_a_pr_produces_exactly_one_launch_plan_fetching_from_the_remot
         )
     );
 
+    // The viewer's own PR: milestone 1's command, every setting source.
+    assert!(
+        !ready.fields.iter().any(|f| f.label == "PROJECT SETTINGS"),
+        "{:?}",
+        ready.fields
+    );
     press(&mut harness, Key::Enter);
 
     let plans = launch_plans(&harness);
@@ -191,6 +197,7 @@ fn c_then_enter_on_a_pr_produces_exactly_one_launch_plan_fetching_from_the_remot
             prompt: "/gh-resolve https://github.com/octo/app/pull/7".to_owned(),
             start: SessionStart::New,
             permission_mode: None,
+            setting_sources: den::handoff::SettingSources::All,
         }]
     );
     let job = harness.jobs.records();
@@ -872,5 +879,72 @@ fn the_sheet_shows_its_keys_in_the_footer_and_c_is_offered_on_the_list() {
     assert_eq!(
         keys(&harness),
         ["⏎ done", "←→ move", "⌫ delete", "esc done"]
+    );
+}
+
+/// Launches octo/app#7 as `pr` describes it, from a clone whose `upstream`
+/// points at octo/app, and returns the sheet it showed before Enter.
+fn launch_pr_7(pr: support::build::PrBuilder) -> (Harness, LaunchSheet) {
+    let observation = ObservationBuilder::new()
+        .owner("octo")
+        .repo("octo/app")
+        .pull_request(pr)
+        .build();
+    let mut harness = started(launch_config(&[]), observation);
+    with_upstream_clone(&harness);
+    press(&mut harness, Key::Char('c'));
+    let ready = sheet(&harness).clone();
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    press(&mut harness, Key::Enter);
+    (harness, ready)
+}
+
+#[test]
+fn a_job_on_another_authors_pr_head_starts_with_user_settings_only() {
+    // A PR by someone else, asking the viewer to Review it (no Linear
+    // Workflow, so not a coordination Job): its head could carry a
+    // `.claude/settings.json` hook that would run as the viewer.
+    let (harness, ready) = launch_pr_7(pr("octo/app", 7).review_requested_from(ME));
+    assert_eq!(ready.next_step, "Review");
+    assert_eq!(
+        field(&ready, "PROJECT SETTINGS"),
+        (
+            "off: PR #7 is by @someone, not you (hooks in the PR could run as you)",
+            Some(
+                "--setting-sources user: the worktree's .claude/settings.json and settings.local.json are not loaded; your own settings are"
+            )
+        )
+    );
+    assert_eq!(
+        ready.command.as_deref(),
+        Some(
+            "kitty --detach --hold --directory /home/me/dev/app/.claude/worktrees/feature-7 claude --setting-sources user -n app-pr7-review '/code-review https://github.com/octo/app/pull/7'"
+        )
+    );
+    let windows = harness.launcher.windows();
+    assert_eq!(windows.len(), 1);
+    assert_eq!(windows[0].setting_sources, SettingSources::UserOnly);
+    assert_eq!(windows[0].permission_mode, None, "no mode for a coding Job");
+}
+
+#[test]
+fn a_job_on_a_pr_whose_author_den_cannot_tell_starts_with_user_settings_only() {
+    // GitHub has no author (a deleted account): treated as someone else.
+    let (harness, ready) = launch_pr_7(pr("octo/app", 7).no_author().changes_requested());
+    assert_eq!(
+        field(&ready, "PROJECT SETTINGS").0,
+        "off: den can't tell who wrote PR #7 (hooks in the PR could run as you)"
+    );
+    assert!(
+        ready
+            .command
+            .as_deref()
+            .is_some_and(|c| c.contains(" claude --setting-sources user -n ")),
+        "{:?}",
+        ready.command
+    );
+    assert_eq!(
+        harness.launcher.windows()[0].setting_sources,
+        SettingSources::UserOnly
     );
 }

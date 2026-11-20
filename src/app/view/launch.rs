@@ -7,8 +7,8 @@ use crate::{
     domain::{WorkItemId, WorkItemKind},
     handoff::{
         BaseRef, BranchStart, CloneSource, JobCheck, LaunchOutcome, LaunchPlan, LaunchReport,
-        PathState, PermissionMode, Refusal, ReopenPlan, ReviewRequest, WindowMode, WorktreeState,
-        Writability, command, reviewers, short_commit,
+        PathState, PermissionMode, ProjectSettings, Refusal, ReopenPlan, ReviewRequest, WindowMode,
+        WorktreeState, Writability, command, reviewers, short_commit,
     },
 };
 
@@ -252,6 +252,21 @@ fn permissions_field(mode: Option<PermissionMode>) -> Option<SheetField> {
     ))
 }
 
+/// The PROJECT SETTINGS field when den turns the worktree's settings off
+/// (`handoff::trust`); none when they load, as in milestone 1.
+fn project_settings_field(settings: &ProjectSettings) -> Option<SheetField> {
+    let text = settings.sheet_text()?;
+    Some(field(
+        "PROJECT SETTINGS",
+        text,
+        Some(format!(
+            "{}: the worktree's .claude/settings.json and settings.local.json are not loaded; your own settings are",
+            settings.sources().args().join(" ")
+        )),
+        Tone::Caution,
+    ))
+}
+
 /// The "upstream →" label: an Upstream target reads as one in monochrome too.
 pub const UPSTREAM_LABEL: &str = "upstream →";
 
@@ -416,6 +431,7 @@ fn fields(sheet: &Sheet, plan: &LaunchPlan, moved_from: Option<&str>) -> Vec<She
         fields.extend(review_request_fields(request, suggested));
     }
     fields.extend(permissions_field(plan.permission_mode));
+    fields.extend(project_settings_field(&plan.project_settings));
     fields.push(opens_field(&plan.window));
     fields
 }
@@ -477,6 +493,8 @@ fn fill_reopen(view: &mut LaunchSheet, plan: &ReopenPlan) {
         ),
     ];
     view.fields.extend(permissions_field(job.reopen_mode()));
+    view.fields
+        .extend(project_settings_field(&plan.project_settings));
     view.fields.push(opens_field(&plan.window));
     view.command = Some(plan.command.clone());
     view.messages.push(message(

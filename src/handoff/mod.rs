@@ -64,15 +64,17 @@ mod plan;
 pub mod prompts;
 mod refusal;
 pub mod reviewers;
+pub mod trust;
 
 pub use clone::Remote;
 pub use cloning::NewCloneView;
-pub use command::{PermissionMode, SessionStart, WindowCommand, WindowMode};
+pub use command::{PermissionMode, SessionStart, SettingSources, WindowCommand, WindowMode};
 pub use execute::{LaunchOutcome, LaunchReport, LaunchStep, execute};
 pub use inspect::{ChosenClone, CloneSearch, InspectRequest, WorkspaceView, inspect};
 pub use live::{JobCheck, JobsCheck, ReopenPlan, WorktreeState};
 pub use plan::{LaunchSettings, PlanInput, inspect_request, plan};
 pub use refusal::{Refusal, RefusalReason};
+pub use trust::{OffReason, ProjectSettings};
 
 use crate::domain::{NextStep, RepoId, WorkItemId, facts::Reviewer};
 use serde::{Deserialize, Serialize};
@@ -313,6 +315,9 @@ pub struct LaunchPlan {
     /// The approval-required mode for a coordination Job; `None` for a coding
     /// Job, whose command is milestone 1's ([`coordination_mode`]).
     pub permission_mode: Option<PermissionMode>,
+    /// Off (`--setting-sources user`) for a coordination Job and for a PR
+    /// head the viewer didn't write ([`trust`]).
+    pub project_settings: ProjectSettings,
     /// Request review only: whom the prompt asks, and where it announces.
     pub review_request: Option<ReviewRequest>,
     pub window: WindowMode,
@@ -383,6 +388,7 @@ impl LaunchPlan {
             prompt: self.prompt.clone(),
             start: SessionStart::New,
             permission_mode: self.permission_mode,
+            setting_sources: self.project_settings.sources(),
         }
     }
 

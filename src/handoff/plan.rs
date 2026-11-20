@@ -12,7 +12,7 @@ use super::{
     kinds::{self, Facts},
     names,
     prompts::{PromptFields, Prompts, PromptsError},
-    reviewers, worktree_path,
+    reviewers, trust, worktree_path,
 };
 use crate::{
     config::Config,
@@ -68,6 +68,9 @@ pub struct PlanInput<'a> {
     /// Request review (#39): the Owner's Slack channel from its Linear
     /// Workflow, opaque, only ever put into the prompt. Unused for other kinds.
     pub slack_channel: Option<&'a str>,
+    /// The Work Item's Owner has a Linear Workflow: its Review Jobs are
+    /// coordination Jobs for [`trust::project_settings`].
+    pub linear_workflow: bool,
 }
 
 /// The facts for a launch, or every reason it can't happen. PRs here; Issues,
@@ -398,6 +401,11 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         session,
         prompt,
         permission_mode: coordination_mode(facts.step),
+        project_settings: trust::project_settings(
+            facts.step,
+            input.linear_workflow,
+            trust::checkout(item, Some(input.observation)),
+        ),
         review_request,
         window: view.window.clone(),
         command: String::new(),
