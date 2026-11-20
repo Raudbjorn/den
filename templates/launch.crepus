@@ -1,0 +1,35 @@
+den's launch sheet (#11): what launching a Job will do, then what it did.
+Lines are pre-wrapped by Rust (`ui::launch`); each has a label column and text.
+
+Line styles: strong (title), step (teal: the Next Step), caution (amber, always
+with a glyph in the text), good (success, always with a glyph in the text),
+input (the prompt field), input_active (the prompt field while typing into it),
+muted, plain, upstream (rust: the target is a fork's Upstream; the text always
+says "upstream →" too). Colours are engine sentinels (see frame.crepus).
+
+--- LaunchSheet
+div w-full h-full flex-col bg-[#aa0002] px-2 pt-1
+  div h-[1] text-[#aa000a] "{sheet_label}"
+  div h-[1]
+  for item in lines
+    div h-[1] flex-row
+      span w-[12] text-[#aa000a] "{label}"
+      if {is_strong}
+        span flex-1 font-bold text-[#aa0006] "{text}"
+      else if {is_step}
+        span flex-1 font-bold text-[#aa0009] "{text}"
+      else if {is_caution}
+        span flex-1 text-[#aa000f] "{text}"
+      else if {is_good}
+        span flex-1 text-[#aa000d] "{text}"
+      else if {is_upstream}
+        span flex-1 font-bold text-[#aa000b] "{text}"
+      else if {is_input_active}
+        span flex-1 bg-[#aa0003] text-[#aa0006] "{text}"
+      else if {is_input}
+        span flex-1 bg-[#aa0001] text-[#aa0005] "{text}"
+      else if {is_muted}
+        span flex-1 text-[#aa0007] "{text}"
+      else
+        span flex-1 text-[#aa0005] "{text}"
+  div flex-1

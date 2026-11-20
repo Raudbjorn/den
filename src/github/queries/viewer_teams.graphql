@@ -1,0 +1,17 @@
+# The viewer's team memberships: a review requested from one of these teams is
+# Waiting On the viewer. Needs the read:org scope.
+query ViewerTeams($login: String!) {
+  rateLimit { remaining resetAt }
+  viewer {
+    organizations(first: 100) {
+      pageInfo { hasNextPage }
+      nodes {
+        login
+        teams(first: 100, userLogins: [$login]) {
+          pageInfo { hasNextPage }
+          nodes { slug }
+        }
+      }
+    }
+  }
+}

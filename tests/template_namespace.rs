@@ -19,15 +19,21 @@ fn den_templates_register_only_their_own_files() {
     let store = TemplateStore::from_sources(templates::sources()).expect("den templates load");
     let mut paths: Vec<String> = store.virtual_files().keys().cloned().collect();
     paths.sort();
-    assert_eq!(paths, ["templates/frame.crepus"]);
-    for section in [
-        templates::HEADER,
-        templates::LIST_EMPTY,
-        templates::DETAIL,
-        templates::FOOTER,
-        templates::SUTURE_V,
-        templates::CHAMFER,
-    ] {
+    assert_eq!(
+        paths,
+        [
+            "templates/detail.crepus",
+            "templates/frame.crepus",
+            "templates/launch.crepus",
+            "templates/list.crepus",
+            "templates/sidebar.crepus"
+        ]
+    );
+    for section in templates::ALL_SECTIONS
+        .into_iter()
+        .chain(templates::LAYOUT_SECTIONS)
+        .chain(templates::LAUNCH_SECTIONS)
+    {
         assert!(store.component(section).is_ok(), "{section:?} missing");
     }
 }

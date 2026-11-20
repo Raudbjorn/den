@@ -1,0 +1,150 @@
+//! Seam 2: drive the App with events; Effects are performed through fake ports
+//! (with the same `perform` the real worker uses) and their Events fed back.
+
+use super::{
+    build::now,
+    fakes::{
+        FakeCache, FakeGitHub, FakeJobs, FakeLauncher, FakeUpstreams, FakeWorkspace, FixedClock,
+    },
+};
+use den::{
+    app::{App, Effect, Event, Key, ViewModel},
+    config::{Config, ConfigError},
+    domain::Observation,
+    ports::{Ports, SurveyFailure},
+    runtime,
+};
+use std::{collections::BTreeMap, sync::Arc};
+
+pub struct Harness {
+    pub app: App,
+    pub github: Arc<FakeGitHub>,
+    pub cache: Arc<FakeCache>,
+    pub workspace: Arc<FakeWorkspace>,
+    pub launcher: Arc<FakeLauncher>,
+    pub jobs: Arc<FakeJobs>,
+    pub upstreams: Arc<FakeUpstreams>,
+    ports: Ports,
+    /// Every Effect the App emitted, in order.
+    pub effects: Vec<Effect>,
+    pub view: ViewModel,
+}
+
+pub fn config(owners: &[&str]) -> Config {
+    Config {
+        owners: owners.iter().map(|o| (*o).to_owned()).collect(),
+        main_clone_root: None,
+        main_clones: BTreeMap::new(),
+    }
+}
+
+impl Harness {
+    pub fn new(config: Result<Config, ConfigError>) -> Self {
+        Self::with_cache(config, FakeCache::default())
+    }
+
+    /// A harness whose cache starts as `cache`.
+    pub fn with_cache(config: Result<Config, ConfigError>, cache: FakeCache) -> Self {
+        Self::with_stores(config, cache, Arc::new(FakeUpstreams::default()))
+    }
+
+    /// A harness whose cache starts as `cache` and whose App reads its Upstream
+    /// choices from `upstreams` at startup, as `main` does (a restart is a new
+    /// harness over the same `upstreams`).
+    pub fn with_stores(
+        config: Result<Config, ConfigError>,
+        cache: FakeCache,
+        upstreams: Arc<FakeUpstreams>,
+    ) -> Self {
+        let github = Arc::new(FakeGitHub::default());
+        let cache = Arc::new(cache);
+        let workspace = Arc::new(FakeWorkspace::default());
+        let launcher = Arc::new(FakeLauncher::default());
+        let jobs = Arc::new(FakeJobs::default());
+        let app =
+            App::new(config).with_upstreams(den::ports::UpstreamStore::load(upstreams.as_ref()));
+        let view = app.view();
+        Self {
+            ports: Ports {
+                github: github.clone(),
+                cache: cache.clone(),
+                workspace: workspace.clone(),
+                launcher: launcher.clone(),
+                jobs: jobs.clone(),
+                upstreams: upstreams.clone(),
+                clock: Arc::new(FixedClock(now())),
+            },
+            app,
+            github,
+            cache,
+            workspace,
+            launcher,
+            jobs,
+            upstreams,
+            effects: Vec::new(),
+            view,
+        }
+    }
+
+    pub fn with_owners(owners: &[&str]) -> Self {
+        Self::new(Ok(config(owners)))
+    }
+
+    /// Queues the next survey's answer.
+    pub fn answer(&self, outcome: Result<Observation, SurveyFailure>) -> &Self {
+        self.github.push_answer(outcome);
+        self
+    }
+
+    /// Sends `event` and performs everything it leads to, until idle.
+    pub fn settle(&mut self, event: Event) -> &ViewModel {
+        let (view, effects) = runtime::settle(&mut self.app, event, &self.ports);
+        self.view = view;
+        self.effects.extend(effects);
+        &self.view
+    }
+
+    /// Sends `event` without performing its Effects; returns them.
+    pub fn send(&mut self, event: Event) -> Vec<Effect> {
+        let (view, effects) = self.app.handle(event);
+        self.view = view;
+        self.effects.extend(effects.iter().cloned());
+        effects
+    }
+
+    /// den starts, surveys, and the answer arrives.
+    pub fn start(&mut self) -> &ViewModel {
+        self.settle(Event::Started { now: now() })
+    }
+
+    /// Performs one Effect through the fake ports and handles the Events it
+    /// produces. Their Effects are returned (and recorded), not performed.
+    pub fn perform(&mut self, effect: &Effect) -> Vec<Effect> {
+        let mut follow_ups = Vec::new();
+        for event in den::ports::perform(effect, &self.ports) {
+            follow_ups.extend(self.send(event));
+        }
+        follow_ups
+    }
+
+    pub fn key(&mut self, key: Key) -> Vec<Effect> {
+        self.send(Event::Key(key))
+    }
+
+    /// The rows' `(repo, reference, step label)`, in list order.
+    pub fn rows(&self) -> Vec<(String, String, String)> {
+        self.view
+            .list
+            .rows
+            .iter()
+            .map(|r| (r.repo.clone(), r.reference.clone(), r.step_label.clone()))
+            .collect()
+    }
+
+    pub fn survey_effects(&self) -> usize {
+        self.effects
+            .iter()
+            .filter(|e| matches!(e, Effect::Survey { .. }))
+            .count()
+    }
+}

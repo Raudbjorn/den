@@ -1,0 +1,20 @@
+# One page of an Owner's own Repos, each with its first page of open PRs.
+# Repos with more open PRs continue with pull_requests_repo.graphql. `$repos`
+# is the batch size: a page too costly for GitHub is read again with fewer.
+# PRs are ordered by creation time, which never changes, so a PR updated
+# mid-read cannot move ahead of a cursor and be skipped.
+query OwnerPullRequests($owner: String!, $after: String, $repos: Int!) {
+  rateLimit { remaining resetAt }
+  repositoryOwner(login: $owner) {
+    repositories(first: $repos, after: $after, ownerAffiliations: [OWNER], orderBy: {field: NAME, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        name
+        pullRequests(states: [OPEN], first: 50, orderBy: {field: CREATED_AT, direction: DESC}) {
+          pageInfo { hasNextPage endCursor }
+          nodes { ...PullRequestFacts }
+        }
+      }
+    }
+  }
+}

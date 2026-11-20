@@ -1,0 +1,379 @@
+//! The launch handoff (spec, "Launch handoff"): hands a Work Item's Next Step to
+//! Claude Code as a Job, in its own worktree and kitty window.
+//!
+//! - [`inspect`] looks at the local workspace through the ports (Main Clone
+//!   candidates and their remotes, the worktree path, the local branch, kitty or
+//!   not, Job records) and returns a [`WorkspaceView`].
+//! - [`plan`] is pure: from the Decision, the Observation, the target choice,
+//!   the WorkspaceView (which carries the Job records) and the prompts it gives
+//!   a [`LaunchPlan`] or a [`Refusal`] naming everything that didn't match.
+//! - [`execute`] carries a confirmed plan out: re-verify, fetch from the remote
+//!   whose URL is the target Repo, add the worktree, open the window (or copy
+//!   the command), record the Job. It stops at the first failure, reports what
+//!   was done, and never deletes anything.
+//!
+//! Every kind of Work Item launches (#12): a PR on its head branch; an Issue
+//! or a default-branch Run on a new `<type>_<slug>` branch from the target's
+//! default branch ([`BaseRef::DefaultBranch`], [`BranchStart::Fresh`]); a
+//! Branch on itself. [`kinds`] holds the non-PR facts. When GitHub doesn't say
+//! which commit the base is at, `inspect` asks the remote, so every sheet shows
+//! a commit and the executor re-checks it like a PR head. A Repo with no Main
+//! Clone is cloned ([`cloning`], [`CloneSource::ToClone`]) as the executor's
+//! first change. A worktree name another Work Item's Job already has gets a
+//! numeric suffix ([`names::free_worktree_name`], [`LaunchPlan::renamed`]).
+//!
+//! Extension points for later tickets:
+//! - #13 (done): [`TargetChoice::Upstream`] targets a fork's Upstream (the
+//!   fork's setting, or `u` on the sheet for one Job); [`Target::upstream_of`]
+//!   says so and [`Target::default_branch`] is the branch new `<type>_<slug>`
+//!   branches start from (the Upstream's when it is the target). A PR's head in
+//!   another Repo is [`BaseRef::PullHead`], fetched as `refs/pull/<n>/head` from
+//!   the target's remote. A PR is only ever fetched from the Repo it is in: an
+//!   Upstream target for a fork's PR is [`RefusalReason::PullRequestNotInTarget`].
+//! - #14 (Live Jobs, built): [`live`] tells each recorded Job's worktree
+//!   present / missing / unknown. The WorkspaceView carries this Work Item's
+//!   checks (`job_checks`); the App asks "open existing or start fresh?" on a
+//!   Live Job. Open existing is a [`live::ReopenPlan`] carried out by
+//!   [`live::reopen`] (`claude --resume`, never in the Main Clone); start fresh
+//!   is [`PlanInput::fresh`], a suffix on the worktree name, branch and
+//!   session.
+//!
+//! One suffix rule for every name den suffixes ([`names::suffixed`],
+//! `<name>-<n>`): a worktree name another Work Item's Job has (#12), and a
+//! fresh start beside this Work Item's Live Job (#14).
+
+pub mod clone;
+pub mod cloning;
+pub mod command;
+mod execute;
+mod inspect;
+mod kinds;
+pub mod live;
+pub mod names;
+mod plan;
+pub mod prompts;
+mod refusal;
+
+pub use clone::Remote;
+pub use cloning::NewCloneView;
+pub use command::{SessionStart, WindowCommand, WindowMode};
+pub use execute::{LaunchOutcome, LaunchReport, LaunchStep, execute};
+pub use inspect::{ChosenClone, CloneSearch, InspectRequest, WorkspaceView, inspect};
+pub use live::{JobCheck, JobsCheck, ReopenPlan, WorktreeState};
+pub use plan::{LaunchSettings, PlanInput, inspect_request, plan};
+pub use refusal::{Refusal, RefusalReason};
+
+use crate::domain::{NextStep, RepoId, WorkItemId};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+/// Where Jobs' worktrees live inside a Main Clone (where Claude Code expects them).
+pub const WORKTREES_DIR: [&str; 2] = [".claude", "worktrees"];
+/// The longest prompt den passes to Claude Code, in characters.
+pub const MAX_PROMPT_CHARS: usize = 8_000;
+/// Characters of a commit shown on the sheet.
+pub const SHORT_COMMIT_CHARS: usize = 7;
+
+/// The worktree path for a Job named `name` in `clone`.
+pub fn worktree_path(clone: &Path, name: &str) -> PathBuf {
+    WORKTREES_DIR
+        .iter()
+        .fold(clone.to_path_buf(), |path, part| path.join(part))
+        .join(name)
+}
+
+/// A commit, shortened for display.
+pub fn short_commit(commit: &str) -> &str {
+    commit.get(..SHORT_COMMIT_CHARS).unwrap_or(commit)
+}
+
+/// Whether den may write in a directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Writability {
+    Writable,
+    NotWritable,
+    /// den couldn't tell (for example, writable only by a group).
+    Unknown(String),
+}
+
+/// What is at a path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PathState {
+    Missing,
+    Exists {
+        writable: Writability,
+    },
+    /// den couldn't inspect it; never treated as missing.
+    Unknown(String),
+}
+
+/// A worktree git has registered for a clone (`git worktree list`). #14 reads
+/// `locked` and `prunable` to tell a Live Job's worktree present / missing / unknown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegisteredWorktree {
+    pub path: PathBuf,
+    /// The branch checked out there; `None` when detached (or bare).
+    pub branch: Option<String>,
+    pub locked: bool,
+    /// git would prune it: its folder is gone.
+    pub prunable: bool,
+}
+
+/// Which Repo the Job's work goes to (ADR-0003: a fork is its own target
+/// unless its Upstream is chosen, for the fork or for one Job).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TargetChoice {
+    /// The Work Item's own Repo (for a fork: the fork itself).
+    #[default]
+    OwnRepo,
+    /// The fork's Upstream. Only meaningful for a Work Item in a fork.
+    Upstream,
+}
+
+impl TargetChoice {
+    /// The other choice (`u`).
+    pub fn flipped(self) -> Self {
+        match self {
+            Self::OwnRepo => Self::Upstream,
+            Self::Upstream => Self::OwnRepo,
+        }
+    }
+
+    /// The target a launch sheet for `item` starts from, given the fork's own
+    /// setting (`fork_setting`). A PR's and a Branch's refs live in the Repo
+    /// they are in, so their Jobs start on that Repo whatever the fork's
+    /// setting (a sheet's `u` can still choose the Upstream, which is
+    /// refused with the reason). Issues and Runs follow the fork's setting:
+    /// their new branches start from the target's default branch.
+    pub fn default_for(item: &WorkItemId, fork_setting: Self) -> Self {
+        match item {
+            WorkItemId::PullRequest { .. } | WorkItemId::Branch { .. } => Self::OwnRepo,
+            WorkItemId::Issue { .. } | WorkItemId::Run { .. } => fork_setting,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Target {
+    pub repo: RepoId,
+    /// The Repo's URL on GitHub; a remote matches it when both name the same Repo.
+    pub url: String,
+    pub is_fork: bool,
+    /// The fork whose Upstream this is, when the target is an Upstream.
+    pub upstream_of: Option<RepoId>,
+    /// The target's default branch (new branches start there, #12); `None`
+    /// for an empty Repo.
+    pub default_branch: Option<String>,
+}
+
+/// How the Main Clone was found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CloneSource {
+    /// By matching remotes under `root`; `others` also matched and lost.
+    Searched { root: PathBuf, others: Vec<PathBuf> },
+    /// From `[main_clones]` in the config.
+    Configured,
+    /// None exists yet: launching clones `url` into the MainClone's path, a
+    /// new folder under `root`. `taken` are the folders den passed over
+    /// because something is already there.
+    ToClone {
+        url: String,
+        root: PathBuf,
+        taken: Vec<PathBuf>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MainClone {
+    pub path: PathBuf,
+    pub source: CloneSource,
+    pub writable: Writability,
+}
+
+/// What the Job's worktree starts from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BaseRef {
+    /// A branch of the target, fetched by name: a same-Repo PR's head branch,
+    /// or the Branch a Branch Work Item is.
+    HeadBranch(String),
+    /// The target's default branch, for a new `<type>_<slug>` branch (#12).
+    DefaultBranch(String),
+    /// The head of PR `number`, whose head branch lives in another Repo than
+    /// the target (or in one that was deleted): fetched as
+    /// `refs/pull/<number>/head` from the target's remote, never from the
+    /// head's Repo (#13).
+    PullHead { number: u64 },
+}
+
+impl BaseRef {
+    /// The target's branch the base is fetched from; `None` for a PR ref.
+    pub fn branch(&self) -> Option<&str> {
+        match self {
+            Self::HeadBranch(branch) | Self::DefaultBranch(branch) => Some(branch),
+            Self::PullHead { .. } => None,
+        }
+    }
+
+    /// The ref on the target's remote: `refs/heads/<branch>` or
+    /// `refs/pull/<n>/head`.
+    pub fn remote_ref(&self) -> String {
+        match self {
+            Self::HeadBranch(branch) | Self::DefaultBranch(branch) => {
+                format!("refs/heads/{branch}")
+            }
+            Self::PullHead { number } => format!("refs/pull/{number}/head"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Base {
+    pub reference: BaseRef,
+    /// The commit the sheet showed, and the worktree will start on.
+    pub commit: String,
+}
+
+/// The Job's local branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BranchStart {
+    /// Created at the base, tracking `tracking` (`<remote>/<branch>`).
+    New { tracking: String },
+    /// Created at the base, tracking nothing: the head branch lives in another
+    /// Repo, and the target's remote has no branch of that name to track.
+    NewUntracked,
+    /// Already exists locally at the base commit; checked out as is.
+    Existing,
+    /// A new branch for this Job, created at the base and tracking nothing:
+    /// pushing it creates it on the remote.
+    Fresh,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobBranch {
+    pub name: String,
+    pub start: BranchStart,
+    /// The name it would have had, when that clashed in the Main Clone: a
+    /// cross-Repo PR head named like the default branch or a branch already
+    /// there is checked out as `pr-<n>-<head>` instead.
+    pub renamed_from: Option<String>,
+}
+
+/// Everything a launch will do, decided before anything is done.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchPlan {
+    pub work_item: WorkItemId,
+    pub title: String,
+    pub url: String,
+    pub next_step: NextStep,
+    pub target: Target,
+    pub main_clone: MainClone,
+    /// The remote whose URL is the target Repo (not assumed to be `origin`).
+    pub remote: Remote,
+    pub base: Base,
+    pub branch: JobBranch,
+    pub worktree: PathBuf,
+    /// Set when the wanted worktree name was taken by another Work Item's Job.
+    pub renamed: Option<Renamed>,
+    pub session: String,
+    pub prompt: String,
+    pub window: WindowMode,
+    /// The exact command, as shown on the sheet.
+    pub command: String,
+}
+
+/// A worktree name (and, for a new branch, the branch name) that got a
+/// numeric suffix because other Work Items' Jobs already have it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Renamed {
+    /// The name den wanted.
+    pub wanted: String,
+    /// The Work Items whose Jobs hold that name (or an earlier suffix).
+    pub taken_by: Vec<WorkItemId>,
+}
+
+/// Why a prompt can't be passed to Claude Code as is.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PromptProblem {
+    #[error("the prompt is empty")]
+    Empty,
+    #[error("the prompt starts with '-', which Claude Code would read as an option")]
+    LooksLikeAnOption,
+    #[error("the prompt is longer than {MAX_PROMPT_CHARS} characters")]
+    TooLong,
+    #[error("the prompt contains a NUL character")]
+    HasNul,
+}
+
+/// Checks `prompt` can be passed as Claude Code's prompt argument.
+pub fn check_prompt(prompt: &str) -> Result<(), PromptProblem> {
+    if prompt.trim().is_empty() {
+        return Err(PromptProblem::Empty);
+    }
+    if prompt.starts_with('-') {
+        return Err(PromptProblem::LooksLikeAnOption);
+    }
+    if prompt.contains('\0') {
+        return Err(PromptProblem::HasNul);
+    }
+    if prompt.chars().count() > MAX_PROMPT_CHARS {
+        return Err(PromptProblem::TooLong);
+    }
+    Ok(())
+}
+
+impl LaunchPlan {
+    /// What the Job's window runs.
+    pub fn window_command(&self) -> WindowCommand {
+        WindowCommand {
+            directory: self.worktree.clone(),
+            session: self.session.clone(),
+            prompt: self.prompt.clone(),
+            start: SessionStart::New,
+        }
+    }
+
+    /// The plan with `prompt` instead (the sheet's edited text), its command
+    /// rebuilt to match.
+    pub fn with_prompt(mut self, prompt: &str) -> Result<Self, PromptProblem> {
+        check_prompt(prompt)?;
+        self.prompt = prompt.to_owned();
+        self.command = command::display(&self.window, &self.window_command());
+        Ok(self)
+    }
+
+    /// The plan on `commit` instead (the base moved and the user accepted it).
+    pub fn on_commit(mut self, commit: &str) -> Self {
+        commit.clone_into(&mut self.base.commit);
+        self
+    }
+
+    /// The ref the base is fetched into: `refs/remotes/<remote>/<branch>` for
+    /// a branch, `refs/den/pull/<remote>/<n>` for a PR ref. A PR head is kept
+    /// out of `refs/remotes/`: the forced fetch would otherwise overwrite the
+    /// remote-tracking ref of a real branch named `pr/<n>`.
+    pub fn tracking_ref(&self) -> String {
+        match &self.base.reference {
+            BaseRef::HeadBranch(branch) | BaseRef::DefaultBranch(branch) => {
+                format!("refs/remotes/{}/{branch}", self.remote.name)
+            }
+            BaseRef::PullHead { number } => {
+                format!("refs/den/pull/{}/{number}", self.remote.name)
+            }
+        }
+    }
+
+    /// The refspec fetched from the remote: the base branch, or the PR ref,
+    /// into [`Self::tracking_ref`].
+    pub fn fetch_refspec(&self) -> String {
+        format!(
+            "+{}:{}",
+            self.base.reference.remote_ref(),
+            self.tracking_ref()
+        )
+    }
+
+    /// The Main Clone doesn't exist yet: launching clones it first.
+    pub fn clones(&self) -> bool {
+        matches!(self.main_clone.source, CloneSource::ToClone { .. })
+    }
+}

@@ -1,0 +1,17 @@
+# One page of an Owner's own Repos (not ones it only collaborates on).
+query OwnerRepos($owner: String!, $after: String) {
+  rateLimit { remaining resetAt }
+  repositoryOwner(login: $owner) {
+    repositories(first: 100, after: $after, ownerAffiliations: [OWNER], orderBy: {field: NAME, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        name
+        url
+        isFork
+        isArchived
+        defaultBranchRef { name }
+        parent { name owner { login } url isFork isArchived defaultBranchRef { name } }
+      }
+    }
+  }
+}

@@ -68,6 +68,18 @@ _Avoid_: Assignee (that is GitHub's narrower concept)
 A Branch with no Pull Request whose last commit is more than 30 days old.
 _Avoid_: Dead branch, old branch
 
+**Observation**:
+One survey of the watched Owners: the facts den read, who the viewer is, and when it was read.
+_Avoid_: Snapshot, fetch (for the result)
+
+**Coverage**:
+How completely an Observation was read, per source: complete, partial (with why), failed (with the error), or not yet fetched.
+_Avoid_: Status, health
+
+**Explanation**:
+Why a Work Item's Next Step won (or why it has none), what else holds, and what den could not establish.
+_Avoid_: Reason (alone), rationale
+
 ### Kinds of Next Step
 
 Each Work Item has at most one. An Issue with a linked open Pull Request has none of its own; the Pull Request carries it.

@@ -1,0 +1,77 @@
+den's sidebar plate (spec, "Look and layout", variant B): every Repo of the
+watched Owners, grouped under its Owner, on surface 1. Rust windows the rows to
+the plate's height and draws each one on its own (`SidebarRow`): a `for` over
+the rows would clone the whole row list once per element.
+
+Sentinels as in frame.crepus. Meaning never rides on colour alone:
+  mark    the rust tick on the cursor row while the sidebar has focus
+  scope   a glyph on the row that is the current Scope
+  icons   fork and archived are glyphs
+  upstream  a fork that targets its Upstream (#13): the "upstream →" label, in rust
+  flag    incomplete coverage (filled by #8) is a glyph
+  count   Work Items with a Next Step, or a faint dot for none
+
+--- Sidebar
+div w-full h-full flex-col bg-[#aa0001] pt-1
+  div h-[1] flex-row px-1 text-[#aa000a]
+    span flex-1 "{sidebar_label}"
+    span w-[10] text-[#aa0008] "{position}"
+  div h-[1]
+  div flex-1
+
+--- SidebarRow
+div w-full h-full flex-col bg-[#aa0001]
+  if {cursor}
+    div h-[1] flex-row bg-[#aa0017]
+      span w-[1] text-[#aa000b] "{mark}"
+      span w-[1] text-[#aa000b] "{scope_mark}"
+      span flex-1 font-bold text-[#aa0006] "{label}"
+      if {has_upstream}
+        span w-[11] font-bold text-[#aa000b] "{upstream}"
+      span w-[1] " "
+      span w-[2] text-[#aa0016] "{icons}"
+      span w-[1] text-[#aa000f] "{flag}"
+      span w-[4] text-[#aa000b] "{count}"
+  else if {heading}
+    div h-[1] flex-row
+      span w-[1] " "
+      span w-[1] text-[#aa000b] "{scope_mark}"
+      if {current}
+        span flex-1 font-bold text-[#aa0006] "{label}"
+      else
+        span flex-1 text-[#aa000a] "{label}"
+      span w-[1] text-[#aa000f] "{flag}"
+      span w-[4] text-[#aa0007] "{count}"
+  else if {current}
+    div h-[1] flex-row
+      span w-[1] " "
+      span w-[1] text-[#aa000b] "{scope_mark}"
+      span flex-1 font-bold text-[#aa0006] "{label}"
+      if {has_upstream}
+        span w-[11] font-bold text-[#aa000b] "{upstream}"
+      span w-[1] " "
+      span w-[2] text-[#aa0016] "{icons}"
+      span w-[1] text-[#aa000f] "{flag}"
+      span w-[4] text-[#aa0009] "{count}"
+  else if {busy}
+    div h-[1] flex-row
+      span w-[1] " "
+      span w-[1] " "
+      span flex-1 text-[#aa0005] "{label}"
+      if {has_upstream}
+        span w-[11] font-bold text-[#aa000b] "{upstream}"
+      span w-[1] " "
+      span w-[2] text-[#aa0016] "{icons}"
+      span w-[1] text-[#aa000f] "{flag}"
+      span w-[4] text-[#aa0009] "{count}"
+  else
+    div h-[1] flex-row
+      span w-[1] " "
+      span w-[1] " "
+      span flex-1 text-[#aa0007] "{label}"
+      if {has_upstream}
+        span w-[11] font-bold text-[#aa000b] "{upstream}"
+      span w-[1] " "
+      span w-[2] text-[#aa0016] "{icons}"
+      span w-[1] text-[#aa000f] "{flag}"
+      span w-[4] text-[#aa0008] "{count}"

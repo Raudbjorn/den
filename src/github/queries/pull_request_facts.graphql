@@ -1,0 +1,20 @@
+# The facts den keeps per open PR. Appended to both PR queries. Checks and
+# reviews come from pull_request_details.graphql, one query per batch of PRs.
+fragment PullRequestFacts on PullRequest {
+  id
+  number
+  title
+  url
+  isDraft
+  createdAt
+  updatedAt
+  author { login }
+  baseRefName
+  headRefName
+  headRefOid
+  headRepository { name owner { login } }
+  mergeable
+  mergeStateStatus
+  reviewDecision
+  isInMergeQueue
+}
