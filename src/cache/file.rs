@@ -8,7 +8,7 @@
 //! afresh. It never crashes den, and is overwritten by the next good survey.
 
 use super::{CacheError, CachedObservation};
-use crate::{files, ports::ObservationCache};
+use crate::{domain::Observation, files, ports::ObservationCache};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -80,6 +80,47 @@ struct StoredCached {
 #[derive(Deserialize)]
 struct StoredObservation {
     observed_at: Timestamp,
+    #[serde(default)]
+    linear: StoredLinear,
+}
+
+#[derive(Deserialize, Default)]
+struct StoredLinear {
+    #[serde(default)]
+    observed_at: Option<Timestamp>,
+}
+
+/// When a cache's surveys were made: GitHub's, and Linear's when it has one.
+/// A Linear answer is saved into the GitHub survey it was merged with, so a
+/// cache is as new as its newer service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SurveyTimes {
+    github: Timestamp,
+    linear: Option<Timestamp>,
+}
+
+impl SurveyTimes {
+    fn of(observation: &Observation) -> Self {
+        Self {
+            github: observation.observed_at,
+            linear: observation.linear.observed_at,
+        }
+    }
+
+    /// When `self` (stored) supersedes `offered`: at least as new for
+    /// GitHub, and for Linear when both have a Linear answer, and newer for
+    /// one of them. Returns that service's two times (stored, offered),
+    /// GitHub's first. Equal times are the same survey saved again.
+    fn supersedes(self, offered: Self) -> Option<(Timestamp, Timestamp)> {
+        let linear = self.linear.zip(offered.linear);
+        if self.github < offered.github || linear.is_some_and(|(s, o)| s < o) {
+            return None;
+        }
+        if self.github > offered.github {
+            return Some((self.github, offered.github));
+        }
+        linear.filter(|(s, o)| s > o)
+    }
 }
 
 /// The real cache, in a directory of its own.
@@ -214,7 +255,7 @@ impl FileCache {
     /// or it is an older format, which no den of this format reads again: its
     /// age must not keep a survey from replacing it (after a clock change, say).
     /// A newer format's age still counts: that is a newer den's survey.
-    fn stored_observed_at(&self, path: &Path) -> Option<Timestamp> {
+    fn stored_times(&self, path: &Path) -> Option<SurveyTimes> {
         let bytes = self.read_bounded(path).ok()??;
         let format = serde_json::from_slice::<FormatOnly>(&bytes).ok()?.format;
         if format < CACHE_FORMAT {
@@ -222,7 +263,10 @@ impl FileCache {
         }
         serde_json::from_slice::<StoredAge>(&bytes)
             .ok()
-            .map(|stored| stored.cached.observation.observed_at)
+            .map(|stored| SurveyTimes {
+                github: stored.cached.observation.observed_at,
+                linear: stored.cached.observation.linear.observed_at,
+            })
     }
 }
 
@@ -271,9 +315,9 @@ impl ObservationCache for FileCache {
         let lock_path = self.lock_for(login)?;
         let _lock = files::lock_exclusive(&lock_path, self.lock_wait)
             .map_err(|e| write_error(&lock_path, &e))?;
-        let offered = cached.observation.observed_at;
-        if let Some(stored) = self.stored_observed_at(&path)
-            && stored > offered
+        if let Some((stored, offered)) = self
+            .stored_times(&path)
+            .and_then(|stored| stored.supersedes(SurveyTimes::of(&cached.observation)))
         {
             return Err(CacheError::Superseded {
                 path,

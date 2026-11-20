@@ -278,6 +278,43 @@ fn an_older_survey_never_replaces_a_newer_one() {
     assert_eq!(cache.load(), Ok(Some(newest)));
 }
 
+/// A Linear answer is saved beside the GitHub survey it was merged into, so
+/// a cache is as new as its newer service: a store is refused only when the
+/// stored survey is at least as new for GitHub and for Linear (and newer for
+/// one), never on GitHub's time alone.
+#[test]
+fn a_survey_is_superseded_only_when_both_services_stored_are_at_least_as_new() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCache::in_state_dir(dir.path());
+    let at = |github: &str, linear: &str, number: u64| {
+        let mut c = cached("me", number);
+        c.observation.observed_at = ts(github);
+        c.observation.linear.observed_at = Some(ts(linear));
+        c
+    };
+    // Another den stored a newer GitHub survey with an older Linear answer:
+    // this den's newer Linear answer still replaces it.
+    cache
+        .store(&at("2026-11-19T11:00:00Z", "2026-11-19T09:00:00Z", 2))
+        .unwrap();
+    let newer_linear = at("2026-11-19T10:00:00Z", "2026-11-19T10:30:00Z", 1);
+    cache.store(&newer_linear).unwrap();
+    assert_eq!(cache.load(), Ok(Some(newer_linear)));
+
+    // Same GitHub survey, older Linear answer: refused, naming Linear's times.
+    let older_linear = at("2026-11-19T10:00:00Z", "2026-11-19T09:00:00Z", 3);
+    assert!(matches!(
+        cache.store(&older_linear),
+        Err(CacheError::Superseded { stored, offered, .. })
+            if stored == ts("2026-11-19T10:30:00Z") && offered == ts("2026-11-19T09:00:00Z")
+    ));
+
+    // The same times again (the same survey saved twice) still replace it.
+    let same = at("2026-11-19T10:00:00Z", "2026-11-19T10:30:00Z", 4);
+    cache.store(&same).unwrap();
+    assert_eq!(cache.load(), Ok(Some(same)));
+}
+
 /// A cache of an older format is never read again, so its age can't keep a
 /// survey from replacing it (its clock may have run ahead). A newer format's
 /// survey is a newer den's, and an older survey still never replaces it.
