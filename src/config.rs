@@ -19,10 +19,8 @@ pub mod linear;
 
 pub use linear::{LinearWorkflow, Reviewer};
 
-use crate::domain::{
-    Policies,
-    ids::{MAX_LOGIN_CHARS, is_valid_login},
-};
+pub(crate) use crate::domain::ids::is_valid_login;
+use crate::domain::{Policies, ids::MAX_LOGIN_CHARS};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -58,9 +56,8 @@ impl Config {
     }
 
     /// Each Owner's Linear Workflow policy for the decision engine; the empty
-    /// policy for Owners without a Linear Workflow. The policy's rules arrive
-    /// with the tickets that read them (#36, #40), each mapped from the
-    /// workflow here.
+    /// policy for Owners without a Linear Workflow. Each workflow maps its own
+    /// ([`LinearWorkflow::policy`]).
     pub fn policies(&self) -> Policies {
         self.linear.iter().fold(Policies::default(), |policies, w| {
             policies.with(w.owner.clone(), w.policy())

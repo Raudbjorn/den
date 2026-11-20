@@ -1,0 +1,8 @@
+# One Landing Group member's state (#37): the selection inside
+# `repository(owner:, name:) { }`. den repeats it once per member in a batch
+# (aliases m0, m1, …), replacing $NUMBER with that member's own variable
+# ($p0, $p1, …). Read-only, like every query den sends.
+pullRequest(number: $NUMBER) {
+  state
+  mergedAt
+}

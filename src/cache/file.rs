@@ -8,7 +8,7 @@
 //! afresh. It never crashes den, and is overwritten by the next good survey.
 
 use super::{CacheError, CachedObservation};
-use crate::{files, ports::ObservationCache};
+use crate::{domain::Observation, files, ports::ObservationCache};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -33,10 +33,26 @@ pub const CACHE_SUBDIR: &str = "cache";
 /// (milestone 2). A milestone-1 cache (4) is refused and surveyed afresh.
 /// 6: the Linear part holds Linear viewers and Linear Issues, and coverage
 /// has Linear incompleteness reasons (#32).
-/// 7: separate branches added Linear attachments (#35) or team states (#33).
-/// 8: separate branches combined those fields or added exact-head PR review facts (#36).
-/// 9: attachments, team workflow states and exact-head PR review facts together.
-pub const CACHE_FORMAT: u32 = 9;
+/// 7: never released as one shape. #33, #34, #35 and #36 each moved to 7 for
+/// their own fields on their branches; a cache any of those wrote is refused.
+/// 8: milestone 2's merged shape (#33 + #34 + #35 + #36). A PR's reviews carry
+/// their commit and their author's kind of account, and a PR has its latest
+/// reviews of any kind, comments included (#36); a Linear Issue carries its
+/// attachments and whether they were all read (#35) and the Linear source
+/// that listed it (#34); the Linear part holds each Linear team's workflow
+/// states (#33) and its own survey time (#34).
+/// 9: an Observation holds the states of Landing Group members den didn't find
+/// among the open Pull Requests (merged, closed, open again), read by number
+/// after the survey, and coverage has their source kind (#37).
+/// 10: integrate/m2-wave3's shape after the second review round (a PR's
+/// details carry the head they were read at, #36; Linear's errors alongside
+/// data count those not kept, #32), without #37's member states; a cache it
+/// wrote is refused here.
+/// 11: 10 with #37's member states: the second review round's merged shape
+/// plus Land and Mark for release.
+/// 12: an Observation records the members den asked about and got no state
+/// for, with when it last asked (#37), so a bounded read rotates past them.
+pub const CACHE_FORMAT: u32 = 12;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// Names the viewer whose cache startup shows.
@@ -81,6 +97,47 @@ struct StoredCached {
 #[derive(Deserialize)]
 struct StoredObservation {
     observed_at: Timestamp,
+    #[serde(default)]
+    linear: StoredLinear,
+}
+
+#[derive(Deserialize, Default)]
+struct StoredLinear {
+    #[serde(default)]
+    observed_at: Option<Timestamp>,
+}
+
+/// When a cache's surveys were made: GitHub's, and Linear's when it has one.
+/// A Linear answer is saved into the GitHub survey it was merged with, so a
+/// cache is as new as its newer service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SurveyTimes {
+    github: Timestamp,
+    linear: Option<Timestamp>,
+}
+
+impl SurveyTimes {
+    fn of(observation: &Observation) -> Self {
+        Self {
+            github: observation.observed_at,
+            linear: observation.linear.observed_at,
+        }
+    }
+
+    /// When `self` (stored) supersedes `offered`: at least as new for
+    /// GitHub, and for Linear when both have a Linear answer, and newer for
+    /// one of them. Returns that service's two times (stored, offered),
+    /// GitHub's first. Equal times are the same survey saved again.
+    fn supersedes(self, offered: Self) -> Option<(Timestamp, Timestamp)> {
+        let linear = self.linear.zip(offered.linear);
+        if self.github < offered.github || linear.is_some_and(|(s, o)| s < o) {
+            return None;
+        }
+        if self.github > offered.github {
+            return Some((self.github, offered.github));
+        }
+        linear.filter(|(s, o)| s > o)
+    }
 }
 
 /// The real cache, in a directory of its own.
@@ -215,7 +272,7 @@ impl FileCache {
     /// or it is an older format, which no den of this format reads again: its
     /// age must not keep a survey from replacing it (after a clock change, say).
     /// A newer format's age still counts: that is a newer den's survey.
-    fn stored_observed_at(&self, path: &Path) -> Option<Timestamp> {
+    fn stored_times(&self, path: &Path) -> Option<SurveyTimes> {
         let bytes = self.read_bounded(path).ok()??;
         let format = serde_json::from_slice::<FormatOnly>(&bytes).ok()?.format;
         if format < CACHE_FORMAT {
@@ -223,7 +280,10 @@ impl FileCache {
         }
         serde_json::from_slice::<StoredAge>(&bytes)
             .ok()
-            .map(|stored| stored.cached.observation.observed_at)
+            .map(|stored| SurveyTimes {
+                github: stored.cached.observation.observed_at,
+                linear: stored.cached.observation.linear.observed_at,
+            })
     }
 }
 
@@ -272,9 +332,9 @@ impl ObservationCache for FileCache {
         let lock_path = self.lock_for(login)?;
         let _lock = files::lock_exclusive(&lock_path, self.lock_wait)
             .map_err(|e| write_error(&lock_path, &e))?;
-        let offered = cached.observation.observed_at;
-        if let Some(stored) = self.stored_observed_at(&path)
-            && stored > offered
+        if let Some((stored, offered)) = self
+            .stored_times(&path)
+            .and_then(|stored| stored.supersedes(SurveyTimes::of(&cached.observation)))
         {
             return Err(CacheError::Superseded {
                 path,

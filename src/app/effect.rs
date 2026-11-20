@@ -5,7 +5,7 @@ use crate::{
     cache::CachedObservation,
     domain::UpstreamTargets,
     handoff::{InspectRequest, LaunchPlan, ReopenPlan},
-    ports::{LinearSurveyRequest, SurveyRequest},
+    ports::{LinearSurveyRequest, MemberStatesRequest, SurveyRequest},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +34,14 @@ pub enum Effect {
     SurveyLinear {
         id: SurveyId,
         request: LinearSurveyRequest,
+    },
+    /// Read the states of Landing Group members den didn't find among the
+    /// open Pull Requests (#37); answered by `Event::MemberStatesRead` with
+    /// the same id as the survey round it follows. Emitted once both of that
+    /// round's surveys have answered, and only when some member needs it.
+    ReadMemberStates {
+        id: SurveyId,
+        request: MemberStatesRequest,
     },
     /// Read the cache; answered by `Event::CacheLoaded`. Emitted before the
     /// startup survey, so cached data shows before any network call completes.

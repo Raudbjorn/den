@@ -4,7 +4,9 @@
 //!
 //! An Owner without a Linear Workflow gets the empty policy, which changes
 //! nothing: it is decided exactly as in milestone 1
-//! (`tests/decide_policies.rs`).
+//! (`tests/decide_policies.rs`). A Linear Workflow's policy says which
+//! unassigned Linear Issues are offered to Start ([`StartPolicy`], #33), its
+//! review rules ([`ReviewPolicy`], #36) and its Held Repos (#36).
 
 use super::{
     RepoId,
@@ -14,13 +16,15 @@ use super::{
 
 /// One Owner's Linear Workflow policy. Its [`Default`] is the **empty** policy,
 /// the one every Owner without a Linear Workflow gets, and it must stay a
-/// policy that changes no Decision: no Start teams, review rules or Held Repos.
+/// policy that changes no Decision: it offers no Start, has no review rules,
+/// holds no Repo and names no release state.
 ///
 /// Fields arrive with the tickets that use them; the landing order comes with
 /// #40.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LinearWorkflowPolicy {
-    /// Which unassigned Linear Issues are offered to Start (#33).
+    /// Which unassigned Linear Issues are offered to Start (#33). Offers
+    /// none in the empty policy.
     pub start: StartPolicy,
     /// The workflow's review rules for the Owner's Pull Requests (#36).
     /// `None` (the empty policy): milestone 1's PR rules, unchanged.
@@ -28,12 +32,25 @@ pub struct LinearWorkflowPolicy {
     /// Held Repos: a PR here that would Merge has no Next Step and is held
     /// for release instead (#36). Empty in the empty policy.
     pub held_repos: Vec<RepoId>,
+    /// The Linear state a landed Linear Issue moves to (#37): Mark for
+    /// release is offered only when the workflow names one, and an issue
+    /// already in it has no Next Step (release is outside den). Compared
+    /// with the issue's state name, ignoring case. `None` in the empty
+    /// policy.
+    pub release_state: Option<String>,
 }
 
 impl LinearWorkflowPolicy {
     /// Whether `repo` is a Held Repo (compared as GitHub compares names).
     pub fn holds(&self, repo: &RepoId) -> bool {
         self.held_repos.iter().any(|held| held.same(repo))
+    }
+
+    /// Whether `state_name` is this workflow's release state.
+    pub fn is_release_state(&self, state_name: &str) -> bool {
+        self.release_state
+            .as_deref()
+            .is_some_and(|release| release.eq_ignore_ascii_case(state_name))
     }
 }
 
@@ -118,6 +135,7 @@ static EMPTY_POLICY: LinearWorkflowPolicy = LinearWorkflowPolicy {
     start: StartPolicy::NONE,
     review: None,
     held_repos: Vec::new(),
+    release_state: None,
 };
 
 impl Policies {

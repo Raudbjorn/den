@@ -209,6 +209,37 @@ fn reads_team_states_and_the_start_teams_unassigned_issues() {
     assert_eq!(start.id, LinearIssueId::new("acme", "id-8"));
     assert_eq!(start.assignee, None);
     assert_eq!(start.state.kind, LinearStateKind::Unstarted);
+    // Integration (#33 + #35): the start-team query reads attachments through
+    // the shared `LinearIssueFields` fragment, so a Start offer's attachments
+    // are as complete as an assigned issue's (spec 0002, rule 3).
+    assert_eq!(start.attachments.read, AttachmentsRead::Complete);
+    // Integration (#33 + #34): the cache merges each issue by the source that
+    // listed it, so a Start offer names the start-team list.
+    assert_eq!(start.listed_by, LinearSourceKind::StartTeamIssues);
+    assert_eq!(
+        survey.part.issues[0].listed_by,
+        LinearSourceKind::AssignedIssues
+    );
+    let request = transport
+        .requests()
+        .into_iter()
+        .find(|r| r.operation == "LinearStartTeamIssues")
+        .expect("asked");
+    assert!(
+        request
+            .query
+            .contains("fragment LinearIssueFields on Issue")
+    );
+    assert!(request.query.contains("...LinearIssueFields"));
+    assert!(request.query.contains("$attachmentsPerIssue: Int!"));
+    assert_eq!(
+        request.variables["attachmentsPerIssue"],
+        json!(ATTACHMENTS_PER_ISSUE)
+    );
+    assert!(
+        request.variables["filter"].is_object(),
+        "the filter is kept"
+    );
 }
 
 #[test]
@@ -561,6 +592,31 @@ fn an_issue_is_kept_once() {
         .map(|i| i.identifier.as_str())
         .collect();
     assert_eq!(identifiers, ["TEAM-1", "TEAM-8"]);
+}
+
+/// Two Owners whose Linear Workflows share a workspace and a start team each
+/// list its Start offers: one Owner's list never hides the other's.
+#[test]
+fn owners_sharing_a_workspace_each_list_the_start_offers() {
+    let labs = LinearWorkflow {
+        owner: "acme-labs".to_owned(),
+        ..start_workflow()
+    };
+    let transport = Arc::new(ScriptedLinear::new(script(all_teams, two_starts)));
+    let survey = source(transport, Arc::default()).survey(&LinearSurveyRequest {
+        workflows: vec![start_workflow(), labs],
+    });
+    let offers = |owner: &str| -> Vec<&str> {
+        survey
+            .part
+            .issues
+            .iter()
+            .filter(|i| i.owner == owner && i.listed_by == LinearSourceKind::StartTeamIssues)
+            .map(|i| i.identifier.as_str())
+            .collect()
+    };
+    assert_eq!(offers("acme"), ["TEAM-8", "TEAM-9"]);
+    assert_eq!(offers("acme-labs"), ["TEAM-8", "TEAM-9"]);
 }
 
 /// The teams `request` asks for: those its key filter names (any case), or

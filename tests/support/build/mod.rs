@@ -20,6 +20,7 @@ pub use run::{RunBuilder, run};
 
 use den::domain::{
     LinearSourceKind, Observation, Repo, RepoId, Source, SourceKind, SourceState, TeamRef, Viewer,
+    facts::{MemberPullRequestState, PullRequestRef, PullRequestState},
 };
 use jiff::Timestamp;
 
@@ -197,6 +198,22 @@ impl ObservationBuilder {
                 SourceState::Complete,
             );
         }
+        self
+    }
+
+    /// GitHub's state of the Landing Group member `repo` `#number`, read by
+    /// number after the survey (#37), with its Owner's member states read
+    /// completely.
+    pub fn member_state(mut self, repo: &str, number: u64, state: PullRequestState) -> Self {
+        let pr = PullRequestRef::new(repo_id(repo), number);
+        self = self.owner_coverage(
+            &pr.repo.owner.clone(),
+            SourceKind::MemberStates,
+            SourceState::Complete,
+        );
+        self.observation
+            .member_states
+            .push(MemberPullRequestState { pr, state });
         self
     }
 

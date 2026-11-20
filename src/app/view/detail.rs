@@ -135,13 +135,7 @@ fn workflow_facts(decision: &Decision) -> Option<DetailFacts> {
     lines.push(if suggested.is_empty() {
         "suggested reviewers: none".to_owned()
     } else {
-        let names: Vec<String> = suggested
-            .iter()
-            .map(|reviewer| match reviewer {
-                Reviewer::User(login) => login.clone(),
-                Reviewer::Team(team) => format!("team {}/{}", team.org, team.slug),
-            })
-            .collect();
+        let names: Vec<String> = suggested.iter().map(Reviewer::label).collect();
         format!("suggested reviewers: {}", names.join(", "))
     });
     if let Some(unread) = &decision.suggested_reviewers_unread {

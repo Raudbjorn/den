@@ -22,6 +22,11 @@ pub enum SourceKind {
     /// One of the Linear sources of an Owner with a Linear Workflow (spec 0002,
     /// see [`LinearSourceKind`]).
     Linear(LinearSourceKind),
+    /// The states of the Owner's Landing Group members that weren't among its
+    /// open Pull Requests: merged, closed or open again (#37). Read by number
+    /// after the survey, so Mark for release rests on a member that really
+    /// merged. Not a Work Item list, and not applicable to a GitHub Work Item.
+    MemberStates,
 }
 
 /// What a Linear source fetches for an Owner with a Linear Workflow. Each is
@@ -82,6 +87,7 @@ impl SourceKind {
             Self::Branches => "Branches",
             Self::Runs => "Runs",
             Self::Linear(kind) => kind.label(),
+            Self::MemberStates => "Landing Group member states",
         }
     }
 }
@@ -119,6 +125,17 @@ impl Source {
             self,
             Self::Owner {
                 kind: SourceKind::Linear(_),
+                ..
+            }
+        )
+    }
+
+    /// One of an Owner's Landing Group member-state sources (#37).
+    pub fn is_member_states(&self) -> bool {
+        matches!(
+            self,
+            Self::Owner {
+                kind: SourceKind::MemberStates,
                 ..
             }
         )
@@ -487,7 +504,10 @@ impl Coverage {
     /// earlier survey may spell its Owner as the config did then.
     ///
     /// A Linear Issue's are its Owner's Linear sources: the Linear viewer (for
-    /// Waiting On) and the issue lists. The GitHub viewer doesn't bear on it.
+    /// Waiting On) and the issue lists; and its Owner's Landing Group member
+    /// states (#37), which Mark for release rests on (the Linear Issue rules
+    /// drop that one from an issue with no member whose end den reads by
+    /// number). The GitHub viewer doesn't bear on it.
     pub fn applicable_to(&self, item: &WorkItemId) -> Vec<CoverageEntry> {
         let Some(repo) = item.repo() else {
             return self
@@ -506,6 +526,10 @@ impl Coverage {
                                     | LinearSourceKind::StartTeamIssues
                             )
                     }
+                    Source::Owner {
+                        owner,
+                        kind: SourceKind::MemberStates,
+                    } => same_login(owner, item.owner()),
                     _ => false,
                 })
                 .cloned()
