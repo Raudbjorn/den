@@ -19,9 +19,14 @@ use std::{
 
 /// The cache directory, under den's state directory (`$XDG_STATE_HOME/den/`).
 pub const CACHE_SUBDIR: &str = "cache";
-/// The cache file format. Bump it when a change to the cached types would make
-/// older files decode wrongly (not merely fail to decode: that is caught anyway).
-pub const CACHE_FORMAT: u32 = 1;
+/// The cache file format. Bump it when the stored shape of the cached types
+/// changes, so an older file is refused by its version rather than half-decoded
+/// (one that would merely fail to decode is caught anyway, as unreadable).
+///
+/// 2: an Issue says whether its labels and assignees were read completely; a
+/// PR carries GitHub's merge state, and its review decision is always present
+/// (`NotRequired` and `Unknown` instead of null).
+pub const CACHE_FORMAT: u32 = 2;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// Names the viewer whose cache startup shows.

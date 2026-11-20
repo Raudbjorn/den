@@ -8,11 +8,14 @@ mod support;
 
 use den::{
     cache::{CACHE_FORMAT, CacheError, CachedObservation, Carried, FileCache},
-    domain::Source,
+    domain::{
+        Source,
+        facts::{MergeState, ReviewDecision},
+    },
     ports::ObservationCache,
 };
 use std::fs;
-use support::build::{ObservationBuilder, pr, ts};
+use support::build::{ObservationBuilder, issue, pr, ts};
 
 fn cached(viewer: &str, number: u64) -> CachedObservation {
     let mut cached = CachedObservation::fresh(
@@ -52,6 +55,50 @@ fn what_is_stored_loads_back_and_the_last_viewer_is_shown() {
     assert_eq!(alice_file, cache.file_for("ALICE").unwrap());
     assert_ne!(alice_file, cache.file_for("bob").unwrap());
     assert!(alice_file.starts_with(dir.path().join("cache")));
+}
+
+/// Every fact shape a refresh can produce survives the file: an Issue whose
+/// labels or assignees were not all read stays unknown rather than "none", and
+/// each PR keeps its merge state and review decision (including "no review
+/// required" and "unknown", which once were both a null).
+#[test]
+fn every_issue_and_pr_shape_loads_back_unchanged() {
+    let mut builder = ObservationBuilder::new()
+        .viewer("me")
+        .owner("alpha")
+        .issue(issue("alpha/app", 1).label("bug").assignee("me"))
+        .issue(issue("alpha/app", 2).labels_unread())
+        .issue(issue("alpha/app", 3).assignees_unread());
+    let decisions = [
+        ReviewDecision::Approved,
+        ReviewDecision::ChangesRequested,
+        ReviewDecision::ReviewRequired,
+        ReviewDecision::NotRequired,
+        ReviewDecision::Unknown,
+    ];
+    let merge_states = [
+        MergeState::Clean,
+        MergeState::HasHooks,
+        MergeState::Unstable,
+        MergeState::Blocked,
+        MergeState::Behind,
+        MergeState::Dirty,
+        MergeState::Draft,
+        MergeState::Unknown,
+    ];
+    for (number, (decision, merge_state)) in decisions.iter().cycle().zip(merge_states).enumerate()
+    {
+        builder = builder.pull_request(
+            pr("alpha/app", 100 + number as u64)
+                .decision(*decision)
+                .merge_state(merge_state),
+        );
+    }
+    let stored = CachedObservation::fresh(builder.build());
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCache::in_state_dir(dir.path());
+    cache.store(&stored).unwrap();
+    assert_eq!(cache.load(), Ok(Some(stored)));
 }
 
 #[cfg(unix)]
