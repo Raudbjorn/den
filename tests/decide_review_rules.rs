@@ -14,7 +14,7 @@ use den::{
     domain::{
         LinearWorkflowPolicy, NextStep, Observation, Policies, ReviewPolicy, TeamRef, Viewers,
         WaitingOn,
-        facts::{ReviewVerdict, Reviewer},
+        facts::{MergeState, ReviewDecision, ReviewVerdict, Reviewer},
     },
 };
 use support::build::{ME, ObservationBuilder, PrBuilder, now, pr, repo_id};
@@ -309,6 +309,96 @@ fn the_author_replying_on_an_older_head_is_not_awaiting_re_review() {
         &acme(BOTH_ON),
     );
     assert_eq!(decision.next_step, Some(NextStep::Merge), "{decision:#?}");
+}
+
+#[test]
+fn a_fresh_approval_github_still_wants_more_review_for_is_request_review() {
+    // Branch protection wants a second approval (or a code owner's): GitHub's
+    // decision stays REVIEW_REQUIRED and its merge state BLOCKED. The
+    // workflow's switches tighten approval; they don't overrule GitHub.
+    let decision = decided(
+        ready(17)
+            .decision(ReviewDecision::ReviewRequired)
+            .merge_state(MergeState::Blocked)
+            .review_at_head("alice", ReviewVerdict::Approved),
+        &acme(BOTH_ON),
+    );
+    assert_eq!(
+        decision.next_step,
+        Some(NextStep::RequestReview),
+        "{decision:#?}"
+    );
+    assert_says(
+        &decision,
+        &["GitHub reports that a review is still required"],
+    );
+
+    // GitHub's decision unread (a response with errors): not known approved.
+    let unread = decided(
+        ready(17)
+            .decision(ReviewDecision::Unknown)
+            .review_at_head("alice", ReviewVerdict::Approved),
+        &acme(BOTH_ON),
+    );
+    assert_ne!(unread.next_step, Some(NextStep::Merge), "{unread:#?}");
+    assert_says(&unread, &["approval could not be established"]);
+}
+
+#[test]
+fn changes_requested_at_the_current_head_also_stop_merge() {
+    // No branch protection, so GitHub gives no decision and reports CLEAN.
+    let decision = decided(
+        ready(18)
+            .no_review_required()
+            .review_at_head("alice", ReviewVerdict::Approved)
+            .review_at_head("bob", ReviewVerdict::ChangesRequested),
+        &acme(BOTH_ON),
+    );
+    assert_eq!(decision.next_step, Some(NextStep::AddressReview));
+    let merge_holds = decision
+        .explanation
+        .other_conditions
+        .iter()
+        .any(|c| c.contains("mergeable into"));
+    assert!(!merge_holds, "Merge must not hold: {decision:#?}");
+}
+
+#[test]
+fn a_reviewer_who_since_commented_on_the_current_head_is_not_awaiting_re_review() {
+    // bob asked for changes, the author pushed, and bob commented on the new
+    // head without approving: he has looked, so asking him again is redundant.
+    let pr = || {
+        ready(19)
+            .review_at_head("alice", ReviewVerdict::Approved)
+            .review_on("bob", ReviewVerdict::ChangesRequested, OLDER_HEAD)
+            .review_at_head("bob", ReviewVerdict::Commented)
+    };
+    let policies = Policies::default().with(
+        "acme",
+        workflow(BOTH_ON, vec![Reviewer::User("carol".to_owned())], &[]),
+    );
+
+    // No branch protection: his older change request no longer stops Merge.
+    let unprotected = decided(pr().no_review_required(), &policies);
+    assert_eq!(
+        unprotected.next_step,
+        Some(NextStep::Merge),
+        "{unprotected:#?}"
+    );
+    assert_says(&unprotected, &["changes requested on an older head by bob"]);
+    assert_eq!(
+        unprotected.suggested_reviewers,
+        Some(vec![Reviewer::User("carol".to_owned())])
+    );
+
+    // Branch protection: GitHub still counts his change request, and says so.
+    let protected = decided(pr().changes_requested(), &policies);
+    assert_eq!(protected.next_step, Some(NextStep::RequestReview));
+    assert_says(&protected, &["GitHub reports changes requested"]);
+    for decision in [&unprotected, &protected] {
+        let text = format!("{} {:?}", why(decision), decision.explanation);
+        assert!(!text.contains("awaiting re-review: bob"), "{text}");
+    }
 }
 
 #[test]

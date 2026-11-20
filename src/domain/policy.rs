@@ -41,8 +41,9 @@ impl LinearWorkflowPolicy {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReviewPolicy {
     /// **Exact-head approval**: only a user's (never a bot's) approval given on
-    /// the PR's current head commit counts. Off: GitHub's review decision, as
-    /// in milestone 1.
+    /// the PR's current head commit counts, and GitHub's own review decision
+    /// must still not ask for more (it tightens GitHub's decision, never
+    /// replaces it). Off: GitHub's review decision, as in milestone 1.
     pub exact_head_approval: bool,
     /// **Comment reviews need re-review**: a user whose latest review only
     /// commented, on an older head, is awaiting re-review.

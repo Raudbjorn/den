@@ -14,21 +14,29 @@
 //!   standing approval given on the current head. With it off: GitHub's review
 //!   decision, as in milestone 1. A comment after an approval at the same head
 //!   doesn't withdraw it, as it doesn't on GitHub.
+//! - **Approved**, with exact-head approval on: a fresh approval, and GitHub's
+//!   own review decision not asking for more (not REVIEW_REQUIRED, not
+//!   CHANGES_REQUESTED). The switch tightens GitHub's decision; it never
+//!   replaces it, so a second required approval or a code owner's is still
+//!   asked for. With it off: GitHub's review decision, as in milestone 1.
 //! - **Awaiting re-review**: a user other than the author, not currently
-//!   requested and not a fresh approver, whose standing or latest review
-//!   requested changes on an older head, or whose latest review only commented
-//!   on an older head when comment reviews need re-review. A review whose
-//!   commit GitHub no longer has counts as on an older head.
+//!   requested, not a fresh approver and whose latest review of any kind is
+//!   not on the current head, whose standing or latest review requested
+//!   changes on an older head, or whose latest review only commented on an
+//!   older head when comment reviews need re-review. A review whose commit
+//!   GitHub no longer has counts as on an older head. Someone who has since
+//!   reviewed the current head has had the fresh look, even if their older
+//!   change request still stands on GitHub.
 //! - **Address review** holds on unresolved threads, or on changes requested
 //!   at the current head (by anyone); changes requested on an older head fall
-//!   through.
+//!   through. Changes requested at the current head also stop Merge.
 //! - **Suggested reviewers**: the configured reviewers plus those awaiting
 //!   re-review, minus fresh approvers, pending requests and the author.
 
 use super::{Approval, Finding, ReviewFindings, approval as github_approval, unresolved_threads};
 use crate::domain::{
     ReviewPolicy,
-    facts::{ActorKind, PrDetails, PullRequest, Review, ReviewVerdict, Reviewer},
+    facts::{ActorKind, PrDetails, PullRequest, Review, ReviewDecision, ReviewVerdict, Reviewer},
     ids::same_login,
 };
 
@@ -151,12 +159,27 @@ impl<'a> WorkflowReview<'a> {
                 .is_some_and(|d| d.latest_reviews_with_comments.complete)
     }
 
-    /// Whether the PR is approved under the workflow: a fresh approval with
-    /// exact-head approval on, GitHub's review decision with it off.
+    /// Whether the PR is approved under the workflow: with exact-head approval
+    /// on, a fresh approval that GitHub's own review decision doesn't
+    /// contradict; GitHub's review decision as in milestone 1 with it off.
     fn approval(&self) -> Approval {
         if !self.exact_head {
             return github_approval(self.pr);
         }
+        match (self.exact_head_approval(), github_decision(self.pr)) {
+            (Approval::NotApproved(ours), Approval::NotApproved(github)) => {
+                Approval::NotApproved(format!("{ours}; {github}"))
+            }
+            (Approval::NotApproved(why), _) | (_, Approval::NotApproved(why)) => {
+                Approval::NotApproved(why)
+            }
+            (Approval::Unknown, _) | (_, Approval::Unknown) => Approval::Unknown,
+            _ => Approval::Approved,
+        }
+    }
+
+    /// Whether some user approved at the current head.
+    fn exact_head_approval(&self) -> Approval {
         if !self.read.fresh_approvers.is_empty() {
             return Approval::Approved;
         }
@@ -200,13 +223,7 @@ impl<'a> WorkflowReview<'a> {
         let Some(details) = &self.pr.details else {
             return Finding::Unknown("review threads could not be read".to_owned());
         };
-        let mut reasons = Vec::new();
-        if !self.read.changes_at_head.is_empty() {
-            reasons.push(format!(
-                "changes requested at the current head by {} ({AT_HEAD})",
-                self.read.changes_at_head.join(", ")
-            ));
-        }
+        let mut reasons: Vec<String> = self.changes_at_head_text().into_iter().collect();
         reasons.extend(unresolved_threads(details));
         if !reasons.is_empty() {
             return Finding::Holds(reasons.join(", "));
@@ -258,15 +275,25 @@ impl<'a> WorkflowReview<'a> {
 
     /// What stops Merge under the workflow, beyond milestone 1's blockers.
     fn merge_blockers(&self) -> Vec<String> {
+        let mut blockers: Vec<String> = self.changes_at_head_text().into_iter().collect();
         if let Some(awaiting) = self.awaiting_text() {
-            return vec![awaiting];
+            blockers.push(awaiting);
+        } else if self.pr.details.is_some() && !self.reviews_complete() {
+            blockers
+                .push("not every review was read, so someone may be awaiting re-review".to_owned());
         }
-        if self.pr.details.is_some() && !self.reviews_complete() {
-            return vec![
-                "not every review was read, so someone may be awaiting re-review".to_owned(),
-            ];
-        }
-        Vec::new()
+        blockers
+    }
+
+    /// "changes requested at the current head by bob (workflow policy: …)".
+    fn changes_at_head_text(&self) -> Option<String> {
+        let by = &self.read.changes_at_head;
+        (!by.is_empty()).then(|| {
+            format!(
+                "changes requested at the current head by {} ({AT_HEAD})",
+                by.join(", ")
+            )
+        })
     }
 
     /// Context that is no rule of its own: changes requested on an older head
@@ -342,6 +369,17 @@ impl Reading<'_> {
         requested(self.details, &Reviewer::User(login.to_owned()))
     }
 
+    /// `login`'s latest review of any kind is on the current head.
+    fn looked_at_head(&self, login: &str) -> bool {
+        self.latest().iter().any(|review| {
+            review
+                .author
+                .as_deref()
+                .is_some_and(|author| same_login(author, login))
+                && self.at_head(review)
+        })
+    }
+
     fn standing(&self) -> &[Review] {
         &self.details.latest_reviews.items
     }
@@ -409,6 +447,7 @@ impl Reading<'_> {
                 || self.is_author(login)
                 || self.requested(login)
                 || fresh.iter().any(|f| same_login(f, login))
+                || self.looked_at_head(login)
             {
                 continue;
             }
@@ -440,6 +479,23 @@ impl Reading<'_> {
             }
         }
         by
+    }
+}
+
+/// GitHub's own review decision, which exact-head approval tightens but never
+/// overrules: REVIEW_REQUIRED means branch protection wants an approval den's
+/// rules don't see (a second one, or a code owner's).
+fn github_decision(pr: &PullRequest) -> Approval {
+    match pr.review_decision {
+        ReviewDecision::Approved | ReviewDecision::NotRequired => Approval::Approved,
+        ReviewDecision::ReviewRequired => Approval::NotApproved(
+            "GitHub reports that a review is still required (for example a second approval or a code owner's)"
+                .to_owned(),
+        ),
+        ReviewDecision::ChangesRequested => {
+            Approval::NotApproved("GitHub reports changes requested".to_owned())
+        }
+        ReviewDecision::Unknown => Approval::Unknown,
     }
 }
 
