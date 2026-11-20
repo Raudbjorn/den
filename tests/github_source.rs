@@ -14,6 +14,7 @@ use den::{
     domain::{Incompleteness, Observation, Source, SourceKind, SourceState},
     github::{
         graphql::{GhCli, GraphQl, GraphQlError, GraphQlRequest, GraphQlResponse, TransportError},
+        pull_requests::{MIN_OWNER_REPOS_PER_PAGE, OWNER_REPOS_PER_PAGE},
         survey,
     },
     ports::SurveyFailure,
@@ -738,4 +739,127 @@ fn a_repo_read_whole_on_a_clean_owner_page_is_complete_when_a_later_page_is_lost
         ),
         SourceState::Complete
     );
+}
+
+/// The Repo batch size of each OwnerPullRequests request, in order.
+fn owner_pr_batches(gql: &ScriptedGraphQl) -> Vec<u64> {
+    gql.requests()
+        .iter()
+        .filter(|r| operation(r) == "OwnerPullRequests")
+        .map(|r| r.variables["repos"].as_u64().expect("a repos batch size"))
+        .collect()
+}
+
+/// Owner "octo" with one Repo "app" and one PR, where an OwnerPullRequests
+/// request for more than `max_batch` Repos is lost the way `answer` says.
+fn octo_prs_lost_above(
+    max_batch: u64,
+    answer: fn() -> Result<GraphQlResponse, TransportError>,
+) -> ScriptedGraphQl {
+    ScriptedGraphQl::new(move |request| {
+        if let Some(found) = viewer_answers(request).or_else(|| only_default_branches(request)) {
+            return found;
+        }
+        match operation(request).as_str() {
+            "OwnerRepos" => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": [repo_node("app")]
+            }}}))),
+            "OwnerPullRequests" if request.variables["repos"].as_u64() > Some(max_batch) => {
+                answer()
+            }
+            "OwnerPullRequests" => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None),
+                "nodes": [ { "name": "app", "pullRequests": { "pageInfo": page_info(None), "nodes": [pr_node(1, false)] } } ]
+            }}}))),
+            "OwnerIssueCounts" => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": []
+            }}}))),
+            other => panic!("unexpected {other:?}"),
+        }
+    })
+}
+
+fn bad_gateway() -> Result<GraphQlResponse, TransportError> {
+    Err(TransportError::Failed {
+        detail: "gh failed: HTTP 502: Bad Gateway".to_owned(),
+    })
+}
+
+/// An Owner page of many Repos, each with its PRs and their facts, can be too
+/// expensive for GitHub to answer (HTTP 502). Losing it must not lose the
+/// Owner's PRs: the same page is read again with fewer Repos.
+#[test]
+fn an_owner_pr_page_too_big_to_answer_is_read_again_in_smaller_batches() {
+    let small_enough = u64::from(MIN_OWNER_REPOS_PER_PAGE);
+    let gql = octo_prs_lost_above(small_enough, bad_gateway);
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    assert_eq!(
+        observation.pull_requests.len(),
+        1,
+        "the Owner's PRs were read"
+    );
+    assert_eq!(
+        state(&observation, owner_source(SourceKind::PullRequests)),
+        SourceState::Complete
+    );
+    let batches = owner_pr_batches(&gql);
+    assert_eq!(batches.first(), Some(&u64::from(OWNER_REPOS_PER_PAGE)));
+    assert!(batches.windows(2).all(|w| w[1] < w[0]), "{batches:?}");
+    assert!(batches.last() <= Some(&small_enough), "{batches:?}");
+}
+
+#[test]
+fn an_owner_pr_page_lost_at_every_batch_size_fails_after_a_bounded_number_of_tries() {
+    let gql = octo_prs_lost_above(0, bad_gateway);
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    assert!(observation.pull_requests.is_empty());
+    assert_eq!(
+        state(&observation, owner_source(SourceKind::PullRequests)),
+        SourceState::Failed {
+            error: "gh failed: HTTP 502: Bad Gateway".to_owned()
+        }
+    );
+    let batches = owner_pr_batches(&gql);
+    assert_eq!(
+        batches.last(),
+        Some(&u64::from(MIN_OWNER_REPOS_PER_PAGE)),
+        "{batches:?}"
+    );
+    assert!(batches.len() <= 4, "bounded: {batches:?}");
+}
+
+#[test]
+fn a_rate_limited_owner_pr_page_is_not_retried_smaller() {
+    let gql = octo_prs_lost_above(0, || {
+        Err(TransportError::RateLimited {
+            detail: "API rate limit exceeded".to_owned(),
+        })
+    });
+    survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    assert_eq!(owner_pr_batches(&gql).len(), 1);
+}
+
+#[test]
+fn pr_pages_are_ordered_by_a_key_that_cannot_change_mid_read() {
+    let gql = ScriptedGraphQl::new(paginated_octo);
+    survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    for operation_name in ["OwnerPullRequests", "RepoPullRequests"] {
+        let requests = gql.requests();
+        let query = &requests
+            .iter()
+            .find(|r| operation(r) == operation_name)
+            .unwrap_or_else(|| panic!("a {operation_name} request"))
+            .query;
+        // Cursors are positions in the sort order. Creation time never changes,
+        // so a PR updated mid-read can't move ahead of the cursor and be skipped,
+        // as it could under UPDATED_AT.
+        let pulls = query
+            .lines()
+            .find(|l| l.contains("pullRequests("))
+            .expect("the pullRequests connection");
+        assert!(
+            pulls.contains("orderBy: {field: CREATED_AT, direction: DESC}"),
+            "{operation_name}: {pulls}"
+        );
+    }
 }

@@ -797,3 +797,92 @@ fn the_domain_names_all_ten_next_steps_with_their_glossary_labels() {
         ]
     );
 }
+
+/// Who a requested review belongs to, when den may not have read every request
+/// or every team of the viewer's: a match to the viewer still counts, but "not
+/// you" needs the whole picture; without it the review is unattributed.
+#[test]
+fn a_review_den_cannot_rule_out_as_mine_is_unattributed_not_someone_else_s() {
+    use NextStep::Review;
+    use WaitingOn::{Me, Nobody, SomeoneElse};
+    let teams_unknown = SourceState::Partial(Incompleteness::ErrorsAlongsideData {
+        errors: vec!["team memberships unknown: timed out".to_owned()],
+    });
+    let cases = [
+        (
+            "a team requested, my teams not all read",
+            ObservationBuilder::new()
+                .team("octo", "core")
+                .viewer_coverage(teams_unknown.clone())
+                .pull_request(
+                    pr("o/r", 1)
+                        .author("alice")
+                        .review_requested_from_team("octo", "docs"),
+                ),
+            Nobody,
+            true,
+            "your team memberships",
+        ),
+        (
+            "requests not all read, the ones read are someone else",
+            ObservationBuilder::new().team("octo", "core").pull_request(
+                pr("o/r", 1)
+                    .author("alice")
+                    .review_requested_from("bob")
+                    .review_requests_truncated(),
+            ),
+            Nobody,
+            true,
+            "not every review request was read",
+        ),
+        (
+            "my team requested, my teams not all read: still mine",
+            ObservationBuilder::new()
+                .team("octo", "core")
+                .viewer_coverage(teams_unknown.clone())
+                .pull_request(
+                    pr("o/r", 1)
+                        .author("alice")
+                        .review_requested_from_team("octo", "core"),
+                ),
+            Me,
+            false,
+            "your team octo/core",
+        ),
+        (
+            "me requested, requests not all read: still mine",
+            ObservationBuilder::new().team("octo", "core").pull_request(
+                pr("o/r", 1)
+                    .author("alice")
+                    .review_requested_from(ME)
+                    .review_requests_truncated(),
+            ),
+            Me,
+            false,
+            "you are one of",
+        ),
+        (
+            "only people requested, my teams not all read: teams don't matter",
+            ObservationBuilder::new()
+                .team("octo", "core")
+                .viewer_coverage(teams_unknown)
+                .pull_request(pr("o/r", 1).author("alice").review_requested_from("bob")),
+            SomeoneElse,
+            false,
+            "you are not one of",
+        ),
+    ];
+    for (name, builder, waiting_on, unattributed, reason) in cases {
+        let observation = builder.owner("o").build();
+        let decisions = decisions(&observation);
+        let decision = find(&decisions, &pr_id("o/r", 1));
+        assert_eq!(decision.next_step, Some(Review), "{name}");
+        assert_eq!(decision.waiting_on, waiting_on, "{name}");
+        assert_eq!(decision.unattributed, unattributed, "{name}");
+        assert!(
+            decision.waiting_reason.contains(reason),
+            "{name}: {:?}",
+            decision.waiting_reason
+        );
+    }
+}
