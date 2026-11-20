@@ -22,10 +22,10 @@ use den::{
             LinearIssue, MemberPullRequestState, PullRequestRef, PullRequestState, ReviewVerdict,
         },
     },
-    ports::{LinearSurvey, MemberStatesRead, MemberStatesRequest},
+    ports::{LinearSurvey, MemberStatesRead, MemberStatesRequest, SurveyFailure},
 };
 use support::{
-    build::{ME, ObservationBuilder, linear_issue, linear_viewer, pr},
+    build::{ME, ObservationBuilder, linear_issue, linear_viewer, now, pr},
     harness::{Harness, linear_workflow},
 };
 
@@ -221,6 +221,77 @@ fn a_member_read_merged_after_the_surveys_gives_mark_for_release() {
     harness.settle(Event::Key(Key::Char('r')));
     assert_eq!(harness.github.member_requests().len(), 1);
     assert_eq!(step_label(&harness, "TEAM-1"), "Mark for release");
+}
+
+/// A failed GitHub refresh must not strand newly attached members behind the
+/// order in which the two surveys finish; the earlier GitHub facts stay shown.
+#[test]
+fn a_failed_github_refresh_reads_new_members_in_either_completion_order() {
+    for linear_first in [true, false] {
+        let mut harness = harness_with_issues(Vec::new());
+        harness.start();
+        queue_round(&harness);
+        let effects = harness.key(Key::Char('r'));
+        let linear = effects
+            .iter()
+            .find(|e| matches!(e, Effect::SurveyLinear { .. }))
+            .unwrap();
+        let id = effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::Survey { id, .. } => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        if linear_first {
+            let follow = harness.perform(linear);
+            assert!(
+                !follow
+                    .iter()
+                    .any(|e| matches!(e, Effect::ReadMemberStates { .. }))
+            );
+        }
+        let mut follow = harness.send(Event::SurveyFinished {
+            id,
+            outcome: Err(SurveyFailure::ViewerUnavailable {
+                detail: "temporary GitHub failure".to_owned(),
+            }),
+            now: now(),
+        });
+        if !linear_first {
+            assert!(
+                !follow
+                    .iter()
+                    .any(|e| matches!(e, Effect::ReadMemberStates { .. }))
+            );
+            follow.extend(harness.perform(linear));
+        }
+        let read = follow
+            .iter()
+            .find(|e| matches!(e, Effect::ReadMemberStates { .. }))
+            .expect("both completed surveys schedule the independent member read");
+        harness
+            .github
+            .push_member_states(member_states_answer(PullRequestState::Merged {
+                merged_at: None,
+            }));
+        for effect in harness.perform(read) {
+            harness.perform(&effect);
+        }
+        assert_eq!(harness.github.member_requests().len(), 1);
+        assert_eq!(step_label(&harness, "TEAM-1"), "Mark for release");
+        assert_eq!(
+            harness
+                .cache
+                .stored()
+                .last()
+                .unwrap()
+                .observation
+                .member_states
+                .len(),
+            1
+        );
+    }
 }
 
 /// A cached issue excluded from Start still needs its missing member's state:
