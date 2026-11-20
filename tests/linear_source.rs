@@ -300,6 +300,31 @@ fn http_429_with_retry_after_is_partial_with_its_reset() {
 }
 
 #[test]
+fn more_pages_without_a_cursor_stop_the_list_as_partial() {
+    let (survey, transport) = survey_with(|request| {
+        if is_viewer(request) {
+            return Ok(ok(viewer_body("acme")));
+        }
+        let mut body = issues_page(vec![issue_node("id-1", "TEAM-1")], Some("unused"));
+        body["data"]["viewer"]["assignedIssues"]["pageInfo"]["endCursor"] = json!(null);
+        Ok(ok(body))
+    });
+    assert_eq!(
+        state(&survey, LinearSourceKind::AssignedIssues),
+        SourceState::Partial(Incompleteness::PaginationStopped {
+            pages_read: 1,
+            reason: "Linear reported more pages but no cursor".to_owned(),
+        })
+    );
+    assert_eq!(survey.part.issues.len(), 1);
+    assert_eq!(
+        transport.requests().len(),
+        2,
+        "no page asked for without a cursor"
+    );
+}
+
+#[test]
 fn retry_after_counts_from_when_the_reply_arrived() {
     // Each call takes a while; the 429 arrives well after the survey began.
     let call_time = SignedDuration::from_secs(15);

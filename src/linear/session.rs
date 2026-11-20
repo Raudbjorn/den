@@ -7,6 +7,7 @@
 use super::transport::{HttpReply, LinearRequest, LinearTransport};
 use crate::{
     domain::{Incompleteness, SourceState, coverage::MAX_KEPT_LINEAR_ERRORS},
+    paging::{self, PagedService},
     ports::Clock,
 };
 use jiff::{SignedDuration, Timestamp};
@@ -245,69 +246,21 @@ fn bounded(message: &str) -> String {
         .collect()
 }
 
-/// Tracks one paginated list: pages read and the worst state so far.
-pub struct Pager {
-    pub cursor: Option<String>,
-    pages_read: u32,
-    state: SourceState,
+/// Linear, as a paged service: lists of up to [`MAX_LINEAR_PAGES`] pages.
+pub struct Linear;
+
+impl PagedService for Linear {
+    const MAX_PAGES: u32 = MAX_LINEAR_PAGES;
+    const NAME: &'static str = "Linear";
+    const LIST: &'static str = "Linear list";
 }
 
-impl Default for Pager {
-    /// Before the first page: no cursor, nothing read, nothing wrong yet.
-    fn default() -> Self {
-        Self {
-            cursor: None,
-            pages_read: 0,
-            state: SourceState::Complete,
-        }
-    }
-}
+/// Tracks one paginated Linear list (the shared [`paging::Pager`]).
+pub type Pager = paging::Pager<Linear>;
 
 impl Pager {
-    /// False once [`MAX_LINEAR_PAGES`] pages were read; the bound is
-    /// recorded as partial (only called when Linear said there is more).
-    pub fn may_continue(&mut self) -> bool {
-        if self.pages_read < MAX_LINEAR_PAGES {
-            return true;
-        }
-        self.note(SourceState::Partial(Incompleteness::PaginationStopped {
-            pages_read: self.pages_read,
-            reason: format!("den reads at most {MAX_LINEAR_PAGES} pages per Linear list"),
-        }));
-        false
-    }
-
-    pub fn pages_read(&self) -> u32 {
-        self.pages_read
-    }
-
-    pub fn page_read(&mut self, state: SourceState) {
-        self.pages_read += 1;
-        self.note(state);
-    }
-
-    /// A page was lost. After earlier pages, that makes the list partial; a
-    /// rate limit stays a rate limit, with its reset time.
-    pub fn page_lost(&mut self, state: SourceState) {
-        let state = match (self.pages_read, state) {
-            (0, state) => state,
-            (_, limited @ SourceState::Partial(Incompleteness::LinearRateLimited { .. })) => {
-                limited
-            }
-            (pages_read, state) => SourceState::Partial(Incompleteness::PaginationStopped {
-                pages_read,
-                reason: state.describe(),
-            }),
-        };
-        self.note(state);
-    }
-
-    pub fn note(&mut self, state: SourceState) {
-        let previous = std::mem::replace(&mut self.state, SourceState::Complete);
-        self.state = previous.worst(state);
-    }
-
+    /// The list's state: the worst of its pages.
     pub fn finish(self) -> SourceState {
-        self.state
+        self.into_state()
     }
 }
