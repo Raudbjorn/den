@@ -5,7 +5,11 @@
 //! failed; no invented counts).
 
 use super::transport::{HttpReply, LinearRequest, LinearTransport};
-use crate::domain::{Incompleteness, SourceState};
+use crate::{
+    domain::{Incompleteness, SourceState, coverage::MAX_KEPT_LINEAR_ERRORS},
+    paging::{self, PagedService},
+    ports::Clock,
+};
 use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -75,18 +79,19 @@ pub struct Session<'a> {
     transport: &'a dyn LinearTransport,
     /// The variable the key came from, to name in errors (never the key).
     key_env: &'a str,
-    now: Timestamp,
+    /// Read when a reply arrives: a `Retry-After` counts from then.
+    clock: &'a dyn Clock,
     /// Once Linear rate-limited this workflow: when it resets, if it said.
     /// Every later query is then recorded as rate limited without being sent.
     limited: Cell<Option<Option<Timestamp>>>,
 }
 
 impl<'a> Session<'a> {
-    pub fn new(transport: &'a dyn LinearTransport, key_env: &'a str, now: Timestamp) -> Self {
+    pub fn new(transport: &'a dyn LinearTransport, key_env: &'a str, clock: &'a dyn Clock) -> Self {
         Self {
             transport,
             key_env,
-            now,
+            clock,
             limited: Cell::new(None),
         }
     }
@@ -139,14 +144,22 @@ impl<'a> Session<'a> {
     fn decode<T: DeserializeOwned>(&self, reply: &HttpReply) -> Answer<T> {
         let body: Option<GraphQlBody> = serde_json::from_slice(&reply.body).ok();
         let body = body.unwrap_or_default();
-        let messages: Vec<String> = body.errors.iter().map(|e| bounded(&e.message)).collect();
+        // Only the first few messages are kept (each cut short); the rest are
+        // counted, so one large reply can't grow coverage without bound.
+        let messages: Vec<String> = body
+            .errors
+            .iter()
+            .take(MAX_KEPT_LINEAR_ERRORS)
+            .map(|e| bounded(&e.message))
+            .collect();
+        let more = body.errors.len().saturating_sub(messages.len());
         let rate_limited = reply.status == HTTP_TOO_MANY_REQUESTS
             || body
                 .errors
                 .iter()
                 .any(|e| e.code() == Some(RATE_LIMITED_CODE));
         if rate_limited {
-            self.limited.set(Some(resets_at(reply, self.now)));
+            self.limited.set(Some(resets_at(reply, self.clock.now())));
         }
         let refused = matches!(reply.status, HTTP_UNAUTHORIZED | HTTP_FORBIDDEN)
             || body
@@ -168,9 +181,7 @@ impl<'a> Session<'a> {
         let error_state = if rate_limited {
             self.rate_limited()
         } else {
-            SourceState::Partial(Incompleteness::LinearErrorsAlongsideData {
-                errors: messages.clone(),
-            })
+            SourceState::Partial(Incompleteness::linear_errors(messages.clone(), more))
         };
         let data = match body.data {
             Some(Value::Null) | None => {
@@ -178,9 +189,12 @@ impl<'a> Session<'a> {
                     error_state
                 } else {
                     SourceState::Failed {
-                        error: match first(&messages) {
-                            Some(_) => messages.join("; "),
-                            None => format!("Linear answered HTTP {} without data", reply.status),
+                        error: match (first(&messages), more) {
+                            (None, _) => {
+                                format!("Linear answered HTTP {} without data", reply.status)
+                            }
+                            (Some(_), 0) => messages.join("; "),
+                            (Some(_), more) => format!("{}; and {more} more", messages.join("; ")),
                         },
                     }
                 });
@@ -232,69 +246,21 @@ fn bounded(message: &str) -> String {
         .collect()
 }
 
-/// Tracks one paginated list: pages read and the worst state so far.
-pub struct Pager {
-    pub cursor: Option<String>,
-    pages_read: u32,
-    state: SourceState,
+/// Linear, as a paged service: lists of up to [`MAX_LINEAR_PAGES`] pages.
+pub struct Linear;
+
+impl PagedService for Linear {
+    const MAX_PAGES: u32 = MAX_LINEAR_PAGES;
+    const NAME: &'static str = "Linear";
+    const LIST: &'static str = "Linear list";
 }
 
-impl Default for Pager {
-    /// Before the first page: no cursor, nothing read, nothing wrong yet.
-    fn default() -> Self {
-        Self {
-            cursor: None,
-            pages_read: 0,
-            state: SourceState::Complete,
-        }
-    }
-}
+/// Tracks one paginated Linear list (the shared [`paging::Pager`]).
+pub type Pager = paging::Pager<Linear>;
 
 impl Pager {
-    /// False once [`MAX_LINEAR_PAGES`] pages were read; the bound is
-    /// recorded as partial (only called when Linear said there is more).
-    pub fn may_continue(&mut self) -> bool {
-        if self.pages_read < MAX_LINEAR_PAGES {
-            return true;
-        }
-        self.note(SourceState::Partial(Incompleteness::PaginationStopped {
-            pages_read: self.pages_read,
-            reason: format!("den reads at most {MAX_LINEAR_PAGES} pages per Linear list"),
-        }));
-        false
-    }
-
-    pub fn pages_read(&self) -> u32 {
-        self.pages_read
-    }
-
-    pub fn page_read(&mut self, state: SourceState) {
-        self.pages_read += 1;
-        self.note(state);
-    }
-
-    /// A page was lost. After earlier pages, that makes the list partial; a
-    /// rate limit stays a rate limit, with its reset time.
-    pub fn page_lost(&mut self, state: SourceState) {
-        let state = match (self.pages_read, state) {
-            (0, state) => state,
-            (_, limited @ SourceState::Partial(Incompleteness::LinearRateLimited { .. })) => {
-                limited
-            }
-            (pages_read, state) => SourceState::Partial(Incompleteness::PaginationStopped {
-                pages_read,
-                reason: state.describe(),
-            }),
-        };
-        self.note(state);
-    }
-
-    pub fn note(&mut self, state: SourceState) {
-        let previous = std::mem::replace(&mut self.state, SourceState::Complete);
-        self.state = previous.worst(state);
-    }
-
+    /// The list's state: the worst of its pages.
     pub fn finish(self) -> SourceState {
-        self.state
+        self.into_state()
     }
 }

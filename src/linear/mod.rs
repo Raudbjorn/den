@@ -119,7 +119,11 @@ impl LinearApi {
             }
         };
         let transport = (self.connect)(key);
-        let session = Session::new(transport.as_ref(), &workflow.api_key_env, self.clock.now());
+        let session = Session::new(
+            transport.as_ref(),
+            &workflow.api_key_env,
+            self.clock.as_ref(),
+        );
         match viewer(&session, workflow) {
             Ok((linear_viewer, state)) => {
                 record(&mut survey.coverage, owner, LinearSourceKind::Viewer, state);

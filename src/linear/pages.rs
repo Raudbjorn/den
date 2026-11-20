@@ -1,8 +1,11 @@
 //! Reading one paginated Linear list: the paging loop every Linear list
 //! shares (the assigned issues, the team states, the start teams' issues).
-//! A [`Pager`] keeps the list's state across calls, so one list can be read
-//! in several parts against one page bound (the start teams' issues, by
-//! priority).
+//! A [`Pager`] (the pager shared with GitHub, `crate::paging`) keeps the
+//! list's state across calls, so one list can be read in several parts
+//! against one page bound (the start teams' issues, by priority). The bound
+//! is the caller's: a list may stop short of [`super::MAX_LINEAR_PAGES`] (one
+//! page, to see whether there are more), and its reason may say which end
+//! was cut, so [`read_list`] returns [`End::Cut`] rather than noting it.
 
 use super::{
     Connection,
@@ -64,30 +67,22 @@ where
             }
         };
         page.nodes.into_iter().for_each(&mut each);
-        if !page.page_info.has_next_page {
-            return End::Done;
+        let more = page.page_info.has_next_page;
+        // The shared pager moves to the next page; more pages without a
+        // cursor it notes as partial.
+        if !pager.advance(more, page.page_info.end_cursor) {
+            return if more { End::Stopped } else { End::Done };
         }
-        let Some(cursor) = page.page_info.end_cursor else {
-            pager.note(SourceState::Partial(Incompleteness::PaginationStopped {
-                pages_read: pager.pages_read(),
-                reason: "Linear said there were more pages but gave no cursor".to_owned(),
-            }));
-            return End::Stopped;
-        };
         if pager.pages_read() >= max_pages {
             return End::Cut;
         }
-        pager.cursor = Some(cursor);
     }
 }
 
 /// The partial state of a list cut at den's page bound; `which` says what
 /// was and wasn't read, when the caller knows.
 pub(super) fn page_bound(pager: &Pager, which: Option<&str>) -> SourceState {
-    let bound = format!(
-        "den reads at most {} pages per Linear list",
-        super::MAX_LINEAR_PAGES
-    );
+    let bound = Pager::bound_reason();
     SourceState::Partial(Incompleteness::PaginationStopped {
         pages_read: pager.pages_read(),
         reason: match which {
