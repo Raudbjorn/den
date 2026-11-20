@@ -38,6 +38,18 @@ impl Scope {
         }
     }
 
+    /// Whether two Scopes name the same thing. GitHub logins and Repo names are
+    /// case-insensitive, so a refresh that returns a different casing keeps the
+    /// sidebar cursor and the current Scope on their row.
+    pub fn same(&self, other: &Scope) -> bool {
+        match (self, other) {
+            (Self::AllOwners, Self::AllOwners) => true,
+            (Self::Owner(a), Self::Owner(b)) => same_login(a, b),
+            (Self::Repo(a), Self::Repo(b)) => same_repo(a, b),
+            _ => false,
+        }
+    }
+
     /// The Owner this Scope is narrowed to, if any (a Repo's Owner for a Repo).
     pub fn owner(&self) -> Option<&str> {
         match self {
@@ -61,6 +73,21 @@ impl fmt::Display for Scope {
 /// GitHub owner and repository names are case-insensitive.
 pub fn same_repo(a: &RepoId, b: &RepoId) -> bool {
     same_login(&a.owner, &b.owner) && a.name.eq_ignore_ascii_case(&b.name)
+}
+
+/// Whether two ids name the same Work Item: the Repo compared as GitHub does
+/// (case-insensitively), the rest exactly (Branch names are case-sensitive).
+pub fn same_work_item(a: &WorkItemId, b: &WorkItemId) -> bool {
+    let rest_matches = match (a, b) {
+        (WorkItemId::Issue { number: x, .. }, WorkItemId::Issue { number: y, .. })
+        | (WorkItemId::PullRequest { number: x, .. }, WorkItemId::PullRequest { number: y, .. }) => {
+            x == y
+        }
+        (WorkItemId::Branch { name: x, .. }, WorkItemId::Branch { name: y, .. }) => x == y,
+        (WorkItemId::Run { workflow: x, .. }, WorkItemId::Run { workflow: y, .. }) => x == y,
+        _ => false,
+    };
+    rest_matches && same_repo(a.repo(), b.repo())
 }
 
 /// Where a Decision's Next Step falls in the kind order; lower comes first.

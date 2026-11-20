@@ -43,7 +43,7 @@ pub fn describe(state: &State<'_>) -> (String, Vec<ScopeSegment>) {
         state
             .owners
             .iter()
-            .map(|owner| segment(owner, current == &Scope::Owner(owner.clone()))),
+            .map(|owner| segment(owner, current.same(&Scope::Owner(owner.clone())))),
     );
     if let Scope::Repo(id) = current {
         segments.push(segment(&id.name, true));

@@ -367,3 +367,70 @@ fn the_sidebar_cursor_follows_its_row_across_a_refresh() {
     assert!(harness.view.sidebar.focused);
     assert_eq!(cursor_label(&harness), "fork");
 }
+
+#[test]
+fn enter_scopes_to_the_row_shown_under_the_cursor_when_a_refresh_removed_its_repo() {
+    let mut harness = started(two_owners());
+    harness.key(Key::Right); // Owner octo: the Scope's row stays after the refresh.
+    harness.key(Key::Tab);
+    harness.key(Key::Down); // From octo down to app.
+    let cursor = harness.view.sidebar.cursor.expect("a cursor");
+    assert_eq!(harness.view.sidebar.rows[cursor].label, "app");
+
+    // `octo/app` is gone: neither listed nor carrying a Work Item.
+    refresh(
+        &mut harness,
+        ObservationBuilder::new()
+            .owner("octo")
+            .owner("beta")
+            .fork("octo/fork", Some("upstream/fork"))
+            .pull_request(pr("octo/fork", 3).draft().author(ME))
+            .build(),
+    );
+    let cursor = harness.view.sidebar.cursor.expect("a cursor");
+    assert_eq!(
+        harness.view.sidebar.rows[cursor].label, "octo",
+        "the cursor falls back to the Scope's row"
+    );
+
+    harness.key(Key::Enter);
+    assert_eq!(
+        harness.view.header.scope, "Owner · octo",
+        "Enter scopes to the row drawn under the cursor, not the removed Repo"
+    );
+    assert_eq!(references(&harness), ["octo/fork#3"]);
+}
+
+#[test]
+fn a_refresh_that_changes_a_repos_casing_keeps_the_scope_cursor_and_selection() {
+    let mut harness = started(two_owners());
+    harness.key(Key::Tab);
+    for _ in 0..3 {
+        harness.key(Key::Down); // All Owners → octo → app → fork.
+    }
+    harness.key(Key::Enter); // Scope: Repo octo/fork.
+    harness.key(Key::Tab);
+    assert_eq!(selected(&harness).as_deref(), Some("octo/fork#3"));
+
+    // GitHub now spells the Owner and the Repo with capitals.
+    refresh(
+        &mut harness,
+        ObservationBuilder::new()
+            .owner("octo")
+            .owner("beta")
+            .repo("Octo/app")
+            .fork("Octo/Fork", Some("upstream/fork"))
+            .pull_request(pr("Octo/Fork", 3).draft().author(ME))
+            .pull_request(pr("Octo/Fork", 7).draft().author(ME))
+            .build(),
+    );
+    let fork = row(&harness.view, &Scope::Repo(repo_id("Octo/Fork")));
+    assert!(fork.current, "the current-Scope mark stays on the Repo");
+    let cursor = harness.view.sidebar.cursor.expect("a cursor");
+    assert_eq!(harness.view.sidebar.rows[cursor].label, "Fork");
+    assert_eq!(
+        selected(&harness).as_deref(),
+        Some("Octo/Fork#3"),
+        "the same Pull Request stays selected"
+    );
+}

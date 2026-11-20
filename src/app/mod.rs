@@ -210,7 +210,9 @@ impl App {
 
     fn selected_index(&self) -> Option<usize> {
         let selected = self.selected.as_ref()?;
-        self.decisions.iter().position(|d| &d.item.id == selected)
+        self.decisions
+            .iter()
+            .position(|d| ordering::same_work_item(&d.item.id, selected))
     }
 
     /// Keeps the selection on the same Work Item if it still exists, else the first.
