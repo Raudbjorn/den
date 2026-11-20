@@ -109,6 +109,10 @@ Each Work Item has at most one. An Issue with a linked open Pull Request has non
 A Claude Code session den launched to carry out one Next Step, in its own worktree and window.
 _Avoid_: Run, task, session (alone)
 
+**Coordination Job**:
+A Job that coordinates rather than codes: it asks for review (Request review) or lands a Landing Group (Land). It still gets a worktree on a PR head, but Claude Code runs it in a permission mode that asks before acting, shown on the sheet; Jobs that change code keep their usual command.
+_Avoid_: Ops job, admin job, meta job
+
 **Live Job**:
 A Job whose worktree still exists. A Work Item with a Live Job is not launched again without asking.
 _Avoid_: Active job, running job
