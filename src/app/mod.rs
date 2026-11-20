@@ -187,7 +187,7 @@ impl App {
                 };
                 // The cache is read first, so it shows before the survey answers;
                 // then the Jobs (local and bounded), so their markers don't wait
-                // for gh on the single worker.
+                // for gh on the Worker's remote lane.
                 let mut effects = vec![Effect::LoadCache, Effect::CheckJobs];
                 if let Some(error) = &self.upstreams_unreadable {
                     effects.push(Effect::log(

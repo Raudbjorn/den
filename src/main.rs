@@ -35,7 +35,7 @@ use den::{
     logging::{self, LoggingError},
     paths::{Paths, PathsError},
     ports::{Ports, SystemClock, UpstreamStore},
-    runtime::{self, Worker},
+    runtime::{self, Flow, Worker},
     terminal::{SIGNAL_EXIT_STATUS_BASE, TerminalSession},
     ui::{
         Theme, UiError,
@@ -277,12 +277,17 @@ fn run_interactive(
     ports: Ports,
     graphics: Option<Graphics>,
 ) -> Result<(), DenError> {
-    let worker = Worker::start(ports.clone());
+    let worker = Worker::start(ports);
     let mut session = TerminalSession::start()?;
     // Before any input is read: the terminal answers the query on stdin.
     let mut bear = BearArt::detect(theme.profile(), graphics);
-    let outcome = event_loop(&mut session, theme, &mut app, (&worker, &ports), &mut bear);
+    let outcome = event_loop(&mut session, theme, &mut app, &worker, &mut bear);
     let restored = session.finish();
+    // After the terminal is back, on quit and on a signal alike: queued writes
+    // of den's state get a bounded time to land.
+    if let Err(error) = worker.finish(&mut app, Duration::from_secs(runtime::FINISH_WITHIN_SECS)) {
+        tracing::error!(%error, "quit");
+    }
     match (outcome, restored) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(error),
@@ -298,7 +303,7 @@ fn event_loop(
     session: &mut TerminalSession,
     theme: &Theme,
     app: &mut App,
-    (worker, ports): (&Worker, &Ports),
+    worker: &Worker,
     bear: &mut BearArt,
 ) -> Result<(), DenError> {
     let size = session.terminal().size()?;
@@ -309,12 +314,9 @@ fn event_loop(
     let (mut view, effects) = app.handle(Event::Started {
         now: Timestamp::now(),
     });
-    let dispatched = runtime::dispatch(effects, worker, ports);
-    if dispatched.quit {
+    if let Flow::Quit = worker.dispatch(app, &mut view, effects) {
         return Ok(());
     }
-    // Events of Effects performed at once, handled on the next turn.
-    let mut performed = dispatched.events;
     let mut dirty = true;
     let mut last_tick = Instant::now();
     loop {
@@ -326,15 +328,20 @@ fn event_loop(
         if let Some(signal) = session.termination_signal() {
             return Err(DenError::Signalled(signal));
         }
-        let mut incoming: Vec<Event> = std::mem::take(&mut performed);
-        incoming.extend(worker.finished());
+        let mut incoming: Vec<Event> = worker.finished().collect();
         if last_tick.elapsed() >= Duration::from_secs(TICK_SECS) {
             last_tick = Instant::now();
             incoming.push(Event::Tick {
                 now: Timestamp::now(),
             });
         }
-        if event::poll(Duration::from_millis(INPUT_POLL_MS))? {
+        // Events already waiting are handled now; input is only waited for when idle.
+        let wait = if incoming.is_empty() {
+            Duration::from_millis(INPUT_POLL_MS)
+        } else {
+            Duration::ZERO
+        };
+        if event::poll(wait)? {
             match event::read()? {
                 TermEvent::Key(key) => incoming.extend(translate_key(&key).map(Event::Key)),
                 TermEvent::Resize(cols, rows) => incoming.push(Event::Resized { cols, rows }),
@@ -345,11 +352,9 @@ fn event_loop(
             let (next_view, effects) = app.handle(event);
             view = next_view;
             dirty = true;
-            let dispatched = runtime::dispatch(effects, worker, ports);
-            if dispatched.quit {
+            if let Flow::Quit = worker.dispatch(app, &mut view, effects) {
                 return Ok(());
             }
-            performed.extend(dispatched.events);
         }
     }
 }
