@@ -71,6 +71,11 @@ fn observation() -> ObservationBuilder {
 /// A harness with a Main Clone of octo/app (remote `upstream`); `arrange`
 /// sets up Jobs and worktrees before den starts.
 fn harness_with(arrange: impl FnOnce(&Harness)) -> Harness {
+    harness_observing(observation(), arrange)
+}
+
+/// [`harness_with`], surveying `observed` instead.
+fn harness_observing(observed: ObservationBuilder, arrange: impl FnOnce(&Harness)) -> Harness {
     let config = Config {
         owners: vec!["octo".to_owned()],
         main_clone_root: Some(PathBuf::from(ROOT)),
@@ -89,7 +94,7 @@ fn harness_with(arrange: impl FnOnce(&Harness)) -> Harness {
         );
     }
     arrange(&harness);
-    harness.answer(Ok(observation().build()));
+    harness.answer(Ok(observed.build()));
     harness.start();
     harness
 }
@@ -571,6 +576,93 @@ fn an_unknown_worktree_is_explained_offers_no_deletion_and_never_relaunches_sile
         field(sheet(&harness), "WORKTREE").0,
         format!("{WORKTREES}/feature-7-2")
     );
+}
+
+/// octo/app with PR 7 waiting for its checks: no rule matches, so it has no
+/// Next Step (spec, "Next Step rules").
+fn waiting_for_checks() -> ObservationBuilder {
+    ObservationBuilder::new()
+        .owner("octo")
+        .repo("octo/app")
+        .pull_request(pr("octo/app", 7).author(ME).pending("ci"))
+}
+
+#[test]
+fn a_live_job_stays_reopenable_while_its_pr_has_no_next_step() {
+    let mut harness = harness_observing(waiting_for_checks(), |h| live_job(h, 7));
+    select(&mut harness, 7);
+    assert_eq!(marker(&harness.view, 7), Some(JobMarker::Live));
+
+    press(&mut harness, Key::Char('c'));
+    let asked = sheet(&harness).clone();
+    assert_eq!(asked.next_step, "none");
+    assert_eq!(asked.status, LaunchStatus::LiveJob, "{}", messages(&asked));
+    assert_eq!(
+        asked.headline,
+        "This Work Item has a Live Job: open existing?"
+    );
+    assert_eq!(field(&asked, "SESSION").0, SESSION_7);
+    // A fresh launch needs a Next Step, so `f` is not offered, and the sheet says why.
+    assert_eq!(hints(&harness.view), ["o open existing", "esc cancel"]);
+    assert!(
+        messages(&asked)
+            .contains("Starting fresh isn't possible: this Work Item has no Next Step to hand off"),
+        "{}",
+        messages(&asked)
+    );
+
+    // `f` anyway: refused with the reason, and the question stays open.
+    let effects = harness.key(Key::Char('f'));
+    assert_eq!(launches_or_reopens(&effects), 0);
+    let still = sheet(&harness).clone();
+    assert_eq!(still.status, LaunchStatus::LiveJob);
+    assert!(
+        messages(&still).contains("can't start fresh: this Work Item has no Next Step"),
+        "{}",
+        messages(&still)
+    );
+
+    press(&mut harness, Key::Char('o'));
+    assert_eq!(sheet(&harness).status, LaunchStatus::ReopenReady);
+    press(&mut harness, Key::Enter);
+    assert_eq!(
+        harness.launcher.windows(),
+        [WindowCommand {
+            directory: worktree(7).into(),
+            session: SESSION_7.to_owned(),
+            prompt: String::new(),
+            start: SessionStart::Resume,
+        }]
+    );
+    assert_eq!(sheet(&harness).status, LaunchStatus::Reopened);
+    // Nothing fetched or added, no new Job recorded.
+    assert!(harness.workspace.calls().is_empty());
+    assert_eq!(harness.jobs.records(), [job(7)]);
+}
+
+#[test]
+fn without_a_next_step_a_job_that_is_no_longer_live_is_refused_as_before() {
+    let mut harness = harness_observing(waiting_for_checks(), |h| live_job(h, 7));
+    select(&mut harness, 7);
+    // The worktree goes after den last checked the Jobs: the sheet's own
+    // inspection finds it missing, so only the fresh launch's refusal is left.
+    harness.workspace.remove_existing(&worktree(7));
+
+    press(&mut harness, Key::Char('c'));
+    let refused = sheet(&harness);
+    assert_eq!(
+        refused.status,
+        LaunchStatus::Refused,
+        "{}",
+        messages(refused)
+    );
+    assert!(
+        messages(refused).contains("this Work Item has no Next Step to hand off"),
+        "{}",
+        messages(refused)
+    );
+    assert!(harness.launcher.windows().is_empty());
+    assert!(harness.workspace.calls().is_empty());
 }
 
 #[test]
