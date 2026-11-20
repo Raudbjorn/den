@@ -21,6 +21,7 @@ use den::{
 use serde_json::{Value, json};
 use std::{os::unix::fs::PermissionsExt, sync::Mutex, time::Duration};
 use support::{
+    branch_graphql::only_default_branches,
     build::{now, repo_id},
     fakes::{ScriptedGraphQl, data, operation},
 };
@@ -113,7 +114,7 @@ fn after(request: &GraphQlRequest) -> Option<String> {
 /// Owner "octo": Repos over two pages; PRs over two Repo pages, where Repo
 /// "busy" has three pages of PRs of its own.
 fn paginated_octo(request: &GraphQlRequest) -> Result<GraphQlResponse, TransportError> {
-    if let Some(answer) = viewer_answers(request) {
+    if let Some(answer) = viewer_answers(request).or_else(|| only_default_branches(request)) {
         return answer;
     }
     let page = after(request);
@@ -203,6 +204,7 @@ fn open_prs_are_paginated_to_completion_and_qualified_by_owner_and_repo() {
             repo: repo_id("octo/busy"),
             kind: SourceKind::PullRequests,
         },
+        owner_source(SourceKind::Branches),
     ] {
         assert_eq!(
             state(&observation, source.clone()),
@@ -214,12 +216,10 @@ fn open_prs_are_paginated_to_completion_and_qualified_by_owner_and_repo() {
         state(&observation, owner_source(SourceKind::Issues)),
         SourceState::Complete
     );
-    for kind in [SourceKind::Branches, SourceKind::Runs] {
-        assert_eq!(
-            state(&observation, owner_source(kind)),
-            SourceState::NotYetFetched
-        );
-    }
+    assert_eq!(
+        state(&observation, owner_source(SourceKind::Runs)),
+        SourceState::NotYetFetched
+    );
     // Variables travel as GraphQL variables, never spliced into query text.
     assert!(gql.requests().iter().all(|r| !r.query.contains("\"octo\"")));
 }
@@ -229,7 +229,7 @@ fn octo_prs_answer(
     answer: impl Fn() -> Result<GraphQlResponse, TransportError> + Send + Sync + 'static,
 ) -> ScriptedGraphQl {
     ScriptedGraphQl::new(move |request| {
-        if let Some(viewer) = viewer_answers(request) {
+        if let Some(viewer) = viewer_answers(request).or_else(|| only_default_branches(request)) {
             return viewer;
         }
         match operation(request).as_str() {
@@ -324,7 +324,7 @@ fn octo_two_pr_pages(
     second: impl Fn() -> Result<GraphQlResponse, TransportError> + Send + Sync + 'static,
 ) -> ScriptedGraphQl {
     ScriptedGraphQl::new(move |request| {
-        if let Some(viewer) = viewer_answers(request) {
+        if let Some(viewer) = viewer_answers(request).or_else(|| only_default_branches(request)) {
             return viewer;
         }
         match (operation(request).as_str(), after(request).as_deref()) {
@@ -405,7 +405,7 @@ fn errors_alongside_data_on_several_pages_are_all_kept() {
 #[test]
 fn errors_on_the_owner_page_make_a_repo_read_on_its_own_pages_partial() {
     let gql = ScriptedGraphQl::new(|request| {
-        if let Some(viewer) = viewer_answers(request) {
+        if let Some(viewer) = viewer_answers(request).or_else(|| only_default_branches(request)) {
             return viewer;
         }
         match (operation(request).as_str(), after(request).as_deref()) {
