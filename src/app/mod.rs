@@ -609,8 +609,7 @@ impl App {
         let mut cached = cached
             .restricted_to(&config.owners)
             .restricted_to_linear(&linear_reads(config));
-        // The cache has no query scope: these sources must be fetched again
-        // before claiming they cover the configured teams, filters and states.
+        // shortcut: without cached query scopes, re-fetch; persist scopes to reuse startup coverage.
         cached.observation.coverage.retain(|entry| {
             !matches!(
                 entry.source,
