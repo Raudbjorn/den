@@ -59,8 +59,8 @@ pub enum RefusalReason {
         number: u64,
         target: RepoId,
     },
-    /// A Branch is fetched from the Repo it is in; the same name in another
-    /// target (a fork's Upstream) is other work, or none.
+    /// A Branch is fetched from the Repo it is in; a branch of the same name in
+    /// another target (a fork's Upstream) is another branch.
     BranchNotInTarget {
         repo: RepoId,
         branch: String,
@@ -123,7 +123,8 @@ pub enum RefusalReason {
     },
     WorktreeExists {
         path: PathBuf,
-        /// The Job recorded there, when den launched it (#14 offers to reopen it).
+        /// The Job recorded there, when den launched it. A Live Job there is
+        /// asked about before planning (#14), so this is the leftover case.
         job: Option<(String, Timestamp)>,
     },
     WorktreeUnknown {
@@ -182,6 +183,25 @@ pub enum RefusalReason {
         number: u64,
     },
     ClaudeMissing,
+    /// Open existing (#14): the Job's worktree is not (or no longer) present.
+    JobNotLive {
+        worktree: PathBuf,
+        why: String,
+    },
+    /// Open existing (#14): the recorded worktree is not inside the Main
+    /// Clone's `.claude/worktrees/`, so it could be the Main Clone itself.
+    ReopenOutsideWorktrees {
+        worktree: PathBuf,
+        main_clone: PathBuf,
+    },
+    /// Open existing (#14): the recorded session name isn't one den makes.
+    SessionNameUnusable {
+        session: String,
+    },
+    /// Start fresh (#14): every suffixed name up to the limit is taken.
+    NoFreshName {
+        last_tried: u32,
+    },
 }
 
 impl fmt::Display for RefusalReason {
@@ -244,7 +264,7 @@ impl fmt::Display for RefusalReason {
                 target,
             } => write!(
                 f,
-                "the branch {branch} is in {repo}, not in {target}: den fetches a branch only from the Repo it is in, and {branch} in {target} would be other work; press u to target {repo} for this Job"
+                "the Branch {branch} is in {repo}, not in {target}: den fetches a Branch only from the Repo it is in; press u to target {repo} for this Job"
             ),
             Self::PromptsUnusable { error } => write!(f, "the prompts file is unusable: {error}"),
             Self::JobRecordsUnreadable { error } => write!(
@@ -314,7 +334,7 @@ impl fmt::Display for RefusalReason {
                 job: Some((session, at)),
             } => write!(
                 f,
-                "a Job for this Work Item (session {session}, launched {}) already has the worktree {}; reopening it isn't built yet",
+                "a Job for this Work Item (session {session}, launched {}) already has the worktree {}, but den couldn't confirm git has it registered",
                 at.strftime("%Y-%m-%d %H:%M UTC"),
                 path.display()
             ),
@@ -371,6 +391,28 @@ impl fmt::Display for RefusalReason {
                 "{remote} has no refs/pull/{number}/head, so the PR's head can't be fetched from it"
             ),
             Self::ClaudeMissing => f.write_str("Claude Code (claude) is not on PATH"),
+            Self::JobNotLive { worktree, why } => write!(
+                f,
+                "the Job's worktree {} is not a Live Job's any more ({why}); den leaves it as it is",
+                worktree.display()
+            ),
+            Self::ReopenOutsideWorktrees {
+                worktree,
+                main_clone,
+            } => write!(
+                f,
+                "the recorded worktree {} isn't inside {}/.claude/worktrees; den never reopens a Job outside it (and never in the Main Clone itself)",
+                worktree.display(),
+                main_clone.display()
+            ),
+            Self::SessionNameUnusable { session } => write!(
+                f,
+                "the recorded session name {session:?} isn't one den makes, so den won't pass it to claude --resume"
+            ),
+            Self::NoFreshName { last_tried } => write!(
+                f,
+                "every fresh worktree name up to -{last_tried} is taken by a Job or a worktree; den deletes none of them"
+            ),
         }
     }
 }

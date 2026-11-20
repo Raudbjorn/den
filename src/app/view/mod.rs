@@ -5,6 +5,7 @@ mod detail;
 mod footer;
 mod format;
 mod header;
+mod jobs;
 mod launch;
 mod list;
 mod scope;
@@ -18,6 +19,7 @@ use crate::{
     config::{Config, ConfigError},
     decide::Decision,
     domain::{Observation, UpstreamTargets},
+    handoff::JobCheck,
     layout::Layout,
     ordering::Scope,
     ports::SurveyFailure,
@@ -44,9 +46,12 @@ pub struct State<'a> {
     pub sidebar: Vec<Scope>,
     pub failure: Option<&'a SurveyFailure>,
     pub selected: Option<usize>,
+    pub detail_page: i64,
     pub now: Option<Timestamp>,
     pub layout: Layout,
     pub overlay: Option<&'a OverlayState>,
+    /// The recorded Jobs' worktree states (#14).
+    pub job_checks: &'a [JobCheck],
     /// The forks whose target is their Upstream (#13).
     pub upstreams: &'a UpstreamTargets,
     /// Something wrong with the Upstream choices, for the header.

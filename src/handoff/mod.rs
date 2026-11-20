@@ -31,8 +31,17 @@
 //!   the target's remote. A PR is only ever fetched from the Repo it is in: an
 //!   Upstream target for a fork's PR is [`RefusalReason::PullRequestNotInTarget`],
 //!   and for a fork's Branch [`RefusalReason::BranchNotInTarget`].
-//! - #14 (Live Jobs): the Job records are in the WorkspaceView; a worktree that
-//!   exists and belongs to this Work Item's Job is reported with that Job.
+//! - #14 (Live Jobs, built): [`live`] tells each recorded Job's worktree
+//!   present / missing / unknown. The WorkspaceView carries this Work Item's
+//!   checks (`job_checks`); the App asks "open existing or start fresh?" on a
+//!   Live Job. Open existing is a [`live::ReopenPlan`] carried out by
+//!   [`live::reopen`] (`claude --resume`, never in the Main Clone); start fresh
+//!   is [`PlanInput::fresh`], a suffix on the worktree name, branch and
+//!   session.
+//!
+//! One suffix rule for every name den suffixes ([`names::suffixed`],
+//! `<name>-<n>`): a worktree name another Work Item's Job has (#12), and a
+//! fresh start beside this Work Item's Live Job (#14).
 
 pub mod clone;
 pub mod cloning;
@@ -40,6 +49,7 @@ pub mod command;
 mod execute;
 mod inspect;
 mod kinds;
+pub mod live;
 pub mod names;
 mod plan;
 pub mod prompts;
@@ -47,9 +57,10 @@ mod refusal;
 
 pub use clone::Remote;
 pub use cloning::NewCloneView;
-pub use command::{WindowCommand, WindowMode};
+pub use command::{SessionStart, WindowCommand, WindowMode};
 pub use execute::{LaunchOutcome, LaunchReport, LaunchStep, execute};
 pub use inspect::{ChosenClone, CloneSearch, InspectRequest, WorkspaceView, inspect};
+pub use live::{JobCheck, JobsCheck, ReopenPlan, WorktreeState};
 pub use plan::{LaunchSettings, PlanInput, inspect_request, plan};
 pub use refusal::{Refusal, RefusalReason};
 
@@ -126,6 +137,19 @@ impl TargetChoice {
         match self {
             Self::OwnRepo => Self::Upstream,
             Self::Upstream => Self::OwnRepo,
+        }
+    }
+
+    /// The target a launch sheet for `item` starts from, given the fork's own
+    /// setting (`fork_setting`). A PR's and a Branch's refs live in the Repo
+    /// they are in, so their Jobs start on that Repo whatever the fork's
+    /// setting (a sheet's `u` can still choose the Upstream, which is
+    /// refused with the reason). Issues and Runs follow the fork's setting:
+    /// their new branches start from the target's default branch.
+    pub fn default_for(item: &WorkItemId, fork_setting: Self) -> Self {
+        match item {
+            WorkItemId::PullRequest { .. } | WorkItemId::Branch { .. } => Self::OwnRepo,
+            WorkItemId::Issue { .. } | WorkItemId::Run { .. } => fork_setting,
         }
     }
 }
@@ -229,6 +253,10 @@ pub enum BranchStart {
 pub struct JobBranch {
     pub name: String,
     pub start: BranchStart,
+    /// The name it would have had, when that clashed in the Main Clone: a
+    /// cross-Repo PR head named like the default branch or a branch already
+    /// there is checked out as `pr-<n>-<head>` instead.
+    pub renamed_from: Option<String>,
 }
 
 /// Everything a launch will do, decided before anything is done.
@@ -301,6 +329,7 @@ impl LaunchPlan {
             directory: self.worktree.clone(),
             session: self.session.clone(),
             prompt: self.prompt.clone(),
+            start: SessionStart::New,
         }
     }
 

@@ -400,11 +400,18 @@ fn quiet_archived_and_empty_repos_cost_at_most_one_request() {
     assert!(few.on_default_branch);
     assert_eq!(
         fetched.coverage,
-        [CoverageEntry {
-            source: owner_runs(),
-            state: SourceState::Complete
-        }],
-        "all complete: no per-Repo entries"
+        ["quiet", "few"]
+            .map(|name| CoverageEntry {
+                source: repo_runs(name),
+                state: SourceState::Complete,
+            })
+            .into_iter()
+            .chain([CoverageEntry {
+                source: owner_runs(),
+                state: SourceState::Complete,
+            }])
+            .collect::<Vec<_>>(),
+        "explicit Repo completion lets a refresh remove deleted workflow Runs"
     );
 }
 

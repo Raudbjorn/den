@@ -34,7 +34,7 @@ pub(super) struct Facts {
     /// The Job's branch, before any suffix.
     pub branch: String,
     /// A new `<type>_<slug>` branch: its name is the worktree name, suffix included.
-    pub fresh: bool,
+    pub new_branch: bool,
 }
 
 /// The target a choice names, and whether it is archived.
@@ -115,9 +115,9 @@ pub(super) fn facts(
         return Err(Refusal { reasons });
     };
     let start = match item {
-        // A Branch is work in the Repo it is in, fetched only from there: the
-        // same name in another target (a fork's Upstream) is other work.
-        WorkItemId::Branch { repo, name } if &target.target.repo != repo => {
+        // A Branch's commits live in the Repo it is in; the same name in
+        // another target (a fork's Upstream) is another branch.
+        WorkItemId::Branch { name, .. } if &target.target.repo != repo => {
             reasons.push(RefusalReason::BranchNotInTarget {
                 repo: repo.clone(),
                 branch: name.clone(),
@@ -146,7 +146,7 @@ pub(super) fn facts(
             return Err(Refusal { reasons });
         }
     };
-    let (Some((base, branch, fresh)), true) = (start, reasons.is_empty()) else {
+    let (Some((base, branch, new_branch)), true) = (start, reasons.is_empty()) else {
         return Err(Refusal { reasons });
     };
     Ok(Facts {
@@ -159,7 +159,7 @@ pub(super) fn facts(
         base,
         base_commit: None,
         branch,
-        fresh,
+        new_branch,
     })
 }
 

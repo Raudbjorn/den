@@ -3,7 +3,7 @@
 use crate::{
     cache::{CacheError, CachedObservation},
     domain::Observation,
-    handoff::{LaunchReport, WorkspaceView},
+    handoff::{JobsCheck, LaunchReport, WorkspaceView},
     ports::SurveyFailure,
     upstreams::UpstreamStoreError,
 };
@@ -31,6 +31,8 @@ pub enum Key {
     Delete,
     Home,
     End,
+    PageUp,
+    PageDown,
     Char(char),
     /// Ctrl-C.
     Interrupt,
@@ -76,6 +78,11 @@ pub enum Event {
     LaunchFinished {
         id: LaunchId,
         report: Box<LaunchReport>,
+    },
+    /// The recorded Jobs' worktrees were checked (#14), or why the Job records
+    /// couldn't be read.
+    JobsChecked {
+        outcome: Result<Box<JobsCheck>, String>,
     },
     /// The Upstream choices were saved, or why not.
     UpstreamsStored {

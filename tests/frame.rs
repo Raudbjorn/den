@@ -699,3 +699,79 @@ fn every_key_hint_fits_the_footer_at_80_by_24() {
         }
     }
 }
+
+#[test]
+fn every_detail_page_is_reachable_in_the_pane_and_narrow_sheet() {
+    use den::domain::{Incompleteness, SourceKind, SourceState};
+    for (cols, rows) in [(110, 24), (80, 24)] {
+        for glyphs in [GlyphProfile::Unicode, GlyphProfile::Ascii] {
+            let theme = Theme::new(TerminalProfile::new(ColorProfile::NoColor, glyphs)).unwrap();
+            let mut rich = pr("octo/one", 1).author(ME).threads_truncated();
+            for n in 0..25 {
+                rich = rich.failing_required(&format!("CHECK-END-{n}"));
+            }
+            let mut harness = Harness::with_owners(&["octo"]);
+            harness.answer(Ok(ObservationBuilder::new()
+                .fully_read_owner("octo")
+                .pull_request(rich)
+                .pull_request(pr("octo/two", 2))
+                .repo_coverage(
+                    "octo/one",
+                    SourceKind::PullRequestDetails,
+                    SourceState::Partial(Incompleteness::FollowUpTruncated {
+                        what: "threads".to_owned(),
+                    }),
+                )
+                .build()));
+            harness.send(Event::Resized { cols, rows });
+            harness.start();
+            if cols < 110 {
+                harness.key(Key::Enter);
+            }
+            let draw = |view: &ViewModel| {
+                frame::buffer_text(&frame::render(&theme, view, cols, rows).unwrap())
+            };
+            let first = draw(&harness.view);
+            assert!(first.contains("PgUp/PgDn"));
+            let selected = harness.view.list.selected;
+            let mut all = first.clone();
+            let mut last = first.clone();
+            let mut wrapped = false;
+            for _ in 0..128 {
+                harness.key(Key::PageDown);
+                assert_eq!(harness.view.list.selected, selected);
+                let page = draw(&harness.view);
+                if page == first {
+                    wrapped = true;
+                    break;
+                }
+                all.push_str(&page);
+                last = page;
+            }
+            assert!(wrapped, "pages cycle through the finite detail content");
+            // The decision engine lists four check names and summarizes the rest.
+            for text in [
+                "CHECK-END-3",
+                "21 more",
+                "INCOMPLETE DATA",
+                "UNKNOWN",
+                "OBSERVED",
+            ] {
+                assert!(all.contains(text), "{cols}x{rows}: missing {text}\n{all}");
+            }
+            harness.key(Key::PageUp);
+            assert_eq!(draw(&harness.view), last, "Page Up wraps to the last page");
+            harness.key(Key::Down);
+            assert_eq!(
+                harness.view.detail.page, 0,
+                "a different item starts on page one"
+            );
+            harness.key(Key::PageDown);
+            harness.send(Event::Resized {
+                cols,
+                rows: rows + 1,
+            });
+            assert_eq!(harness.view.detail.page, 0, "resize resets wrapping");
+        }
+    }
+}

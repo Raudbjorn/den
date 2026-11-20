@@ -23,7 +23,10 @@ use crate::{
     config::{Config, ConfigError},
     decide::{self, Decision},
     domain::{Observation, SourceState, UpstreamTargets, WorkItemId},
-    handoff::prompts::{Prompts, PromptsError},
+    handoff::{
+        JobCheck, JobsCheck,
+        prompts::{Prompts, PromptsError},
+    },
     layout::{Layout, TerminalSize},
     ordering,
     ports::{SurveyFailure, SurveyRequest},
@@ -60,6 +63,7 @@ pub struct App {
     /// The last survey's failure, when it produced no Observation.
     failure: Option<SurveyFailure>,
     selected: Option<WorkItemId>,
+    detail_page: i64,
     now: Option<Timestamp>,
     /// The terminal's size, as last reported (`Event::Resized`).
     size: TerminalSize,
@@ -70,6 +74,9 @@ pub struct App {
     /// Where to search for Main Clones when the config sets no `main_clone_root`.
     default_clone_root: Option<PathBuf>,
     next_launch: u64,
+    /// The recorded Jobs' worktree states (#14), newest first; refreshed at
+    /// start, on `r`, after a launch, and per Work Item by a sheet's inspection.
+    job_checks: Vec<JobCheck>,
     /// The forks whose target is their Upstream (#13).
     upstreams: UpstreamTargets,
     /// Why the stored Upstream choices couldn't be read at startup, if they
@@ -92,12 +99,14 @@ impl App {
             scope: ScopeState::default(),
             failure: None,
             selected: None,
+            detail_page: 0,
             now: None,
             size: TerminalSize::DESIGN,
             overlay: None,
             prompts: Ok(Prompts::default()),
             default_clone_root: None,
             next_launch: 0,
+            job_checks: Vec::new(),
             upstreams: UpstreamTargets::default(),
             upstreams_unreadable: None,
             upstream_problem: None,
@@ -137,6 +146,7 @@ impl App {
             Event::CacheStored { outcome } => cache_stored(outcome),
             Event::LaunchInspected { id, view } => self.launch_inspected(id, view),
             Event::LaunchFinished { id, report } => self.launch_finished(id, report),
+            Event::JobsChecked { outcome } => self.jobs_checked(outcome),
             Event::UpstreamsStored { outcome } => self.upstreams_stored(outcome),
         };
         (self.view(), effects)
@@ -157,9 +167,11 @@ impl App {
             sidebar: self.sidebar_entries(),
             failure: self.failure.as_ref(),
             selected: self.selected_index(),
+            detail_page: self.detail_page,
             now: self.now,
             layout: Layout::for_size(self.size),
             overlay: self.overlay.as_ref(),
+            job_checks: &self.job_checks,
             upstreams: &self.upstreams,
             upstream_note: self.upstream_note(),
         })
@@ -172,8 +184,10 @@ impl App {
                     owners: config.owners.clone(),
                     upstreams: self.upstreams.clone(),
                 };
-                // The cache is read first, so it shows before the survey answers.
-                let mut effects = vec![Effect::LoadCache];
+                // The cache is read first, so it shows before the survey answers;
+                // then the Jobs (local and bounded), so their markers don't wait
+                // for gh on the single worker.
+                let mut effects = vec![Effect::LoadCache, Effect::CheckJobs];
                 if let Some(error) = &self.upstreams_unreadable {
                     effects.push(Effect::log(
                         LogLevel::Warn,
@@ -211,6 +225,12 @@ impl App {
             && let Some(OverlayState::Launch(sheet)) = self.overlay.take()
         {
             return self.launch_key(sheet, key);
+        }
+        if matches!(key, Key::PageUp | Key::PageDown) {
+            self.detail_page =
+                self.detail_page
+                    .saturating_add(if key == Key::PageDown { 1 } else { -1 });
+            return Vec::new();
         }
         // An open sheet claims its keys before anything else.
         if self.overlay.is_some()
@@ -254,7 +274,9 @@ impl App {
             | Key::Backspace
             | Key::Delete
             | Key::Home
-            | Key::End => Vec::new(),
+            | Key::End
+            | Key::PageUp
+            | Key::PageDown => Vec::new(),
         }
     }
 
@@ -315,7 +337,9 @@ impl App {
                     owners: config.owners.clone(),
                     upstreams: self.upstreams.clone(),
                 };
-                self.begin_survey(request)
+                let mut effects = vec![Effect::CheckJobs];
+                effects.extend(self.begin_survey(request));
+                effects
             }
             Err(error) => vec![Effect::log(
                 LogLevel::Warn,
@@ -432,6 +456,7 @@ impl App {
     fn keep_selection(&mut self) {
         if self.selected_index().is_none() {
             self.selected = self.decisions.first().map(|d| d.item.id.clone());
+            self.detail_page = 0;
         }
     }
 
@@ -443,7 +468,42 @@ impl App {
             Some(i) => i.saturating_add_signed(delta).min(last),
             None => 0,
         };
-        self.selected = self.decisions.get(target).map(|d| d.item.id.clone());
+        let selected = self.decisions.get(target).map(|d| d.item.id.clone());
+        if selected != self.selected {
+            self.detail_page = 0;
+        }
+        self.selected = selected;
+    }
+}
+
+impl App {
+    /// The Jobs' worktrees were checked: the list and detail mark them. On an
+    /// error the earlier checks stay (and `c` refuses until the records read).
+    fn jobs_checked(&mut self, outcome: Result<Box<JobsCheck>, String>) -> Vec<Effect> {
+        match outcome {
+            Ok(check) => {
+                let live = check.checks.iter().filter(|c| c.is_live()).count();
+                let unknown = check
+                    .checks
+                    .iter()
+                    .filter(|c| matches!(c.state, crate::handoff::WorktreeState::Unknown(_)))
+                    .count();
+                let log = Effect::log(
+                    LogLevel::Info,
+                    format!(
+                        "checked {} Job(s): {live} live, {unknown} unknown; {} older not checked",
+                        check.checks.len(),
+                        check.not_checked
+                    ),
+                );
+                self.job_checks = check.checks;
+                vec![log]
+            }
+            Err(error) => vec![Effect::log(
+                LogLevel::Warn,
+                format!("could not check the Jobs: {error}"),
+            )],
+        }
     }
 }
 

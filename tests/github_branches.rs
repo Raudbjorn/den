@@ -212,8 +212,8 @@ fn only_candidates_are_checked_and_only_unproposed_ones_compared() {
     );
     assert_eq!(
         coverage(&observation, &repo_branches("octo/app")),
-        None,
-        "complete Repos add no entry"
+        Some(SourceState::Complete),
+        "explicit Repo completion lets a refresh remove deleted branches"
     );
     // Values travel as variables; only alias indices are generated into the text.
     assert!(
@@ -287,8 +287,8 @@ fn a_repo_with_many_branches_is_read_from_both_ends_without_gaps_or_duplicates()
     assert_eq!(names.len(), 250, "every Branch but main, once");
     assert_eq!(
         coverage(&observation, &repo_branches("octo/big")),
-        None,
-        "read completely"
+        Some(SourceState::Complete),
+        "read completely, even if the Owner's Repo list is partial"
     );
     // 251 Branches at 100 per page: page 1 forwards, then both ends at once.
     let rounds = ops(&gql, "BranchRefs").len();
@@ -334,7 +334,11 @@ fn a_lost_candidate_query_leaves_those_branches_out_and_says_so_for_their_repo()
         }
         other => panic!("expected partial coverage for octo/app, got {other:?}"),
     }
-    assert_eq!(coverage(&observation, &repo_branches("octo/lib")), None);
+    // A successful Repo keeps explicit coverage even when other Repos are partial.
+    assert_eq!(
+        coverage(&observation, &repo_branches("octo/lib")),
+        Some(SourceState::Complete)
+    );
 }
 
 #[test]

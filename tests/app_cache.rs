@@ -745,3 +745,28 @@ fn a_kept_run_under_an_owner_s_old_casing_is_superseded_by_a_newer_run() {
         references(&harness.view)
     );
 }
+
+#[test]
+fn fully_read_repos_drop_deleted_branches_and_runs_even_when_the_owner_list_is_partial() {
+    use den::cache;
+    use support::build::branch;
+    let old = ObservationBuilder::new()
+        .fully_read_owner("alpha")
+        .branch(branch("alpha/read", "deleted").author(ME))
+        .branch(branch("alpha/unread", "kept").author(ME))
+        .run(run("alpha/read", "gone.yml", 1).failed().by(ME))
+        .run(run("alpha/unread", "kept.yml", 2).failed().by(ME))
+        .build();
+    let fresh = ObservationBuilder::new()
+        .fully_read_owner("alpha")
+        .owner_coverage("alpha", SourceKind::Repos, failed("next Repo page lost"))
+        .repo_coverage("alpha/read", SourceKind::Branches, SourceState::Complete)
+        .repo_coverage("alpha/read", SourceKind::Runs, SourceState::Complete)
+        .build();
+    let merged = cache::merge(Some(CachedObservation::fresh(old)), fresh);
+    assert_eq!(merged.observation.branches.len(), 1);
+    assert_eq!(merged.observation.branches[0].repo.name, "unread");
+    assert_eq!(merged.observation.runs.len(), 1);
+    assert_eq!(merged.observation.runs[0].repo.name, "unread");
+    assert!(!merged.observation.coverage.is_complete());
+}

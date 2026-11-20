@@ -152,11 +152,11 @@ pub struct WorktreeAdd {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorktreeStart {
-    /// Create `branch` at `start` (a remote-tracking ref), tracking it.
-    NewBranchTracking { start: String },
+    /// Create `branch` at `start` on `remote`, tracking it even when the local name differs.
+    NewBranchTracking { start: String, remote: String },
     /// Like NewBranchTracking, but a clone just created by this launch may
     /// already have this branch checked out; detach that clone and reuse it.
-    ClonedBranchTracking { start: String },
+    ClonedBranchTracking { start: String, remote: String },
     /// Check out the existing local `branch`.
     ExistingBranch,
     /// Create `branch` at `start` tracking nothing: a new `<type>_<slug>`

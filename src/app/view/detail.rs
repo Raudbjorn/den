@@ -1,6 +1,6 @@
 //! The detail pane: the selected item's Next Step, Waiting On and Explanation.
 
-use super::{State, coverage, format};
+use super::{State, coverage, format, jobs};
 use crate::app::view_model::{Detail, DetailContent};
 
 const LABEL: &str = "D E T A I L";
@@ -44,10 +44,12 @@ pub fn build(state: &State<'_>) -> Detail {
                     state,
                     coverage::item_observed_at(state, &decision.coverage, decision.observed_at),
                 ),
+                job: jobs::detail(state.job_checks, &decision.item.id),
             }
         });
     Detail {
         label: LABEL.to_owned(),
+        page: state.detail_page,
         content,
         placeholder: PLACEHOLDER.to_owned(),
     }

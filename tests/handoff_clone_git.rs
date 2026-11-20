@@ -257,6 +257,7 @@ fn clone_plan(root: &Path, url: &str, tip: &str) -> LaunchPlan {
         branch: JobBranch {
             name: "fix-ci_ci".to_owned(),
             start: BranchStart::Fresh,
+            renamed_from: None,
         },
         worktree: handoff::worktree_path(&clone, "fix-ci_ci"),
         renamed: None,
@@ -354,6 +355,7 @@ fn a_pr_on_the_default_branch_can_launch_from_a_clone_created_for_it() {
     plan.base.reference = BaseRef::HeadBranch("main".into());
     plan.branch = JobBranch {
         name: "main".into(),
+        renamed_from: None,
         start: BranchStart::New {
             tracking: "origin/main".into(),
         },

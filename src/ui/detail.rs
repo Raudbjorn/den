@@ -4,7 +4,7 @@ use super::{
     Theme, UiError, glyphs, templates,
     text::{self, LineStyle},
 };
-use crate::app::view_model::Detail;
+use crate::app::view_model::{Detail, JobMarker};
 use crepuscularity_tui::TemplateContext;
 use ratatui::{Frame, layout::Rect};
 
@@ -46,6 +46,18 @@ pub fn draw(frame: &mut Frame, theme: &Theme, detail: &Detail, area: Rect) -> Re
                     push(&format!("{} {note}", glyphs.incomplete), LineStyle::Caution);
                 }
             }
+            if let Some(job) = &content.job {
+                push("JOB", LineStyle::Label);
+                let (glyph, style) = match job.marker {
+                    JobMarker::Live => (glyphs.live_job, LineStyle::Step),
+                    JobMarker::Missing => (glyphs.job_missing, LineStyle::Muted),
+                    JobMarker::Unknown => (glyphs.job_unknown, LineStyle::Caution),
+                };
+                push(&format!("{glyph} {}", job.summary), style);
+                for line in &job.lines {
+                    push(line, LineStyle::Muted);
+                }
+            }
             if !content.unknowns.is_empty() {
                 push("UNKNOWN", LineStyle::Label);
                 for unknown in &content.unknowns {
@@ -58,12 +70,23 @@ pub fn draw(frame: &mut Frame, theme: &Theme, detail: &Detail, area: Rect) -> Re
             push(&content.url, LineStyle::Muted);
         }
     }
+    let height = height.max(1);
+    let pages = lines.len().div_ceil(height).max(1);
+    let page = detail
+        .page
+        .rem_euclid(i64::try_from(pages).unwrap_or(i64::MAX)) as usize;
+    let label = if pages > 1 {
+        format!("DETAIL {}/{} PgUp/PgDn", page + 1, pages)
+    } else {
+        detail.label.clone()
+    };
     let lines = lines
         .into_iter()
+        .skip(page * height)
         .take(height)
         .map(|(text, style)| text::line_context(&text, style));
     let mut ctx = TemplateContext::default();
-    ctx.set("detail_label", detail.label.as_str())
+    ctx.set("detail_label", label.as_str())
         .set("lines", text::lines_value(lines));
     theme.draw(frame, templates::DETAIL, &ctx, area)
 }

@@ -434,3 +434,29 @@ fn partial_issue_coverage_is_carried_onto_issues_only() {
         Vec::<SourceState>::new()
     );
 }
+
+#[test]
+fn incomplete_assignees_preserve_positive_matches_but_never_rule_the_viewer_out() {
+    for assignees in [
+        vec![],
+        vec!["alice"],
+        vec!["alice", "bob"],
+        vec![ME],
+        vec!["alice", ME],
+    ] {
+        let mut builder = issue("o/r", 1).assignees_unread();
+        for login in &assignees {
+            builder = builder.assignee(login);
+        }
+        let decision = decide_one(builder);
+        let me = assignees.contains(&ME);
+        assert_eq!(
+            decision.waiting_on,
+            if me { WaitingOn::Me } else { WaitingOn::Nobody }
+        );
+        assert_eq!(decision.unattributed, !me);
+        if !me {
+            assert!(decision.waiting_reason.contains("could not establish"));
+        }
+    }
+}
