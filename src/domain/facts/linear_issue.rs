@@ -291,8 +291,10 @@ impl PullRequestRef {
     }
 
     /// `https://github.com/<owner>/<repo>/pull/<number>`, optionally followed
-    /// by a sub-page (`/files`), a query or a fragment. Anything else, or any
-    /// part that isn't a valid GitHub login, Repo name or Pull Request
+    /// by a sub-page (`/files`), a query or a fragment. Lenient about form on
+    /// purpose, as people paste links: `http://` and `www.github.com` too,
+    /// in any casing. Strict about names: anything else, or any part that
+    /// isn't a valid GitHub login, Repo name or canonical Pull Request
     /// number, is `None`: den never guesses a membership from a URL it
     /// doesn't fully understand.
     pub fn from_url(url: &str) -> Option<Self> {
