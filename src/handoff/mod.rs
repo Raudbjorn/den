@@ -12,13 +12,17 @@
 //!   the command), record the Job. It stops at the first failure, reports what
 //!   was done, and never deletes anything.
 //!
+//! Every kind of Work Item launches (#12): a PR on its head branch; an Issue
+//! or a default-branch Run on a new `<type>_<slug>` branch from the target's
+//! default branch ([`BaseRef::DefaultBranch`], [`BranchStart::Fresh`]); a
+//! Branch on itself. [`kinds`] holds the non-PR facts. When GitHub doesn't say
+//! which commit the base is at, `inspect` asks the remote, so every sheet shows
+//! a commit and the executor re-checks it like a PR head. A Repo with no Main
+//! Clone is cloned ([`cloning`], [`CloneSource::ToClone`]) as the executor's
+//! first change. A worktree name another Work Item's Job already has gets a
+//! numeric suffix ([`names::free_worktree_name`], [`LaunchPlan::renamed`]).
+//!
 //! Extension points for later tickets:
-//! - #12 (Issues, Branches, Runs; cloning; worktree-name suffixes):
-//!   `plan::facts` refuses non-PR kinds with [`RefusalReason::NotYetLaunchable`];
-//!   add their facts there and a `BaseRef::DefaultBranch` start. A missing Main
-//!   Clone is [`RefusalReason::NoMainClone`]; cloning becomes an executor step
-//!   before `Fetch`. Name collisions are [`RefusalReason::WorktreeExists`]
-//!   today, with the Job records already in the WorkspaceView.
 //! - #13 (Upstream target; cross-Repo heads): [`TargetChoice`] gains `Upstream`;
 //!   [`RefusalReason::CrossRepoHead`] becomes a `BaseRef::PullHead` fetched as
 //!   `refs/pull/<n>/head` from the target's remote.
@@ -26,15 +30,18 @@
 //!   exists and belongs to this Work Item's Job is reported with that Job.
 
 pub mod clone;
+pub mod cloning;
 pub mod command;
 mod execute;
 mod inspect;
+mod kinds;
 pub mod names;
 mod plan;
 pub mod prompts;
 mod refusal;
 
 pub use clone::Remote;
+pub use cloning::NewCloneView;
 pub use command::{WindowCommand, WindowMode};
 pub use execute::{LaunchOutcome, LaunchReport, LaunchStep, execute};
 pub use inspect::{ChosenClone, CloneSearch, InspectRequest, WorkspaceView, inspect};
@@ -120,6 +127,14 @@ pub enum CloneSource {
     Searched { root: PathBuf, others: Vec<PathBuf> },
     /// From `[main_clones]` in the config.
     Configured,
+    /// None exists yet: launching clones `url` into the MainClone's path, a
+    /// new folder under `root`. `taken` are the folders den passed over
+    /// because something is already there.
+    ToClone {
+        url: String,
+        root: PathBuf,
+        taken: Vec<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,12 +144,24 @@ pub struct MainClone {
     pub writable: Writability,
 }
 
-/// What the Job's worktree starts from. #12 adds the target's default branch;
-/// #13 adds a cross-Repo PR head (fetched as the PR ref).
+/// What the Job's worktree starts from. #13 adds a cross-Repo PR head
+/// (fetched as the PR ref).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BaseRef {
-    /// A same-Repo PR's head branch, fetched by name.
+    /// A branch of the target, fetched by name: a same-Repo PR's head branch,
+    /// or the Branch a Branch Work Item is.
     HeadBranch(String),
+    /// The target's default branch, for a new `<type>_<slug>` branch.
+    DefaultBranch(String),
+}
+
+impl BaseRef {
+    /// The target's branch the base is fetched from.
+    pub fn branch(&self) -> &str {
+        match self {
+            Self::HeadBranch(branch) | Self::DefaultBranch(branch) => branch,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,6 +178,9 @@ pub enum BranchStart {
     New { tracking: String },
     /// Already exists locally at the base commit; checked out as is.
     Existing,
+    /// A new branch for this Job, created at the base and tracking nothing:
+    /// pushing it creates it on the remote.
+    Fresh,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,11 +203,23 @@ pub struct LaunchPlan {
     pub base: Base,
     pub branch: JobBranch,
     pub worktree: PathBuf,
+    /// Set when the wanted worktree name was taken by another Work Item's Job.
+    pub renamed: Option<Renamed>,
     pub session: String,
     pub prompt: String,
     pub window: WindowMode,
     /// The exact command, as shown on the sheet.
     pub command: String,
+}
+
+/// A worktree name (and, for a new branch, the branch name) that got a
+/// numeric suffix because other Work Items' Jobs already have it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Renamed {
+    /// The name den wanted.
+    pub wanted: String,
+    /// The Work Items whose Jobs hold that name (or an earlier suffix).
+    pub taken_by: Vec<WorkItemId>,
 }
 
 /// Why a prompt can't be passed to Claude Code as is.
@@ -229,7 +271,7 @@ impl LaunchPlan {
         Ok(self)
     }
 
-    /// The plan on `commit` instead (the PR head moved and the user accepted it).
+    /// The plan on `commit` instead (the base moved and the user accepted it).
     pub fn on_commit(mut self, commit: &str) -> Self {
         commit.clone_into(&mut self.base.commit);
         self
@@ -238,14 +280,23 @@ impl LaunchPlan {
     /// The remote-tracking ref the base is fetched into: `refs/remotes/<remote>/<branch>`.
     pub fn tracking_ref(&self) -> String {
         match &self.base.reference {
-            BaseRef::HeadBranch(branch) => format!("refs/remotes/{}/{branch}", self.remote.name),
+            BaseRef::HeadBranch(branch) | BaseRef::DefaultBranch(branch) => {
+                format!("refs/remotes/{}/{branch}", self.remote.name)
+            }
         }
     }
 
-    /// The refspec fetched from the remote: the head branch into its tracking ref.
+    /// The refspec fetched from the remote: the base branch into its tracking ref.
     pub fn fetch_refspec(&self) -> String {
         match &self.base.reference {
-            BaseRef::HeadBranch(branch) => format!("+refs/heads/{branch}:{}", self.tracking_ref()),
+            BaseRef::HeadBranch(branch) | BaseRef::DefaultBranch(branch) => {
+                format!("+refs/heads/{branch}:{}", self.tracking_ref())
+            }
         }
+    }
+
+    /// The Main Clone doesn't exist yet: launching clones it first.
+    pub fn clones(&self) -> bool {
+        matches!(self.main_clone.source, CloneSource::ToClone { .. })
     }
 }

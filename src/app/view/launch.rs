@@ -3,6 +3,7 @@
 use super::super::launch::{Sheet, SheetState};
 use crate::{
     app::view_model::{LaunchSheet, LaunchStatus, PromptField, SheetField, SheetMessage, Tone},
+    domain::WorkItemKind,
     handoff::{
         BaseRef, BranchStart, CloneSource, LaunchOutcome, LaunchPlan, LaunchReport, PathState,
         Refusal, WindowMode, Writability, command, short_commit,
@@ -41,10 +42,15 @@ pub fn build(sheet: &Sheet) -> LaunchSheet {
             };
             view.headline = match moved_from {
                 Some(from) => format!(
-                    "The PR head moved from {} to {}: check, then ⏎ launches on {}",
+                    "{} moved from {} to {}: check, then ⏎ launches on {}",
+                    moved_subject(plan),
                     short_commit(from),
                     short_commit(&plan.base.commit),
                     short_commit(&plan.base.commit)
+                ),
+                None if plan.clones() => format!(
+                    "Ready: ⏎ clones {}, then launches; esc cancels",
+                    plan.target.repo
                 ),
                 None => "Ready: ⏎ launches, esc cancels".to_owned(),
             };
@@ -97,68 +103,67 @@ fn fields(plan: &LaunchPlan, moved_from: Option<&str>) -> Vec<SheetField> {
             .then(|| "fork: its own Repo, not its Upstream".to_owned()),
         Tone::Plain,
     )];
-    let (writable, tone) = match &plan.main_clone.writable {
-        Writability::Writable => ("exists, writable".to_owned(), Tone::Good),
-        Writability::NotWritable => ("exists, not writable".to_owned(), Tone::Caution),
-        Writability::Unknown(why) => (format!("exists; writable unknown: {why}"), Tone::Caution),
-    };
-    let source = match &plan.main_clone.source {
-        CloneSource::Configured => "set in [main_clones]".to_owned(),
-        CloneSource::Searched { root, others } if others.is_empty() => {
-            format!("found under {} by its remote", root.display())
-        }
-        CloneSource::Searched { root, others } => format!(
-            "found under {} by its remote; also matching: {}",
-            root.display(),
-            others
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    };
-    fields.push(field(
-        "MAIN CLONE",
-        plan.main_clone.path.display().to_string(),
-        Some(format!("{writable}; {source}")),
-        tone,
-    ));
+    fields.push(main_clone_field(plan));
     fields.push(field(
         "REMOTE",
         format!("{} → {}", plan.remote.name, plan.remote.url),
-        Some("its URL is the target Repo".to_owned()),
+        Some(if plan.clones() {
+            "the clone's remote: its URL is the target Repo".to_owned()
+        } else {
+            "its URL is the target Repo".to_owned()
+        }),
         Tone::Good,
     ));
-    let BaseRef::HeadBranch(head) = &plan.base.reference;
+    let base = format!("{} @ {}", base_words(plan), short_commit(&plan.base.commit));
     fields.push(match moved_from {
         Some(from) => field(
             "BASE",
-            format!("PR head {head} @ {}", short_commit(&plan.base.commit)),
+            base,
             Some(format!("moved from {}", short_commit(from))),
             Tone::Caution,
         ),
-        None => field(
-            "BASE",
-            format!("PR head {head} @ {}", short_commit(&plan.base.commit)),
-            None,
-            Tone::Plain,
-        ),
+        None => field("BASE", base, None, Tone::Plain),
     });
     fields.push(field(
         "BRANCH",
         plan.branch.name.clone(),
         Some(match &plan.branch.start {
             BranchStart::New { tracking } => format!("new, tracking {tracking}"),
-            BranchStart::Existing => "existing local branch, already at the PR head".to_owned(),
+            BranchStart::Existing if plan.work_item.kind() == WorkItemKind::PullRequest => {
+                "existing local branch, already at the PR head".to_owned()
+            }
+            BranchStart::Existing => "existing local branch, already at the base".to_owned(),
+            BranchStart::Fresh => format!(
+                "new, from {}/{}; tracks nothing until pushed",
+                plan.remote.name,
+                plan.base.reference.branch()
+            ),
         }),
         Tone::Plain,
     ));
-    fields.push(field(
-        "WORKTREE",
-        plan.worktree.display().to_string(),
-        Some(worktree_note(&PathState::Missing)),
-        Tone::Good,
-    ));
+    fields.push(match &plan.renamed {
+        None => field(
+            "WORKTREE",
+            plan.worktree.display().to_string(),
+            Some(worktree_note(&PathState::Missing)),
+            Tone::Good,
+        ),
+        Some(renamed) => field(
+            "WORKTREE",
+            plan.worktree.display().to_string(),
+            Some(format!(
+                "free; {} is taken by the Job for {}, so den added a number",
+                renamed.wanted,
+                renamed
+                    .taken_by
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            Tone::Caution,
+        ),
+    });
     fields.push(field("SESSION", plan.session.clone(), None, Tone::Plain));
     fields.push(match &plan.window {
         WindowMode::Kitty => field(
@@ -175,6 +180,85 @@ fn fields(plan: &LaunchPlan, moved_from: Option<&str>) -> Vec<SheetField> {
         ),
     });
     fields
+}
+
+/// What the base is, in words: "PR head feature-7", "branch feature-7",
+/// "default branch main".
+fn base_words(plan: &LaunchPlan) -> String {
+    match &plan.base.reference {
+        BaseRef::HeadBranch(head) if plan.work_item.kind() == WorkItemKind::PullRequest => {
+            format!("PR head {head}")
+        }
+        BaseRef::HeadBranch(branch) => format!("branch {branch}"),
+        BaseRef::DefaultBranch(branch) => format!("default branch {branch}"),
+    }
+}
+
+/// What moved, for the headline: "The PR head", "The default branch main".
+fn moved_subject(plan: &LaunchPlan) -> String {
+    if plan.work_item.kind() == WorkItemKind::PullRequest {
+        "The PR head".to_owned()
+    } else {
+        format!("The {}", base_words(plan))
+    }
+}
+
+fn main_clone_field(plan: &LaunchPlan) -> SheetField {
+    let (writable, tone) = match &plan.main_clone.writable {
+        Writability::Writable => ("exists, writable".to_owned(), Tone::Good),
+        Writability::NotWritable => ("exists, not writable".to_owned(), Tone::Caution),
+        Writability::Unknown(why) => (format!("exists; writable unknown: {why}"), Tone::Caution),
+    };
+    let source = match &plan.main_clone.source {
+        CloneSource::ToClone { url, root, taken } => {
+            let root_writable = match &plan.main_clone.writable {
+                Writability::Writable => String::new(),
+                Writability::NotWritable => format!(" ({} is not writable)", root.display()),
+                Writability::Unknown(why) => {
+                    format!(
+                        " (whether den may write in {} is unknown: {why})",
+                        root.display()
+                    )
+                }
+            };
+            let note = match taken.as_slice() {
+                [] => format!("not cloned yet: launching clones {url} here{root_writable}"),
+                taken => format!(
+                    "not cloned yet: launching clones {url} here{root_writable}; {} is taken",
+                    taken
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
+            return field(
+                "MAIN CLONE",
+                plan.main_clone.path.display().to_string(),
+                Some(note),
+                Tone::Caution,
+            );
+        }
+        CloneSource::Configured => "set in [main_clones]".to_owned(),
+        CloneSource::Searched { root, others } if others.is_empty() => {
+            format!("found under {} by its remote", root.display())
+        }
+        CloneSource::Searched { root, others } => format!(
+            "found under {} by its remote; also matching: {}",
+            root.display(),
+            others
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    field(
+        "MAIN CLONE",
+        plan.main_clone.path.display().to_string(),
+        Some(format!("{writable}; {source}")),
+        tone,
+    )
 }
 
 fn worktree_note(state: &PathState) -> String {
