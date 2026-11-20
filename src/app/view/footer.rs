@@ -19,6 +19,9 @@ pub fn build(state: &State<'_>) -> Footer {
         hints.push(hint("←→", "scope"));
         hints.push(hint("tab", "repos"));
     }
+    if state.config.is_ok() {
+        hints.push(hint("r", "refresh"));
+    }
     hints.push(hint("q", "quit"));
     Footer { hints }
 }

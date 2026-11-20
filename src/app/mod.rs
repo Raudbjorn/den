@@ -15,6 +15,7 @@ pub use scope::Focus;
 pub use view_model::ViewModel;
 
 use crate::{
+    cache::{self, CacheError, CachedObservation},
     config::{Config, ConfigError},
     decide::{self, Decision},
     domain::{Observation, SourceState, WorkItemId},
@@ -29,7 +30,11 @@ pub struct App {
     /// The survey in flight, if any.
     running: Option<SurveyId>,
     next_survey: u64,
-    observation: Option<Observation>,
+    /// What den shows: the latest survey merged with data kept for sources it
+    /// could not read, or the cached one until the first survey answers.
+    shown: Option<CachedObservation>,
+    /// `shown` came from the cache and no survey has answered yet this session.
+    from_cache: bool,
     /// Every Decision, ordered for display.
     ordered: Vec<Decision>,
     /// The ordered Decisions in the current Scope: what the list shows.
@@ -48,7 +53,8 @@ impl App {
             config,
             running: None,
             next_survey: 0,
-            observation: None,
+            shown: None,
+            from_cache: false,
             ordered: Vec::new(),
             decisions: Vec::new(),
             scope: ScopeState::default(),
@@ -73,6 +79,8 @@ impl App {
                 self.now = Some(now);
                 self.survey_finished(id, outcome, now)
             }
+            Event::CacheLoaded { outcome } => self.cache_loaded(outcome),
+            Event::CacheStored { outcome } => cache_stored(outcome),
         };
         (self.view(), effects)
     }
@@ -82,7 +90,9 @@ impl App {
         view::build(&view::State {
             config: &self.config,
             surveying: self.running.is_some(),
-            observation: self.observation.as_ref(),
+            observation: self.shown.as_ref().map(|s| &s.observation),
+            carried: self.shown.as_ref().map_or(&[], |s| s.carried.as_slice()),
+            from_cache: self.from_cache,
             decisions: &self.decisions,
             all_decisions: &self.ordered,
             owners: self.owners(),
@@ -100,7 +110,10 @@ impl App {
                 let request = SurveyRequest {
                     owners: config.owners.clone(),
                 };
-                self.begin_survey(request)
+                // The cache is read first, so it shows before the survey answers.
+                let mut effects = vec![Effect::LoadCache];
+                effects.extend(self.begin_survey(request));
+                effects
             }
             Err(error) => vec![Effect::log(LogLevel::Error, format!("config: {error}"))],
         }
@@ -145,6 +158,7 @@ impl App {
                 self.move_selection(-1);
                 Vec::new()
             }
+            Key::Char('r') => self.refresh(),
             Key::Enter | Key::Esc | Key::Char(_) | Key::Left | Key::Right | Key::Tab => Vec::new(),
         }
     }
@@ -168,12 +182,17 @@ impl App {
         match outcome {
             Ok(observation) => {
                 let log = survey_log(id, &observation);
-                self.ordered =
-                    ordering::order(decide::decide(&observation, &observation.viewer, now));
-                self.observation = Some(*observation);
+                let merged = cache::merge(self.shown.take(), *observation);
+                let carried = carried_log(&merged);
+                self.show(merged.clone(), now);
+                self.from_cache = false;
                 self.failure = None;
-                self.apply_scope();
-                vec![log]
+                let mut effects = vec![log];
+                effects.extend(carried);
+                effects.push(Effect::StoreCache {
+                    cached: Box::new(merged),
+                });
+                effects
             }
             Err(failure) => {
                 let log = Effect::log(
@@ -187,17 +206,93 @@ impl App {
         }
     }
 
+    /// `r`: survey again, unless a survey is already running or there is no config.
+    fn refresh(&mut self) -> Vec<Effect> {
+        if self.running.is_some() {
+            return vec![Effect::log(
+                LogLevel::Info,
+                "refresh asked for while a survey is running; waiting for that one",
+            )];
+        }
+        match &self.config {
+            Ok(config) => {
+                let request = SurveyRequest {
+                    owners: config.owners.clone(),
+                };
+                self.begin_survey(request)
+            }
+            Err(error) => vec![Effect::log(
+                LogLevel::Warn,
+                format!("refresh asked for, but the config is unusable: {error}"),
+            )],
+        }
+    }
+
+    fn cache_loaded(
+        &mut self,
+        outcome: Result<Option<Box<CachedObservation>>, CacheError>,
+    ) -> Vec<Effect> {
+        let cached = match outcome {
+            Ok(Some(cached)) => cached,
+            Ok(None) => {
+                return vec![Effect::log(
+                    LogLevel::Info,
+                    "no cached Observation yet; waiting for the first survey",
+                )];
+            }
+            Err(error) => {
+                return vec![Effect::log(
+                    LogLevel::Warn,
+                    format!("ignored the cache: {error}; surveying afresh"),
+                )];
+            }
+        };
+        if self.shown.is_some() {
+            return vec![Effect::log(
+                LogLevel::Info,
+                "ignored the cache: a survey already answered",
+            )];
+        }
+        let Ok(config) = &self.config else {
+            return Vec::new();
+        };
+        let cached = cached.restricted_to(&config.owners);
+        let log = Effect::log(
+            LogLevel::Info,
+            format!(
+                "showing the cached Observation of {} from {}",
+                cached.observation.viewer.login, cached.observation.observed_at
+            ),
+        );
+        let now = self.now.unwrap_or(cached.observation.observed_at);
+        self.show(cached, now);
+        self.from_cache = true;
+        vec![log]
+    }
+
+    /// Shows `shown`, deciding its Work Items as of `now`, keeping the selection.
+    fn show(&mut self, shown: CachedObservation, now: Timestamp) {
+        let observation = &shown.observation;
+        self.ordered = ordering::order(decide::decide(observation, &observation.viewer, now));
+        self.shown = Some(shown);
+        self.apply_scope();
+    }
+
     /// The watched Owners: the config's, else the last Observation's.
     fn owners(&self) -> &[String] {
-        match (&self.config, &self.observation) {
+        match (&self.config, &self.shown) {
             (Ok(config), _) => &config.owners,
-            (Err(_), Some(observation)) => &observation.owners,
+            (Err(_), Some(shown)) => &shown.observation.owners,
             (Err(_), None) => &[],
         }
     }
 
     fn sidebar_entries(&self) -> Vec<ordering::Scope> {
-        scope::entries(self.owners(), self.observation.as_ref(), &self.ordered)
+        scope::entries(
+            self.owners(),
+            self.shown.as_ref().map(|s| &s.observation),
+            &self.ordered,
+        )
     }
 
     /// Narrows the list to the Scope, keeping the selection when it is still in it.
@@ -232,6 +327,32 @@ impl App {
         };
         self.selected = self.decisions.get(target).map(|d| d.item.id.clone());
     }
+}
+
+fn cache_stored(outcome: Result<(), CacheError>) -> Vec<Effect> {
+    match outcome {
+        Ok(()) => Vec::new(),
+        Err(error) => vec![Effect::log(
+            LogLevel::Warn,
+            format!("could not save the cache: {error}"),
+        )],
+    }
+}
+
+/// Logs which sources show data kept from an earlier survey.
+fn carried_log(merged: &CachedObservation) -> Option<Effect> {
+    if merged.carried.is_empty() {
+        return None;
+    }
+    let kept: Vec<String> = merged
+        .carried
+        .iter()
+        .map(|c| format!("{} from {}", c.source.label(), c.observed_at))
+        .collect();
+    Some(Effect::log(
+        LogLevel::Warn,
+        format!("kept earlier data for: {}", kept.join("; ")),
+    ))
 }
 
 fn survey_log(id: SurveyId, observation: &Observation) -> Effect {

@@ -517,7 +517,11 @@ fn once_rate_limited_the_remaining_repos_are_rate_limited_not_asked() {
         .iter()
         .filter(|r| operation(r) == "RepoIssues")
         .count();
-    assert_eq!(asked, 2);
+    // Only the first Repo is asked: once one request is rate limited, the
+    // survey's shared rate-limit memo (#19) records every later request as rate
+    // limited without sending it, before #17's own stop after two unreachable
+    // Repos would come into play.
+    assert_eq!(asked, 1);
     assert!(matches!(
         state(&observation, issues_of("octo/c")),
         SourceState::Partial(Incompleteness::RateLimited { .. })

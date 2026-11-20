@@ -239,7 +239,10 @@ fn list_facts_map_mergeability_review_decision_and_merge_queue() {
         assert!(details.checks.items.is_empty() && details.checks.complete);
     }
     assert_eq!(owner_prs_state(&observation), Some(SourceState::Complete));
-    assert_eq!(app_prs_state(&observation), None);
+    // Was `None` (nothing marked the Repo partial). A Repo whose PRs all came
+    // on one clean Owner page now records that page's state as its own, so the
+    // cache can drop its closed PRs even if a later Owner page is lost.
+    assert_eq!(app_prs_state(&observation), Some(SourceState::Complete));
 }
 
 #[test]

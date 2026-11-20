@@ -1,6 +1,10 @@
 //! Events: everything that can happen to the App.
 
-use crate::{domain::Observation, ports::SurveyFailure};
+use crate::{
+    cache::{CacheError, CachedObservation},
+    domain::Observation,
+    ports::SurveyFailure,
+};
 use jiff::Timestamp;
 
 /// Identifies one survey, so a late answer to an older one is recognised.
@@ -38,5 +42,13 @@ pub enum Event {
         id: SurveyId,
         outcome: Result<Box<Observation>, SurveyFailure>,
         now: Timestamp,
+    },
+    /// The cache was read: the last viewer's Observation, none, or why not.
+    CacheLoaded {
+        outcome: Result<Option<Box<CachedObservation>>, CacheError>,
+    },
+    /// The cache was written, or why not.
+    CacheStored {
+        outcome: Result<(), CacheError>,
     },
 }

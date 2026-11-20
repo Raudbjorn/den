@@ -29,7 +29,26 @@ pub struct Header {
     pub status: String,
     /// How complete the picture is, in words.
     pub coverage: String,
+    /// True only after a complete survey of every source.
     pub coverage_complete: bool,
+    /// Coverage per Repo, in survey order, for the sidebar (#9) to show beside
+    /// each Repo; the header's `coverage` summarises it.
+    pub repos: Vec<RepoCoverage>,
+}
+
+/// How completely one Repo was read. Meaning is carried by `complete` and the
+/// text, never by colour alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoCoverage {
+    /// `owner/name`.
+    pub repo: String,
+    /// Every source behind this Repo's Work Items was read completely.
+    pub complete: bool,
+    /// "complete", or what is missing, e.g. "Pull Requests failed: …".
+    pub summary: String,
+    /// One line per source that was not read completely, with the age of any
+    /// data kept for it from an earlier survey.
+    pub problems: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
