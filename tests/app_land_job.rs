@@ -550,6 +550,93 @@ fn a_membership_change_asks_again() {
     );
 }
 
+#[test]
+fn a_changed_first_repository_is_inspected_and_confirmed_before_landing() {
+    let without_app = [("acme/api", 1), ("acme/web", 3)];
+    for (before, after, target, clone, first) in [
+        (
+            &ALL[..],
+            &without_app[..],
+            "api",
+            "/home/me/dev/api",
+            "acme/api#1 @ 1111111",
+        ),
+        (
+            &without_app[..],
+            &ALL[..],
+            "app",
+            CLONE,
+            "acme/app#2 @ 2222222",
+        ),
+    ] {
+        let mut settings = config();
+        settings.main_clones.insert("acme/app".into(), CLONE.into());
+        settings
+            .main_clones
+            .insert("acme/api".into(), "/home/me/dev/api".into());
+        let mut harness = Harness::new(Ok(settings));
+        for (path, url, branch, head) in [
+            (CLONE, APP_URL, "feature-2", HEAD_2),
+            ("/home/me/dev/api", API_URL, "feature-1", HEAD_1),
+        ] {
+            harness.workspace.add_clone(path, &[("origin", url)]);
+            harness
+                .workspace
+                .set_remote_head(path, "origin", branch, head);
+        }
+        harness.workspace.host_pull_head(API_URL, 1, HEAD_1);
+        harness.workspace.host_pull_head(APP_URL, 2, HEAD_2);
+        queue_round(&harness, members(), before);
+        harness.start();
+        select(&mut harness, "TEAM-1");
+        let survey = harness.key(Key::Char('r'));
+        queue_round(&harness, members(), after);
+        assert_eq!(
+            open_sheet(&mut harness, "TEAM-1").status,
+            LaunchStatus::Ready
+        );
+        for effect in &survey {
+            harness.perform(effect);
+        }
+
+        press(&mut harness, Key::Enter);
+        let asked = sheet(&harness);
+        assert_eq!(asked.status, LaunchStatus::Ready, "{}", messages(asked));
+        assert!(
+            launch_plans(&harness).is_empty(),
+            "a new target needs confirmation"
+        );
+        assert_eq!(field(asked, "LAND 1").map(|f| f.0), Some(first));
+        let worktree = format!("{clone}/.claude/worktrees/land_team-1");
+        assert_eq!(
+            field(asked, "WORKTREE").map(|f| f.0),
+            Some(worktree.as_str())
+        );
+        assert!(
+            messages(asked).contains("Not launched"),
+            "{}",
+            messages(asked)
+        );
+        assert!(harness.effects.iter().any(|effect| matches!(effect,
+            Effect::InspectLaunch { request, .. }
+                if request.target == RepoId::new("acme", target)
+                    && request.configured_clone.as_deref() == Some(std::path::Path::new(clone))
+        )));
+
+        press(&mut harness, Key::Enter);
+        assert_eq!(
+            sheet(&harness).status,
+            LaunchStatus::Launched,
+            "{}",
+            messages(sheet(&harness))
+        );
+        let plans = launch_plans(&harness);
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].main_clone.path, PathBuf::from(clone));
+        assert_eq!(plans[0].target.repo, RepoId::new("acme", target));
+    }
+}
+
 /// Just before anything changes, the executor re-reads every member's head
 /// from GitHub: one at another commit than approved refuses the launch, and
 /// nothing is fetched, added, opened or recorded.

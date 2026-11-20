@@ -460,6 +460,36 @@ impl App {
             return Vec::new();
         };
         let (shown, view, moved_from) = (shown.clone(), view.clone(), moved_from.clone());
+        // A different first Land member needs its own clone inspection before planning.
+        if shown.landing.is_some()
+            && let (Some(decision), Some(observed)) =
+                (self.decision_of(&sheet.item), self.shown.as_ref())
+        {
+            let settings = LaunchSettings::from_config(
+                self.config.as_ref().ok(),
+                self.default_clone_root.clone(),
+            );
+            let request = match handoff::inspect_request(
+                decision,
+                &observed.observation,
+                sheet.choice,
+                &settings,
+                self.policies.for_owner(sheet.item.owner()),
+            ) {
+                Ok(request) => request,
+                Err(refusal) => return refuse(sheet, refusal),
+            };
+            if !request.target.same(&shown.target.repo) {
+                sheet.notice = Some(format!(
+                    "Not launched: the Landing Group target changed from {} to {}. The prompt is rebuilt; check the updated sheet, then press Enter to launch",
+                    shown.target.repo, request.target
+                ));
+                sheet.accepted_head = None;
+                sheet.edited_prompt = None;
+                sheet.fresh = None;
+                return self.inspect_for(sheet, "Landing Group target changed");
+            }
+        }
         sync_reviewers(sheet, self.decision_of(&sheet.item));
         let planned = planned_reviewers(sheet, Some(&shown));
         let plan = match self.replan(sheet, &view, planned.as_deref()) {
