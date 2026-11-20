@@ -24,7 +24,8 @@ use crate::{
     decide::{self, Decision},
     domain::{
         Coverage, Observation, Policies, Source, SourceKind, SourceState, UpstreamTargets, Viewer,
-        Viewers, WorkItemId, facts::PullRequestRef,
+        Viewers, WorkItemId,
+        facts::{MemberStateAttempt, PullRequestRef},
     },
     handoff::{
         JobCheck, JobsCheck,
@@ -755,7 +756,7 @@ impl App {
         let Some(shown) = self.shown.take() else {
             return Vec::new();
         };
-        let (members, wanted) = landing_members(&self.ordered);
+        let (members, wanted) = landing_members(&self.ordered, &shown.observation.member_attempts);
         let size = |c: &CachedObservation| {
             (
                 c.observation.member_states.len(),
@@ -840,7 +841,7 @@ impl App {
         let Some(shown) = self.shown.take() else {
             return effects;
         };
-        let merged = cache::merge_member_states(shown, read);
+        let merged = cache::merge_member_states(shown, read, now);
         self.show(merged.clone(), now);
         // The Linear-only stand-in is never saved (no GitHub viewer).
         if has_github_viewer(&merged) {
@@ -966,39 +967,55 @@ fn has_github_viewer(shown: &CachedObservation) -> bool {
 /// From the Linear Issues' Decisions (their Landing Groups, already
 /// correlated while deciding): every member, and the members whose state den
 /// should read, each once. Those are attached, not among their Repo's open
-/// Pull Requests (which den read completely), and not known merged. They
-/// come unread first (no state yet), then open again, then read closed: the read is
-/// bounded, and members re-read every round must never keep one den hasn't
-/// read yet beyond the bound.
-fn landing_members(decisions: &[Decision]) -> (Vec<PullRequestRef>, Vec<PullRequestRef>) {
+/// Pull Requests (which den read completely), and not known merged.
+///
+/// The read is bounded, so they come in this order: members den never asked
+/// about; then members asked about and not answered (`attempts`), the
+/// longest unanswered first, so a member that never resolves moves behind
+/// the others each round instead of holding its place; then open again;
+/// then read closed. Members re-read every round never keep one den hasn't
+/// asked about yet beyond the bound.
+fn landing_members(
+    decisions: &[Decision],
+    attempts: &[MemberStateAttempt],
+) -> (Vec<PullRequestRef>, Vec<PullRequestRef>) {
     use decide::correlation::{MemberStatus, PullRequestKey};
     use std::collections::HashSet;
     let mut members: Vec<PullRequestRef> = Vec::new();
     let mut seen: HashSet<PullRequestKey> = HashSet::new();
-    let mut asked: HashSet<PullRequestKey> = HashSet::new();
-    let (mut unread, mut open_again, mut closed) = (Vec::new(), Vec::new(), Vec::new());
+    let mut queued: HashSet<PullRequestKey> = HashSet::new();
+    let mut never_asked = Vec::new();
+    let mut unanswered: Vec<(Timestamp, PullRequestRef)> = Vec::new();
+    let (mut open_again, mut closed) = (Vec::new(), Vec::new());
     for member in decisions.iter().flat_map(|d| &d.landing.members) {
         let key = PullRequestKey::of(&member.pr.repo, member.pr.number);
         if seen.insert(key.clone()) {
             members.push(member.pr.clone());
         }
-        let queue = match member.status {
-            MemberStatus::NotOpen => &mut unread,
-            MemberStatus::OpenAgain => &mut open_again,
-            MemberStatus::Closed => &mut closed,
-            MemberStatus::Open { .. }
-            | MemberStatus::Merged { .. }
-            | MemberStatus::NotSurveyed(_) => {
-                continue;
-            }
-        };
-        if asked.insert(key) {
-            queue.push(member.pr.clone());
+        let wanted = matches!(
+            member.status,
+            MemberStatus::NotOpen | MemberStatus::OpenAgain | MemberStatus::Closed
+        );
+        if !wanted || !queued.insert(key) {
+            continue;
+        }
+        let pr = member.pr.clone();
+        match member.status {
+            MemberStatus::NotOpen => match attempts.iter().find(|a| a.pr.is(&pr.repo, pr.number)) {
+                Some(attempt) => unanswered.push((attempt.attempted_at, pr)),
+                None => never_asked.push(pr),
+            },
+            MemberStatus::OpenAgain => open_again.push(pr),
+            _ => closed.push(pr),
         }
     }
-    unread.extend(open_again);
-    unread.extend(closed);
-    (members, unread)
+    // Stable: members asked at the same time keep their group order.
+    unanswered.sort_by_key(|(attempted_at, _)| *attempted_at);
+    let mut wanted = never_asked;
+    wanted.extend(unanswered.into_iter().map(|(_, pr)| pr));
+    wanted.extend(open_again);
+    wanted.extend(closed);
+    (members, wanted)
 }
 
 fn linear_log(id: SurveyId, survey: &LinearSurvey) -> Effect {

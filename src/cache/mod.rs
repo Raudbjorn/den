@@ -95,6 +95,9 @@ impl CachedObservation {
         observation
             .member_states
             .retain(|m| watched(&m.pr.repo.owner));
+        observation
+            .member_attempts
+            .retain(|a| watched(&a.pr.repo.owner));
         let mut coverage = crate::domain::Coverage::default();
         for entry in observation.coverage.entries() {
             if source_owner(&entry.source).is_none_or(watched) {
