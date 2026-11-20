@@ -803,3 +803,36 @@ fn a_merge_pr_is_incomplete_when_an_issues_attachments_were_not_all_read() {
         })
     );
 }
+
+/// The Owner's member-state read bears only on a Linear Issue with a member
+/// whose end den reads by number (merged or closed, not read yet, or read
+/// closed). One member den can't read leaves that issue incomplete, never
+/// the Owner's other Linear Issues: an Implement with no members, or a Mark
+/// for release whose members are all read merged.
+#[test]
+fn a_failed_member_state_read_marks_only_the_issues_that_rest_on_it() {
+    let partial = SourceState::Partial(Incompleteness::FollowUpLost {
+        what: "the state of acme/api #99".to_owned(),
+        reason: "GitHub returned no such Pull Request".to_owned(),
+    });
+    let observation = acme_owner()
+        .owner_coverage("acme", SourceKind::MemberStates, partial)
+        .member_state("acme/app", 2, PullRequestState::Merged { merged_at: None })
+        .linear_issue(linear_issue("acme", "id-1", "TEAM-1").attached("acme/api", 99))
+        .linear_issue(linear_issue("acme", "id-2", "TEAM-2").attached("acme/app", 2))
+        .linear_issue(linear_issue("acme", "id-3", "TEAM-3"))
+        .build();
+    let decisions = decide_all(&observation, &acme());
+    let member_states = |d: &Decision| d.coverage.iter().any(|c| c.source.is_member_states());
+
+    let unread = linear(&decisions, "TEAM-1");
+    assert!(member_states(unread), "{:?}", unread.coverage);
+
+    let landed = linear(&decisions, "TEAM-2");
+    assert_eq!(landed.next_step, Some(NextStep::MarkForRelease));
+    assert!(!member_states(landed), "{:?}", landed.coverage);
+
+    let implement = linear(&decisions, "TEAM-3");
+    assert_eq!(implement.next_step, Some(NextStep::Implement));
+    assert!(!member_states(implement), "{:?}", implement.coverage);
+}

@@ -150,6 +150,16 @@ fn decide(ctx: &Context<'_>, issue: &LinearIssue, pull_requests: &[Decision]) ->
         }
         Group::Ungrouped => by_assignment(ctx, issue, item, other_conditions, unknowns),
     };
+    // The Owner's member-state read bears only on an issue with a member
+    // whose end den reads by number; it never marks the Owner's other
+    // issues incomplete.
+    if !landing
+        .members
+        .iter()
+        .any(|m| matches!(m.status, MemberStatus::NotOpen | MemberStatus::Closed))
+    {
+        decision.coverage.retain(|c| !c.source.is_member_states());
+    }
     decision.landing = landing;
     Some(decision)
 }

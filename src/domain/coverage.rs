@@ -497,8 +497,9 @@ impl Coverage {
     ///
     /// A Linear Issue's are its Owner's Linear sources: the Linear viewer (for
     /// Waiting On) and the issue lists; and its Owner's Landing Group member
-    /// states (#37), which Mark for release rests on. The GitHub viewer
-    /// doesn't bear on it.
+    /// states (#37), which Mark for release rests on (the Linear Issue rules
+    /// drop that one from an issue with no member whose end den reads by
+    /// number). The GitHub viewer doesn't bear on it.
     pub fn applicable_to(&self, item: &WorkItemId) -> Vec<CoverageEntry> {
         let Some(repo) = item.repo() else {
             return self
