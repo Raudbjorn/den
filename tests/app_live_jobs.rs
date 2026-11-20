@@ -684,6 +684,34 @@ fn a_live_job_stays_reopenable_while_its_pr_has_no_next_step() {
     assert_eq!(harness.jobs.records(), [job(7)]);
 }
 
+/// Reopening a Live Job whose fresh launch is refused inspects the Work Item
+/// asked about, as surveyed, not as the Job recorded it: the request belongs
+/// to the sheet's item, whatever the Job's subject is (a Landing Group's Job
+/// covers its members, #40).
+#[test]
+fn a_reopen_inspection_is_for_the_work_item_asked_about() {
+    let observed = ObservationBuilder::new()
+        .owner("OCTO")
+        .repo("OCTO/App")
+        .pull_request(pr("OCTO/App", 7).author(ME).pending("ci"));
+    let mut harness = harness_observing(observed, |h| live_job(h, 7));
+    let effects = harness.send(Event::Key(Key::Char('c')));
+    let Some(Effect::InspectLaunch { request, .. }) = effects
+        .into_iter()
+        .find(|e| matches!(e, Effect::InspectLaunch { .. }))
+    else {
+        panic!("c on a Live Job inspects it");
+    };
+    assert_eq!(
+        request.item,
+        WorkItemId::PullRequest {
+            repo: RepoId::new("OCTO", "App"),
+            number: 7,
+        }
+    );
+    assert_eq!(request.worktree_name, "feature-7");
+}
+
 #[test]
 fn without_a_next_step_a_job_that_is_no_longer_live_is_refused_as_before() {
     let mut harness = harness_observing(waiting_for_checks(), |h| live_job(h, 7));

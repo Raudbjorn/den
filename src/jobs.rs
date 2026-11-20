@@ -61,14 +61,6 @@ impl JobSubject {
         }
     }
 
-    /// The GitHub Work Item the Job was launched for, when it was launched for
-    /// one; reopening and re-inspecting a Job start from it.
-    pub fn github_item(&self) -> Option<&WorkItemId> {
-        match self {
-            Self::GitHub(item) => Some(item),
-        }
-    }
-
     /// The subject in its case-insensitive form ([`WorkItemId::folded`]), so
     /// one Job recorded under two casings is one subject.
     #[must_use]
