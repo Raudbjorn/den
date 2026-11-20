@@ -8,7 +8,10 @@
 mod support;
 
 use den::{
-    app::{App, Event, Key, ViewModel, view_model::EmptyState},
+    app::{
+        App, Event, Key, ViewModel,
+        view_model::{ELLIPSIS, EmptyState, SEPARATOR},
+    },
     palette::OXIDE_TRUECOLOR,
     ui::{Theme, frame},
 };
@@ -395,9 +398,9 @@ fn the_sidebar_shows_repos_with_counts_and_glyphs_and_the_header_its_segments() 
     let harness = many_repos(DESIGN_SIZE);
     // Every row is marked incomplete: the builder leaves Branches and Runs
     // unfetched, so no Scope here was read completely.
-    for (glyphs, fork, archived, scope_mark, incomplete) in [
-        (GlyphProfile::Unicode, "⑂", "▣", "●", "⚠"),
-        (GlyphProfile::Ascii, "Y", "#", "*", "!"),
+    for (glyphs, fork, archived, scope_mark, incomplete, separator) in [
+        (GlyphProfile::Unicode, "⑂", "▣", "●", "⚠", "·"),
+        (GlyphProfile::Ascii, "Y", "#", "*", "!", "-"),
     ] {
         let theme = Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
         let (cols, rows) = DESIGN_SIZE;
@@ -456,15 +459,12 @@ fn the_sidebar_shows_repos_with_counts_and_glyphs_and_the_header_its_segments() 
         // step after it (beta's sidebar row is scrolled out of view here, so
         // "beta" can only come from the header).
         let header = region_lines(&buffer, regions.header).join("\n");
-        // The ASCII profile draws the sentence's "·" as "?" today (reported
-        // separately), so only the Unicode run checks the separator; both
-        // check the Owners' part and that the segments follow it.
-        if glyphs == GlyphProfile::Unicode {
-            assert!(
-                header.contains("All Owners · octo, beta"),
-                "{glyphs:?}: the Scope sentence\n{text}"
-            );
-        }
+        // The sentence's separator has an ASCII form of its own (not the
+        // engine's "?" for a character it cannot draw).
+        assert!(
+            header.contains(&format!("All Owners {separator} octo, beta")),
+            "{glyphs:?}: the Scope sentence\n{text}"
+        );
         let (before, after) = header
             .split_once("octo, beta")
             .unwrap_or_else(|| panic!("{glyphs:?}: the Scope sentence\n{text}"));
@@ -482,6 +482,29 @@ fn the_sidebar_shows_repos_with_counts_and_glyphs_and_the_header_its_segments() 
             "{glyphs:?}: segments drawn after the sentence\n{text}"
         );
     }
+}
+
+/// The ViewModel's separator and ellipsis each have an ASCII form, so an ASCII
+/// header never shows the engine's "?" for them. (The status is set on the view:
+/// a refresh in flight is otherwise only visible between two settles.)
+#[test]
+fn an_ascii_header_draws_separators_and_ellipses_in_ascii() {
+    let mut view = surveyed_harness(DESIGN_SIZE).view;
+    view.header.status = format!("observed 12:00 UTC {SEPARATOR} refreshing{ELLIPSIS}");
+    let theme = Theme::new(TerminalProfile::new(
+        ColorProfile::Mono,
+        GlyphProfile::Ascii,
+    ))
+    .expect("theme");
+    let (cols, rows) = DESIGN_SIZE;
+    let buffer = frame::render(&theme, &view, cols, rows).expect("renders");
+    let header = region_lines(&buffer, frame::regions(buffer.area, &view.layout).header).join("\n");
+    assert!(header.contains("All Owners - octo"), "{header}");
+    assert!(
+        header.contains("observed 12:00 UTC - refreshing..."),
+        "{header}"
+    );
+    assert!(!header.contains('?'), "{header}");
 }
 
 #[test]

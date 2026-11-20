@@ -3,7 +3,7 @@
 
 use super::{State, coverage};
 use crate::{
-    app::view_model::{EmptyState, ScopeSegment},
+    app::view_model::{EmptyState, SEPARATOR, ScopeSegment},
     ordering::{Scope, same_repo},
 };
 
@@ -18,21 +18,23 @@ pub fn describe(state: &State<'_>) -> (String, Vec<ScopeSegment>) {
     }
     let current = &state.scope.scope;
     let sentence = match current {
-        Scope::AllOwners => format!("{ALL_OWNERS} · {}", state.owners.join(", ")),
-        Scope::Owner(owner) => format!("Owner · {owner}"),
+        Scope::AllOwners => format!("{ALL_OWNERS} {SEPARATOR} {}", state.owners.join(", ")),
+        Scope::Owner(owner) => format!("Owner {SEPARATOR} {owner}"),
         Scope::Repo(id) => {
-            let mut sentence = format!("Repo · {id}");
+            let mut sentence = format!("Repo {SEPARATOR} {id}");
             let repo = state
                 .observation
                 .and_then(|o| o.repos.iter().find(|r| same_repo(&r.id, id)));
             if let Some(repo) = repo {
                 match (&repo.parent, repo.is_fork) {
-                    (Some(parent), true) => sentence.push_str(&format!(" · fork of {parent}")),
-                    (None, true) => sentence.push_str(" · fork"),
+                    (Some(parent), true) => {
+                        sentence.push_str(&format!(" {SEPARATOR} fork of {parent}"));
+                    }
+                    (None, true) => sentence.push_str(&format!(" {SEPARATOR} fork")),
                     _ => {}
                 }
                 if repo.is_archived {
-                    sentence.push_str(" · archived");
+                    sentence.push_str(&format!(" {SEPARATOR} archived"));
                 }
             }
             sentence

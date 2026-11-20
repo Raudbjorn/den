@@ -1,7 +1,11 @@
 //! The header plate: brand, Scope (sentence and segmented control), survey
 //! status, coverage.
 
-use super::{Theme, UiError, glyphs, templates};
+use super::{
+    Theme, UiError,
+    glyphs::{self, Glyphs},
+    templates,
+};
 use crate::app::view_model::{Header, ScopeSegment};
 use crepuscularity_tui::{TemplateContext, TemplateValue};
 use ratatui::{Frame, layout::Rect};
@@ -21,10 +25,10 @@ pub fn draw(frame: &mut Frame, theme: &Theme, header: &Header, area: Rect) -> Re
     let glyphs = glyphs::for_profile(theme.profile().glyphs);
     let mut ctx = TemplateContext::default();
     ctx.set("brand", BRAND)
-        .set("scope", header.scope.as_str())
-        .set("scopes", segments(header, area.width, glyphs.tick))
-        .set("status", header.status.as_str())
-        .set("coverage", header.coverage.as_str())
+        .set("scope", glyphs.text(&header.scope).as_ref())
+        .set("scopes", segments(header, area.width, &glyphs))
+        .set("status", glyphs.text(&header.status).as_ref())
+        .set("coverage", glyphs.text(&header.coverage).as_ref())
         .set("coverage_complete", header.coverage_complete)
         .set("complete_glyph", glyphs.complete)
         .set("incomplete_glyph", glyphs.incomplete);
@@ -33,7 +37,7 @@ pub fn draw(frame: &mut Frame, theme: &Theme, header: &Header, area: Rect) -> Re
 
 /// The segmented control, or nothing when it would crowd out the Scope
 /// sentence (which always says the Scope in words).
-fn segments(header: &Header, width: u16, tick: &str) -> TemplateValue {
+fn segments(header: &Header, width: u16, glyphs: &Glyphs) -> TemplateValue {
     let needed = SCOPE_ROW_CHROME_COLS
         + header.scope.chars().count()
         + header.scopes.len() * (SEGMENT_GAP_COLS + SEGMENT_COLS);
@@ -44,22 +48,23 @@ fn segments(header: &Header, width: u16, tick: &str) -> TemplateValue {
         header
             .scopes
             .iter()
-            .map(|segment| segment_context(segment, tick))
+            .map(|segment| segment_context(segment, glyphs))
             .collect(),
     )
 }
 
 /// The active segment carries the tick glyph as well as its fill.
-fn segment_context(segment: &ScopeSegment, tick: &str) -> TemplateContext {
+fn segment_context(segment: &ScopeSegment, glyphs: &Glyphs) -> TemplateContext {
     let room = SEGMENT_COLS - SEGMENT_MARK_COLS;
     let label: String = if segment.label.chars().count() > room {
-        let mut cut: String = segment.label.chars().take(room - 1).collect();
-        cut.push('…');
+        let kept = room.saturating_sub(glyphs.ellipsis.chars().count());
+        let mut cut: String = segment.label.chars().take(kept).collect();
+        cut.push_str(glyphs.ellipsis);
         cut
     } else {
         segment.label.clone()
     };
-    let mark = if segment.active { tick } else { " " };
+    let mark = if segment.active { glyphs.tick } else { " " };
     let mut ctx = TemplateContext::default();
     ctx.set("active", segment.active)
         .set("segment", format!("{mark}{label:^room$} "));
