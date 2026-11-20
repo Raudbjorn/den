@@ -9,7 +9,7 @@
 //!   (failed, partial, not fetched) keeps the earlier data, marked with that
 //!   data's own age. One error never wipes the list, and a refresh of one service
 //!   never touches the other's data. Linear data is dropped when the Linear
-//!   viewer behind it changes.
+//!   viewer behind it changes, or when its Linear source is no longer read.
 //! - [`FileCache`]: the real [`ObservationCache`](crate::ports::ObservationCache),
 //!   one versioned JSON file per viewer under `$XDG_STATE_HOME/den/cache/`.
 //!
@@ -20,9 +20,11 @@ mod file;
 mod merge;
 
 pub use file::{CACHE_FORMAT, CACHE_SUBDIR, FileCache, MAX_CACHE_BYTES};
-pub use merge::{changed_linear_viewers, merge, merge_linear};
+pub use merge::{GitHubMerge, LinearMerge, merge, merge_linear};
 
-use crate::domain::{Observation, Source, SourceKind, SourceState};
+use crate::domain::{
+    LinearSourceKind, Observation, Source, SourceKind, SourceState, ids::same_login,
+};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -117,18 +119,23 @@ impl CachedObservation {
     }
 }
 
+/// What den reads from Linear for one Owner's Linear Workflow: the workspace,
+/// and the Linear sources its config asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinearReads<'a> {
+    pub owner: &'a str,
+    pub workspace: &'a str,
+    pub sources: Vec<LinearSourceKind>,
+}
+
 impl CachedObservation {
-    /// Fits a cached Linear part to the configured Linear Workflows, given each
-    /// one's `(Owner, workspace)`: drops the Linear facts, Linear coverage and
-    /// Linear ages of an Owner that has no Linear Workflow now, or whose
-    /// workflow names another workspace than the cached data was read in.
-    pub fn restricted_to_linear(mut self, workflows: &[(&str, &str)]) -> Self {
-        let workspace_of = |owner: &str| {
-            workflows
-                .iter()
-                .find(|(o, _)| o.eq_ignore_ascii_case(owner))
-                .map(|(_, w)| *w)
-        };
+    /// Fits a cached Linear part to the configured Linear Workflows: drops the
+    /// Linear facts, Linear coverage and Linear ages of an Owner that has no
+    /// Linear Workflow now, or whose workflow names another workspace than the
+    /// cached data was read in, and of every Linear source the config no
+    /// longer reads (a fact goes with the source that listed it).
+    pub fn restricted_to_linear(mut self, workflows: &[LinearReads<'_>]) -> Self {
+        let workflow_of = |owner: &str| workflows.iter().find(|w| same_login(w.owner, owner));
         let part = &self.observation.linear;
         let mut dropped: Vec<String> = Vec::new();
         let read_elsewhere = part
@@ -138,20 +145,29 @@ impl CachedObservation {
             .chain(part.issues.iter().map(|i| (&i.owner, &i.id.workspace)))
             .chain(part.team_states.iter().map(|t| (&t.owner, &t.workspace)));
         for (owner, workspace) in read_elsewhere {
-            let fits = workspace_of(owner).is_some_and(|w| w.eq_ignore_ascii_case(workspace));
-            if !fits && !dropped.iter().any(|d| d.eq_ignore_ascii_case(owner)) {
+            let fits =
+                workflow_of(owner).is_some_and(|w| w.workspace.eq_ignore_ascii_case(workspace));
+            if !fits && !dropped.iter().any(|d| same_login(d, owner)) {
                 dropped.push(owner.clone());
             }
         }
-        let keep = |owner: &str| {
-            workspace_of(owner).is_some() && !dropped.iter().any(|d| d.eq_ignore_ascii_case(owner))
+        let reads = |owner: &str, kind: LinearSourceKind| {
+            !dropped.iter().any(|d| same_login(d, owner))
+                && workflow_of(owner).is_some_and(|w| w.sources.contains(&kind))
         };
         let part = &mut self.observation.linear;
-        part.viewers.retain(|v| keep(&v.owner));
-        part.issues.retain(|i| keep(&i.owner));
-        part.team_states.retain(|t| keep(&t.owner));
-        let linear_kept =
-            |source: &Source| !source.is_linear() || source_owner(source).is_some_and(keep);
+        part.viewers
+            .retain(|v| reads(&v.owner, LinearSourceKind::Viewer));
+        part.issues.retain(|i| reads(&i.owner, i.listed_by));
+        part.team_states
+            .retain(|t| reads(&t.owner, LinearSourceKind::TeamStates));
+        let linear_kept = |source: &Source| match source {
+            Source::Owner {
+                owner,
+                kind: SourceKind::Linear(kind),
+            } => reads(owner, *kind),
+            Source::Owner { .. } | Source::Repo { .. } | Source::Viewer => true,
+        };
         self.observation.coverage.retain(|e| linear_kept(&e.source));
         self.carried.retain(|c| linear_kept(&c.source));
         self

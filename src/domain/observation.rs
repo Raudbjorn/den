@@ -3,7 +3,7 @@
 use super::{
     coverage::Coverage,
     facts::{Branch, Issue, PullRequest, Run},
-    ids::{RepoId, same_login},
+    ids::{RepoId, WorkItemId, same_login},
     linear::{LinearPart, LinearViewer},
 };
 use jiff::Timestamp;
@@ -132,5 +132,16 @@ impl Observation {
 
     pub fn repo(&self, id: &RepoId) -> Option<&Repo> {
         self.repos.iter().find(|r| &r.id == id)
+    }
+
+    /// When the survey that read `id`'s facts was made: a Linear Issue's is
+    /// the Linear survey's (Linear is surveyed apart from GitHub), any other
+    /// Work Item's the GitHub survey's. Data kept from an earlier survey is
+    /// older still; the cache records that age.
+    pub fn observed_at_of(&self, id: &WorkItemId) -> Timestamp {
+        match (id, self.linear.observed_at) {
+            (WorkItemId::LinearIssue { .. }, Some(linear)) => linear,
+            _ => self.observed_at,
+        }
     }
 }
