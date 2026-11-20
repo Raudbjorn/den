@@ -2,9 +2,10 @@
 //! (spec, "Ordering").
 //!
 //! Order: Waiting On (me › nobody › someone else), then the kind order (Fix CI
-//! on a default branch › Resolve conflicts › Address review › Merge › Review ›
-//! Fix CI on a PR › Finish draft › Implement › Triage › Open PR › Prune or
-//! revive › no Next Step), then most recently updated first. The Work Item's
+//! on a default branch › Resolve conflicts › Address review › Land › Merge ›
+//! Review › Request review › Fix CI on a PR › Finish draft › Mark for release ›
+//! Implement › Start › Triage › Open PR › Prune or revive › no Next Step; spec
+//! 0002, "Ordering"), then most recently updated first. The Work Item's
 //! identity breaks remaining ties, so the order is total and stable across
 //! refreshes.
 
@@ -128,19 +129,23 @@ pub fn kind_rank(next_step: Option<NextStep>, kind: WorkItemKind) -> u8 {
         (NextStep::FixCi, WorkItemKind::Run) => 0,
         (NextStep::ResolveConflicts, _) => 1,
         (NextStep::AddressReview, _) => 2,
-        (NextStep::Merge, _) => 3,
-        (NextStep::Review, _) => 4,
-        (NextStep::FixCi, _) => 5,
-        (NextStep::FinishDraft, _) => 6,
-        (NextStep::Implement, _) => 7,
-        (NextStep::Triage, _) => 8,
-        (NextStep::OpenPr, _) => 9,
-        (NextStep::PruneOrRevive, _) => 10,
+        (NextStep::Land, _) => 3,
+        (NextStep::Merge, _) => 4,
+        (NextStep::Review, _) => 5,
+        (NextStep::RequestReview, _) => 6,
+        (NextStep::FixCi, _) => 7,
+        (NextStep::FinishDraft, _) => 8,
+        (NextStep::MarkForRelease, _) => 9,
+        (NextStep::Implement, _) => 10,
+        (NextStep::Start, _) => 11,
+        (NextStep::Triage, _) => 12,
+        (NextStep::OpenPr, _) => 13,
+        (NextStep::PruneOrRevive, _) => 14,
     }
 }
 
 /// The rank of a Work Item with no Next Step: after every kind.
-const NO_STEP_RANK: u8 = 11;
+const NO_STEP_RANK: u8 = 15;
 
 /// Sorts Decisions for display (see the module docs).
 pub fn order(mut decisions: Vec<Decision>) -> Vec<Decision> {

@@ -58,6 +58,18 @@ pub fn default_template(step: NextStep) -> &'static str {
         NextStep::PruneOrRevive => {
             "Branch {branch} in {repo} has no Pull Request and no commits for over 30 days. Work out whether to revive or prune it, and ask me before deleting anything."
         }
+        // Milestone 2 (spec 0002, "Prompts"). Start launches an Implement
+        // Job (#38); Request review and Land are coordination Jobs whose
+        // full prompts arrive with #39 and #40; Mark for release is a
+        // Linear write den makes itself, never a Job (#38).
+        NextStep::Start => "/implement {url}",
+        NextStep::RequestReview => {
+            "Pull Request {repo}#{number} ({url}) needs reviewers asked. Ask me which reviewers to request before requesting anyone."
+        }
+        NextStep::Land => "Landing Group {url} is ready to land. Ask me before merging anything.",
+        NextStep::MarkForRelease => {
+            "Linear Issue {url} can move to its release state. den makes this change itself; do nothing remote."
+        }
     }
 }
 

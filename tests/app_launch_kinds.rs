@@ -819,6 +819,8 @@ fn every_next_step_kind_has_a_default_prompt_that_carries_no_title_or_body() {
         (NextStep::Triage, "/triage "),
         (NextStep::Review, "/code-review "),
         (NextStep::FixCi, "/diagnosing-bugs "),
+        // Milestone 2: Start launches an Implement Job (spec 0002, "Prompts").
+        (NextStep::Start, "/implement "),
     ];
     for step in NextStep::ALL {
         let prompt = defaults.render(step, &fields);
