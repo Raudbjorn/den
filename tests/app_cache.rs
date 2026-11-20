@@ -301,7 +301,8 @@ fn a_repo_kept_from_an_older_survey_keeps_its_age_when_its_owner_later_fails() {
     };
     assert_eq!(
         cached.carried_since(&den::domain::Source::Repo {
-            repo: support::build::repo_id("alpha/app"),
+            // A caller's casing must not replace the Repo's older age with its Owner's age.
+            repo: support::build::repo_id("ALPHA/APP"),
             kind: SourceKind::PullRequests,
         }),
         Some(ts(EARLIER)),
