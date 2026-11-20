@@ -99,7 +99,7 @@ Each Work Item has at most one. An Issue with a linked open Pull Request has non
 - **Open PR**: a Branch has unmerged commits and no Pull Request.
 - **Prune or revive**: a Stale Branch needs a decision.
 - **Start**: an unassigned Linear Issue in a start team, not yet started and with no Pull Request, can be picked up.
-- **Request review**: a Pull Request in a Linear Workflow needs reviewers asked, or asked again after its head moved.
+- **Request review**: a Pull Request in a Linear Workflow, with no review request pending, has no approval at its current head, or a reviewer whose feedback was given on an older head and needs a fresh look. Its author asks reviewers, or asks them again.
 - **Land**: every open Pull Request of a Landing Group, outside Held Repos, is ready to merge, so the group can land.
 - **Mark for release**: a Linear Issue's Pull Requests have all landed, so the issue can move to its release state.
 
