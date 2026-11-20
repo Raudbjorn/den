@@ -89,6 +89,20 @@ impl Member {
         !self.also_attached_to.is_empty()
     }
 
+    /// "ambiguous, also attached to TEAM-2, TEAM-3" when it is ambiguous: the
+    /// one wording for the Explanation and the detail.
+    pub fn ambiguity(&self) -> Option<String> {
+        if !self.ambiguous() {
+            return None;
+        }
+        let others: Vec<&str> = self
+            .also_attached_to
+            .iter()
+            .map(|g| g.identifier.as_str())
+            .collect();
+        Some(format!("ambiguous, also attached to {}", others.join(", ")))
+    }
+
     /// `acme/api #4`.
     pub fn reference(&self) -> String {
         pull_request_reference(&self.pr)

@@ -80,14 +80,7 @@ fn member_line(state: &State<'_>, member: &Member) -> LandingLine {
     if let Some(marker) = job {
         parts.push(job_words(marker).to_owned());
     }
-    if member.ambiguous() {
-        let others: Vec<&str> = member
-            .also_attached_to
-            .iter()
-            .map(|g| g.identifier.as_str())
-            .collect();
-        parts.push(format!("ambiguous, also attached to {}", others.join(", ")));
-    }
+    parts.extend(member.ambiguity());
     LandingLine {
         text: parts.join(&format!(" {SEPARATOR} ")),
         job,
