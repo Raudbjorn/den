@@ -25,8 +25,19 @@ pub enum Scope {
 
 impl Scope {
     /// Whether a Work Item belongs to this Scope.
+    ///
+    /// A Linear Issue belongs to its Owner, so the Owner and All Owners
+    /// Scopes include it. A Repo Scope will include the Linear Issues with a
+    /// member PR there (#35); before Landing Groups none has one.
     pub fn contains(&self, item: &WorkItemId) -> bool {
-        self.contains_repo(item.repo())
+        match item.repo() {
+            Some(repo) => self.contains_repo(repo),
+            None => match self {
+                Self::AllOwners => true,
+                Self::Owner(owner) => same_login(owner, item.owner()),
+                Self::Repo(_) => false,
+            },
+        }
     }
 
     /// Whether a Repo belongs to this Scope.
@@ -85,9 +96,24 @@ pub fn same_work_item(a: &WorkItemId, b: &WorkItemId) -> bool {
         }
         (WorkItemId::Branch { name: x, .. }, WorkItemId::Branch { name: y, .. }) => x == y,
         (WorkItemId::Run { workflow: x, .. }, WorkItemId::Run { workflow: y, .. }) => x == y,
+        // Workspace + Linear's ID; the Owner folds like a login.
+        (
+            WorkItemId::LinearIssue {
+                owner: x_owner,
+                issue: x,
+            },
+            WorkItemId::LinearIssue {
+                owner: y_owner,
+                issue: y,
+            },
+        ) => return x == y && same_login(x_owner, y_owner),
         _ => false,
     };
-    rest_matches && same_repo(a.repo(), b.repo())
+    rest_matches
+        && match (a.repo(), b.repo()) {
+            (Some(x), Some(y)) => same_repo(x, y),
+            _ => false,
+        }
 }
 
 /// Where a Decision's Next Step falls in the kind order; lower comes first.

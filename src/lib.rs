@@ -27,6 +27,7 @@ pub mod handoff;
 pub mod jobs;
 pub mod launcher;
 pub mod layout;
+pub mod linear;
 pub mod logging;
 pub mod ordering;
 pub mod palette;

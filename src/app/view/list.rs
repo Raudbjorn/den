@@ -33,8 +33,10 @@ fn row(state: &State<'_>, decision: &Decision) -> Row {
             .next_step
             .map_or(NO_STEP, |step| step.label())
             .to_owned(),
-        repo: id.repo().to_string(),
-        reference: id.reference(),
+        repo: id
+            .repo()
+            .map_or_else(|| id.owner().to_owned(), ToString::to_string),
+        reference: decision.item.reference(),
         title: decision.item.title.clone(),
         waiting_on: decision.waiting_on,
         waiting_label: if decision.unattributed {

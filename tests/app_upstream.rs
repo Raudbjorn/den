@@ -44,6 +44,7 @@ fn config() -> Config {
         owners: vec!["octo".to_owned()],
         main_clone_root: Some(PathBuf::from(ROOT)),
         main_clones: BTreeMap::new(),
+        linear: Vec::new(),
     }
 }
 

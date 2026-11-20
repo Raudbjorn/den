@@ -67,6 +67,7 @@ enum Approval {
 fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
     let item = WorkItem {
         id: pr.id(),
+        identifier: None,
         title: pr.title.clone(),
         url: pr.url.clone(),
         updated_at: pr.updated_at,

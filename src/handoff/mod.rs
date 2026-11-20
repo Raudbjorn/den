@@ -149,6 +149,8 @@ impl TargetChoice {
         match item {
             WorkItemId::PullRequest { .. } | WorkItemId::Branch { .. } => Self::OwnRepo,
             WorkItemId::Issue { .. } | WorkItemId::Run { .. } => fork_setting,
+            // Not launchable yet (#38); the sheet refuses before any target matters.
+            WorkItemId::LinearIssue { .. } => Self::OwnRepo,
         }
     }
 }

@@ -4,12 +4,13 @@
 use super::{
     build::now,
     fakes::{
-        FakeCache, FakeGitHub, FakeJobs, FakeLauncher, FakeUpstreams, FakeWorkspace, FixedClock,
+        FakeCache, FakeGitHub, FakeJobs, FakeLauncher, FakeLinear, FakeUpstreams, FakeWorkspace,
+        FixedClock,
     },
 };
 use den::{
     app::{App, Effect, Event, Key, ViewModel},
-    config::{Config, ConfigError},
+    config::{Config, ConfigError, LinearWorkflow, Location},
     domain::Observation,
     ports::{Ports, SurveyFailure},
     runtime,
@@ -19,6 +20,7 @@ use std::{collections::BTreeMap, sync::Arc};
 pub struct Harness {
     pub app: App,
     pub github: Arc<FakeGitHub>,
+    pub linear: Arc<FakeLinear>,
     pub cache: Arc<FakeCache>,
     pub workspace: Arc<FakeWorkspace>,
     pub launcher: Arc<FakeLauncher>,
@@ -35,6 +37,41 @@ pub fn config(owners: &[&str]) -> Config {
         owners: owners.iter().map(|o| (*o).to_owned()).collect(),
         main_clone_root: None,
         main_clones: BTreeMap::new(),
+        linear: Vec::new(),
+    }
+}
+
+/// A Linear Workflow for `owner` on `workspace`, every setting at its
+/// config default (both policy switches on), its key in `DEN_TEST_LINEAR_KEY`.
+pub fn linear_workflow(owner: &str, workspace: &str) -> LinearWorkflow {
+    LinearWorkflow {
+        owner: owner.to_owned(),
+        workspace: workspace.to_owned(),
+        api_key_env: "DEN_TEST_LINEAR_KEY".to_owned(),
+        api_key_env_at: Location { line: 1, column: 1 },
+        start_teams: Vec::new(),
+        include_backlog: false,
+        active_cycle_only: false,
+        new_work_repos: Vec::new(),
+        held_repos: Vec::new(),
+        landing_order: Vec::new(),
+        reviewers: Vec::new(),
+        slack_channel: None,
+        in_progress_state: None,
+        release_state: None,
+        exact_head_approval: true,
+        comment_reviews_need_rereview: true,
+    }
+}
+
+/// `owners`, with a Linear Workflow for each of `linear` (Owner, workspace).
+pub fn config_with_linear(owners: &[&str], linear: &[(&str, &str)]) -> Config {
+    Config {
+        linear: linear
+            .iter()
+            .map(|(owner, workspace)| linear_workflow(owner, workspace))
+            .collect(),
+        ..config(owners)
     }
 }
 
@@ -57,6 +94,7 @@ impl Harness {
         upstreams: Arc<FakeUpstreams>,
     ) -> Self {
         let github = Arc::new(FakeGitHub::default());
+        let linear = Arc::new(FakeLinear::default());
         let cache = Arc::new(cache);
         let workspace = Arc::new(FakeWorkspace::default());
         let launcher = Arc::new(FakeLauncher::default());
@@ -67,6 +105,7 @@ impl Harness {
         Self {
             ports: Ports {
                 github: github.clone(),
+                linear: linear.clone(),
                 cache: cache.clone(),
                 workspace: workspace.clone(),
                 launcher: launcher.clone(),
@@ -76,6 +115,7 @@ impl Harness {
             },
             app,
             github,
+            linear,
             cache,
             workspace,
             launcher,

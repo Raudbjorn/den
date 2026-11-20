@@ -1,7 +1,7 @@
-//! The user config (`config.toml`): watched Owners, and room for the Main Clone
-//! settings later tickets use. Missing or malformed config is an error with the
-//! file and line, never silently replaced by defaults: without Owners there is
-//! nothing to survey.
+//! The user config (`config.toml`): watched Owners, the Main Clone settings,
+//! and each Owner's optional Linear Workflow. Missing or malformed config is an
+//! error with the file and line, never silently replaced by defaults: without
+//! Owners there is nothing to survey.
 //!
 //! ```toml
 //! owners = ["Raudbjorn", "massif-network"]
@@ -10,10 +10,20 @@
 //! # Both take absolute paths only.
 //! # "Raudbjorn/den" = "/home/me/dev/den"
 //! ```
+//!
+//! A Linear Workflow binds one Owner to one Linear workspace (spec 0002,
+//! "Config"); see [`linear`] for the block. The API key is never in the file:
+//! the block names the environment variable that holds it.
 
+pub mod linear;
+
+pub use linear::{LinearWorkflow, Reviewer};
+
+use crate::domain::{LinearWorkflowPolicy, Policies};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::OsString,
     fmt, io,
     ops::Range,
     path::{Path, PathBuf},
@@ -31,6 +41,50 @@ pub struct Config {
     pub main_clone_root: Option<PathBuf>,
     /// Per-Repo Main Clone overrides keyed by `owner/name`. Read by the launch handoff (#11).
     pub main_clones: BTreeMap<String, PathBuf>,
+    /// The Linear Workflows, at most one per Owner, in `owners` order. An
+    /// Owner without one is GitHub-only.
+    pub linear: Vec<LinearWorkflow>,
+}
+
+impl Config {
+    /// The Linear Workflow of `owner`, if it has one.
+    pub fn linear_workflow(&self, owner: &str) -> Option<&LinearWorkflow> {
+        self.linear
+            .iter()
+            .find(|w| w.owner.eq_ignore_ascii_case(owner))
+    }
+
+    /// Each Owner's Linear Workflow policy for the decision engine; the empty
+    /// policy for Owners without a Linear Workflow. The policy's rules arrive
+    /// with the tickets that read them (#36, #40), each mapped from the
+    /// workflow here.
+    pub fn policies(&self) -> Policies {
+        self.linear.iter().fold(Policies::default(), |policies, w| {
+            policies.with(w.owner.clone(), LinearWorkflowPolicy::default())
+        })
+    }
+
+    /// Checks that every Linear Workflow's API key variable is set and not
+    /// empty in `env`, without keeping the key. The error names the variable
+    /// and the line that names it.
+    pub fn check_linear_keys(
+        &self,
+        path: &Path,
+        env: impl Fn(&str) -> Option<OsString>,
+    ) -> Result<(), ConfigError> {
+        for workflow in &self.linear {
+            let set = env(&workflow.api_key_env).is_some_and(|value| !value.is_empty());
+            if !set {
+                return Err(ConfigError::MissingLinearKey {
+                    path: path.to_owned(),
+                    location: workflow.api_key_env_at,
+                    owner: workflow.owner.clone(),
+                    variable: workflow.api_key_env.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,6 +94,8 @@ struct RawConfig {
     main_clone_root: Option<Spanned<PathBuf>>,
     #[serde(default)]
     main_clones: BTreeMap<String, Spanned<PathBuf>>,
+    #[serde(default)]
+    linear: BTreeMap<Spanned<String>, Spanned<linear::RawLinearWorkflow>>,
 }
 
 /// A 1-based line and column in the config file.
@@ -70,6 +126,18 @@ pub enum ConfigError {
         /// `None` only when the parser could not point at a place in the file.
         location: Option<Location>,
         message: String,
+    },
+    /// A Linear Workflow's API key variable is not set (or is empty).
+    #[error(
+        "{}, {location}: the Linear Workflow of {owner} reads its API key from the environment variable {variable}, which is not set: set {variable} to a Linear API key before starting den",
+        path.display()
+    )]
+    MissingLinearKey {
+        path: PathBuf,
+        /// Where the config names the variable.
+        location: Location,
+        owner: String,
+        variable: String,
     },
 }
 
@@ -137,10 +205,13 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
             .map_err(|(span, message)| malformed(Some(span), message))?;
         main_clones.insert(repo, clone);
     }
+    let linear = linear::workflows(raw.linear, &owners, text)
+        .map_err(|(span, message)| malformed(Some(span), message))?;
     Ok(Config {
         owners,
         main_clone_root,
         main_clones,
+        linear,
     })
 }
 
@@ -162,7 +233,7 @@ fn absolute(path: Spanned<PathBuf>, what: &str) -> Result<PathBuf, (Range<usize>
     ))
 }
 
-fn is_valid_login(login: &str) -> bool {
+pub(crate) fn is_valid_login(login: &str) -> bool {
     let len = login.chars().count();
     (1..=MAX_LOGIN_CHARS).contains(&len)
         && login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')

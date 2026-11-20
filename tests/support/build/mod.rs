@@ -6,15 +6,21 @@
 
 pub mod branch;
 pub mod issue;
+pub mod linear_issue;
 pub mod pull_request;
 pub mod run;
 
 pub use branch::{BranchBuilder, branch};
 pub use issue::{IssueBuilder, issue};
+pub use linear_issue::{
+    LINEAR_ME_ID, LINEAR_ME_NAME, LinearIssueBuilder, linear_issue, linear_viewer,
+};
 pub use pull_request::{PrBuilder, pr};
 pub use run::{RunBuilder, run};
 
-use den::domain::{Observation, Repo, RepoId, Source, SourceKind, SourceState, TeamRef, Viewer};
+use den::domain::{
+    LinearSourceKind, Observation, Repo, RepoId, Source, SourceKind, SourceState, TeamRef, Viewer,
+};
 use jiff::Timestamp;
 
 /// A fork's Upstream ("owner/name") as GitHub describes it: on github.com,
@@ -166,6 +172,31 @@ impl ObservationBuilder {
 
     pub fn run(mut self, run: RunBuilder) -> Self {
         self.observation.runs.push(run.build());
+        self
+    }
+
+    /// A Linear Issue in the Observation's Linear part.
+    pub fn linear_issue(mut self, issue: LinearIssueBuilder) -> Self {
+        self.observation.linear.issues.push(issue.build());
+        self
+    }
+
+    /// The Linear viewer of `owner`'s Linear Workflow on `workspace`
+    /// ([`LINEAR_ME_ID`]), with its Linear sources complete.
+    pub fn linear_viewer(mut self, owner: &str, workspace: &str) -> Self {
+        self.observation
+            .linear
+            .viewers
+            .push(linear_viewer(owner, workspace));
+        for kind in [LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues] {
+            self.observation.coverage.record(
+                Source::Owner {
+                    owner: owner.to_owned(),
+                    kind: SourceKind::Linear(kind),
+                },
+                SourceState::Complete,
+            );
+        }
         self
     }
 

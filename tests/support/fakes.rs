@@ -9,10 +9,11 @@ use den::{
     github::graphql::{GraphQl, GraphQlRequest, GraphQlResponse, TransportError},
     handoff::{PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode, Writability},
     jobs::{JobRecord, JobStoreError},
+    linear::{HttpReply, LinearRequest, LinearTransport, TransportError as LinearTransportError},
     ports::{
-        Clock, GitHubSource, JobStore, LaunchError, Launcher, ObservationCache, Ports,
-        SurveyFailure, SurveyRequest, UpstreamStore, Workspace, WorkspaceError, WorktreeAdd,
-        WorktreeStart,
+        Clock, GitHubSource, JobStore, LaunchError, Launcher, LinearSource, LinearSurvey,
+        LinearSurveyRequest, ObservationCache, Ports, SurveyFailure, SurveyRequest, UpstreamStore,
+        Workspace, WorkspaceError, WorktreeAdd, WorktreeStart,
     },
     upstreams::UpstreamStoreError,
 };
@@ -61,6 +62,78 @@ impl GitHubSource for FakeGitHub {
                     detail: "the fake GitHub source has no more answers".to_owned(),
                 })
             })
+    }
+}
+
+/// Answers Linear surveys from a queue (an empty survey once it runs out),
+/// and records every request.
+#[derive(Default)]
+pub struct FakeLinear {
+    answers: Mutex<VecDeque<LinearSurvey>>,
+    requests: Mutex<Vec<LinearSurveyRequest>>,
+}
+
+impl FakeLinear {
+    pub fn push_answer(&self, answer: LinearSurvey) {
+        self.answers.lock().expect("lock").push_back(answer);
+    }
+
+    pub fn requests(&self) -> Vec<LinearSurveyRequest> {
+        self.requests.lock().expect("lock").clone()
+    }
+}
+
+impl LinearSource for FakeLinear {
+    fn survey(&self, request: &LinearSurveyRequest) -> LinearSurvey {
+        self.requests.lock().expect("lock").push(request.clone());
+        self.answers
+            .lock()
+            .expect("lock")
+            .pop_front()
+            .unwrap_or_default()
+    }
+}
+
+type LinearScript = dyn Fn(&LinearRequest) -> Result<HttpReply, LinearTransportError> + Send + Sync;
+
+/// A Linear transport answering from a closure, recording every request.
+/// Shared (`Arc`) so a test can keep it after handing it to the source.
+pub struct ScriptedLinear {
+    script: Box<LinearScript>,
+    requests: Mutex<Vec<LinearRequest>>,
+}
+
+impl ScriptedLinear {
+    pub fn new(
+        script: impl Fn(&LinearRequest) -> Result<HttpReply, LinearTransportError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self {
+            script: Box::new(script),
+            requests: Mutex::default(),
+        }
+    }
+
+    pub fn requests(&self) -> Vec<LinearRequest> {
+        self.requests.lock().expect("lock").clone()
+    }
+}
+
+impl LinearTransport for ScriptedLinear {
+    fn post(&self, request: &LinearRequest) -> Result<HttpReply, LinearTransportError> {
+        self.requests.lock().expect("lock").push(request.clone());
+        (self.script)(request)
+    }
+}
+
+/// Lets an `Arc<ScriptedLinear>` be handed out as a boxed transport.
+pub struct SharedLinear(pub Arc<ScriptedLinear>);
+
+impl LinearTransport for SharedLinear {
+    fn post(&self, request: &LinearRequest) -> Result<HttpReply, LinearTransportError> {
+        self.0.post(request)
     }
 }
 
@@ -728,6 +801,7 @@ pub fn ports(github: Arc<FakeGitHub>, now: Timestamp) -> Ports {
 pub fn ports_with_cache(github: Arc<FakeGitHub>, cache: Arc<FakeCache>, now: Timestamp) -> Ports {
     Ports {
         github,
+        linear: Arc::new(FakeLinear::default()),
         cache,
         workspace: Arc::new(FakeWorkspace::default()),
         launcher: Arc::new(FakeLauncher::default()),

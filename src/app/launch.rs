@@ -136,7 +136,7 @@ impl App {
         let id = LaunchId(self.next_launch);
         self.next_launch += 1;
         let fork = self.shown.as_ref().and_then(|shown| {
-            let repo = shown.observation.repo(decision.item.id.repo())?;
+            let repo = shown.observation.repo(decision.item.id.repo()?)?;
             repo.is_fork.then(|| ForkTargets {
                 fork: repo.id.clone(),
                 upstream: repo.upstream().map(|u| u.id.clone()),
@@ -241,7 +241,10 @@ impl App {
         let Some(fork) = &sheet.fork else {
             sheet.notice = Some(format!(
                 "u does nothing here: {} is not a fork, so it has no Upstream to target",
-                sheet.item.repo()
+                sheet
+                    .item
+                    .repo()
+                    .map_or_else(|| sheet.item.to_string(), ToString::to_string)
             ));
             return Vec::new();
         };

@@ -94,7 +94,10 @@ pub(super) fn facts(
         reasons.push(RefusalReason::WorkItemGone);
         return Err(Refusal { reasons });
     }
-    let repo = item.repo();
+    let Some(repo) = item.repo() else {
+        reasons.push(RefusalReason::LinearIssueNotLaunchable);
+        return Err(Refusal { reasons });
+    };
     let Some(repo_facts) = observation.repo(repo) else {
         reasons.push(RefusalReason::RepoUnknown { repo: repo.clone() });
         return Err(Refusal { reasons });
@@ -143,6 +146,11 @@ pub(super) fn facts(
         // PRs have their own facts (`plan::facts`); never routed here.
         WorkItemId::PullRequest { .. } => {
             reasons.push(RefusalReason::WorkItemGone);
+            return Err(Refusal { reasons });
+        }
+        // Refused above: a Linear Issue has no Repo.
+        WorkItemId::LinearIssue { .. } => {
+            reasons.push(RefusalReason::LinearIssueNotLaunchable);
             return Err(Refusal { reasons });
         }
     };
@@ -203,5 +211,8 @@ fn observed(item: &WorkItemId, observation: &Observation) -> bool {
             .pull_requests
             .iter()
             .any(|p| &p.repo == repo && p.number == *number),
+        WorkItemId::LinearIssue { issue, .. } => {
+            observation.linear.issues.iter().any(|i| &i.id == issue)
+        }
     }
 }

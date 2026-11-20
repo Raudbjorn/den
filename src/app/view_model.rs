@@ -72,6 +72,9 @@ pub struct RepoCoverage {
 pub struct ScopeSegment {
     pub label: String,
     pub active: bool,
+    /// An Owner segment whose Owner has a Linear Workflow (#32); drawn as
+    /// the Linear glyph beside the label.
+    pub linear_workflow: bool,
 }
 
 /// Every Repo of the watched Owners, grouped by Owner, each row a Scope.
@@ -108,6 +111,9 @@ pub struct SidebarRow {
     pub archived: bool,
     /// This row is the current Scope.
     pub current: bool,
+    /// An Owner row whose Owner has a Linear Workflow (#32); drawn as the
+    /// Linear glyph, never colour alone.
+    pub linear_workflow: bool,
     /// Some source behind this row's Scope was not read completely (the
     /// viewer, or a source of its Owner or Repo); drawn as a glyph.
     pub incomplete: bool,
@@ -130,9 +136,10 @@ pub struct Row {
     pub next_step: Option<NextStep>,
     /// The Next Step's name, or the text shown when there is none.
     pub step_label: String,
-    /// `owner/name`.
+    /// `owner/name`; for a Linear Issue, its Owner (the row's kind,
+    /// [`WorkItemKind::LinearIssue`], draws the Linear glyph before it).
     pub repo: String,
-    /// `#12`, a branch name, a workflow.
+    /// `#12`, a branch name, a workflow, a Linear identifier (`TEAM-123`).
     pub reference: String,
     pub title: String,
     pub waiting_on: WaitingOn,
@@ -205,6 +212,19 @@ pub struct DetailContent {
     pub observed: String,
     /// The Job den launched for this Work Item, if any (#14).
     pub job: Option<JobDetail>,
+    /// Facts about the Work Item shown as a section of their own: a Linear
+    /// Issue's team, state, assignee, priority and cycle (#32). `None` for
+    /// GitHub Work Items, whose facts are in the Explanation.
+    pub facts: Option<DetailFacts>,
+}
+
+/// A section of facts in the detail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetailFacts {
+    /// "LINEAR ISSUE".
+    pub label: String,
+    /// One fact per line, each saying what it is ("team TEAM").
+    pub lines: Vec<String>,
 }
 
 /// Sheets drawn over the screen; at most one at a time.

@@ -5,6 +5,7 @@
 //! - `fakes`: fake ports (GitHub source, Workspace, Launcher, Clock) and a
 //!   scripted GraphQL transport for the GitHub adapter.
 //! - `harness`: drives the App through events with fake ports (test seam 2).
+//! - `linear_replies`: scripted Linear replies and a source wired to them.
 //! - `render` / `row_text` / `profile`: rendering through the engine.
 
 // Each test binary uses a different subset of these helpers.
@@ -14,6 +15,7 @@ pub mod branch_graphql;
 pub mod build;
 pub mod fakes;
 pub mod harness;
+pub mod linear_replies;
 
 use crepuscularity_tui::TemplateContext;
 use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, layout::Rect};

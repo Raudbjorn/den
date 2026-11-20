@@ -4,7 +4,7 @@ use super::{
     coverage::Coverage,
     facts::{Branch, Issue, PullRequest, Run},
     ids::{RepoId, same_login},
-    linear::LinearPart,
+    linear::{LinearPart, LinearViewer},
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -35,21 +35,31 @@ impl Viewer {
     }
 }
 
-/// Everyone den decides "me" by: the GitHub viewer now, and, from #32, the
-/// Linear viewer of each Linear Workflow's workspace. A Linear viewer is never
-/// matched to a GitHub login (spec 0002, "Waiting On").
+/// Everyone den decides "me" by: the GitHub viewer, and the Linear viewer of
+/// each Linear Workflow's workspace. A Linear viewer is never matched to a
+/// GitHub login (spec 0002, "Waiting On").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Viewers {
     pub github: Viewer,
+    /// One per workspace whose Linear viewer den read.
+    pub linear: Vec<LinearViewer>,
 }
 
 impl Viewers {
-    /// The viewers an Observation recorded: its GitHub viewer (and, from #32,
-    /// the Linear viewers in its Linear part).
+    /// The viewers an Observation recorded: its GitHub viewer and the Linear
+    /// viewers in its Linear part.
     pub fn of(observation: &Observation) -> Self {
         Self {
             github: observation.viewer.clone(),
+            linear: observation.linear.viewers.clone(),
         }
+    }
+
+    /// The Linear viewer of `workspace`, if den read it.
+    pub fn linear(&self, workspace: &str) -> Option<&LinearViewer> {
+        self.linear
+            .iter()
+            .find(|v| v.workspace.eq_ignore_ascii_case(workspace))
     }
 }
 

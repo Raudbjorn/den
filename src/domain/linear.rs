@@ -1,11 +1,10 @@
 //! The Linear part of an Observation (spec 0002, "Linear source").
 //!
-//! Milestone-2 groundwork (#31): the slot exists and is cached with the rest of
-//! the Observation, but nothing fills it yet. Later tickets add, per Owner with a
-//! Linear Workflow:
+//! Per Owner with a Linear Workflow:
 //!
-//! - #32: the Linear viewer of the workflow's workspace and the Linear Issues
-//!   assigned to it (identity: workspace + permanent ID, never the identifier);
+//! - #32: the Linear viewer of the workflow's workspace and the active Linear
+//!   Issues assigned to it (identity: workspace + permanent ID, never the
+//!   identifier);
 //! - #33: the unassigned Linear Issues of the start teams, and each team's
 //!   workflow states;
 //! - #35: each Linear Issue's attachments, reduced to PR identities.
@@ -17,8 +16,43 @@
 //! Observation of Owners without a Linear Workflow holds; it never makes the
 //! survey read as incomplete.
 
+use super::facts::LinearIssue;
 use serde::{Deserialize, Serialize};
 
-/// What den read from Linear in one survey. Empty until #32.
+/// What den read from Linear in one survey.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LinearPart {}
+pub struct LinearPart {
+    /// The Linear viewer of each Linear Workflow whose viewer den could read.
+    pub viewers: Vec<LinearViewer>,
+    /// The Linear Issues read, of every Owner with a Linear Workflow.
+    pub issues: Vec<LinearIssue>,
+}
+
+/// Who the Linear API key belongs to, in one workspace: "me" for Linear
+/// Issues of that workspace. Never matched to a GitHub login.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinearViewer {
+    /// The Owner whose Linear Workflow read it.
+    pub owner: String,
+    /// The workspace's URL key, as the config names it.
+    pub workspace: String,
+    /// Linear's permanent user ID.
+    pub id: String,
+    pub name: String,
+}
+
+impl LinearViewer {
+    /// Whether the Linear user `id` is this viewer.
+    pub fn is(&self, id: &str) -> bool {
+        self.id == id
+    }
+}
+
+impl LinearPart {
+    /// The Linear viewer of `workspace`, if den read it.
+    pub fn viewer(&self, workspace: &str) -> Option<&LinearViewer> {
+        self.viewers
+            .iter()
+            .find(|v| v.workspace.eq_ignore_ascii_case(workspace))
+    }
+}

@@ -25,8 +25,17 @@ pub fn draw(frame: &mut Frame, theme: &Theme, detail: &Detail, area: Rect) -> Re
         Some(content) => {
             lines.extend(styled(&content.title, width, LineStyle::Strong).take(TITLE_MAX_LINES));
             let mut push = |text: &str, style: LineStyle| lines.extend(styled(text, width, style));
-            push(&content.reference, LineStyle::Muted);
+            push(&glyphs.text(&content.reference), LineStyle::Muted);
             push(" ", LineStyle::Plain);
+            if let Some(facts) = &content.facts {
+                push(
+                    &format!("{} {}", glyphs.linear, facts.label),
+                    LineStyle::Label,
+                );
+                for line in &facts.lines {
+                    push(line, LineStyle::Plain);
+                }
+            }
             push("NEXT STEP", LineStyle::Label);
             push(&content.next_step, LineStyle::Step);
             push("WAITING ON", LineStyle::Label);

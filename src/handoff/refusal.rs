@@ -31,6 +31,9 @@ impl fmt::Display for Refusal {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RefusalReason {
     NoNextStep,
+    /// A Linear Issue: den launches Jobs for it only from the Start and
+    /// Implement sheets, which arrive with the Linear writes (#38).
+    LinearIssueNotLaunchable,
     /// The Work Item is not in what den last observed.
     WorkItemGone,
     RepoUnknown {
@@ -211,6 +214,9 @@ impl fmt::Display for RefusalReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoNextStep => f.write_str("this Work Item has no Next Step to hand off"),
+            Self::LinearIssueNotLaunchable => f.write_str(
+                "den can't launch a Job for a Linear Issue yet: it has no Repo until one is chosen for it, and the sheet that chooses one isn't built yet",
+            ),
             Self::WorkItemGone => f.write_str("this Work Item is no longer in the survey"),
             Self::RepoUnknown { repo } => write!(f, "den has no facts about the Repo {repo}"),
             Self::RepoArchived { repo } => {

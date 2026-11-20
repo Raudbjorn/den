@@ -165,3 +165,205 @@ fn paths_follow_xdg_and_fall_back_to_home() {
         Err(PathsError::NoHome { .. })
     ));
 }
+
+// Linear Workflows (#32).
+
+const FULL_WORKFLOW: &str = r##"owners = ["acme", "octo"]
+
+[linear.acme]
+workspace = "Acme"
+api_key_env = "DEN_LINEAR_KEY"
+start_teams = ["TEAM", "OPS"]
+include_backlog = true
+active_cycle_only = true
+new_work_repos = ["api", "acme/web"]
+held_repos = ["app"]
+landing_order = ["api", "web"]
+reviewers = ["alice", "acme/backend"]
+slack_channel = "#team-dev"
+in_progress_state = "In Progress"
+release_state = "Ready for Release"
+exact_head_approval = false
+comment_reviews_need_rereview = false
+"##;
+
+#[test]
+fn a_linear_workflow_reads_every_setting() {
+    let config = parse(FULL_WORKFLOW).expect("valid");
+    assert_eq!(config.linear.len(), 1);
+    let workflow = config.linear_workflow("ACME").expect("acme's");
+    assert_eq!(workflow.owner, "acme");
+    assert_eq!(workflow.workspace, "acme", "lowercased");
+    assert_eq!(workflow.api_key_env, "DEN_LINEAR_KEY");
+    assert_eq!(workflow.api_key_env_at.line, 5);
+    assert_eq!(workflow.start_teams, ["TEAM", "OPS"]);
+    assert!(workflow.include_backlog && workflow.active_cycle_only);
+    let names =
+        |repos: &[den::domain::RepoId]| repos.iter().map(|r| r.to_string()).collect::<Vec<_>>();
+    assert_eq!(names(&workflow.new_work_repos), ["acme/api", "acme/web"]);
+    assert_eq!(names(&workflow.held_repos), ["acme/app"]);
+    assert_eq!(names(&workflow.landing_order), ["acme/api", "acme/web"]);
+    assert_eq!(
+        workflow.reviewers,
+        [
+            config::Reviewer::User("alice".to_owned()),
+            config::Reviewer::Team(den::domain::TeamRef {
+                org: "acme".to_owned(),
+                slug: "backend".to_owned(),
+            }),
+        ]
+    );
+    assert_eq!(workflow.slack_channel.as_deref(), Some("#team-dev"));
+    assert_eq!(workflow.in_progress_state.as_deref(), Some("In Progress"));
+    assert_eq!(workflow.release_state.as_deref(), Some("Ready for Release"));
+    assert!(!workflow.exact_head_approval);
+    assert!(!workflow.comment_reviews_need_rereview);
+    assert!(config.linear_workflow("octo").is_none());
+}
+
+/// The policy switches default to on in the config (spec 0002, "Config");
+/// everything else is empty or off, and no organization's values ship.
+#[test]
+fn a_minimal_linear_workflow_has_the_configs_defaults() {
+    let config =
+        parse("owners = [\"acme\"]\n[linear.acme]\nworkspace = \"acme\"\napi_key_env = \"K\"\n")
+            .expect("valid");
+    let workflow = &config.linear[0];
+    assert!(workflow.exact_head_approval);
+    assert!(workflow.comment_reviews_need_rereview);
+    assert!(!workflow.include_backlog && !workflow.active_cycle_only);
+    assert!(workflow.start_teams.is_empty() && workflow.new_work_repos.is_empty());
+    assert!(workflow.held_repos.is_empty() && workflow.landing_order.is_empty());
+    assert!(workflow.reviewers.is_empty() && workflow.slack_channel.is_none());
+    assert!(workflow.in_progress_state.is_none() && workflow.release_state.is_none());
+}
+
+#[test]
+fn owners_without_a_linear_workflow_get_the_empty_policy() {
+    let config = parse(FULL_WORKFLOW).expect("valid");
+    let policies = config.policies();
+    assert_eq!(
+        policies.for_owner("octo"),
+        &den::domain::LinearWorkflowPolicy::default()
+    );
+    let github_only = parse("owners = [\"acme\"]\n").expect("valid");
+    assert!(github_only.linear.is_empty());
+    assert_eq!(github_only.policies(), den::domain::Policies::default());
+}
+
+#[test]
+fn linear_workflow_errors_name_the_file_and_line() {
+    let base = "owners = [\"acme\", \"octo\"]\n";
+    let block = |body: &str| {
+        format!("{base}\n[linear.acme]\nworkspace = \"acme\"\napi_key_env = \"K\"\n{body}")
+    };
+    let cases: Vec<(&str, String, usize, &str)> = vec![
+        (
+            "unwatched Owner",
+            format!("{base}\n[linear.nobody]\nworkspace = \"acme\"\napi_key_env = \"K\"\n"),
+            3,
+            "not in `owners`",
+        ),
+        (
+            "another Owner's Repo",
+            block("held_repos = [\"api\",\n  \"octo/api\"]\n"),
+            7,
+            "not one of acme's Repos",
+        ),
+        (
+            "not a Repo name",
+            block("new_work_repos = [\"a b\"]\n"),
+            6,
+            "not a Repo name",
+        ),
+        (
+            "duplicate Repo",
+            block("landing_order = [\"api\", \"API\"]\n"),
+            6,
+            "listed twice",
+        ),
+        (
+            "bad workspace",
+            format!(
+                "{base}\n[linear.acme]\nworkspace = \"linear.app/acme\"\napi_key_env = \"K\"\n"
+            ),
+            4,
+            "workspace",
+        ),
+        (
+            "a key, not a name",
+            format!("{base}\n[linear.acme]\nworkspace = \"acme\"\napi_key_env = \"lin_api_x y\"\n"),
+            5,
+            "environment variable name",
+        ),
+        (
+            "bad team key",
+            block("start_teams = [\"TEAM-1\"]\n"),
+            6,
+            "team key",
+        ),
+        (
+            "bad reviewer",
+            block("reviewers = [\"-x\"]\n"),
+            6,
+            "reviewers",
+        ),
+        (
+            "blank state",
+            block("release_state = \"  \"\n"),
+            6,
+            "release_state",
+        ),
+        (
+            "unknown setting",
+            block("held_repo = [\"app\"]\n"),
+            6,
+            "held_repo",
+        ),
+        (
+            "missing api_key_env",
+            format!("{base}\n[linear.acme]\nworkspace = \"acme\"\n"),
+            3,
+            "api_key_env",
+        ),
+        (
+            "a workspace bound twice",
+            format!(
+                "{base}\n[linear.acme]\nworkspace = \"acme\"\napi_key_env = \"K\"\n\n[linear.octo]\nworkspace = \"ACME\"\napi_key_env = \"K\"\n"
+            ),
+            7,
+            "bound to both",
+        ),
+    ];
+    for (name, text, line, says) in cases {
+        let error = parse(&text).expect_err(name);
+        let message = error.to_string();
+        assert!(message.starts_with(PATH), "{name}: {message}");
+        assert!(message.contains(says), "{name}: {message}");
+        assert_eq!(
+            location(&error).map(|l| l.line),
+            Some(line),
+            "{name}: {message}\n{text}"
+        );
+    }
+}
+
+#[test]
+fn a_missing_key_variable_is_an_error_naming_it_and_its_line() {
+    let config = parse(FULL_WORKFLOW).expect("valid");
+    let path = Path::new(PATH);
+    assert_eq!(
+        config.check_linear_keys(path, env(&[("DEN_LINEAR_KEY", "lin_api_x")])),
+        Ok(())
+    );
+    for unset in [env(&[]), env(&[("DEN_LINEAR_KEY", "")])] {
+        let error = config.check_linear_keys(path, unset).expect_err("unset");
+        let message = error.to_string();
+        assert!(message.starts_with(&format!("{PATH}, line 5")), "{message}");
+        assert!(message.contains("DEN_LINEAR_KEY"), "{message}");
+        assert!(message.contains("acme"), "{message}");
+    }
+    // Owners without a Linear Workflow need no key.
+    let github_only = parse("owners = [\"acme\"]\n").expect("valid");
+    assert_eq!(github_only.check_linear_keys(path, env(&[])), Ok(()));
+}

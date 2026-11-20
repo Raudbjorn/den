@@ -708,7 +708,7 @@ fn every_pr_gets_exactly_one_decision_qualified_by_owner_and_repo() {
     ] {
         let decision = find(&decisions, &pr_id(repo, 1));
         assert_eq!(decision.next_step, step, "{repo}#1");
-        assert_eq!(decision.item.id.repo(), &repo_id(repo));
+        assert_eq!(decision.item.id.repo(), Some(&repo_id(repo)));
     }
 }
 

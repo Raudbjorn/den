@@ -32,6 +32,7 @@ use den::{
     handoff::prompts,
     jobs::FileJobStore,
     launcher::{KittyLauncher, LaunchEnvironment},
+    linear::LinearApi,
     logging::{self, LoggingError},
     paths::{Paths, PathsError},
     ports::{Ports, SystemClock, UpstreamStore},
@@ -395,7 +396,12 @@ fn run(args: &[String]) -> Result<(), DenError> {
     tracing::info!(config = %paths.config_file.display(), "den starting");
     let theme = Theme::new(TerminalProfile::from_env()?)?;
     let graphics = requested_graphics()?;
-    let config = config::load(&paths.config_file);
+    // A Linear Workflow whose key variable isn't set is a config error naming
+    // the variable; the key itself is only read by the Linear source.
+    let config = config::load(&paths.config_file).and_then(|config| {
+        config.check_linear_keys(&paths.config_file, |name| std::env::var_os(name))?;
+        Ok(config)
+    });
     if let Err(error) = &config {
         tracing::error!(%error, "config");
     }
@@ -413,6 +419,7 @@ fn run(args: &[String]) -> Result<(), DenError> {
         .with_upstreams(upstreams);
     let ports = Ports {
         github: Arc::new(GhSource::new(GhCli::new())),
+        linear: Arc::new(LinearApi::new(Arc::new(SystemClock))),
         cache: Arc::new(FileCache::in_state_dir(&paths.state_dir)),
         workspace: Arc::new(GitWorkspace::new()),
         launcher: Arc::new(KittyLauncher::new(LaunchEnvironment::from_env(|name| {

@@ -303,5 +303,9 @@ fn fold_item(id: WorkItemId) -> WorkItemId {
             repo: fold_repo(&repo),
             workflow,
         },
+        WorkItemId::LinearIssue { owner, issue } => WorkItemId::LinearIssue {
+            owner: owner.to_ascii_lowercase(),
+            issue,
+        },
     }
 }

@@ -1,7 +1,11 @@
 //! The detail pane: the selected item's Next Step, Waiting On and Explanation.
 
 use super::{State, coverage, format, jobs};
-use crate::app::view_model::{Detail, DetailContent};
+use crate::{
+    app::view_model::{Detail, DetailContent, DetailFacts},
+    decide::Decision,
+    domain::{WorkItemId, facts::LinearIssue},
+};
 
 const LABEL: &str = "D E T A I L";
 const PLACEHOLDER: &str = "Nothing selected.";
@@ -18,7 +22,7 @@ pub fn build(state: &State<'_>) -> Detail {
                 .or_else(|| explanation.no_step_reason.clone())
                 .unwrap_or_default();
             DetailContent {
-                reference: decision.item.id.to_string(),
+                reference: reference(decision),
                 title: decision.item.title.clone(),
                 url: decision.item.url.clone(),
                 next_step: decision
@@ -45,6 +49,7 @@ pub fn build(state: &State<'_>) -> Detail {
                     coverage::item_observed_at(state, &decision.coverage, decision.observed_at),
                 ),
                 job: jobs::detail(state.job_checks, &decision.item.id),
+                facts: linear_issue(state, &decision.item.id).map(linear_facts),
             }
         });
     Detail {
@@ -62,5 +67,50 @@ fn observed(state: &State<'_>, at: jiff::Timestamp) -> String {
         format::clock_time(at)
     } else {
         format!("{}, {ago}", format::clock_time(at))
+    }
+}
+
+/// `owner/name #12`; a Linear Issue's identifier, its workspace and Owner.
+fn reference(decision: &Decision) -> String {
+    match &decision.item.id {
+        WorkItemId::LinearIssue { owner, issue } => format!(
+            "{} {} Linear workspace {} {} Owner {owner}",
+            decision.item.reference(),
+            crate::app::view_model::SEPARATOR,
+            issue.workspace,
+            crate::app::view_model::SEPARATOR,
+        ),
+        id => id.to_string(),
+    }
+}
+
+fn linear_issue<'s>(state: &State<'s>, id: &WorkItemId) -> Option<&'s LinearIssue> {
+    let issue = id.linear_issue()?;
+    state
+        .observation?
+        .linear
+        .issues
+        .iter()
+        .find(|i| &i.id == issue)
+}
+
+/// Spec 0002, story 17: team, state, assignee, priority, cycle (the URL is
+/// the detail's own last line).
+fn linear_facts(issue: &LinearIssue) -> DetailFacts {
+    DetailFacts {
+        label: "LINEAR ISSUE".to_owned(),
+        lines: vec![
+            format!("team {}", issue.team.key),
+            format!("state {} ({})", issue.state.name, issue.state.kind.label()),
+            match &issue.assignee {
+                Some(assignee) => format!("assignee {}", assignee.name),
+                None => "unassigned".to_owned(),
+            },
+            format!("priority {}", issue.priority.label()),
+            issue
+                .cycle
+                .as_ref()
+                .map_or_else(|| "no cycle".to_owned(), |c| c.describe()),
+        ],
     }
 }

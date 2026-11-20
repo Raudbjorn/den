@@ -74,6 +74,14 @@ pub fn build(state: &State<'_>) -> ViewModel {
     }
 }
 
+/// Whether `owner` has a Linear Workflow in the config (#32).
+pub fn has_linear_workflow(state: &State<'_>, owner: &str) -> bool {
+    state
+        .config
+        .as_ref()
+        .is_ok_and(|config| config.linear_workflow(owner).is_some())
+}
+
 /// The splash stands in for the plates only while den has nothing else to show:
 /// the first survey is running and there is no Observation and no failure yet.
 fn splash(state: &State<'_>) -> bool {

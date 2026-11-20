@@ -5,7 +5,7 @@ use crate::{
     cache::CachedObservation,
     domain::UpstreamTargets,
     handoff::{InspectRequest, LaunchPlan, ReopenPlan},
-    ports::SurveyRequest,
+    ports::{LinearSurveyRequest, SurveyRequest},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +27,13 @@ pub enum Effect {
     Survey {
         id: SurveyId,
         request: SurveyRequest,
+    },
+    /// Survey Linear for the Owners with a Linear Workflow (#32); answered by
+    /// `Event::LinearSurveyFinished` with the same id as the GitHub survey it
+    /// accompanies. Never emitted when no Owner has a Linear Workflow.
+    SurveyLinear {
+        id: SurveyId,
+        request: LinearSurveyRequest,
     },
     /// Read the cache; answered by `Event::CacheLoaded`. Emitted before the
     /// startup survey, so cached data shows before any network call completes.

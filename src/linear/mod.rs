@@ -1,0 +1,399 @@
+//! The real [`LinearSource`](crate::ports::LinearSource): Linear's GraphQL API
+//! over HTTPS (spec 0002, "Linear source"). Read-only: every query here is a
+//! `query`, never a `mutation`.
+//!
+//! For each Linear Workflow, in config order: the API key is read from the
+//! environment variable the workflow names, then the Linear viewer (checked
+//! against the configured workspace), then the viewer's active assigned
+//! Linear Issues, paged up to [`MAX_LINEAR_PAGES`]. Each is recorded as
+//! `Source::Owner { owner, kind: SourceKind::Linear(..) }`. Owners without a
+//! Linear Workflow are never in the request, so they make no Linear request
+//! and need no key.
+//!
+//! - [`transport`]: the HTTPS transport (timeout per call, the key only in
+//!   its header) and the scripted-transport seam.
+//! - [`session`]: replies to source states, paging, the rate-limit stop.
+
+pub mod session;
+pub mod transport;
+
+pub use session::{LINEAR_PAGE_SIZE, MAX_LINEAR_PAGES};
+pub use transport::{
+    ApiKey, HttpReply, HttpsTransport, LINEAR_TIMEOUT_SECS, LinearRequest, LinearTransport,
+    TransportError,
+};
+
+use crate::{
+    config::LinearWorkflow,
+    domain::{
+        Coverage, Incompleteness, LinearIssueId, LinearSourceKind, LinearViewer, Source,
+        SourceKind, SourceState,
+        facts::{
+            LinearCycle, LinearIssue, LinearPriority, LinearState, LinearStateKind, LinearTeam,
+            LinearUser,
+        },
+    },
+    ports::{Clock, LinearSource, LinearSurvey, LinearSurveyRequest},
+};
+use jiff::Timestamp;
+use serde::Deserialize;
+use serde_json::{Value, json};
+use session::{Answer, Pager, Session};
+use std::{collections::HashSet, ffi::OsString, sync::Arc};
+
+const VIEWER_QUERY: &str = include_str!("queries/viewer.graphql");
+const ASSIGNED_ISSUES_QUERY: &str = include_str!("queries/assigned_issues.graphql");
+
+/// Reads an environment variable (the real one is `std::env::var_os`).
+pub type Env = dyn Fn(&str) -> Option<OsString> + Send + Sync;
+/// Makes a transport that sends `key` (the real one is [`HttpsTransport::new`]).
+pub type Connect = dyn Fn(ApiKey) -> Box<dyn LinearTransport> + Send + Sync;
+
+/// The Linear source.
+pub struct LinearApi {
+    env: Box<Env>,
+    connect: Box<Connect>,
+    clock: Arc<dyn Clock>,
+}
+
+impl LinearApi {
+    /// Keys from the process environment, HTTPS to Linear.
+    pub fn new(clock: Arc<dyn Clock>) -> Self {
+        Self::with(
+            Box::new(|name| std::env::var_os(name)),
+            Box::new(|key| Box::new(HttpsTransport::new(key))),
+            clock,
+        )
+    }
+
+    /// Keys from `env`, transports from `connect` (tests script both).
+    pub fn with(env: Box<Env>, connect: Box<Connect>, clock: Arc<dyn Clock>) -> Self {
+        Self {
+            env,
+            connect,
+            clock,
+        }
+    }
+}
+
+impl LinearSource for LinearApi {
+    fn survey(&self, request: &LinearSurveyRequest) -> LinearSurvey {
+        let mut survey = LinearSurvey::default();
+        for workflow in &request.workflows {
+            self.survey_workflow(workflow, &mut survey);
+        }
+        survey
+    }
+}
+
+fn record(coverage: &mut Coverage, owner: &str, kind: LinearSourceKind, state: SourceState) {
+    coverage.record(
+        Source::Owner {
+            owner: owner.to_owned(),
+            kind: SourceKind::Linear(kind),
+        },
+        state,
+    );
+}
+
+impl LinearApi {
+    fn survey_workflow(&self, workflow: &LinearWorkflow, survey: &mut LinearSurvey) {
+        let owner = &workflow.owner;
+        let key = match self.key(workflow) {
+            Ok(key) => key,
+            Err(error) => {
+                let failed = SourceState::Failed { error };
+                record(
+                    &mut survey.coverage,
+                    owner,
+                    LinearSourceKind::Viewer,
+                    failed.clone(),
+                );
+                record(
+                    &mut survey.coverage,
+                    owner,
+                    LinearSourceKind::AssignedIssues,
+                    failed,
+                );
+                return;
+            }
+        };
+        let transport = (self.connect)(key);
+        let session = Session::new(transport.as_ref(), &workflow.api_key_env, self.clock.now());
+        match viewer(&session, workflow) {
+            Ok((linear_viewer, state)) => {
+                record(&mut survey.coverage, owner, LinearSourceKind::Viewer, state);
+                survey.part.viewers.push(linear_viewer);
+            }
+            Err(state) => {
+                // Without the viewer den doesn't ask for its issues: the
+                // same trouble (a refused key, no network) would stop them.
+                record(
+                    &mut survey.coverage,
+                    owner,
+                    LinearSourceKind::Viewer,
+                    state.clone(),
+                );
+                record(
+                    &mut survey.coverage,
+                    owner,
+                    LinearSourceKind::AssignedIssues,
+                    state,
+                );
+                return;
+            }
+        }
+        let (issues, state) = assigned_issues(&session, workflow);
+        record(
+            &mut survey.coverage,
+            owner,
+            LinearSourceKind::AssignedIssues,
+            state,
+        );
+        survey.part.issues.extend(issues);
+    }
+
+    /// The workflow's key, or why there is none (naming the variable, never
+    /// a value).
+    fn key(&self, workflow: &LinearWorkflow) -> Result<ApiKey, String> {
+        let variable = &workflow.api_key_env;
+        match (self.env)(variable) {
+            None => Err(format!(
+                "the environment variable {variable} is not set, so den has no Linear API key for {}",
+                workflow.owner
+            )),
+            Some(value) if value.is_empty() => Err(format!(
+                "the environment variable {variable} is empty, so den has no Linear API key for {}",
+                workflow.owner
+            )),
+            Some(value) => value
+                .into_string()
+                .map(ApiKey::new)
+                .map_err(|_| format!("the environment variable {variable} is not valid UTF-8")),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ViewerData {
+    viewer: RawUser,
+    organization: RawOrganization,
+}
+
+#[derive(Deserialize)]
+struct RawOrganization {
+    #[serde(rename = "urlKey")]
+    url_key: String,
+}
+
+#[derive(Deserialize)]
+struct RawUser {
+    id: String,
+    name: String,
+}
+
+/// The Linear viewer, checked against the configured workspace: a key for
+/// another workspace would show someone else's picture as this Owner's.
+fn viewer(
+    session: &Session<'_>,
+    workflow: &LinearWorkflow,
+) -> Result<(LinearViewer, SourceState), SourceState> {
+    match session.run::<ViewerData>("LinearViewer", VIEWER_QUERY, json!({})) {
+        Answer::Lost(state) => Err(state),
+        Answer::Data { data, state } => {
+            if !data
+                .organization
+                .url_key
+                .eq_ignore_ascii_case(&workflow.workspace)
+            {
+                return Err(SourceState::Failed {
+                    error: format!(
+                        "the API key in {} belongs to the Linear workspace {:?}, not {:?} as configured for {}",
+                        workflow.api_key_env,
+                        data.organization.url_key,
+                        workflow.workspace,
+                        workflow.owner
+                    ),
+                });
+            }
+            Ok((
+                LinearViewer {
+                    owner: workflow.owner.clone(),
+                    workspace: workflow.workspace.clone(),
+                    id: data.viewer.id,
+                    name: data.viewer.name,
+                },
+                state,
+            ))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct AssignedData {
+    viewer: AssignedViewer,
+}
+
+#[derive(Deserialize)]
+struct AssignedViewer {
+    #[serde(rename = "assignedIssues")]
+    assigned_issues: Connection,
+}
+
+#[derive(Deserialize)]
+struct Connection {
+    nodes: Vec<Value>,
+    #[serde(rename = "pageInfo")]
+    page_info: PageInfo,
+}
+
+#[derive(Deserialize)]
+struct PageInfo {
+    #[serde(rename = "hasNextPage")]
+    has_next_page: bool,
+    #[serde(rename = "endCursor")]
+    end_cursor: Option<String>,
+}
+
+/// The viewer's active (not completed, not canceled) assigned Linear Issues,
+/// every page up to [`MAX_LINEAR_PAGES`].
+fn assigned_issues(
+    session: &Session<'_>,
+    workflow: &LinearWorkflow,
+) -> (Vec<LinearIssue>, SourceState) {
+    let mut pager = Pager::default();
+    let mut issues: Vec<LinearIssue> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut unreadable: Vec<String> = Vec::new();
+    loop {
+        let variables = json!({ "first": LINEAR_PAGE_SIZE, "after": pager.cursor });
+        let page = match session.run::<AssignedData>(
+            "LinearAssignedIssues",
+            ASSIGNED_ISSUES_QUERY,
+            variables,
+        ) {
+            Answer::Lost(state) => {
+                pager.page_lost(state);
+                break;
+            }
+            Answer::Data { data, state } => {
+                pager.page_read(state);
+                data.viewer.assigned_issues
+            }
+        };
+        for node in page.nodes {
+            match serde_json::from_value::<RawIssue>(node) {
+                Ok(raw) if seen.insert(raw.id.clone()) => issues.push(raw.into_issue(workflow)),
+                Ok(_) => {}
+                Err(e) => unreadable.push(e.to_string()),
+            }
+        }
+        if !page.page_info.has_next_page {
+            break;
+        }
+        let Some(cursor) = page.page_info.end_cursor else {
+            pager.note(SourceState::Partial(Incompleteness::PaginationStopped {
+                pages_read: pager.pages_read(),
+                reason: "Linear said there were more pages but gave no cursor".to_owned(),
+            }));
+            break;
+        };
+        pager.cursor = Some(cursor);
+        if !pager.may_continue() {
+            break;
+        }
+    }
+    if let Some(first) = unreadable.first() {
+        pager.note(SourceState::Partial(Incompleteness::FollowUpTruncated {
+            what: format!(
+                "{} Linear Issue(s) den could not read, first: {first}",
+                unreadable.len()
+            ),
+        }));
+    }
+    (issues, pager.finish())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawIssue {
+    id: String,
+    identifier: String,
+    title: String,
+    url: String,
+    priority: f64,
+    created_at: Timestamp,
+    updated_at: Timestamp,
+    branch_name: Option<String>,
+    team: RawTeam,
+    state: RawState,
+    assignee: Option<RawUser>,
+    cycle: Option<RawCycle>,
+}
+
+#[derive(Deserialize)]
+struct RawTeam {
+    id: String,
+    key: String,
+}
+
+#[derive(Deserialize)]
+struct RawState {
+    id: String,
+    name: String,
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawCycle {
+    id: String,
+    number: f64,
+    name: Option<String>,
+    is_active: bool,
+}
+
+impl RawIssue {
+    fn into_issue(self, workflow: &LinearWorkflow) -> LinearIssue {
+        LinearIssue {
+            owner: workflow.owner.clone(),
+            id: LinearIssueId::new(workflow.workspace.clone(), self.id),
+            identifier: self.identifier,
+            title: self.title,
+            url: self.url,
+            team: LinearTeam {
+                id: self.team.id,
+                key: self.team.key,
+            },
+            state: LinearState {
+                id: self.state.id,
+                name: self.state.name,
+                kind: LinearStateKind::from_linear(&self.state.kind),
+            },
+            assignee: self.assignee.map(|a| LinearUser {
+                id: a.id,
+                name: a.name,
+            }),
+            priority: LinearPriority::from_linear(whole(self.priority)),
+            cycle: self.cycle.map(|c| LinearCycle {
+                id: c.id,
+                number: u64::try_from(whole(c.number)).unwrap_or_default(),
+                name: c.name,
+                active: c.is_active,
+            }),
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            branch_name: self.branch_name.filter(|b| !b.is_empty()),
+        }
+    }
+}
+
+/// Linear sends some integers as GraphQL Floats; a value with a fraction is
+/// kept as its whole part.
+fn whole(value: f64) -> i64 {
+    // `as` saturates on overflow and maps NaN to 0, which is what's wanted here.
+    #[allow(clippy::cast_possible_truncation)]
+    let whole = value.trunc() as i64;
+    whole
+}

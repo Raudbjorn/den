@@ -77,14 +77,17 @@ impl JobSubject {
         match self {
             Self::GitHub(item) => {
                 let mut item = item.clone();
-                let repo = match &mut item {
+                match &mut item {
                     WorkItemId::Issue { repo, .. }
                     | WorkItemId::PullRequest { repo, .. }
                     | WorkItemId::Branch { repo, .. }
-                    | WorkItemId::Run { repo, .. } => repo,
-                };
-                repo.owner.make_ascii_lowercase();
-                repo.name.make_ascii_lowercase();
+                    | WorkItemId::Run { repo, .. } => {
+                        repo.owner.make_ascii_lowercase();
+                        repo.name.make_ascii_lowercase();
+                    }
+                    // Its identity is workspace + Linear's ID; only the Owner folds.
+                    WorkItemId::LinearIssue { owner, .. } => owner.make_ascii_lowercase(),
+                }
                 Self::GitHub(item)
             }
         }

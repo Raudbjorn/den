@@ -1,6 +1,6 @@
 //! Ports: den's I/O behind traits, so the App and its tests never touch the
 //! network, git, kitty or the clock directly. Real adapters live in
-//! `crate::github`, `crate::cache`, `crate::workspace`, `crate::launcher`,
+//! `crate::github`, `crate::linear`, `crate::cache`, `crate::workspace`, `crate::launcher`,
 //! `crate::jobs` and `crate::upstreams`; fakes live with the tests (`tests/support/fakes.rs`).
 
 mod perform;
@@ -9,7 +9,8 @@ pub use perform::perform;
 
 use crate::{
     cache::{CacheError, CachedObservation},
-    domain::{Observation, UpstreamTargets},
+    config::LinearWorkflow,
+    domain::{Coverage, LinearPart, Observation, UpstreamTargets},
     handoff::{PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode},
     jobs::{JobRecord, JobStoreError},
     upstreams::UpstreamStoreError,
@@ -71,6 +72,29 @@ impl SurveyFailure {
 /// Reads GitHub. Read-only by construction (ADR-0002): there is no write method.
 pub trait GitHubSource: Send + Sync {
     fn survey(&self, request: &SurveyRequest) -> Result<Observation, SurveyFailure>;
+}
+
+/// What to survey in Linear: the Linear Workflows, one per Owner that has one.
+/// Never empty when sent: without Linear Workflows den asks Linear nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinearSurveyRequest {
+    pub workflows: Vec<LinearWorkflow>,
+}
+
+/// What one Linear survey read: the Observation's Linear part, and the
+/// coverage of its Linear sources (`Source::Owner { kind: SourceKind::Linear(..) }`
+/// only). A source that couldn't be read is coverage, never an error: the
+/// survey always answers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LinearSurvey {
+    pub part: LinearPart,
+    pub coverage: Coverage,
+}
+
+/// Reads Linear for the Owners with a Linear Workflow. Read-only: the two
+/// Linear writes ADR-0004 allows are a separate port (#38).
+pub trait LinearSource: Send + Sync {
+    fn survey(&self, request: &LinearSurveyRequest) -> LinearSurvey;
 }
 
 /// den's own on-disk cache of the last Observation, per viewer. Read-only
@@ -225,6 +249,7 @@ impl Clock for SystemClock {
 #[derive(Clone)]
 pub struct Ports {
     pub github: Arc<dyn GitHubSource>,
+    pub linear: Arc<dyn LinearSource>,
     pub cache: Arc<dyn ObservationCache>,
     pub workspace: Arc<dyn Workspace>,
     pub launcher: Arc<dyn Launcher>,

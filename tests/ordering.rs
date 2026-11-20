@@ -51,6 +51,7 @@ fn decision(
             url: String::new(),
             updated_at: ts(updated),
             id,
+            identifier: None,
         },
         next_step: step,
         waiting_on,

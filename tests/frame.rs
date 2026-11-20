@@ -775,3 +775,51 @@ fn every_detail_page_is_reachable_in_the_pane_and_narrow_sheet() {
         }
     }
 }
+
+/// #32: the Linear glyph marks a Linear Issue's row, its detail's facts, and
+/// an Owner with a Linear Workflow in the sidebar and the header, in every
+/// glyph profile and without colour (monochrome).
+#[test]
+fn linear_markers_are_glyphs_that_read_in_monochrome() {
+    use den::{
+        domain::{Coverage, LinearPart},
+        ports::LinearSurvey,
+    };
+    use support::{
+        build::{linear_issue, linear_viewer},
+        harness::config_with_linear,
+    };
+    let mut harness = Harness::new(Ok(config_with_linear(
+        &["acme", "octo"],
+        &[("acme", "acme")],
+    )));
+    let (cols, rows) = DESIGN_SIZE;
+    harness.send(Event::Resized { cols, rows });
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("acme")
+        .fully_read_owner("octo")
+        .build()));
+    harness.linear.push_answer(LinearSurvey {
+        part: LinearPart {
+            viewers: vec![linear_viewer("acme", "acme")],
+            issues: vec![linear_issue("acme", "id-7", "TEAM-7").build()],
+        },
+        coverage: Coverage::default(),
+    });
+    let view = harness.start().clone();
+    for (glyphs, mark) in [(GlyphProfile::Unicode, "◇"), (GlyphProfile::Ascii, "[L]")] {
+        let theme = Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
+        let text = frame::buffer_text(&frame::render(&theme, &view, cols, rows).expect("renders"));
+        for expected in [
+            format!("{mark} acme TEAM-7"),
+            format!("acme {mark}"),
+            format!("{mark} LINEAR ISSUE"),
+            "team TEAM".to_owned(),
+        ] {
+            assert!(
+                text.contains(&expected),
+                "{glyphs:?}: missing {expected:?}\n{text}"
+            );
+        }
+    }
+}

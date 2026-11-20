@@ -4,11 +4,15 @@
 
 pub mod branch;
 pub mod issue;
+pub mod linear_issue;
 pub mod pull_request;
 pub mod run;
 
 pub use branch::{Branch, ComparisonBranch};
 pub use issue::{Issue, IssueLink, LinkKind, LinkedPrState};
+pub use linear_issue::{
+    LinearCycle, LinearIssue, LinearPriority, LinearState, LinearStateKind, LinearTeam, LinearUser,
+};
 pub use pull_request::{
     Check, CheckOutcome, Listed, MergeState, Mergeability, PrDetails, PullRequest, Review,
     ReviewDecision, ReviewVerdict, Reviewer,

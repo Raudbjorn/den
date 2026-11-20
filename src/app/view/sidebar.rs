@@ -58,6 +58,7 @@ fn row(state: &State<'_>, scope: &Scope) -> SidebarRow {
             }),
         archived: repo.is_some_and(|r| r.is_archived),
         current: state.scope.scope.same(scope),
+        linear_workflow: matches!(scope, Scope::Owner(owner) if super::has_linear_workflow(state, owner)),
         // No Observation yet is not "incomplete coverage": nothing was read.
         incomplete: state
             .observation

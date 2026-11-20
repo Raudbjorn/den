@@ -2,7 +2,7 @@
 //! `decide(Observation, viewers, policies, now) -> Decisions`.
 //!
 //! Pure: no I/O, no clock reads, deterministic. `viewers` says who "me" is (the
-//! GitHub viewer; from #32 also a Linear viewer per workspace) and `policies`
+//! GitHub viewer, and a Linear viewer per workspace) and `policies`
 //! holds each Owner's Linear Workflow policy, which is empty, and changes
 //! nothing, for an Owner without one. Decisions are made on the whole
 //! Observation; Scope filtering comes after (`crate::ordering`). Each Work Item kind has its own
@@ -12,6 +12,7 @@
 mod attribution;
 mod branch;
 mod issue;
+mod linear_issue;
 mod pull_request;
 mod run;
 
@@ -28,9 +29,23 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkItem {
     pub id: WorkItemId,
+    /// A Linear Issue's identifier (`TEAM-123`): shown, never compared.
+    /// `None` for GitHub Work Items, whose reference comes from their id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identifier: Option<String>,
     pub title: String,
     pub url: String,
     pub updated_at: Timestamp,
+}
+
+impl WorkItem {
+    /// The short reference shown beside the Repo or Owner: `#12`, a branch
+    /// name, a workflow, a Linear identifier.
+    pub fn reference(&self) -> String {
+        self.identifier
+            .clone()
+            .unwrap_or_else(|| self.id.reference())
+    }
 }
 
 /// Why a Next Step won (or why there is none), what else holds, what is unknown.
@@ -107,7 +122,7 @@ impl Context<'_> {
 }
 
 /// Decides every Work Item in the Observation, in kind order (Pull Requests,
-/// Issues, Branches, Runs) and source order within a kind. Sorting for display
+/// Issues, Branches, Runs, Linear Issues) and source order within a kind. Sorting for display
 /// is `crate::ordering`'s job.
 ///
 /// Every fork is its own target (ADR-0003); [`decide_with`] takes the forks
@@ -146,5 +161,6 @@ pub fn decide_with(
     decisions.extend(issue::decide_all(&ctx));
     decisions.extend(branch::decide_all(&ctx));
     decisions.extend(run::decide_all(&ctx));
+    decisions.extend(linear_issue::decide_all(&ctx));
     decisions
 }

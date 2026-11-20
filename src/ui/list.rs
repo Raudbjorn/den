@@ -7,7 +7,10 @@ use super::{
     templates,
     text::{self, LineStyle},
 };
-use crate::app::view_model::{JobMarker, List, Row};
+use crate::{
+    app::view_model::{JobMarker, List, Row},
+    domain::WorkItemKind,
+};
 use crepuscularity_tui::TemplateContext;
 use ratatui::{Frame, layout::Rect};
 
@@ -126,7 +129,7 @@ fn row_context(row: &Row, selected: bool, glyphs: &glyphs::Glyphs) -> TemplateCo
         .set("tick", if selected { glyphs.tick } else { " " })
         .set("step", row.step_label.as_str())
         .set("flag", flag)
-        .set("repo", row.repo.as_str())
+        .set("repo", place(row, glyphs))
         .set("reference", row.reference.as_str())
         .set("title", row.title.as_str())
         .set("waiting", row.waiting_label.as_str())
@@ -144,5 +147,15 @@ pub fn job_glyph(job: Option<JobMarker>, glyphs: &glyphs::Glyphs) -> &'static st
         Some(JobMarker::Missing) => glyphs.job_missing,
         Some(JobMarker::Unknown) => glyphs.job_unknown,
         None => " ",
+    }
+}
+
+/// The row's Repo, or for a Linear Issue the Linear glyph and its Owner: the
+/// glyph, not colour, says it is Linear's (#32).
+fn place(row: &Row, glyphs: &glyphs::Glyphs) -> String {
+    if row.kind == WorkItemKind::LinearIssue {
+        format!("{} {}", glyphs.linear, row.repo)
+    } else {
+        row.repo.clone()
     }
 }

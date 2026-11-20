@@ -31,7 +31,9 @@ pub const CACHE_SUBDIR: &str = "cache";
 /// 4: PR detail coverage is separate from open-PR list coverage.
 /// 5: an Observation has a Linear part, and coverage has Linear source kinds
 /// (milestone 2). A milestone-1 cache (4) is refused and surveyed afresh.
-pub const CACHE_FORMAT: u32 = 5;
+/// 6: the Linear part holds Linear viewers and Linear Issues, and coverage
+/// has Linear incompleteness reasons (#32).
+pub const CACHE_FORMAT: u32 = 6;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// Names the viewer whose cache startup shows.

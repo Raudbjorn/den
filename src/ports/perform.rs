@@ -20,6 +20,11 @@ pub fn perform(effect: &Effect, ports: &Ports) -> Vec<Event> {
                 now: ports.clock.now(),
             }]
         }
+        Effect::SurveyLinear { id, request } => vec![Event::LinearSurveyFinished {
+            id: *id,
+            survey: Box::new(ports.linear.survey(request)),
+            now: ports.clock.now(),
+        }],
         Effect::LoadCache => vec![Event::CacheLoaded {
             outcome: ports.cache.load().map(|c| c.map(Box::new)),
         }],

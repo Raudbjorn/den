@@ -22,14 +22,17 @@ use crate::{
     cache::{self, CacheError, CachedObservation},
     config::{Config, ConfigError},
     decide::{self, Decision},
-    domain::{Observation, Policies, SourceState, UpstreamTargets, Viewers, WorkItemId},
+    domain::{
+        LinearSourceKind, Observation, Policies, Source, SourceKind, SourceState, UpstreamTargets,
+        Viewers, WorkItemId,
+    },
     handoff::{
         JobCheck, JobsCheck,
         prompts::{Prompts, PromptsError},
     },
     layout::{Layout, TerminalSize},
     ordering,
-    ports::{SurveyFailure, SurveyRequest},
+    ports::{LinearSurvey, LinearSurveyRequest, SurveyFailure, SurveyRequest},
 };
 use jiff::Timestamp;
 use scope::ScopeState;
@@ -84,13 +87,19 @@ pub struct App {
     upstreams_unreadable: Option<String>,
     /// The last thing that went wrong with a `u` (not saved, Upstream not visible).
     upstream_problem: Option<String>,
-    /// Each Owner's Linear Workflow policy for the decision engine. Empty for
-    /// every Owner until the config's Linear Workflows fill it (#32).
+    /// Each Owner's Linear Workflow policy for the decision engine, from the
+    /// config: the empty policy for an Owner without a Linear Workflow.
     policies: Policies,
+    /// The Linear survey in flight, if any (#32).
+    linear_running: Option<SurveyId>,
+    /// The latest Linear survey's answer this session: spliced into every
+    /// Observation den shows (#34 will merge it per source with the cache).
+    linear: Option<LinearSurvey>,
 }
 
 impl App {
     pub fn new(config: Result<Config, ConfigError>) -> Self {
+        let policies = config.as_ref().map(Config::policies).unwrap_or_default();
         Self {
             config,
             running: None,
@@ -111,7 +120,9 @@ impl App {
             next_launch: 0,
             job_checks: Vec::new(),
             upstreams: UpstreamTargets::default(),
-            policies: Policies::default(),
+            policies,
+            linear_running: None,
+            linear: None,
             upstreams_unreadable: None,
             upstream_problem: None,
         }
@@ -146,6 +157,10 @@ impl App {
             Event::SurveyFinished { id, outcome, now } => {
                 self.now = Some(now);
                 self.survey_finished(id, outcome, now)
+            }
+            Event::LinearSurveyFinished { id, survey, now } => {
+                self.now = Some(now);
+                self.linear_survey_finished(id, *survey, now)
             }
             Event::CacheLoaded { outcome } => self.cache_loaded(outcome),
             Event::CacheStored { outcome } => cache_stored(outcome),
@@ -229,6 +244,12 @@ impl App {
                 ));
                 "save Upstream choices"
             }
+            Effect::SurveyLinear { id, .. } => {
+                if self.linear_running == Some(id) {
+                    self.linear_running = None;
+                }
+                "Linear survey"
+            }
             Effect::LoadCache => "read cache",
             Effect::StoreCache { .. } => "save cache",
             Effect::CheckJobs => "check Jobs",
@@ -241,22 +262,48 @@ impl App {
         )]
     }
 
+    /// Starts a survey: Linear first when any Owner has a Linear Workflow (its
+    /// answer is then in hand when GitHub's arrives on the one worker), then
+    /// GitHub. Without Linear Workflows den asks Linear nothing.
     fn begin_survey(&mut self, request: SurveyRequest) -> Vec<Effect> {
         let id = SurveyId(self.next_survey);
         self.next_survey += 1;
         self.running = Some(id);
-        vec![
-            Effect::log(
+        let mut effects = vec![Effect::log(
+            LogLevel::Info,
+            format!(
+                "survey {} started for {} Owner(s): {}",
+                id.0,
+                request.owners.len(),
+                request.owners.join(", ")
+            ),
+        )];
+        let workflows = self
+            .config
+            .as_ref()
+            .map(|c| c.linear.clone())
+            .unwrap_or_default();
+        if !workflows.is_empty() {
+            self.linear_running = Some(id);
+            effects.push(Effect::log(
                 LogLevel::Info,
                 format!(
-                    "survey {} started for {} Owner(s): {}",
+                    "Linear survey {} started for the Linear Workflow(s) of {}",
                     id.0,
-                    request.owners.len(),
-                    request.owners.join(", ")
+                    workflows
+                        .iter()
+                        .map(|w| w.owner.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
-            ),
-            Effect::Survey { id, request },
-        ]
+            ));
+            effects.push(Effect::SurveyLinear {
+                id,
+                request: LinearSurveyRequest { workflows },
+            });
+        }
+        effects.push(Effect::Survey { id, request });
+        effects
     }
 
     fn key(&mut self, key: Key) -> Vec<Effect> {
@@ -339,7 +386,8 @@ impl App {
         match outcome {
             Ok(observation) => {
                 let log = survey_log(id, &observation);
-                let merged = cache::merge(self.shown.take(), *observation);
+                let mut merged = cache::merge(self.shown.take(), *observation);
+                self.with_linear(&mut merged);
                 let carried = carried_log(&merged);
                 self.show(merged.clone(), now);
                 self.from_cache = false;
@@ -416,7 +464,10 @@ impl App {
         let Ok(config) = &self.config else {
             return Vec::new();
         };
-        let cached = cached.restricted_to(&config.owners);
+        let mut cached = cached.restricted_to(&config.owners);
+        if config.linear.is_empty() {
+            without_linear(&mut cached);
+        }
         let log = Effect::log(
             LogLevel::Info,
             format!(
@@ -546,6 +597,117 @@ impl App {
             )],
         }
     }
+}
+
+impl App {
+    /// A Linear survey answered: it replaces the Linear part of what is shown
+    /// (and is spliced into every later GitHub answer until the next one).
+    fn linear_survey_finished(
+        &mut self,
+        id: SurveyId,
+        survey: LinearSurvey,
+        now: Timestamp,
+    ) -> Vec<Effect> {
+        if self.linear_running != Some(id) {
+            return vec![Effect::log(
+                LogLevel::Warn,
+                format!(
+                    "ignored the answer to Linear survey {}, which is no longer current",
+                    id.0
+                ),
+            )];
+        }
+        self.linear_running = None;
+        let log = linear_log(id, &survey);
+        self.linear = Some(survey);
+        let Some(mut shown) = self.shown.take() else {
+            return vec![log];
+        };
+        self.with_linear(&mut shown);
+        self.show(shown.clone(), now);
+        vec![
+            log,
+            Effect::StoreCache {
+                cached: Box::new(shown),
+            },
+        ]
+    }
+
+    /// Gives `shown` this session's Linear part: the latest Linear survey's,
+    /// or, before one answers, Linear sources not yet fetched for each Owner
+    /// with a Linear Workflow (never an empty part that reads as complete).
+    /// Without Linear Workflows, no Linear part at all.
+    fn with_linear(&self, shown: &mut CachedObservation) {
+        without_linear(shown);
+        let Ok(config) = &self.config else {
+            return;
+        };
+        let observation = &mut shown.observation;
+        if let Some(survey) = &self.linear {
+            observation.linear = survey.part.clone();
+            for entry in survey.coverage.entries() {
+                observation
+                    .coverage
+                    .record(entry.source.clone(), entry.state.clone());
+            }
+        }
+        // Whatever the survey said (or before one answered), every Linear
+        // Workflow's sources are recorded: one den has no word on is not
+        // yet fetched, never silently complete.
+        for workflow in &config.linear {
+            for kind in [LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues] {
+                let source = Source::Owner {
+                    owner: workflow.owner.clone(),
+                    kind: SourceKind::Linear(kind),
+                };
+                if observation.coverage.get(&source).is_none() {
+                    observation
+                        .coverage
+                        .record(source, SourceState::NotYetFetched);
+                }
+            }
+        }
+    }
+}
+
+/// Drops the Linear part, its coverage, and any age carried for a Linear
+/// source (until #34 merges Linear per source, den never keeps Linear facts
+/// across surveys, so no Linear data is older than its survey).
+fn without_linear(shown: &mut CachedObservation) {
+    let is_linear = |source: &Source| {
+        matches!(
+            source,
+            Source::Owner {
+                kind: SourceKind::Linear(_),
+                ..
+            }
+        )
+    };
+    shown.observation.linear = Default::default();
+    shown.observation.coverage.retain(|e| !is_linear(&e.source));
+    shown.carried.retain(|c| !is_linear(&c.source));
+}
+
+fn linear_log(id: SurveyId, survey: &LinearSurvey) -> Effect {
+    let incomplete: Vec<String> = survey
+        .coverage
+        .incomplete()
+        .map(|e| format!("{} {}", e.source.label(), e.state.describe()))
+        .collect();
+    Effect::log(
+        if incomplete.is_empty() {
+            LogLevel::Info
+        } else {
+            LogLevel::Warn
+        },
+        format!(
+            "Linear survey {} finished: {} Linear Issue(s), {} Linear viewer(s); incomplete: [{}]",
+            id.0,
+            survey.part.issues.len(),
+            survey.part.viewers.len(),
+            incomplete.join("; ")
+        ),
+    )
 }
 
 fn cache_stored(outcome: Result<(), CacheError>) -> Vec<Effect> {
