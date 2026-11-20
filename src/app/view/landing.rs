@@ -8,6 +8,7 @@ use crate::{
     decide::{
         Decision,
         correlation::{Member, MemberStatus, PullRequestKey},
+        linear_issue::pull_request_like_links,
     },
     domain::{WorkItemId, facts::AttachmentsRead},
     handoff::live,
@@ -53,6 +54,15 @@ fn issue_group(state: &State<'_>, decision: &Decision) -> LandingDetail {
         .iter()
         .map(|member| member_line(state, &decisions, member))
         .collect();
+    // A link that looks like a Pull Request den can't read is no member, and
+    // no "no Pull Request attached" either (the Explanation's unknown).
+    if let Some(issue) = linear_issue(state, &decision.item.id) {
+        lines.extend(pull_request_like_links(issue).into_iter().map(|url| {
+            caution(&format!(
+                "attached {url}: looks like a Pull Request den can't read"
+            ))
+        }));
+    }
     // den never reads a partial attachment list as "no Pull Request", so
     // the section agrees with the Explanation's "couldn't establish whether
     // a PR exists".

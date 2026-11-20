@@ -589,3 +589,87 @@ fn a_repo_read_completely_under_one_spelling_is_read_completely() {
         MemberStatus::NotOpen
     );
 }
+
+/// A link den can't read as a Pull Request but that looks like one (no
+/// scheme, `/pulls/`, a GitHub Enterprise host, a name den won't accept)
+/// may be an open Pull Request: den doesn't read it as "no Pull Request",
+/// so it withholds Implement and says why. A plain link still doesn't.
+#[test]
+fn a_link_that_looks_like_a_pull_request_withholds_implement() {
+    for url in [
+        "github.com/acme/api/pull/4",
+        "https://github.com/acme/api/pulls/4",
+        "https://github.example.com/acme/api/pull/4",
+        "https://github.com/acme/a%20pi/pull/4",
+    ] {
+        let observation = two_owners()
+            .linear_issue(linear_issue("acme", "id-1", "TEAM-1").link(url))
+            .build();
+        let decisions = decide_all(&observation);
+        let issue = linear(&decisions, "TEAM-1");
+        assert_eq!(issue.next_step, None, "{url}: {issue:?}");
+        let reason = issue.explanation.no_step_reason.as_deref().unwrap();
+        assert!(reason.contains(PR_EXISTENCE_UNKNOWN), "{url}: {reason}");
+        assert!(reason.contains(url), "{url}: {reason}");
+        assert!(
+            issue
+                .explanation
+                .unknowns
+                .iter()
+                .any(|u| u.contains(PR_EXISTENCE_UNKNOWN) && u.contains(url)),
+            "{url}: {issue:?}"
+        );
+        assert!(
+            !issue
+                .explanation
+                .other_conditions
+                .iter()
+                .any(|c| c.contains("not GitHub Pull Requests")),
+            "{url} isn't counted as a plain link: {issue:?}"
+        );
+    }
+}
+
+/// With an open member, a Pull Request exists. Attachments den couldn't read
+/// in full then leave unknown only whether *more* are attached, as the detail
+/// says; the Explanation doesn't also say den couldn't tell whether one
+/// exists.
+#[test]
+fn incomplete_attachments_beside_an_open_member_say_more_may_be_attached() {
+    let observation = two_owners()
+        .pull_request(pr("acme/api", 4).author(ME))
+        .linear_issue(
+            linear_issue("acme", "id-1", "TEAM-1")
+                .attached("acme/api", 4)
+                .attachments_incomplete("Linear returned errors alongside the page"),
+        )
+        .build();
+    let decisions = decide_all(&observation);
+    let issue = linear(&decisions, "TEAM-1");
+    assert_eq!(issue.next_step, None);
+    assert!(
+        issue
+            .explanation
+            .no_step_reason
+            .as_deref()
+            .is_some_and(|r| r.contains("carries the work")),
+        "{issue:?}"
+    );
+    assert!(
+        !issue
+            .explanation
+            .unknowns
+            .iter()
+            .any(|u| u.contains(PR_EXISTENCE_UNKNOWN)),
+        "{issue:?}"
+    );
+    assert!(
+        issue
+            .explanation
+            .unknowns
+            .iter()
+            .any(|u| u.contains("more Pull Requests may be attached")
+                && u.contains("Linear returned errors")),
+        "{issue:?}"
+    );
+}

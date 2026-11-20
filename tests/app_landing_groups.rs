@@ -295,6 +295,35 @@ fn a_linear_issue_detail_never_says_no_pr_when_attachments_are_incomplete() {
     assert!(landing.lines[1].caution, "unknown is a caution");
 }
 
+/// A link that looks like a Pull Request den can't read
+/// (`github.com/octo/api/pull/8`, no scheme) is no member, and the detail
+/// never says "no Pull Request attached" for it: it names the link as a
+/// caution, agreeing with the Explanation's unknown.
+#[test]
+fn a_linear_issue_detail_names_a_link_that_looks_like_a_pull_request() {
+    let mut harness = harness_with(vec![
+        linear_issue("octo", "id-6", "TEAM-6")
+            .link("github.com/octo/api/pull/8")
+            .build(),
+    ]);
+    let detail = detail_of(&mut harness, "TEAM-6");
+    assert_eq!(detail.next_step, "none");
+    assert!(
+        detail
+            .why
+            .contains("couldn't establish whether a PR exists"),
+        "{}",
+        detail.why
+    );
+    let landing = detail.landing.expect("a Landing Group section");
+    let texts: Vec<&str> = landing.lines.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        ["attached github.com/octo/api/pull/8: looks like a Pull Request den can't read"]
+    );
+    assert!(landing.lines[0].caution, "unknown is a caution");
+}
+
 /// "Ordering and Scope": a Repo Scope shows the Linear Issues with a member
 /// there (not a hint), and the Decisions shown are the ones the whole
 /// survey gave.

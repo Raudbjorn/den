@@ -10,6 +10,8 @@
 //! - attachments not read completely → no Next Step: den couldn't establish
 //!   whether a Pull Request exists;
 //! - a member den can't see → no Next Step, for the same reason;
+//! - a link that looks like a Pull Request den can't read
+//!   (`Attachment::may_be_pull_request`) → no Next Step, for the same reason;
 //! - members, none open → no Next Step (Mark for release, #37, goes here).
 //!
 //! Then, with no members and every attachment read:
@@ -31,6 +33,9 @@ use crate::domain::{
 const ASSIGNEE_ROLE: &str = "the Linear assignee";
 /// The unknown that withholds Start and Implement (spec 0002, rule 4).
 pub const PR_EXISTENCE_UNKNOWN: &str = "couldn't establish whether a PR exists";
+/// The same unknown once an open member shows a Pull Request exists: only
+/// whether more are attached is unknown (the detail's wording too).
+pub const MORE_MAY_BE_ATTACHED: &str = "more Pull Requests may be attached";
 
 pub fn decide_all(ctx: &Context<'_>) -> Vec<Decision> {
     ctx.observation
@@ -109,6 +114,13 @@ fn group_gate(issue: &LinearIssue, landing: &Landing) -> Option<String> {
             references(&unseen)
         ));
     }
+    let unread = pull_request_like_links(issue);
+    if !unread.is_empty() {
+        return Some(format!(
+            "den {PR_EXISTENCE_UNKNOWN}: attached {} looks like a Pull Request it can't read",
+            unread.join(", ")
+        ));
+    }
     if !landing.members.is_empty() {
         let all: Vec<&Member> = landing.members.iter().collect();
         return Some(format!(
@@ -185,11 +197,12 @@ fn group_conditions(issue: &LinearIssue, landing: &Landing) -> Vec<String> {
             hint.branch
         )
     }));
+    // A link that may be a Pull Request is an unknown, not a plain link.
     let links = issue
         .attachments
         .links
         .iter()
-        .filter(|a| matches!(a, Attachment::Link { .. }))
+        .filter(|a| matches!(a, Attachment::Link { .. }) && !a.may_be_pull_request())
         .count();
     if links > 0 {
         lines.push(format!(
@@ -201,12 +214,29 @@ fn group_conditions(issue: &LinearIssue, landing: &Landing) -> Vec<String> {
 }
 
 fn unknowns(issue: &LinearIssue, landing: &Landing) -> Vec<String> {
+    // An open member is a Pull Request that exists; then only whether more
+    // are attached is unknown, so the Explanation agrees with the no-step
+    // reason ("its Pull Request carries the work").
+    let unknown = if landing
+        .members
+        .iter()
+        .any(|m| matches!(m.status, MemberStatus::Open { .. }))
+    {
+        MORE_MAY_BE_ATTACHED
+    } else {
+        PR_EXISTENCE_UNKNOWN
+    };
     let mut unknowns = Vec::new();
     if let AttachmentsRead::Incomplete { why } = &issue.attachments.read {
         unknowns.push(format!(
-            "{PR_EXISTENCE_UNKNOWN}: the Linear Issue's attachments weren't read completely ({why})"
+            "{unknown}: the Linear Issue's attachments weren't read completely ({why})"
         ));
     }
+    unknowns.extend(
+        pull_request_like_links(issue).into_iter().map(|url| {
+            format!("{unknown}: attached {url} looks like a Pull Request den can't read")
+        }),
+    );
     unknowns.extend(landing.members.iter().filter_map(|m| match &m.status {
         MemberStatus::NotSurveyed(why) => Some(format!(
             "attached {} is a member den can't see: {}",
@@ -216,6 +246,19 @@ fn unknowns(issue: &LinearIssue, landing: &Landing) -> Vec<String> {
         _ => None,
     }));
     unknowns
+}
+
+/// The URLs of the attachments that may be Pull Requests den can't read.
+pub fn pull_request_like_links(issue: &LinearIssue) -> Vec<&str> {
+    issue
+        .attachments
+        .links
+        .iter()
+        .filter_map(|a| match a {
+            Attachment::Link { url } if a.may_be_pull_request() => Some(url.as_str()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn references(members: &[&Member]) -> String {
