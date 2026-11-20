@@ -17,7 +17,8 @@
 //!    outside a Held Repo would Merge (its own Decision "lands with" this
 //!    issue; one open again has no Decision yet, so it blocks), none is
 //!    ambiguous, no member is unseen ("not surveyed"), none is in a merge
-//!    queue, and den read every attachment and every such member's facts
+//!    queue, no attachment is a link that may be a Pull Request den can't
+//!    read, and den read every attachment and every such member's facts
 //!    completely → **Land**, Waiting On the Linear assignee. Otherwise no
 //!    Next Step: its Pull Requests carry the work, and the Explanation names
 //!    each blocking member with its own Next Step or reason, and each held
@@ -291,6 +292,13 @@ fn land(
             "den couldn't read all of the Linear Issue's attachments ({why}), so it can't tell every member"
         ));
     }
+    // A link that may be a Pull Request den can't read may be a member it
+    // can't judge: the group is possibly incomplete, so never ready.
+    blocking.extend(pull_request_like_links(issue).into_iter().map(|url| {
+        format!(
+            "attached {url} looks like a Pull Request den can't read, so it can't tell every member"
+        )
+    }));
     for member in &landing.members {
         let own = own_decision(pull_requests, &member.pr.id());
         let reasons = blocking_reasons(ctx, member, held(member), own, &issue.identifier);

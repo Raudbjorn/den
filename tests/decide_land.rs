@@ -904,3 +904,36 @@ fn a_pull_request_like_link_withholds_mark_for_release_and_a_member_open_again_i
         said(issue)
     );
 }
+
+/// A link that looks like a Pull Request den can't read blocks Land, as an
+/// unread attachment list does: it may be a member den can't judge, so a
+/// possibly incomplete group is never presented as ready. The ready member
+/// still lands with the issue.
+#[test]
+fn a_pull_request_like_link_blocks_land() {
+    const LINK: &str = "github.com/acme/api/pull/8";
+    let observation = acme_owner()
+        .pull_request(ready("acme/api", 1))
+        .linear_issue(
+            linear_issue("acme", "id-1", "TEAM-1")
+                .attached("acme/api", 1)
+                .link(LINK),
+        )
+        .build();
+    let decisions = decide_all(&observation, &acme());
+    let issue = linear(&decisions, "TEAM-1");
+    assert_eq!(issue.next_step, None, "{issue:#?}");
+    assert_says(
+        issue,
+        &[
+            "1 blocking",
+            &format!(
+                "blocking: attached {LINK} looks like a Pull Request den can't read, so it can't tell every member"
+            ),
+        ],
+    );
+    assert_eq!(
+        pull_request(&decisions, "acme/api", 1).held_back,
+        lands_with(&["TEAM-1"])
+    );
+}
