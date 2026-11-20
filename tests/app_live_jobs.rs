@@ -780,6 +780,7 @@ fn fresh_push_instructions_preserve_shell_metacharacters_in_remote_and_branch() 
         "fix/quote'",
         "fix/$(whoami)",
         "fix/semicolon;name",
+        "fix/it's;$(printf-expanded)",
     ] {
         let remote = "up$stream";
         let observed = ObservationBuilder::new()
@@ -947,43 +948,4 @@ fn casing_changes_keep_only_the_latest_record_for_each_job_worktree() {
     );
     assert_eq!(checked.checks.len(), 1);
     assert_eq!(checked.checks[0].job, latest);
-}
-
-#[test]
-fn fresh_push_instructions_preserve_literal_remote_and_branch_arguments_in_a_shell() {
-    for branch in ["fix/$USER", "fix/it's;$(printf-expanded)"] {
-        let remote = "up$stream";
-        let observed = ObservationBuilder::new()
-            .owner("octo")
-            .repo("octo/app")
-            .pull_request(
-                pr("octo/app", 7)
-                    .author(ME)
-                    .changes_requested()
-                    .head_ref(branch),
-            );
-        let mut harness = harness_observing(observed, |h| {
-            h.workspace
-                .add_clone(CLONE, &[(remote, "git@github.com:octo/app.git")]);
-            live_job(h, 7);
-        });
-        press(&mut harness, Key::Char('c'));
-        press(&mut harness, Key::Char('f'));
-        let ready = sheet(&harness);
-        assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(ready));
-        let prompt = &ready.prompt.as_ref().unwrap().text;
-        let (_, instruction) = prompt.split_once("Push with: ").unwrap();
-        // A shell function captures argv without pushing or accessing a network.
-        let script = format!("git() {{ printf '%s\\n' \"$@\"; }}; {instruction}");
-        let output = std::process::Command::new("sh")
-            .args(["-c", &script])
-            .env("USER", "expanded")
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{:?}", output);
-        assert_eq!(
-            String::from_utf8(output.stdout).unwrap(),
-            format!("push\n{remote}\nHEAD:{branch}\n")
-        );
-    }
 }
