@@ -13,8 +13,12 @@
 //!   another Owner's Repo (a Landing Group's Pull Requests are its Owner's),
 //!   in a Repo den didn't survey, or in one whose open Pull Requests den
 //!   didn't read completely. A member den looked for in a completely read
-//!   Repo and didn't find isn't open: merged or closed (den reads open Pull
-//!   Requests only, so it can't say which).
+//!   Repo and didn't find isn't open: merged or closed. The survey reads open
+//!   Pull Requests only, so den says which only once it has read that
+//!   member's state by number (`Observation.member_states`, #37): **merged**,
+//!   **closed** without merging, or still "merged or closed" until then. One
+//!   GitHub reports open at that read is **open again**: open, but not in
+//!   the survey, so den hasn't read its facts.
 //!
 //! Pull Requests are identified by Owner, Repo and number, compared as GitHub
 //! does (case-insensitively), so two Owners' `api#42` never meet; Linear
@@ -23,9 +27,10 @@
 
 use crate::domain::{
     LinearIssueId, Observation, RepoId, SourceKind, WorkItemId,
-    facts::{LinearIssue, PullRequest, PullRequestRef},
+    facts::{LinearIssue, PullRequest, PullRequestRef, PullRequestState},
     ids::same_login,
 };
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -116,21 +121,43 @@ pub enum MemberStatus {
     /// Open, and in the survey: its own Decision says what it needs.
     Open { draft: bool },
     /// Its Repo's open Pull Requests were read completely and it isn't among
-    /// them: merged or closed.
+    /// them: merged or closed, and den hasn't read which.
     NotOpen,
+    /// Missing from its Repo's open Pull Requests, but GitHub reported it
+    /// open when den read its state after the survey (#37): open, and den
+    /// hasn't read its facts. Until a survey lists it, it can't be judged.
+    OpenAgain,
+    /// Not open, and GitHub reported it merged when den read its state (#37).
+    Merged { merged_at: Option<Timestamp> },
+    /// Not open, and GitHub reported it closed without merging (#37).
+    Closed,
     /// den can't see it, for this reason.
     NotSurveyed(NotSurveyed),
 }
 
 impl MemberStatus {
-    /// "open", "draft", "merged or closed", "member not surveyed".
+    /// "open", "draft", "merged or closed", "open again", "merged", "closed
+    /// without merging", "member not surveyed".
     pub fn label(&self) -> &'static str {
         match self {
             Self::Open { draft: false } => "open",
             Self::Open { draft: true } => "draft",
             Self::NotOpen => "merged or closed",
+            Self::OpenAgain => "open again",
+            Self::Merged { .. } => "merged",
+            Self::Closed => "closed without merging",
             Self::NotSurveyed(_) => "member not surveyed",
         }
+    }
+
+    /// Not open, whether or not den has read how it ended.
+    pub fn is_not_open(&self) -> bool {
+        matches!(self, Self::NotOpen | Self::Merged { .. } | Self::Closed)
+    }
+
+    /// Open: in the survey, or reported open again after it.
+    pub fn is_open(&self) -> bool {
+        matches!(self, Self::Open { .. } | Self::OpenAgain)
     }
 
     /// The label and, when den can't see the member, why.
@@ -425,14 +452,26 @@ fn status(
         return MemberStatus::NotSurveyed(NotSurveyed::RepoNotSurveyed);
     }
     // The cache merge's rule: a member missing from a Repo read completely
-    // is gone from its open Pull Requests.
-    if observation
+    // is gone from its open Pull Requests; how it ended is read by number.
+    if !observation
         .coverage
         .read_completely(&pr.repo, SourceKind::PullRequests)
     {
-        MemberStatus::NotOpen
-    } else {
-        MemberStatus::NotSurveyed(NotSurveyed::PullRequestsIncomplete)
+        return MemberStatus::NotSurveyed(NotSurveyed::PullRequestsIncomplete);
+    }
+    let read = observation
+        .member_states
+        .iter()
+        .find(|m| m.pr.is(&pr.repo, pr.number));
+    match read.map(|m| &m.state) {
+        Some(PullRequestState::Merged { merged_at }) => MemberStatus::Merged {
+            merged_at: *merged_at,
+        },
+        Some(PullRequestState::Closed) => MemberStatus::Closed,
+        // Reopened since the survey listed the Repo's open Pull Requests.
+        Some(PullRequestState::Open) => MemberStatus::OpenAgain,
+        // Not read yet: den can't say how it ended.
+        None => MemberStatus::NotOpen,
     }
 }
 

@@ -141,7 +141,11 @@ fn member_line(
     LandingLine {
         text: parts.join(&format!(" {SEPARATOR} ")),
         job,
-        caution: member.ambiguous() || matches!(member.status, MemberStatus::NotSurveyed(_)),
+        caution: member.ambiguous()
+            || matches!(
+                member.status,
+                MemberStatus::NotSurveyed(_) | MemberStatus::OpenAgain
+            ),
     }
 }
 
@@ -151,7 +155,8 @@ fn own_next_step(own: Option<&Decision>) -> String {
         || "its Decision isn't shown".to_owned(),
         |d| match (d.next_step, &d.held_back) {
             (Some(step), _) => format!("Next Step {}", step.label()),
-            // As the list and the detail say it: "held for release" (#36).
+            // As the list and the detail say it: "lands with TEAM-1", "held
+            // for release" (#36, #37).
             (None, Some(held)) => held.label(),
             (None, None) => "no Next Step".to_owned(),
         },

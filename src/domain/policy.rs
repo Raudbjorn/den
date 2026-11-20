@@ -16,8 +16,8 @@ use super::{
 
 /// One Owner's Linear Workflow policy. Its [`Default`] is the **empty** policy,
 /// the one every Owner without a Linear Workflow gets, and it must stay a
-/// policy that changes no Decision: it offers no Start, has no review rules
-/// and holds no Repo.
+/// policy that changes no Decision: it offers no Start, has no review rules,
+/// holds no Repo and names no release state.
 ///
 /// Fields arrive with the tickets that use them; the landing order comes with
 /// #40.
@@ -32,12 +32,25 @@ pub struct LinearWorkflowPolicy {
     /// Held Repos: a PR here that would Merge has no Next Step and is held
     /// for release instead (#36). Empty in the empty policy.
     pub held_repos: Vec<RepoId>,
+    /// The Linear state a landed Linear Issue moves to (#37): Mark for
+    /// release is offered only when the workflow names one, and an issue
+    /// already in it has no Next Step (release is outside den). Compared
+    /// with the issue's state name, ignoring case. `None` in the empty
+    /// policy.
+    pub release_state: Option<String>,
 }
 
 impl LinearWorkflowPolicy {
     /// Whether `repo` is a Held Repo (compared as GitHub compares names).
     pub fn holds(&self, repo: &RepoId) -> bool {
         self.held_repos.iter().any(|held| held.same(repo))
+    }
+
+    /// Whether `state_name` is this workflow's release state.
+    pub fn is_release_state(&self, state_name: &str) -> bool {
+        self.release_state
+            .as_deref()
+            .is_some_and(|release| release.eq_ignore_ascii_case(state_name))
     }
 }
 
@@ -122,6 +135,7 @@ static EMPTY_POLICY: LinearWorkflowPolicy = LinearWorkflowPolicy {
     start: StartPolicy::NONE,
     review: None,
     held_repos: Vec::new(),
+    release_state: None,
 };
 
 impl Policies {

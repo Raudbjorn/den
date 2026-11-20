@@ -7,12 +7,15 @@
 //! source still reads as failed or partial: den never presents old data as new.
 //!
 //! GitHub and Linear are surveyed apart, so each refresh speaks for its own
-//! sources only. [`merge`] takes a GitHub survey and leaves the Linear part, its
-//! coverage and its ages as they were, also when it starts afresh for another
-//! GitHub viewer (Linear data is read as the Linear viewer, not the GitHub
-//! one); [`merge_linear`] takes a Linear survey and leaves GitHub's alone.
-//! Both apply the one rule above ([`Reading`], [`keep_unread`]): a fact names
-//! its source, a GitHub fact by its kind and
+//! sources only. The Landing Group members' states (#37), read by number
+//! after both surveys, are a third: a GitHub survey of the same GitHub viewer
+//! keeps them and their coverage as they were, and [`merge_member_states`]
+//! replaces each member's state it read. [`merge`] takes a GitHub survey and
+//! leaves the Linear part, its coverage and its ages as they were, also when
+//! it starts afresh for another GitHub viewer (Linear data is read as the
+//! Linear viewer, not the GitHub one); [`merge_linear`] takes a Linear survey
+//! and leaves GitHub's alone. Both apply the one rule above ([`Reading`],
+//! [`keep_unread`]): a fact names its source, a GitHub fact by its kind and
 //! Repo, a Linear fact by its Owner and the Linear source that listed it. A
 //! Linear fact list added later (a start team's states, say) is one more
 //! [`keep_unread`] call in [`merge_linear`], and one more `retain` by its
@@ -41,9 +44,11 @@ use super::{CachedObservation, Carried, LinearReads, source_owner};
 use crate::{
     domain::{
         Coverage, CoverageEntry, LinearPart, LinearSourceKind, Observation, RepoId, Source,
-        SourceKind, SourceState, ids::same_login,
+        SourceKind, SourceState,
+        facts::{MemberStateAttempt, PullRequestRef},
+        ids::same_login,
     },
-    ports::LinearSurvey,
+    ports::{LinearSurvey, MemberStatesRead},
 };
 use jiff::Timestamp;
 use std::{collections::HashSet, hash::Hash};
@@ -67,7 +72,11 @@ pub struct LinearMerge {
 /// `fresh` carries is ignored: a GitHub survey says nothing about Linear.
 pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> CachedObservation {
     fresh.linear = LinearPart::default();
-    fresh.coverage.retain(|e| !e.source.is_linear());
+    fresh.member_states.clear();
+    fresh.member_attempts.clear();
+    fresh
+        .coverage
+        .retain(|e| !e.source.is_linear() && !e.source.is_member_states());
     let Some(mut previous) = previous else {
         return CachedObservation::fresh(fresh);
     };
@@ -190,10 +199,119 @@ fn merge_github(previous: CachedObservation, fresh: Observation) -> CachedObserv
             }
         }
     }
+    // The members' states stay as they were, with their coverage: they are
+    // read by number after the survey, not by it (#37). They are GitHub data,
+    // so unlike the Linear part they go when the GitHub viewer changes.
+    merged.member_states = previous_observation.member_states;
+    merged.member_attempts = previous_observation.member_attempts;
+    for entry in previous_observation.coverage.entries() {
+        if entry.source.is_member_states() {
+            merged
+                .coverage
+                .record(entry.source.clone(), entry.state.clone());
+        }
+    }
     CachedObservation {
         observation: merged,
         carried,
     }
+}
+
+/// Merges a read of Landing Group members' states (#37) into `previous`: each
+/// member it read a state for replaces that member's earlier state, any other
+/// keeps its earlier one, and the read's coverage replaces the earlier
+/// coverage of the same Owners' member states. A member den asked about and
+/// got no state for keeps the one it had, if any (the coverage says the read
+/// was incomplete): a failed read never invents a state, and never erases a
+/// merge, which is final on GitHub.
+///
+/// A member it sent to GitHub and got no state for is recorded as attempted
+/// `now` (`Observation.member_attempts`), so the next bounded read asks for
+/// the others first; one it got a state for is no longer an attempt.
+pub fn merge_member_states(
+    mut previous: CachedObservation,
+    read: MemberStatesRead,
+    now: Timestamp,
+) -> CachedObservation {
+    let observation = &mut previous.observation;
+    let answered = |pr: &PullRequestRef| read.states.iter().any(|s| s.pr.is(&pr.repo, pr.number));
+    let unanswered: Vec<&PullRequestRef> = read.asked.iter().filter(|pr| !answered(pr)).collect();
+    observation.member_attempts.retain(|a| {
+        !answered(&a.pr) && !unanswered.iter().any(|pr| pr.is(&a.pr.repo, a.pr.number))
+    });
+    observation
+        .member_attempts
+        .extend(unanswered.into_iter().map(|pr| MemberStateAttempt {
+            pr: pr.clone(),
+            attempted_at: now,
+        }));
+    observation.member_states.retain(|kept| {
+        !read
+            .states
+            .iter()
+            .any(|s| s.pr.is(&kept.pr.repo, kept.pr.number))
+    });
+    observation.member_states.extend(read.states);
+    let answered: Vec<Source> = read
+        .coverage
+        .entries()
+        .iter()
+        .map(|e| e.source.clone())
+        .collect();
+    observation
+        .coverage
+        .retain(|e| !answered.iter().any(|a| a.same(&e.source)));
+    for entry in read.coverage.entries() {
+        observation
+            .coverage
+            .record(entry.source.clone(), entry.state.clone());
+    }
+    previous
+}
+
+/// Settles the members' states (#37) once both surveys of a round have
+/// answered, against the Landing Groups now decided: `members` are every
+/// member of them, `wanted` the ones den is about to read the state of.
+///
+/// - A state of a Pull Request no longer a member of any group is dropped,
+///   so the states kept (in memory and in the cache file) never outgrow the
+///   groups den shows.
+/// - An attempt (a member asked about and not answered) is dropped once den
+///   no longer wants that member's state, so attempts never outgrow the
+///   members still to read.
+/// - An Owner's member-state coverage is dropped when den wants none of its
+///   members' states: no read will replace it, and an old failure must not
+///   leave the picture incomplete for good. An Owner den is about to read
+///   keeps its entry until that read answers.
+pub fn settle_member_states(
+    mut previous: CachedObservation,
+    members: &[PullRequestRef],
+    wanted: &[PullRequestRef],
+) -> CachedObservation {
+    let fold = |pr: &PullRequestRef| {
+        (
+            pr.repo.owner.to_ascii_lowercase(),
+            pr.repo.name.to_ascii_lowercase(),
+            pr.number,
+        )
+    };
+    let current: HashSet<_> = members.iter().map(fold).collect();
+    let still_wanted: HashSet<_> = wanted.iter().map(fold).collect();
+    let observation = &mut previous.observation;
+    observation
+        .member_states
+        .retain(|kept| current.contains(&fold(&kept.pr)));
+    observation
+        .member_attempts
+        .retain(|a| still_wanted.contains(&fold(&a.pr)));
+    observation.coverage.retain(|e| match &e.source {
+        Source::Owner {
+            owner,
+            kind: SourceKind::MemberStates,
+        } => wanted.iter().any(|pr| same_login(&pr.repo.owner, owner)),
+        _ => true,
+    });
+    previous
 }
 
 /// Merges a Linear survey into `previous`, Linear source by Linear source;

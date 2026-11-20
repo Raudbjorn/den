@@ -12,7 +12,8 @@ use den::{
         Incompleteness, LinearSourceKind, LinearTeamStates, Source, SourceKind, SourceState,
         facts::{
             ActorKind, Attachment, AttachmentsRead, LinearState, LinearStateKind, LinearTeam,
-            MergeState, PullRequestRef, ReviewDecision, ReviewVerdict,
+            MemberPullRequestState, MemberStateAttempt, MergeState, PullRequestRef,
+            PullRequestState, ReviewDecision, ReviewVerdict,
         },
     },
     ports::ObservationCache,
@@ -141,15 +142,29 @@ fn the_linear_part_and_its_ages_load_back_unchanged() {
     assert_eq!(cache.load(), Ok(Some(stored)));
 }
 
-/// Format 8 is milestone 2's merged shape. Every field #33, #34, #35 and #36
-/// added to the stored Observation survives a store and load, together:
-/// #33's `LinearPart.team_states`, #34's `LinearIssue.listed_by` and
-/// `LinearPart.observed_at`, #35's attachments (a PR, a link, and an issue
-/// whose attachments weren't all read), and #36's review commit and author
-/// kind (a user's review on an older head, a bot's comment at the head).
+/// Format 8 was milestone 2's merged shape; 10 adds the second review
+/// round's fields and 11 #37's Landing Group member states. Every field #33,
+/// #34, #35, #36 and #37 added to the stored Observation survives a store and
+/// load, together: #33's `LinearPart.team_states`, #34's
+/// `LinearIssue.listed_by` and `LinearPart.observed_at`, #35's attachments (a
+/// PR, a link, and an issue whose attachments weren't all read), #36's review
+/// commit and author kind (a user's review on an older head, a bot's comment
+/// at the head) and `PrDetails::head_commit`, #32's
+/// `LinearErrorsAlongsideData::more`, and #37's member states (merged with
+/// its time, closed, open again) with their coverage.
+///
+/// (#37 moved its format assertion from 8 to 9, and the second review round
+/// to 10 and then 11, and #37's round 4 to 12 with its member attempts: the
+/// stored Observation gained fields each time. Every
+/// earlier assertion is unchanged. #37 had renamed this test to
+/// `milestone_2_s_shape_…`; the merge keeps integrate/m2-wave3's name.)
 #[test]
 fn milestone_2_s_merged_shape_loads_back_unchanged() {
-    assert_eq!(CACHE_FORMAT, 10, "the merged milestone-2 shape");
+    // 12: #37's member attempts joined the Observation (round 4).
+    assert_eq!(
+        CACHE_FORMAT, 12,
+        "the merged milestone-2 shape with member states and attempts"
+    );
     let team_states = LinearTeamStates {
         owner: "acme".to_owned(),
         workspace: "acme".to_owned(),
@@ -188,6 +203,35 @@ fn milestone_2_s_merged_shape_loads_back_unchanged() {
         .build();
     observation.linear.team_states = vec![team_states.clone()];
     observation.linear.observed_at = Some(ts("2026-11-19T11:00:00Z"));
+    let member = |number: u64, state: PullRequestState| MemberPullRequestState {
+        pr: PullRequestRef::new(den::domain::RepoId::new("acme", "api"), number),
+        state,
+    };
+    let member_states = vec![
+        member(
+            5,
+            PullRequestState::Merged {
+                merged_at: Some(ts("2026-11-18T10:00:00Z")),
+            },
+        ),
+        member(6, PullRequestState::Closed),
+        member(7, PullRequestState::Open),
+    ];
+    observation.member_states = member_states.clone();
+    let member_attempts = vec![MemberStateAttempt {
+        pr: PullRequestRef::new(den::domain::RepoId::new("acme", "api"), 99),
+        attempted_at: ts("2026-11-19T11:30:00Z"),
+    }];
+    observation.member_attempts = member_attempts.clone();
+    observation.coverage.record(
+        Source::Owner {
+            owner: "acme".to_owned(),
+            kind: SourceKind::MemberStates,
+        },
+        SourceState::Failed {
+            error: "timeout".to_owned(),
+        },
+    );
     let assigned = Source::Owner {
         owner: "acme".to_owned(),
         kind: SourceKind::Linear(LinearSourceKind::AssignedIssues),
@@ -253,6 +297,17 @@ fn milestone_2_s_merged_shape_loads_back_unchanged() {
         .expect("the bot's comment");
     assert_eq!(bot.author_kind, ActorKind::Bot);
     assert_eq!(bot.verdict, ReviewVerdict::Commented);
+    assert_eq!(loaded.observation.member_states, member_states);
+    assert_eq!(loaded.observation.member_attempts, member_attempts);
+    assert!(
+        loaded
+            .observation
+            .coverage
+            .entries()
+            .iter()
+            .any(|e| e.source.is_member_states()),
+        "the member states' coverage"
+    );
 }
 
 #[cfg(unix)]

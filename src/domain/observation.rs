@@ -2,7 +2,7 @@
 
 use super::{
     coverage::Coverage,
-    facts::{Branch, Issue, PullRequest, Run},
+    facts::{Branch, Issue, MemberPullRequestState, MemberStateAttempt, PullRequest, Run},
     ids::{RepoId, WorkItemId, same_login},
     linear::{LinearPart, LinearViewer},
 };
@@ -103,6 +103,15 @@ pub struct Observation {
     /// What den read from Linear, for Owners with a Linear Workflow. Empty when
     /// no Owner has one; its sources are in `coverage` like GitHub's.
     pub linear: LinearPart,
+    /// What GitHub said, after the survey, of the Landing Group members den
+    /// didn't find among the open Pull Requests (#37): merged, closed or open
+    /// again. Read by number, with their own coverage
+    /// (`SourceKind::MemberStates`, per Owner).
+    pub member_states: Vec<MemberPullRequestState>,
+    /// The members den asked about and got no state for, with when it last
+    /// asked (#37): they order the next bounded read, oldest first, after
+    /// the members never asked about.
+    pub member_attempts: Vec<MemberStateAttempt>,
     pub coverage: Coverage,
 }
 
@@ -126,6 +135,8 @@ impl Observation {
             branches: Vec::new(),
             runs: Vec::new(),
             linear: LinearPart::default(),
+            member_states: Vec::new(),
+            member_attempts: Vec::new(),
             coverage: Coverage::default(),
         }
     }
