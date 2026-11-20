@@ -19,8 +19,8 @@ pub use scope::Focus;
 pub use view_model::ViewModel;
 
 use crate::{
-    cache::{self, CacheError, CachedObservation},
-    config::{Config, ConfigError},
+    cache::{self, CacheError, CachedObservation, LinearReads},
+    config::{Config, ConfigError, LinearWorkflow},
     decide::{self, Decision},
     domain::{
         Coverage, LinearSourceKind, Observation, Policies, Source, SourceKind, SourceState,
@@ -94,7 +94,8 @@ pub struct App {
     linear_running: Option<SurveyId>,
     /// The latest Linear survey's answer this session, dated: merged into what
     /// is shown when it arrives, and again into a GitHub survey that starts
-    /// afresh (no earlier Observation of its viewer to merge into).
+    /// afresh (no earlier Observation of its viewer to merge into). Merges
+    /// borrow it.
     linear: Option<LinearSurvey>,
 }
 
@@ -386,24 +387,23 @@ impl App {
         self.running = None;
         match outcome {
             Ok(observation) => {
-                let log = survey_log(id, &observation);
-                let previous = self.shown.take();
-                let afresh = !previous
-                    .as_ref()
-                    .is_some_and(|p| p.observation.viewer.is(&observation.viewer.login));
-                let mut merged = cache::merge(previous, *observation);
+                let mut effects = vec![survey_log(id, &observation)];
+                let merge = cache::merge(self.shown.take(), *observation);
+                let mut merged = merge.cached;
                 // Starting afresh, the merge kept no Linear part: give it this
-                // session's Linear answer (otherwise it is in `previous` already).
-                if afresh && let Some(latest) = &self.linear {
-                    merged = cache::merge_linear(merged, latest.clone());
+                // session's Linear answer (otherwise it is in the earlier
+                // Observation already).
+                if merge.afresh
+                    && let Some(latest) = &self.linear
+                {
+                    merged = merge_linear_logged(merged, latest, &mut effects);
                 }
                 self.record_unanswered_linear(&mut merged.observation.coverage);
-                let carried = carried_log(&merged);
+                // Linear's kept data was logged when its answer arrived.
+                effects.extend(carried_log(&merged, |source| !source.is_linear()));
                 self.show(merged.clone(), now);
                 self.from_cache = false;
                 self.failure = None;
-                let mut effects = vec![log];
-                effects.extend(carried);
                 effects.push(Effect::StoreCache {
                     cached: Box::new(merged),
                 });
@@ -474,29 +474,33 @@ impl App {
         let Ok(config) = &self.config else {
             return Vec::new();
         };
-        let workflows: Vec<(&str, &str)> = config
+        let workflows: Vec<LinearReads<'_>> = config
             .linear
             .iter()
-            .map(|w| (w.owner.as_str(), w.workspace.as_str()))
+            .map(|w| LinearReads {
+                owner: &w.owner,
+                workspace: &w.workspace,
+                sources: linear_sources(w),
+            })
             .collect();
         let mut cached = cached
             .restricted_to(&config.owners)
             .restricted_to_linear(&workflows);
-        if let Some(latest) = &self.linear {
-            cached = cache::merge_linear(cached, latest.clone());
-        }
-        self.record_unanswered_linear(&mut cached.observation.coverage);
-        let log = Effect::log(
+        let mut effects = vec![Effect::log(
             LogLevel::Info,
             format!(
                 "showing the cached Observation of {} from {}",
                 cached.observation.viewer.login, cached.observation.observed_at
             ),
-        );
+        )];
+        if let Some(latest) = &self.linear {
+            cached = merge_linear_logged(cached, latest, &mut effects);
+        }
+        self.record_unanswered_linear(&mut cached.observation.coverage);
         let now = self.now.unwrap_or(cached.observation.observed_at);
         self.show(cached, now);
         self.from_cache = true;
-        vec![log]
+        effects
     }
 
     /// Shows `shown`, deciding its Work Items as of `now`, keeping the selection.
@@ -642,22 +646,13 @@ impl App {
         survey.part.observed_at.get_or_insert(now);
         self.record_unanswered_linear(&mut survey.coverage);
         let mut effects = vec![linear_log(id, &survey)];
-        self.linear = Some(survey.clone());
+        let latest = &*self.linear.insert(survey);
         let Some(shown) = self.shown.take() else {
             return effects;
         };
-        let changed = cache::changed_linear_viewers(&shown.observation.linear, &survey.part);
-        if !changed.is_empty() {
-            effects.push(Effect::log(
-                LogLevel::Warn,
-                format!(
-                    "the Linear viewer of {} is not the one den's Linear data was read as; dropped that data",
-                    changed.join(", ")
-                ),
-            ));
-        }
-        let merged = cache::merge_linear(shown, survey);
-        effects.extend(carried_log(&merged));
+        let merged = merge_linear_logged(shown, latest, &mut effects);
+        // GitHub's kept data was logged when its answer arrived.
+        effects.extend(carried_log(&merged, Source::is_linear));
         self.show(merged.clone(), now);
         effects.push(Effect::StoreCache {
             cached: Box::new(merged),
@@ -673,7 +668,7 @@ impl App {
             return;
         };
         for workflow in &config.linear {
-            for kind in [LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues] {
+            for kind in linear_sources(workflow) {
                 let source = Source::Owner {
                     owner: workflow.owner.clone(),
                     kind: SourceKind::Linear(kind),
@@ -684,6 +679,33 @@ impl App {
             }
         }
     }
+}
+
+/// The Linear sources `workflow` reads: its Linear viewer and the Linear
+/// Issues assigned to it. Every Linear source den records for the workflow
+/// comes from here, so one it no longer reads is dropped from the cache.
+fn linear_sources(_workflow: &LinearWorkflow) -> Vec<LinearSourceKind> {
+    vec![LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues]
+}
+
+/// Merges `survey` into `cached`, logging any Owner whose earlier Linear data
+/// was dropped because its Linear viewer changed.
+fn merge_linear_logged(
+    cached: CachedObservation,
+    survey: &LinearSurvey,
+    effects: &mut Vec<Effect>,
+) -> CachedObservation {
+    let merge = cache::merge_linear(cached, survey);
+    if !merge.viewer_changed.is_empty() {
+        effects.push(Effect::log(
+            LogLevel::Warn,
+            format!(
+                "the Linear viewer of {} is not the one den's Linear data was read as; dropped that data",
+                merge.viewer_changed.join(", ")
+            ),
+        ));
+    }
+    merge.cached
 }
 
 fn linear_log(id: SurveyId, survey: &LinearSurvey) -> Effect {
@@ -718,16 +740,18 @@ fn cache_stored(outcome: Result<(), CacheError>) -> Vec<Effect> {
     }
 }
 
-/// Logs which sources show data kept from an earlier survey.
-fn carried_log(merged: &CachedObservation) -> Option<Effect> {
-    if merged.carried.is_empty() {
-        return None;
-    }
+/// Logs which of the sources `of` picks show data kept from an earlier
+/// survey: a survey of one service logs its own.
+fn carried_log(merged: &CachedObservation, of: impl Fn(&Source) -> bool) -> Option<Effect> {
     let kept: Vec<String> = merged
         .carried
         .iter()
+        .filter(|c| of(&c.source))
         .map(|c| format!("{} from {}", c.source.label(), c.observed_at))
         .collect();
+    if kept.is_empty() {
+        return None;
+    }
     Some(Effect::log(
         LogLevel::Warn,
         format!("kept earlier data for: {}", kept.join("; ")),
