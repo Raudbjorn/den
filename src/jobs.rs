@@ -8,6 +8,10 @@
 //! Work Item. A format-1 file (milestone 1) still loads: each of its records
 //! becomes a [`JobSubject::GitHub`] record. The next append writes the whole
 //! file as format 2, keeping every earlier record.
+//!
+//! A file from a newer den (a format above [`JOBS_FORMAT`]) is refused as such,
+//! never half-read and never overwritten: an older den can't tell what it would
+//! lose. So every new [`JobSubject`] variant bumps [`JOBS_FORMAT`].
 
 use crate::{
     domain::{NextStep, RepoId, WorkItemId},
@@ -23,8 +27,14 @@ use std::{
 };
 
 pub const JOBS_FILE: &str = "jobs.json";
-/// The Job records file format. Bump it when a change to [`JobRecord`] would
-/// make older files decode wrongly, and keep reading the older formats.
+/// The Job records file format. Keep reading the older formats. Bump it when a
+/// den of this format could not read, or would drop part of, a file the new
+/// den writes:
+/// - a new [`JobSubject`] variant (serde would fail on the unknown variant,
+///   and the older den could not say the file is from a newer den);
+/// - a new [`JobRecord`] field an older den must not lose when it rewrites
+///   the file on its next append (serde drops unknown fields);
+/// - any change to the stored shape of an existing variant or field.
 ///
 /// 1: milestone 1, a record's subject is a GitHub Work Item (`work_item`).
 /// 2: a record's subject is a [`JobSubject`] (`subject`).
@@ -45,10 +55,16 @@ pub const JOBS_LOCK_WAIT_SECS: u64 = 10;
 /// their head commits a Land Job covers (#40). Code that asks whether a Job is
 /// a Work Item's asks [`JobSubject::covers`], so a Landing Group's members are
 /// recognised wherever its Linear Issue is.
+///
+/// Stored as `{"<name>": ...}`, the name pinned by `#[serde(rename)]` so a
+/// Rust rename never changes the file. **Adding a variant bumps
+/// [`JOBS_FORMAT`]**: a den of the older format then refuses the file as a
+/// newer den's instead of failing on an unknown variant.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum JobSubject {
     /// A GitHub Work Item: an Issue, a Pull Request, a Branch or a Run (every
     /// milestone-1 Job).
+    #[serde(rename = "github")]
     GitHub(WorkItemId),
 }
 
@@ -98,15 +114,22 @@ pub struct JobRecord {
 pub enum JobStoreError {
     #[error("cannot read the Job records at {}: {detail}", path.display())]
     Read { path: PathBuf, detail: String },
+    /// A format above [`JOBS_FORMAT`]: the file is from a newer den.
     #[error(
-        "the Job records at {} are format {found}, this den reads format {expected}",
-        path.display()
+        "the Job records at {} are format {found}, written by a newer den; this den reads formats {} to {}",
+        path.display(),
+        JOBS_FORMAT_GITHUB_ONLY,
+        JOBS_FORMAT
     )]
-    Format {
-        path: PathBuf,
-        found: u32,
-        expected: u32,
-    },
+    Newer { path: PathBuf, found: u32 },
+    /// A format no den wrote (below the oldest).
+    #[error(
+        "the Job records at {} are format {found}, which no den writes; this den reads formats {} to {}",
+        path.display(),
+        JOBS_FORMAT_GITHUB_ONLY,
+        JOBS_FORMAT
+    )]
+    Format { path: PathBuf, found: u32 },
     #[error("cannot save the Job records at {}: {detail}", path.display())]
     Write { path: PathBuf, detail: String },
 }
@@ -216,10 +239,13 @@ impl JobStore for FileJobStore {
             JOBS_FORMAT_GITHUB_ONLY => serde_json::from_slice::<GitHubOnlyEnvelope>(&bytes)
                 .map(|e| e.jobs.into_iter().map(JobRecord::from).collect())
                 .map_err(|e| self.read_error(e)),
+            found if found > JOBS_FORMAT => Err(JobStoreError::Newer {
+                path: self.path.clone(),
+                found,
+            }),
             found => Err(JobStoreError::Format {
                 path: self.path.clone(),
                 found,
-                expected: JOBS_FORMAT,
             }),
         }
     }
@@ -237,11 +263,20 @@ impl JobStore for FileJobStore {
                 .map_err(|e| self.write_error(e))?;
         let mut jobs = self.load()?;
         jobs.push(job.clone());
-        let body = serde_json::to_vec_pretty(&Envelope {
+        let envelope = Envelope {
             format: JOBS_FORMAT,
             jobs,
-        })
-        .map_err(|e| self.write_error(e))?;
+        };
+        // Indented for a reader while it fits; compact when only that fits. A
+        // file milestone 1 wrote (indented, format 1) grows when its records
+        // are indented one level deeper as format 2, so near the bound only
+        // the compact form keeps the append from being refused.
+        let pretty = serde_json::to_vec_pretty(&envelope).map_err(|e| self.write_error(e))?;
+        let body = if pretty.len() as u64 > MAX_JOBS_BYTES {
+            serde_json::to_vec(&envelope).map_err(|e| self.write_error(e))?
+        } else {
+            pretty
+        };
         if body.len() as u64 > MAX_JOBS_BYTES {
             return Err(self.write_error(format!(
                 "adding this Job would exceed the {MAX_JOBS_BYTES}-byte records limit; existing records were kept"
