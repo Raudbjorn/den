@@ -16,6 +16,12 @@ pub fn perform(effect: &Effect, ports: &Ports) -> Vec<Event> {
                 now: ports.clock.now(),
             }]
         }
+        Effect::LoadCache => vec![Event::CacheLoaded {
+            outcome: ports.cache.load().map(|c| c.map(Box::new)),
+        }],
+        Effect::StoreCache { cached } => vec![Event::CacheStored {
+            outcome: ports.cache.store(cached),
+        }],
         Effect::Quit | Effect::Log(_) => Vec::new(),
     }
 }

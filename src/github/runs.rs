@@ -333,20 +333,9 @@ pub fn fetch(
     out.coverage.push(CoverageEntry {
         source: owner_source,
         // On a tie the stop wins: a rate limit carries its reset time.
-        state: stopped.worst(runs_of_listed_repos_only(repo_list)),
+        state: stopped.worst(super::of_listed_repos_only(repo_list, "Runs")),
     });
     Ok(out)
-}
-
-/// The Owner's Runs, as far as the list of Repos limits them.
-fn runs_of_listed_repos_only(repo_list: &SourceState) -> SourceState {
-    match repo_list {
-        SourceState::Failed { error } => SourceState::Failed {
-            error: format!("the Owner's Repos could not be listed, so no Runs were read: {error}"),
-        },
-        // Partial (with the list's own reason), not yet fetched, or complete.
-        other => other.clone(),
-    }
 }
 
 /// One Repo's Runs as the phases fill them in.

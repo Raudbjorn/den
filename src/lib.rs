@@ -7,12 +7,14 @@
 //! - [`app`]: `App::handle(Event) -> (ViewModel, Effects)` (test seam 2).
 //! - [`ports`]: GitHub source, Workspace, Launcher and Clock traits, and `perform`.
 //! - [`github`]: the real GitHub source over `gh api graphql`.
+//! - [`cache`]: the last Observation per viewer on disk, merged with each refresh by source.
 //! - [`runtime`]: performing Effects (background worker, or synchronously).
 //! - [`ordering`], [`config`], [`paths`], [`logging`], [`process`].
 //! - [`layout`]: the responsive layout (plate widths, narrow terminals).
 //! - [`palette`], [`ui`], [`terminal`]: IRONMAW Oxide rendering of the ViewModel.
 
 pub mod app;
+pub mod cache;
 pub mod config;
 pub mod decide;
 pub mod domain;

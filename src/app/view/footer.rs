@@ -29,6 +29,9 @@ pub fn build(state: &State<'_>) -> Footer {
         }
         _ => {}
     }
+    if state.config.is_ok() {
+        hints.push(hint("r", "refresh"));
+    }
     hints.push(hint("q", "quit"));
     Footer { hints }
 }

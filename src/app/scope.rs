@@ -44,7 +44,8 @@ impl ScopeState {
     /// Handles a Scope key. `entries` are the sidebar's rows, in order.
     pub fn key(&mut self, key: Key, owners: &[String], entries: &[Scope]) -> Outcome {
         match (key, self.focus) {
-            (Key::Char('q') | Key::Interrupt, _) => Outcome::Unhandled,
+            // Quit and refresh work whatever has focus.
+            (Key::Char('q' | 'r') | Key::Interrupt, _) => Outcome::Unhandled,
             (Key::Tab, Focus::List) => {
                 self.focus = Focus::Sidebar;
                 if !entries.iter().any(|e| e.same(&self.cursor)) {

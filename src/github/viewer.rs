@@ -47,6 +47,9 @@ struct Team {
 pub fn fetch(session: &Session<'_>) -> Result<(Viewer, CoverageEntry), SurveyFailure> {
     let login = match session.run::<LoginData>(VIEWER_QUERY, json!({}))? {
         Fetched::Data { data, .. } => data.viewer.login,
+        Fetched::Lost(SourceState::Partial(Incompleteness::RateLimited { resets_at })) => {
+            return Err(SurveyFailure::RateLimited { resets_at });
+        }
         Fetched::Lost(state) => {
             return Err(SurveyFailure::ViewerUnavailable {
                 detail: state.describe(),
@@ -75,6 +78,9 @@ pub fn fetch(session: &Session<'_>) -> Result<(Viewer, CoverageEntry), SurveyFai
                 state
             };
             (teams, state)
+        }
+        Fetched::Lost(state @ SourceState::Partial(Incompleteness::RateLimited { .. })) => {
+            (Vec::new(), state)
         }
         Fetched::Lost(state) => (
             Vec::new(),

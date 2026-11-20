@@ -398,6 +398,60 @@ fn errors_alongside_data_on_several_pages_are_all_kept() {
     );
 }
 
+/// The Repo's first PR page arrives inside the Owner's page, so an error on
+/// that page may have nulled some of its PRs. Its own later pages reading
+/// cleanly must not make the Repo complete: a merge trusts a complete Repo
+/// and would drop cached PRs the first page lost.
+#[test]
+fn errors_on_the_owner_page_make_a_repo_read_on_its_own_pages_partial() {
+    let gql = ScriptedGraphQl::new(|request| {
+        if let Some(viewer) = viewer_answers(request).or_else(|| only_default_branches(request)) {
+            return viewer;
+        }
+        match (operation(request).as_str(), after(request).as_deref()) {
+            ("OwnerRepos", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": [repo_node("app")]
+            }}}))),
+            ("OwnerPullRequests", None) => Ok(GraphQlResponse {
+                data: Some(json!({ "repositoryOwner": { "repositories": {
+                    "pageInfo": page_info(None),
+                    "nodes": [ { "name": "app", "pullRequests": { "pageInfo": page_info(Some("a2")), "nodes": [pr_node(1, false), null] } } ]
+                }}})),
+                errors: vec![GraphQlError {
+                    message: "first page error".to_owned(),
+                    kind: None,
+                }],
+            }),
+            ("RepoPullRequests", Some("a2")) => Ok(data(json!({ "repository": { "pullRequests": {
+                "pageInfo": page_info(None), "nodes": [pr_node(3, false)]
+            }}}))),
+            ("OwnerIssueCounts", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": []
+            }}}))),
+            other => panic!("unexpected {other:?}"),
+        }
+    });
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    assert_eq!(observation.pull_requests.len(), 2);
+    let first_page_error = SourceState::Partial(Incompleteness::ErrorsAlongsideData {
+        errors: vec!["first page error".to_owned()],
+    });
+    assert_eq!(
+        state(
+            &observation,
+            Source::Repo {
+                repo: repo_id("octo/app"),
+                kind: SourceKind::PullRequests,
+            }
+        ),
+        first_page_error
+    );
+    assert_eq!(
+        state(&observation, owner_source(SourceKind::PullRequests)),
+        first_page_error
+    );
+}
+
 #[test]
 fn a_page_lost_mid_pagination_makes_the_list_partial() {
     let gql = ScriptedGraphQl::new(|request| {
@@ -609,4 +663,79 @@ fn other_gh_failures_are_values_with_context() {
         let error = run_fake_gh(script, SHORT_TIMEOUT).expect_err(script);
         assert!(check(&error), "{script}: {error:?}");
     }
+}
+
+/// Branches are read Repo by Repo from the Owner's Repo list, so a list that
+/// failed means the Owner's Branches were not read (as for Runs); a merge must
+/// not take them as complete and drop the Branches it already shows.
+#[test]
+fn branches_of_repos_that_could_not_be_listed_are_not_complete() {
+    let gql = ScriptedGraphQl::new(|request| {
+        if let Some(answer) = viewer_answers(request).or_else(|| only_default_branches(request)) {
+            return answer;
+        }
+        match operation(request).as_str() {
+            "OwnerRepos" => Ok(GraphQlResponse {
+                data: None,
+                errors: vec![GraphQlError {
+                    message: "repos down".to_owned(),
+                    kind: None,
+                }],
+            }),
+            "OwnerPullRequests" | "OwnerIssueCounts" => {
+                Ok(data(json!({ "repositoryOwner": { "repositories": {
+                    "pageInfo": page_info(None), "nodes": []
+                }}})))
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    });
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    assert_eq!(
+        state(&observation, owner_source(SourceKind::Branches)),
+        SourceState::Failed {
+            error: "the Owner's Repos could not be listed, so no Branches were read: repos down"
+                .to_owned()
+        }
+    );
+}
+
+/// A Repo whose PRs all came on a clean Owner page was read completely, even
+/// if a later Owner page was lost: its own coverage says so, so a merge can
+/// drop its closed PRs.
+#[test]
+fn a_repo_read_whole_on_a_clean_owner_page_is_complete_when_a_later_page_is_lost() {
+    let gql = ScriptedGraphQl::new(|request| {
+        if let Some(answer) = viewer_answers(request).or_else(|| only_default_branches(request)) {
+            return answer;
+        }
+        match (operation(request).as_str(), after(request).as_deref()) {
+            ("OwnerRepos", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": [repo_node("app")]
+            }}}))),
+            ("OwnerPullRequests", None) => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(Some("p2")),
+                "nodes": [ { "name": "app", "pullRequests": { "pageInfo": page_info(None), "nodes": [pr_node(1, false)] } } ]
+            }}}))),
+            ("OwnerPullRequests", Some("p2")) => Err(TransportError::TimedOut {
+                after: Duration::from_secs(30),
+            }),
+            ("OwnerIssueCounts", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": []
+            }}}))),
+            other => panic!("unexpected {other:?}"),
+        }
+    });
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    assert!(!state(&observation, owner_source(SourceKind::PullRequests)).is_complete());
+    assert_eq!(
+        state(
+            &observation,
+            Source::Repo {
+                repo: repo_id("octo/app"),
+                kind: SourceKind::PullRequests,
+            }
+        ),
+        SourceState::Complete
+    );
 }
