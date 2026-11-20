@@ -380,3 +380,63 @@ fn group_tags_read_in_monochrome() {
         }
     }
 }
+
+/// A member PR in a Held Repo reads in the Landing Group as it does in the
+/// list and the detail: "held for release", never "no Next Step".
+#[test]
+fn a_held_member_reads_as_held_for_release_in_the_landing_group() {
+    let mut workflow = linear_workflow("octo", "acme");
+    workflow.held_repos = vec![RepoId::new("octo", "app")];
+    let config = Config {
+        owners: vec!["octo".to_owned()],
+        main_clone_root: Some(PathBuf::from(ROOT)),
+        main_clones: std::collections::BTreeMap::new(),
+        linear: vec![workflow],
+    };
+    let mut harness = Harness::new(Ok(config));
+    let (cols, rows) = SIZE;
+    harness.send(Event::Resized { cols, rows });
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("octo")
+        .repo("octo/app")
+        // Ready, passing and approved at its head: it would Merge, but its
+        // Repo is held.
+        .pull_request(
+            pr("octo/app", 7)
+                .author(ME)
+                .passing("ci")
+                .approved()
+                .review_at_head("reviewer", ReviewVerdict::Approved),
+        )
+        .build()));
+    let mut coverage = Coverage::default();
+    for kind in [LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues] {
+        coverage.record(
+            Source::Owner {
+                owner: "octo".to_owned(),
+                kind: SourceKind::Linear(kind),
+            },
+            SourceState::Complete,
+        );
+    }
+    harness.linear.push_answer(LinearSurvey {
+        part: LinearPart {
+            viewers: vec![linear_viewer("octo", "acme")],
+            issues: vec![
+                linear_issue("octo", "id-1", "TEAM-1")
+                    .attached("octo/app", 7)
+                    .build(),
+            ],
+            ..LinearPart::default()
+        },
+        coverage,
+    });
+    harness.start();
+
+    let pr_detail = detail_of(&mut harness, "#7");
+    assert_eq!(pr_detail.next_step, "none (held for release)");
+    let detail = detail_of(&mut harness, "TEAM-1");
+    let landing = detail.landing.expect("a Landing Group section");
+    let texts: Vec<&str> = landing.lines.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(texts, ["octo/app #7 · open · held for release"]);
+}
