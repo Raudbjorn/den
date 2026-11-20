@@ -4,9 +4,10 @@
 //! reviewer grammar: the config's `reviewers` parse and compare through
 //! [`parse`] and [`folded`] too.
 
-use crate::{
-    config::is_valid_team_slug,
-    domain::{TeamRef, facts::Reviewer, ids::is_valid_login},
+use crate::domain::{
+    TeamRef,
+    facts::Reviewer,
+    ids::{is_valid_login, is_valid_team_slug},
 };
 
 /// A reviewer as the sheet and the prompt spell it: `alice`, `acme/backend`.

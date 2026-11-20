@@ -266,6 +266,19 @@ pub fn is_valid_login(login: &str) -> bool {
         && !login.ends_with('-')
 }
 
+/// den's bound on a GitHub team's slug, in characters.
+pub const MAX_TEAM_SLUG_CHARS: usize = 100;
+
+/// A GitHub team's slug (the `team` of `org/team`): letters, digits, `-`,
+/// `_` and `.`, at most [`MAX_TEAM_SLUG_CHARS`] characters. The one check for
+/// the config's reviewers and the Request review sheet's (#39).
+pub fn is_valid_team_slug(slug: &str) -> bool {
+    (1..=MAX_TEAM_SLUG_CHARS).contains(&slug.chars().count())
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
 /// A GitHub Repo name: letters, digits, `.`, `_` and `-`, at most
 /// [`MAX_REPO_NAME_CHARS`] characters, and neither `.` nor `..`. The one
 /// check for the config's Repo names and for the Repos in attachment URLs.

@@ -4,11 +4,20 @@
 //! fails instead of prompting into den's screen. Nothing here deletes anything.
 
 use crate::{
-    handoff::{PathState, RegisteredWorktree, Remote, Writability},
+    files,
+    handoff::{
+        PathState, RegisteredWorktree, Remote, Writability,
+        workflows::{
+            COMMAND_EXTENSION, COMMANDS_DIR, ClaudeDir, MAX_PLUGIN_SKILL_DEPTH, PluginDir,
+            PluginsRead, SKILL_FILE, SKILLS_DIR, installed_plugins_file, plugin_name,
+        },
+    },
     ports::{Workspace, WorkspaceError, WorktreeAdd, WorktreeStart},
     process::{self, Invocation, Output},
 };
+use serde::Deserialize;
 use std::{
+    collections::BTreeMap,
     ffi::OsString,
     fs, io,
     path::{Path, PathBuf},
@@ -26,6 +35,16 @@ pub const GIT_CLONE_TIMEOUT_SECS: u64 = 900;
 pub const MAIN_CLONE_SEARCH_DEPTH: usize = 2;
 /// The most folders one search looks at before giving up.
 pub const MAX_FOLDERS_SEARCHED: usize = 10_000;
+/// The most entries den reads under one folder of a Claude directory
+/// (`commands/` with its subfolders, or `skills/`) before giving up on it.
+pub const MAX_CLAUDE_DIR_ENTRIES: usize = 2_000;
+/// How deep den reads `commands/` subfolders, in folder levels
+/// (`commands/a/b.md`, the command `/a:b`, is 1).
+pub const MAX_COMMAND_FOLDER_DEPTH: usize = 4;
+/// The largest `installed_plugins.json` den reads, in bytes.
+pub const MAX_INSTALLED_PLUGINS_BYTES: u64 = 1024 * 1024;
+/// The most plugin installs den reads from `installed_plugins.json`.
+pub const MAX_PLUGIN_INSTALLS: usize = 200;
 const GIT_PROGRAM: &str = "git";
 /// Owner and other write bits of a Unix mode.
 #[cfg(unix)]
@@ -491,11 +510,198 @@ impl Workspace for GitWorkspace {
         self.run_ok(&invocation, operation, GIT_CLONE_TIMEOUT_SECS)
             .map(|_| ())
     }
+
+    fn claude_dir(&self, dir: &Path) -> ClaudeDir {
+        ClaudeDir {
+            path: dir.to_path_buf(),
+            commands: command_files(&dir.join(COMMANDS_DIR)),
+            skills: skill_folders(&dir.join(SKILLS_DIR)),
+        }
+    }
+
+    fn installed_plugins(&self, claude_dir: &Path) -> PluginsRead {
+        let file = installed_plugins_file(claude_dir);
+        let bytes = match files::read_bounded(&file, MAX_INSTALLED_PLUGINS_BYTES) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => return PluginsRead::NotChecked(format!("{} isn't there", file.display())),
+            Err(e) => {
+                return PluginsRead::NotChecked(format!("couldn't read {}: {e}", file.display()));
+            }
+        };
+        let listed: InstalledPlugins = match serde_json::from_slice(&bytes) {
+            Ok(listed) => listed,
+            Err(e) => {
+                return PluginsRead::NotChecked(format!(
+                    "couldn't understand {}: {e}",
+                    file.display()
+                ));
+            }
+        };
+        let installs: Vec<(String, PathBuf)> = listed
+            .plugins
+            .iter()
+            .flat_map(|(key, installs)| {
+                installs
+                    .iter()
+                    .map(move |install| (plugin_name(key).to_owned(), install.install_path.clone()))
+            })
+            .collect();
+        if installs.len() > MAX_PLUGIN_INSTALLS {
+            return PluginsRead::NotChecked(format!(
+                "{} lists more than {MAX_PLUGIN_INSTALLS} installs",
+                file.display()
+            ));
+        }
+        PluginsRead::Read {
+            plugins: installs
+                .into_iter()
+                .map(|(name, path)| plugin_dir(name, path))
+                .collect(),
+            file,
+        }
+    }
 }
 
 /// `git worktree list --porcelain`: blank-line separated records of
 /// `worktree <path>`, then `branch refs/heads/<name>`, `detached`, `locked …`,
 /// `prunable …` lines.
+/// The Markdown files under `commands`, relative to it, sorted. Symlinks are
+/// followed, as Claude Code follows them; the depth bound stops a loop.
+fn command_files(commands: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    let mut folders = vec![(PathBuf::new(), 0_usize)];
+    let mut seen = 0_usize;
+    while let Some((relative, depth)) = folders.pop() {
+        let folder = commands.join(&relative);
+        let entries = match fs::read_dir(&folder) {
+            Ok(entries) => entries,
+            Err(e) if depth == 0 && e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(format!("{}: {e}", folder.display())),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("{}: {e}", folder.display()))?;
+            seen += 1;
+            if seen > MAX_CLAUDE_DIR_ENTRIES {
+                return Err(format!(
+                    "more than {MAX_CLAUDE_DIR_ENTRIES} entries; den stopped reading"
+                ));
+            }
+            let name = relative.join(entry.file_name());
+            // A broken link defines nothing.
+            let Ok(metadata) = fs::metadata(entry.path()) else {
+                continue;
+            };
+            if metadata.is_dir() {
+                if depth < MAX_COMMAND_FOLDER_DEPTH {
+                    folders.push((name, depth + 1));
+                }
+            } else if metadata.is_file()
+                && name.extension().and_then(|e| e.to_str()) == Some(COMMAND_EXTENSION)
+            {
+                files.push(name);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// The folders under `skills` (or links to folders) holding a `SKILL.md`,
+/// sorted.
+fn skill_folders(skills: &Path) -> Result<Vec<String>, String> {
+    let entries = match fs::read_dir(skills) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut names = Vec::new();
+    for (seen, entry) in entries.enumerate() {
+        if seen >= MAX_CLAUDE_DIR_ENTRIES {
+            return Err(format!(
+                "more than {MAX_CLAUDE_DIR_ENTRIES} entries; den stopped reading"
+            ));
+        }
+        let entry = entry.map_err(|e| e.to_string())?;
+        let is_skill = fs::metadata(entry.path().join(SKILL_FILE)).is_ok_and(|m| m.is_file());
+        if let (true, Some(name)) = (is_skill, entry.file_name().to_str()) {
+            names.push(name.to_owned());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// The part of Claude Code's `installed_plugins.json` den reads: each
+/// `<name>@<marketplace>` key's installs and their `installPath`. Other
+/// fields are ignored.
+#[derive(Deserialize)]
+struct InstalledPlugins {
+    plugins: BTreeMap<String, Vec<PluginInstall>>,
+}
+
+#[derive(Deserialize)]
+struct PluginInstall {
+    #[serde(rename = "installPath")]
+    install_path: PathBuf,
+}
+
+/// One installed plugin's command files and skill folders.
+fn plugin_dir(name: String, path: PathBuf) -> PluginDir {
+    if !path.is_absolute() {
+        let why = "its installPath isn't an absolute path".to_owned();
+        return PluginDir {
+            name,
+            path,
+            commands: Err(why.clone()),
+            skills: Err(why),
+        };
+    }
+    PluginDir {
+        commands: command_files(&path.join(COMMANDS_DIR)),
+        skills: nested_skill_folders(&path.join(SKILLS_DIR)),
+        name,
+        path,
+    }
+}
+
+/// The folders under a plugin's `skills` holding a `SKILL.md`, relative to
+/// it, found up to [`MAX_PLUGIN_SKILL_DEPTH`] folders down (a plugin may
+/// group its skills, `skills/engineering/implement/`). A skill folder isn't
+/// searched further. Sorted.
+fn nested_skill_folders(skills: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut found = Vec::new();
+    let mut folders = vec![(PathBuf::new(), 0_usize)];
+    let mut seen = 0_usize;
+    while let Some((relative, depth)) = folders.pop() {
+        let folder = skills.join(&relative);
+        let entries = match fs::read_dir(&folder) {
+            Ok(entries) => entries,
+            Err(e) if depth == 0 && e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(format!("{}: {e}", folder.display())),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("{}: {e}", folder.display()))?;
+            seen += 1;
+            if seen > MAX_CLAUDE_DIR_ENTRIES {
+                return Err(format!(
+                    "more than {MAX_CLAUDE_DIR_ENTRIES} entries; den stopped reading"
+                ));
+            }
+            if !fs::metadata(entry.path()).is_ok_and(|m| m.is_dir()) {
+                continue;
+            }
+            let name = relative.join(entry.file_name());
+            if fs::metadata(entry.path().join(SKILL_FILE)).is_ok_and(|m| m.is_file()) {
+                found.push(name);
+            } else if depth + 1 < MAX_PLUGIN_SKILL_DEPTH {
+                folders.push((name, depth + 1));
+            }
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
 fn parse_worktrees(text: &str) -> Vec<RegisteredWorktree> {
     let mut worktrees: Vec<RegisteredWorktree> = Vec::new();
     for line in text.lines() {
