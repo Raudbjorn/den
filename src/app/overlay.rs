@@ -25,6 +25,7 @@ impl App {
 
     pub(super) fn resized(&mut self, size: TerminalSize) -> Vec<Effect> {
         self.size = size;
+        self.detail_page = 0;
         // Wide enough again: the detail pane shows what the sheet showed.
         if matches!(self.overlay, Some(OverlayState::DetailSheet))
             && Layout::for_size(size).has_detail_pane()

@@ -49,6 +49,7 @@ pub fn build(state: &State<'_>) -> Detail {
         });
     Detail {
         label: LABEL.to_owned(),
+        page: state.detail_page,
         content,
         placeholder: PLACEHOLDER.to_owned(),
     }

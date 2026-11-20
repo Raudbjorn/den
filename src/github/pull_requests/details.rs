@@ -3,17 +3,17 @@
 //! per PR, since `isRequired` needs each PR's own ID).
 //!
 //! A batch that can't be read leaves its PRs' `details` as `None` and records
-//! partial coverage on their Repos; a batch with errors alongside data is kept,
+//! partial detail coverage on their Repos, separate from open-PR list coverage.
+//! A batch with errors alongside data is kept,
 //! and its Repos are marked partial too (an error can null out a nested field,
 //! such as the check rollup, without anything else showing it, so a null
 //! rollup in such a batch counts as checks not read, not as no checks). A PR
 //! whose lists were not read in full (more entries than one query reads, or
 //! unreadable entries) marks its Repo partial as well.
 
-use super::repo_source;
 use crate::{
     domain::{
-        CoverageEntry, Incompleteness, RepoId, SourceState, TeamRef,
+        CoverageEntry, Incompleteness, RepoId, Source, SourceKind, SourceState, TeamRef,
         facts::{
             Check, CheckOutcome, Listed, PrDetails, PullRequest, Review, ReviewVerdict, Reviewer,
         },
@@ -39,6 +39,21 @@ pub fn fill(
     prs: &mut [(String, PullRequest)],
     coverage: &mut Vec<CoverageEntry>,
 ) -> Result<(), SurveyFailure> {
+    // Record clean details even for an empty list, so old carried detail ages expire.
+    let completed: Vec<_> = coverage
+        .iter()
+        .filter_map(|entry| match &entry.source {
+            Source::Repo {
+                repo,
+                kind: SourceKind::PullRequests,
+            } => Some(CoverageEntry {
+                source: repo_source(repo),
+                state: SourceState::Complete,
+            }),
+            _ => None,
+        })
+        .collect();
+    coverage.extend(completed);
     for batch in prs.chunks_mut(PRS_PER_QUERY) {
         fill_batch(session, batch, coverage)?;
     }
@@ -455,5 +470,13 @@ fn verdict(state: &str) -> ReviewVerdict {
         "APPROVED" => ReviewVerdict::Approved,
         "CHANGES_REQUESTED" => ReviewVerdict::ChangesRequested,
         _ => ReviewVerdict::Other,
+    }
+}
+
+// Detail failures must never turn a fully enumerated open-PR list into a partial list.
+fn repo_source(repo: &RepoId) -> Source {
+    Source::Repo {
+        repo: repo.clone(),
+        kind: SourceKind::PullRequestDetails,
     }
 }

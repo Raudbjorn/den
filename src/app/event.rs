@@ -31,6 +31,8 @@ pub enum Key {
     Delete,
     Home,
     End,
+    PageUp,
+    PageDown,
     Char(char),
     /// Ctrl-C.
     Interrupt,

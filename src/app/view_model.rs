@@ -178,6 +178,8 @@ pub struct EmptyState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Detail {
+    /// Signed page movement; the renderer wraps it over the current page count.
+    pub page: i64,
     pub label: String,
     /// `None` when nothing is selected; `placeholder` is shown instead.
     pub content: Option<DetailContent>,

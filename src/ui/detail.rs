@@ -70,12 +70,23 @@ pub fn draw(frame: &mut Frame, theme: &Theme, detail: &Detail, area: Rect) -> Re
             push(&content.url, LineStyle::Muted);
         }
     }
+    let height = height.max(1);
+    let pages = lines.len().div_ceil(height).max(1);
+    let page = detail
+        .page
+        .rem_euclid(i64::try_from(pages).unwrap_or(i64::MAX)) as usize;
+    let label = if pages > 1 {
+        format!("DETAIL {}/{} PgUp/PgDn", page + 1, pages)
+    } else {
+        detail.label.clone()
+    };
     let lines = lines
         .into_iter()
+        .skip(page * height)
         .take(height)
         .map(|(text, style)| text::line_context(&text, style));
     let mut ctx = TemplateContext::default();
-    ctx.set("detail_label", detail.label.as_str())
+    ctx.set("detail_label", label.as_str())
         .set("lines", text::lines_value(lines));
     theme.draw(frame, templates::DETAIL, &ctx, area)
 }

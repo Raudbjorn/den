@@ -111,7 +111,7 @@ fn unknowns(issue: &Issue) -> Vec<String> {
 }
 
 fn own_step(ctx: &Context<'_>, issue: &Issue) -> OwnStep {
-    match (issue.labels.as_slice(), issue.assignees.as_slice()) {
+    let mut own = match (issue.labels.as_slice(), issue.assignees.as_slice()) {
         ([], []) => OwnStep {
             step: NextStep::Triage,
             rule: "the Issue has no labels and no assignee".to_owned(),
@@ -135,7 +135,17 @@ fn own_step(ctx: &Context<'_>, issue: &Issue) -> OwnStep {
             rule: format!("the Issue is assigned to {}", assignees.join(", ")),
             attribution: Attribution::any_of(ctx.viewer, assignees, &[], ASSIGNEES_ROLE, &[]),
         },
+    };
+    if !issue.assignees_complete && !issue.assignees.iter().any(|login| ctx.viewer.is(login)) {
+        own.attribution = Attribution::any_of(
+            ctx.viewer,
+            &issue.assignees,
+            &[],
+            ASSIGNEES_ROLE,
+            &[ASSIGNEES_UNREAD.to_owned()],
+        );
     }
+    own
 }
 
 /// One linked PR, with every way it is linked (a PR can be both a closing

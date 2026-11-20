@@ -264,6 +264,8 @@ fn translate_key(key: &KeyEvent) -> Option<Key> {
         KeyCode::Delete => Some(Key::Delete),
         KeyCode::Home => Some(Key::Home),
         KeyCode::End => Some(Key::End),
+        KeyCode::PageUp => Some(Key::PageUp),
+        KeyCode::PageDown => Some(Key::PageDown),
         KeyCode::Char(c) => Some(Key::Char(c)),
         _ => None,
     }

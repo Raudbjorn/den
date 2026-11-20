@@ -75,6 +75,19 @@ responsive while `gh` runs; `den --dump COLSxROWS` and the tests use
   and per-kind builders), `fakes.rs` (fake ports, scripted GraphQL), `harness.rs`
   (drive the App with fake ports).
 
+Detail text is paged after wrapping, in both the pane and the narrow-screen
+sheet. `Page Up` / `Page Down` cycle through all pages without changing the
+selected Work Item; the detail label shows the page count and keys. Changing
+the selection or resizing starts at page one. Launch-sheet editing keeps its
+own keys.
+
+PR list coverage (`PullRequests`) and follow-up coverage (`PullRequestDetails`)
+are separate. Missing checks or reviews still mark the item incomplete, but a
+fully read open-PR list can remove closed PRs from the cache. Successful Branch
+and Run reads record complete per-Repo entries even when the Owner list is
+partial. Cache format 4 rejects older snapshots and rebuilds them with a fresh
+survey; Job and Upstream state formats are unchanged.
+
 ## Where each ticket plugs in
 
 Launch verification refuses to reuse a PR or Branch's local branch unless its

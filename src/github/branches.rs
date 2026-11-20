@@ -117,12 +117,7 @@ pub fn fetch_against(
         },
         state: SourceState::Complete,
     });
-    out.coverage.extend(
-        reads
-            .into_iter()
-            .map(RepoRead::finish)
-            .filter(|entry| !entry.state.is_complete()),
-    );
+    out.coverage.extend(reads.into_iter().map(RepoRead::finish));
     Ok(out)
 }
 

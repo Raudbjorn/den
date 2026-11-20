@@ -12,13 +12,15 @@ pub enum SourceKind {
     /// The Owner's list of Repos (with fork / archived / default branch).
     Repos,
     PullRequests,
+    /// Checks, reviews and threads of PRs already enumerated by PullRequests.
+    PullRequestDetails,
     Issues,
     Branches,
     Runs,
 }
 
 impl SourceKind {
-    /// The kinds that yield Work Items: everything but the Repo list itself.
+    /// The lists that yield Work Items, excluding Repo metadata and PR details.
     pub const WORK_ITEMS: [Self; 4] =
         [Self::PullRequests, Self::Issues, Self::Branches, Self::Runs];
 
@@ -35,6 +37,7 @@ impl SourceKind {
         match self {
             Self::Repos => "Repos",
             Self::PullRequests => "Pull Requests",
+            Self::PullRequestDetails => "Pull Request details",
             Self::Issues => "Issues",
             Self::Branches => "Branches",
             Self::Runs => "Runs",
@@ -320,12 +323,15 @@ impl Coverage {
     pub fn applicable_to(&self, item: &WorkItemId) -> Vec<CoverageEntry> {
         let repo = item.repo();
         let kind = SourceKind::for_work_item(item.kind());
+        let relevant = |k: SourceKind| {
+            k == kind || (kind == SourceKind::PullRequests && k == SourceKind::PullRequestDetails)
+        };
         self.entries
             .iter()
             .filter(|e| match &e.source {
                 Source::Viewer => true,
-                Source::Owner { owner, kind: k } => *k == kind && same_login(owner, &repo.owner),
-                Source::Repo { repo: r, kind: k } => *k == kind && r.same(repo),
+                Source::Owner { owner, kind: k } => relevant(*k) && same_login(owner, &repo.owner),
+                Source::Repo { repo: r, kind: k } => relevant(*k) && r.same(repo),
             })
             .cloned()
             .collect()

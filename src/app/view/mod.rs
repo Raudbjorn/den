@@ -46,6 +46,7 @@ pub struct State<'a> {
     pub sidebar: Vec<Scope>,
     pub failure: Option<&'a SurveyFailure>,
     pub selected: Option<usize>,
+    pub detail_page: i64,
     pub now: Option<Timestamp>,
     pub layout: Layout,
     pub overlay: Option<&'a OverlayState>,

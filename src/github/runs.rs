@@ -320,15 +320,13 @@ pub fn fetch(
             continue;
         }
         out.items.extend(repo.latest.into_runs());
-        if !repo.state.is_complete() {
-            out.coverage.push(CoverageEntry {
-                source: Source::Repo {
-                    repo: target.repo.clone(),
-                    kind: SourceKind::Runs,
-                },
-                state: repo.state,
-            });
-        }
+        out.coverage.push(CoverageEntry {
+            source: Source::Repo {
+                repo: target.repo.clone(),
+                kind: SourceKind::Runs,
+            },
+            state: repo.state,
+        });
     }
     out.coverage.push(CoverageEntry {
         source: owner_source,

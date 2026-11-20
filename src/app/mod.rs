@@ -63,6 +63,7 @@ pub struct App {
     /// The last survey's failure, when it produced no Observation.
     failure: Option<SurveyFailure>,
     selected: Option<WorkItemId>,
+    detail_page: i64,
     now: Option<Timestamp>,
     /// The terminal's size, as last reported (`Event::Resized`).
     size: TerminalSize,
@@ -98,6 +99,7 @@ impl App {
             scope: ScopeState::default(),
             failure: None,
             selected: None,
+            detail_page: 0,
             now: None,
             size: TerminalSize::DESIGN,
             overlay: None,
@@ -165,6 +167,7 @@ impl App {
             sidebar: self.sidebar_entries(),
             failure: self.failure.as_ref(),
             selected: self.selected_index(),
+            detail_page: self.detail_page,
             now: self.now,
             layout: Layout::for_size(self.size),
             overlay: self.overlay.as_ref(),
@@ -223,6 +226,12 @@ impl App {
         {
             return self.launch_key(sheet, key);
         }
+        if matches!(key, Key::PageUp | Key::PageDown) {
+            self.detail_page =
+                self.detail_page
+                    .saturating_add(if key == Key::PageDown { 1 } else { -1 });
+            return Vec::new();
+        }
         // An open sheet claims its keys before anything else.
         if self.overlay.is_some()
             && let Some(effects) = self.overlay_key(key)
@@ -265,7 +274,9 @@ impl App {
             | Key::Backspace
             | Key::Delete
             | Key::Home
-            | Key::End => Vec::new(),
+            | Key::End
+            | Key::PageUp
+            | Key::PageDown => Vec::new(),
         }
     }
 
@@ -445,6 +456,7 @@ impl App {
     fn keep_selection(&mut self) {
         if self.selected_index().is_none() {
             self.selected = self.decisions.first().map(|d| d.item.id.clone());
+            self.detail_page = 0;
         }
     }
 
@@ -456,7 +468,11 @@ impl App {
             Some(i) => i.saturating_add_signed(delta).min(last),
             None => 0,
         };
-        self.selected = self.decisions.get(target).map(|d| d.item.id.clone());
+        let selected = self.decisions.get(target).map(|d| d.item.id.clone());
+        if selected != self.selected {
+            self.detail_page = 0;
+        }
+        self.selected = selected;
     }
 }
 

@@ -185,6 +185,16 @@ fn app_prs_state(observation: &Observation) -> Option<SourceState> {
         .cloned()
 }
 
+fn app_details_state(observation: &Observation) -> Option<SourceState> {
+    observation
+        .coverage
+        .get(&Source::Repo {
+            repo: repo_id("octo/app"),
+            kind: SourceKind::PullRequestDetails,
+        })
+        .cloned()
+}
+
 fn owner_prs_state(observation: &Observation) -> Option<SourceState> {
     observation
         .coverage
@@ -322,9 +332,9 @@ fn more_pages_or_unreadable_entries_mark_a_list_incomplete() {
     assert!(details.review_requests.items.is_empty());
     assert!(details.latest_reviews.complete);
     // The response itself was clean, but the header and sidebar read coverage,
-    // not these per-PR flags, so the Repo is partial too.
+    // not these per-PR flags: detail coverage is partial; list coverage stays complete.
     assert_eq!(
-        app_prs_state(&observation),
+        app_details_state(&observation),
         Some(SourceState::Partial(Incompleteness::FollowUpTruncated {
             what: "#1 (checks, review threads, review requests)".to_owned()
         }))
@@ -475,7 +485,9 @@ fn a_lost_details_query_keeps_the_prs_and_marks_their_repo_partial() {
         ReviewDecision::Approved
     );
     assert_eq!(owner_prs_state(&observation), Some(SourceState::Complete));
-    match app_prs_state(&observation) {
+    // A lost follow-up must not undo the completely read open-PR list.
+    assert_eq!(app_prs_state(&observation), Some(SourceState::Complete));
+    match app_details_state(&observation) {
         Some(SourceState::Partial(Incompleteness::FollowUpLost { what, reason })) => {
             assert_eq!(what, "checks and reviews of #1, #2");
             assert!(reason.contains("30s"), "{reason}");
@@ -501,7 +513,7 @@ fn a_rate_limited_details_query_is_partial_with_the_reset_time() {
     let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
     assert!(the_pr(&observation, 1).details.is_none());
     assert_eq!(
-        app_prs_state(&observation),
+        app_details_state(&observation),
         Some(SourceState::Partial(Incompleteness::RateLimited {
             resets_at: Some(RESET_AT.parse().expect("timestamp"))
         }))
@@ -529,9 +541,85 @@ fn errors_alongside_details_keep_the_data_and_mark_the_repo_partial() {
     assert!(the_pr(&observation, 1).details.is_some());
     assert!(the_pr(&observation, 2).details.is_none());
     assert_eq!(
-        app_prs_state(&observation),
+        app_details_state(&observation),
         Some(SourceState::Partial(Incompleteness::ErrorsAlongsideData {
             errors: vec!["Could not resolve to a node".to_owned()]
         }))
     );
+}
+
+#[test]
+fn unread_details_do_not_keep_closed_prs_but_an_incomplete_list_does() {
+    use den::cache::{self, CachedObservation};
+    let mut truncated = no_details();
+    truncated["reviewThreads"]["pageInfo"] = page_info(true);
+    let cases: Vec<Box<DetailsAnswer>> = vec![
+        each(truncated),
+        Box::new(|_| {
+            Err(TransportError::TimedOut {
+                after: Duration::from_secs(30),
+            })
+        }),
+        Box::new(|_| {
+            Ok(GraphQlResponse {
+                data: Some(json!({ "pr0": no_details() })),
+                errors: vec![GraphQlError {
+                    message: "unread check".to_owned(),
+                    kind: None,
+                }],
+            })
+        }),
+        Box::new(|_| {
+            Ok(GraphQlResponse {
+                data: None,
+                errors: vec![GraphQlError {
+                    message: "API rate limit exceeded".to_owned(),
+                    kind: Some("RATE_LIMITED".to_owned()),
+                }],
+            })
+        }),
+    ];
+    for details in cases {
+        let fresh = survey(
+            &octo(vec![pr_node(1, "MERGEABLE", Value::Null, false)], details),
+            &["octo".to_owned()],
+            now(),
+        )
+        .unwrap();
+        assert_eq!(app_prs_state(&fresh), Some(SourceState::Complete));
+        assert!(!app_details_state(&fresh).unwrap().is_complete());
+        assert!(
+            fresh
+                .coverage
+                .applicable_to(&the_pr(&fresh, 1).id())
+                .iter()
+                .any(|entry| !entry.state.is_complete())
+        );
+        let mut earlier = fresh.clone();
+        let mut closed = earlier.pull_requests[0].clone();
+        closed.number = 999;
+        earlier.pull_requests.push(closed);
+        let earlier = CachedObservation::fresh(earlier);
+        let merged = cache::merge(Some(earlier.clone()), fresh.clone());
+        assert_eq!(merged.observation.pull_requests.len(), 1);
+        assert!(!merged.observation.coverage.is_complete());
+
+        let mut partial = fresh;
+        partial.coverage.record(
+            Source::Repo {
+                repo: repo_id("octo/app"),
+                kind: SourceKind::PullRequests,
+            },
+            SourceState::Partial(Incompleteness::PaginationStopped {
+                pages_read: 1,
+                reason: "lost page".to_owned(),
+            }),
+        );
+        let merged = cache::merge(Some(earlier), partial);
+        assert_eq!(
+            merged.observation.pull_requests.len(),
+            2,
+            "unread list pages still retain cached PRs"
+        );
+    }
 }
