@@ -167,7 +167,7 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         (NextStep::AddressReview, address_review),
         (
             NextStep::Review,
-            review(pr.details.as_ref(), &ctx.viewers.github),
+            review(pr.details.as_ref(), ctx.viewers.github),
         ),
     ];
     rules.extend(request_review.map(|finding| (NextStep::RequestReview, finding)));
@@ -299,7 +299,7 @@ fn held_back(policy: &LinearWorkflowPolicy, pr: &PullRequest) -> Option<(HeldBac
 }
 
 fn waiting_on(step: NextStep, pr: &PullRequest, ctx: &Context<'_>) -> Attribution {
-    let viewer = &ctx.viewers.github;
+    let viewer = ctx.viewers.github;
     if step != NextStep::Review {
         return Attribution::person(viewer, pr.author.as_deref(), AUTHOR_ROLE);
     }

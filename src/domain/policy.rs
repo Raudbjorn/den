@@ -67,12 +67,20 @@ static EMPTY_POLICY: LinearWorkflowPolicy = LinearWorkflowPolicy {
 };
 
 impl Policies {
-    /// `owner`'s policy is `policy` (replacing any it had). Owners compare
-    /// case-insensitively, as GitHub logins do.
+    /// `owner`'s policy is `policy`. Owners compare case-insensitively, as
+    /// GitHub logins do: an Owner that already has one keeps its place in
+    /// config order, with this spelling and policy.
+    #[must_use]
     pub fn with(mut self, owner: impl Into<String>, policy: LinearWorkflowPolicy) -> Self {
         let owner = owner.into();
-        self.by_owner.retain(|(o, _)| !same_login(o, &owner));
-        self.by_owner.push((owner, policy));
+        match self
+            .by_owner
+            .iter_mut()
+            .find(|(o, _)| same_login(o, &owner))
+        {
+            Some(entry) => *entry = (owner, policy),
+            None => self.by_owner.push((owner, policy)),
+        }
         self
     }
 
@@ -82,5 +90,37 @@ impl Policies {
             .iter()
             .find(|(o, _)| same_login(o, owner))
             .map_or(&EMPTY_POLICY, |(_, policy)| policy)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Replacing an Owner's policy keeps the Owner where the config put it,
+    /// whatever the casing.
+    #[test]
+    fn a_replaced_owner_keeps_its_place_in_config_order() {
+        let policies = Policies::default()
+            .with("acme", LinearWorkflowPolicy::default())
+            .with("octo", LinearWorkflowPolicy::default())
+            .with("ACME", LinearWorkflowPolicy::default());
+        let owners: Vec<&str> = policies.by_owner.iter().map(|(o, _)| o.as_str()).collect();
+        assert_eq!(owners, ["ACME", "octo"]);
+    }
+
+    /// `for_owner` finds the Owner's own policy under any casing, and the
+    /// empty one for an Owner without a Linear Workflow. The policy has no
+    /// fields yet (#31), so which one is told by where it lives.
+    #[test]
+    fn an_owners_policy_is_found_under_any_casing() {
+        let policies = Policies::default()
+            .with("acme", LinearWorkflowPolicy::default())
+            .with("octo", LinearWorkflowPolicy::default());
+        let acme = &policies.by_owner[0].1;
+        let octo = &policies.by_owner[1].1;
+        assert!(std::ptr::eq(policies.for_owner("Acme"), acme));
+        assert!(std::ptr::eq(policies.for_owner("OCTO"), octo));
+        assert!(std::ptr::eq(policies.for_owner("other"), &EMPTY_POLICY));
     }
 }

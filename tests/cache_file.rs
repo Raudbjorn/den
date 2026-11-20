@@ -241,6 +241,40 @@ fn an_older_survey_never_replaces_a_newer_one() {
     assert_eq!(cache.load(), Ok(Some(newest)));
 }
 
+/// A cache of an older format is never read again, so its age can't keep a
+/// survey from replacing it (its clock may have run ahead). A newer format's
+/// survey is a newer den's, and an older survey still never replaces it.
+#[test]
+fn only_a_readable_or_newer_formats_age_can_supersede_a_survey() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCache::in_state_dir(dir.path());
+    let at = |time: &str, number: u64| {
+        let mut c = cached("me", number);
+        c.observation.observed_at = ts(time);
+        c
+    };
+    let file = cache.file_for("me").unwrap();
+    let restamp = |format: u32| {
+        let mut body: serde_json::Value =
+            serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        body["format"] = serde_json::json!(format);
+        fs::write(&file, serde_json::to_vec(&body).unwrap()).unwrap();
+    };
+
+    cache.store(&at("2026-11-19T11:00:00Z", 2)).unwrap();
+    restamp(CACHE_FORMAT - 1);
+    let earlier = at("2026-11-19T10:00:00Z", 1);
+    cache.store(&earlier).unwrap();
+    assert_eq!(cache.load(), Ok(Some(earlier)));
+
+    cache.store(&at("2026-11-19T11:00:00Z", 2)).unwrap();
+    restamp(CACHE_FORMAT + 1);
+    assert!(matches!(
+        cache.store(&at("2026-11-19T10:00:00Z", 1)),
+        Err(CacheError::Superseded { .. })
+    ));
+}
+
 /// The age check and the replacement are one step for every den sharing the
 /// directory: while another den holds the viewer's lock, a store waits, and
 /// past its bound gives up as an error value, leaving the stored survey as is.

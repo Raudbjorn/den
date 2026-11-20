@@ -2,6 +2,10 @@
 //! background worker (the interactive TUI, which must stay responsive while `gh`
 //! runs) or synchronously until nothing is pending (`den --dump`, and the seam-2
 //! test harness).
+//!
+//! The worker has two lanes: Linear surveys run on their own, so a slow or
+//! hung Linear call never holds back GitHub's answer (or anything else);
+//! every other Effect runs in order on the main lane.
 
 use crate::{
     app::{App, Effect, Event, LogLevel, LogRecord, ViewModel},
@@ -9,12 +13,18 @@ use crate::{
 };
 use std::{
     collections::VecDeque,
-    sync::mpsc::{self, Receiver, SyncSender, TrySendError},
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, SyncSender, TrySendError},
+    },
     thread,
 };
 
 /// How many Effects may wait for the worker before new ones are refused.
 const EFFECT_QUEUE_CAPACITY: usize = 16;
+/// How many Linear surveys may wait behind a running one before new ones are
+/// refused (the App asks for one per survey, so more means Linear is stuck).
+const LINEAR_QUEUE_CAPACITY: usize = 2;
 /// How many finished-operation Events may wait for the UI thread.
 const EVENT_QUEUE_CAPACITY: usize = 16;
 
@@ -48,9 +58,11 @@ pub fn settle(app: &mut App, event: Event, ports: &Ports) -> (ViewModel, Vec<Eff
     (view, emitted)
 }
 
-/// A background thread that performs Effects and sends back their Events.
+/// Background threads that perform Effects and send back their Events: the
+/// main lane, and the Linear lane for Linear surveys.
 pub struct Worker {
     effects: SyncSender<Effect>,
+    linear: SyncSender<Effect>,
     events: Receiver<Event>,
 }
 
@@ -64,26 +76,24 @@ pub enum WorkerError {
 
 impl Worker {
     pub fn start(ports: Ports) -> Self {
-        let (effect_tx, effect_rx) = mpsc::sync_channel::<Effect>(EFFECT_QUEUE_CAPACITY);
+        let ports = Arc::new(ports);
         let (event_tx, event_rx) = mpsc::sync_channel::<Event>(EVENT_QUEUE_CAPACITY);
-        thread::spawn(move || {
-            for effect in effect_rx {
-                for event in perform(&effect, &ports) {
-                    if event_tx.send(event).is_err() {
-                        return; // The UI is gone.
-                    }
-                }
-            }
-        });
+        let effects = lane(EFFECT_QUEUE_CAPACITY, ports.clone(), event_tx.clone());
+        let linear = lane(LINEAR_QUEUE_CAPACITY, ports, event_tx);
         Self {
-            effects: effect_tx,
+            effects,
+            linear,
             events: event_rx,
         }
     }
 
     /// Queues an Effect without blocking; feed any rejection event back to the App.
     pub fn submit(&self, effect: Effect) -> Result<(), Box<Event>> {
-        self.effects.try_send(effect).map_err(|e| {
+        let lane = match effect {
+            Effect::SurveyLinear { .. } => &self.linear,
+            _ => &self.effects,
+        };
+        lane.try_send(effect).map_err(|e| {
             let (effect, error) = match e {
                 TrySendError::Full(effect) => (effect, WorkerError::Busy),
                 TrySendError::Disconnected(effect) => (effect, WorkerError::Stopped),
@@ -101,6 +111,21 @@ impl Worker {
     }
 }
 
+/// One worker thread performing the Effects queued to it, in order.
+fn lane(capacity: usize, ports: Arc<Ports>, events: SyncSender<Event>) -> SyncSender<Effect> {
+    let (effect_tx, effect_rx) = mpsc::sync_channel::<Effect>(capacity);
+    thread::spawn(move || {
+        for effect in effect_rx {
+            for event in perform(&effect, &ports) {
+                if events.send(event).is_err() {
+                    return; // The UI is gone.
+                }
+            }
+        }
+    });
+    effect_tx
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,8 +133,13 @@ mod tests {
     #[test]
     fn a_full_or_stopped_worker_returns_the_rejected_effect_to_the_app() {
         let (effects, queued) = mpsc::sync_channel(EFFECT_QUEUE_CAPACITY);
+        let (linear, _linear_queued) = mpsc::sync_channel(LINEAR_QUEUE_CAPACITY);
         let (_events, events) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
-        let worker = Worker { effects, events };
+        let worker = Worker {
+            effects,
+            linear,
+            events,
+        };
         for _ in 0..EFFECT_QUEUE_CAPACITY {
             assert!(worker.submit(Effect::LoadCache).is_ok());
         }

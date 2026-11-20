@@ -324,6 +324,19 @@ fn linear_workflow_errors_name_the_file_and_line() {
             "listed twice",
         ),
         (
+            // The same Repo written with and without its Owner.
+            "duplicate Repo, two spellings",
+            block("new_work_repos = [\"api\",\n  \"Acme/API\"]\n"),
+            7,
+            "listed twice",
+        ),
+        (
+            "duplicate reviewer team, two casings",
+            block("reviewers = [\"acme/backend\", \"ACME/Backend\"]\n"),
+            6,
+            "listed twice",
+        ),
+        (
             "bad workspace",
             format!(
                 "{base}\n[linear.acme]\nworkspace = \"linear.app/acme\"\napi_key_env = \"K\"\n"
