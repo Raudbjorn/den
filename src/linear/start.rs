@@ -28,6 +28,7 @@ use crate::{
     domain::{
         Incompleteness, LinearSourceKind, LinearTeamStates, SourceState,
         facts::{LinearIssue, LinearPriority, LinearState, LinearStateKind, LinearTeam},
+        ids::same_login,
     },
 };
 use serde::Deserialize;
@@ -275,7 +276,8 @@ fn has_state(states: &[LinearState], name: &str) -> bool {
 }
 
 /// The start teams' unassigned, not-yet-started Linear Issues (see the
-/// module docs), without those already in `known`.
+/// module docs), without those this workflow's Owner already holds in
+/// `known` (another Owner reading the same workspace lists its own).
 ///
 /// One page, oldest first, holds them all in most workspaces. When Linear
 /// has more, den reads them again by priority, urgent first and oldest first
@@ -292,7 +294,7 @@ pub(super) fn start_team_issues(
     let filter = start_filter(workflow);
     let known: HashSet<&str> = known
         .iter()
-        .filter(|i| i.id.workspace == workflow.workspace)
+        .filter(|i| i.id.workspace == workflow.workspace && same_login(&i.owner, &workflow.owner))
         .map(|i| i.id.id.as_str())
         .collect();
     let mut pager = Pager::default();

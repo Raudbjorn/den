@@ -537,6 +537,31 @@ fn an_issue_is_kept_once() {
     assert_eq!(identifiers, ["TEAM-1", "TEAM-8"]);
 }
 
+/// Two Owners whose Linear Workflows share a workspace and a start team each
+/// list its Start offers: one Owner's list never hides the other's.
+#[test]
+fn owners_sharing_a_workspace_each_list_the_start_offers() {
+    let labs = LinearWorkflow {
+        owner: "acme-labs".to_owned(),
+        ..start_workflow()
+    };
+    let transport = Arc::new(ScriptedLinear::new(script(all_teams, two_starts)));
+    let survey = source(transport, Arc::default()).survey(&LinearSurveyRequest {
+        workflows: vec![start_workflow(), labs],
+    });
+    let offers = |owner: &str| -> Vec<&str> {
+        survey
+            .part
+            .issues
+            .iter()
+            .filter(|i| i.owner == owner && i.listed_by == LinearSourceKind::StartTeamIssues)
+            .map(|i| i.identifier.as_str())
+            .collect()
+    };
+    assert_eq!(offers("acme"), ["TEAM-8", "TEAM-9"]);
+    assert_eq!(offers("acme-labs"), ["TEAM-8", "TEAM-9"]);
+}
+
 /// The teams `request` asks for: those its key filter names (any case), or
 /// all of `nodes` without a filter, as Linear answers `teams(filter:)`.
 fn teams_matching(request: &LinearRequest, nodes: Vec<Value>) -> HttpReply {
