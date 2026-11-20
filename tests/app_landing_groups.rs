@@ -197,11 +197,13 @@ fn a_linear_issue_detail_lists_every_member() {
     let landing = detail.landing.expect("a Landing Group section");
     assert_eq!(landing.label, "LANDING GROUP");
     let texts: Vec<&str> = landing.lines.iter().map(|l| l.text.as_str()).collect();
+    // Members are spelled as `WorkItemId`'s `Display` spells every Pull
+    // Request, as their own detail does (was `octo/app #7`, review of #49).
     assert_eq!(
         texts,
         [
-            "octo/app #7 · open · Next Step Address review · Live Job · ambiguous, also attached to TEAM-2",
-            "octo/api #8 · draft · Next Step Finish draft",
+            "octo/app#7 · open · Next Step Address review · Live Job · ambiguous, also attached to TEAM-2",
+            "octo/api#8 · draft · Next Step Finish draft",
         ]
     );
     assert_eq!(landing.lines[0].job, Some(JobMarker::Live));
@@ -232,7 +234,8 @@ fn a_hinted_linear_issue_detail_says_possibly_for_and_not_a_member() {
         texts,
         [
             "no Pull Request attached in Linear",
-            "possibly for TEAM-3: octo/api #9 (branch team-3-cache), not a member",
+            // Spelled as `WorkItemId`'s `Display` (was `octo/api #9`).
+            "possibly for TEAM-3: octo/api#9 (branch team-3-cache), not a member",
         ]
     );
 
@@ -288,7 +291,8 @@ fn a_linear_issue_detail_never_says_no_pr_when_attachments_are_incomplete() {
     assert_eq!(
         texts,
         [
-            "octo/api #8 · draft · Next Step Finish draft · ambiguous, also attached to TEAM-1",
+            // Spelled as `WorkItemId`'s `Display` (was `octo/api #8`).
+            "octo/api#8 · draft · Next Step Finish draft · ambiguous, also attached to TEAM-1",
             "den couldn't read all of its attachments in Linear (more than 50 attachments): more Pull Requests may be attached",
         ]
     );

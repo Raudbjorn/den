@@ -121,7 +121,7 @@ fn pull_request_decisions<'d>(
     decisions
 }
 
-/// `acme/api #4 · open · Merge · Live Job`.
+/// `acme/api#4 · open · Merge · Live Job`.
 fn member_line(
     state: &State<'_>,
     decisions: &HashMap<PullRequestKey, &Decision>,
