@@ -24,7 +24,8 @@ fn den_templates_register_only_their_own_files() {
         [
             "templates/detail.crepus",
             "templates/frame.crepus",
-            "templates/list.crepus"
+            "templates/list.crepus",
+            "templates/sidebar.crepus"
         ]
     );
     for section in templates::ALL_SECTIONS {

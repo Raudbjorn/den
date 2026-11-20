@@ -1,7 +1,10 @@
 //! What every fetcher shares: running a query, turning its outcome into a
 //! [`SourceState`], walking pages, and remembering when the rate limit resets.
 
-use super::graphql::{GraphQl, GraphQlRequest, GraphQlResponse, TransportError};
+use super::{
+    graphql::{GraphQl, GraphQlRequest, GraphQlResponse, TransportError},
+    rest::Rest,
+};
 use crate::{
     domain::{CoverageEntry, Incompleteness, Source, SourceState},
     ports::SurveyFailure,
@@ -69,6 +72,11 @@ impl<'a> Session<'a> {
             gql,
             rate_limit_reset,
         }
+    }
+
+    /// The transport's REST side, when it has one (see [`GraphQl::rest`]).
+    pub fn rest(&self) -> Option<&'a dyn Rest> {
+        self.gql.rest()
     }
 
     /// Runs `query` and decodes its `data` as `T`. `gh` missing or logged out

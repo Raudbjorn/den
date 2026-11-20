@@ -43,12 +43,37 @@ fn viewer_answers(request: &GraphQlRequest) -> Option<Result<GraphQlResponse, Tr
                 }}]
             }}
         })))),
+        // Every PR's checks and reviews: none, read completely.
+        "PullRequestDetails" => Some(Ok(data(no_pr_details(request)))),
         _ => None,
     }
 }
 
+/// A details answer with empty checks, threads, requests and reviews for each PR asked about.
+fn no_pr_details(request: &GraphQlRequest) -> Value {
+    let empty = json!({ "pageInfo": page_info(None), "nodes": [] });
+    let mut answer = serde_json::Map::new();
+    for (i, _) in request
+        .variables
+        .as_object()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        answer.insert(
+            format!("pr{i}"),
+            json!({
+                "reviewThreads": empty, "reviewRequests": empty, "latestOpinionatedReviews": empty,
+                "commits": { "nodes": [{ "commit": { "statusCheckRollup": null } }] }
+            }),
+        );
+    }
+    Value::Object(answer)
+}
+
 fn pr_node(number: u64, draft: bool) -> Value {
     json!({
+        "id": format!("PR_{number}"),
         "number": number,
         "title": format!("PR {number}"),
         "url": format!("https://github.com/x/pull/{number}"),
@@ -59,7 +84,11 @@ fn pr_node(number: u64, draft: bool) -> Value {
         "baseRefName": "main",
         "headRefName": format!("feature-{number}"),
         "headRefOid": "abc123",
-        "headRepository": { "name": "fork", "owner": { "login": "someone" } }
+        "headRepository": { "name": "fork", "owner": { "login": "someone" } },
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "reviewDecision": null,
+        "isInMergeQueue": false
     })
 }
 

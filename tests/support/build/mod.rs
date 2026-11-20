@@ -7,10 +7,12 @@
 pub mod branch;
 pub mod issue;
 pub mod pull_request;
+pub mod run;
 
 pub use branch::{BranchBuilder, branch};
 pub use issue::{IssueBuilder, issue};
 pub use pull_request::{PrBuilder, pr};
+pub use run::{RunBuilder, run};
 
 use den::domain::{Observation, Repo, RepoId, Source, SourceKind, SourceState, TeamRef, Viewer};
 use jiff::Timestamp;
@@ -119,6 +121,24 @@ impl ObservationBuilder {
         self
     }
 
+    /// A fork of `parent` ("owner/name"), or of a parent den cannot see.
+    pub fn fork(mut self, full_name: &str, parent: Option<&str>) -> Self {
+        self = self.repo(full_name);
+        if let Some(repo) = self.observation.repos.last_mut() {
+            repo.is_fork = true;
+            repo.parent = parent.map(repo_id);
+        }
+        self
+    }
+
+    pub fn archived_repo(mut self, full_name: &str) -> Self {
+        self = self.repo(full_name);
+        if let Some(repo) = self.observation.repos.last_mut() {
+            repo.is_archived = true;
+        }
+        self
+    }
+
     pub fn pull_request(mut self, pr: PrBuilder) -> Self {
         self.observation.pull_requests.push(pr.build());
         self
@@ -126,6 +146,11 @@ impl ObservationBuilder {
 
     pub fn branch(mut self, branch: BranchBuilder) -> Self {
         self.observation.branches.push(branch.build());
+        self
+    }
+
+    pub fn run(mut self, run: RunBuilder) -> Self {
+        self.observation.runs.push(run.build());
         self
     }
 

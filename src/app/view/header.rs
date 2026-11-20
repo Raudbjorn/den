@@ -1,16 +1,13 @@
 //! The header: Scope, survey status and freshness, coverage summary.
 
-use super::{State, format};
+use super::{State, format, scope};
 use crate::{
     app::view_model::Header,
     domain::{Coverage, SourceState},
 };
 
 pub fn build(state: &State<'_>) -> Header {
-    let scope = match state.config {
-        Ok(config) => format!("All Owners · {}", config.owners.join(", ")),
-        Err(_) => "No Owners configured".to_owned(),
-    };
+    let (scope, scopes) = scope::describe(state);
     let status = status(state);
     let (coverage, coverage_complete) = match state.observation {
         Some(observation) => (
@@ -21,6 +18,7 @@ pub fn build(state: &State<'_>) -> Header {
     };
     Header {
         scope,
+        scopes,
         status,
         coverage,
         coverage_complete,
