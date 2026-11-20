@@ -152,6 +152,11 @@ impl Harness {
         effects
     }
 
+    /// From now on the ports' clock reads `now` (time passed between rounds).
+    pub fn set_clock(&mut self, now: jiff::Timestamp) {
+        self.ports.clock = Arc::new(FixedClock(now));
+    }
+
     /// den starts, surveys, and the answer arrives.
     pub fn start(&mut self) -> &ViewModel {
         self.settle(Event::Started { now: now() })

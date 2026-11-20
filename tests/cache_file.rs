@@ -12,8 +12,8 @@ use den::{
         Incompleteness, LinearSourceKind, LinearTeamStates, Source, SourceKind, SourceState,
         facts::{
             ActorKind, Attachment, AttachmentsRead, LinearState, LinearStateKind, LinearTeam,
-            MemberPullRequestState, MergeState, PullRequestRef, PullRequestState, ReviewDecision,
-            ReviewVerdict,
+            MemberPullRequestState, MemberStateAttempt, MergeState, PullRequestRef,
+            PullRequestState, ReviewDecision, ReviewVerdict,
         },
     },
     ports::ObservationCache,
@@ -154,14 +154,16 @@ fn the_linear_part_and_its_ages_load_back_unchanged() {
 /// its time, closed, open again) with their coverage.
 ///
 /// (#37 moved its format assertion from 8 to 9, and the second review round
-/// to 10 and then 11: the stored Observation gained fields each time. Every
+/// to 10 and then 11, and #37's round 4 to 12 with its member attempts: the
+/// stored Observation gained fields each time. Every
 /// earlier assertion is unchanged. #37 had renamed this test to
 /// `milestone_2_s_shape_…`; the merge keeps integrate/m2-wave3's name.)
 #[test]
 fn milestone_2_s_merged_shape_loads_back_unchanged() {
+    // 12: #37's member attempts joined the Observation (round 4).
     assert_eq!(
-        CACHE_FORMAT, 11,
-        "the merged milestone-2 shape with member states"
+        CACHE_FORMAT, 12,
+        "the merged milestone-2 shape with member states and attempts"
     );
     let team_states = LinearTeamStates {
         owner: "acme".to_owned(),
@@ -216,6 +218,11 @@ fn milestone_2_s_merged_shape_loads_back_unchanged() {
         member(7, PullRequestState::Open),
     ];
     observation.member_states = member_states.clone();
+    let member_attempts = vec![MemberStateAttempt {
+        pr: PullRequestRef::new(den::domain::RepoId::new("acme", "api"), 99),
+        attempted_at: ts("2026-11-19T11:30:00Z"),
+    }];
+    observation.member_attempts = member_attempts.clone();
     observation.coverage.record(
         Source::Owner {
             owner: "acme".to_owned(),
@@ -291,6 +298,7 @@ fn milestone_2_s_merged_shape_loads_back_unchanged() {
     assert_eq!(bot.author_kind, ActorKind::Bot);
     assert_eq!(bot.verdict, ReviewVerdict::Commented);
     assert_eq!(loaded.observation.member_states, member_states);
+    assert_eq!(loaded.observation.member_attempts, member_attempts);
     assert!(
         loaded
             .observation

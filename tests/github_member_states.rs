@@ -278,3 +278,27 @@ fn batches_not_sent_after_gh_fails_carry_its_error_not_the_bound() {
         other => panic!("beta: {other:?}"),
     }
 }
+
+/// `asked` holds exactly the members den sent to GitHub: within the bound,
+/// and only the batches sent before `gh` failed. Those are the ones a
+/// missing state counts against (they rotate behind the rest next time).
+#[test]
+fn asked_names_the_members_sent_and_no_others() {
+    let transport = Arc::new(ScriptedGraphQl::new(|r| Ok(data(Value::Object(answer(r))))));
+    let members: Vec<PullRequestRef> = (1000..1000 + MAX_MEMBER_STATES as u64 + 3)
+        .map(|n| member("acme/api", n))
+        .collect();
+    let read = read_with(transport, members.clone());
+    assert_eq!(read.asked, members[..MAX_MEMBER_STATES]);
+
+    let logged_out = Arc::new(ScriptedGraphQl::new(|_| {
+        Err(TransportError::NotLoggedIn {
+            detail: "run gh auth login".to_owned(),
+        })
+    }));
+    let members: Vec<PullRequestRef> = (1..=MEMBERS_PER_QUERY as u64 + 5)
+        .map(|n| member("acme/api", n + 10))
+        .collect();
+    let read = read_with(logged_out, members.clone());
+    assert_eq!(read.asked, members[..MEMBERS_PER_QUERY]);
+}
