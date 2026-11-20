@@ -170,7 +170,8 @@ impl LinearCycle {
 /// A Linear Issue's attachments, as den read them (#35).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attachments {
-    /// In Linear's order, without repeats.
+    /// In Linear's order, without repeats ([`Attachment::same`]; the
+    /// constructors and [`Attachments::push`] drop them).
     pub links: Vec<Attachment>,
     /// Whether `links` is every attachment the issue has.
     pub read: AttachmentsRead,
@@ -179,17 +180,29 @@ pub struct Attachments {
 impl Attachments {
     /// Every attachment was read: `links` is all of them.
     pub fn complete(links: Vec<Attachment>) -> Self {
-        Self {
-            links,
-            read: AttachmentsRead::Complete,
-        }
+        Self::read_as(links, AttachmentsRead::Complete)
     }
 
     /// Some or all attachments are missing, for `why`.
     pub fn incomplete(links: Vec<Attachment>, why: impl Into<String>) -> Self {
-        Self {
-            links,
-            read: AttachmentsRead::Incomplete { why: why.into() },
+        Self::read_as(links, AttachmentsRead::Incomplete { why: why.into() })
+    }
+
+    fn read_as(links: Vec<Attachment>, read: AttachmentsRead) -> Self {
+        let mut attachments = Self {
+            links: Vec::with_capacity(links.len()),
+            read,
+        };
+        for link in links {
+            attachments.push(link);
+        }
+        attachments
+    }
+
+    /// Adds `attachment` after the others, unless it repeats one of them.
+    pub fn push(&mut self, attachment: Attachment) {
+        if !self.links.iter().any(|seen| seen.same(&attachment)) {
+            self.links.push(attachment);
         }
     }
 
@@ -226,6 +239,17 @@ pub enum Attachment {
 }
 
 impl Attachment {
+    /// The same attachment: two Pull Requests compared as GitHub compares
+    /// them (Owner and Repo case-insensitively, see [`PullRequestRef::is`]),
+    /// two links exactly.
+    pub fn same(&self, other: &Attachment) -> bool {
+        match (self, other) {
+            (Self::PullRequest(a), Self::PullRequest(b)) => a.is(&b.repo, b.number),
+            (Self::Link { url: a }, Self::Link { url: b }) => a == b,
+            _ => false,
+        }
+    }
+
     /// A Pull Request when `url` parses as one, otherwise a link.
     pub fn from_url(url: &str) -> Self {
         PullRequestRef::from_url(url).map_or_else(

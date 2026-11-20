@@ -482,6 +482,29 @@ fn attachments_become_pull_request_identities_or_links() {
     );
 }
 
+/// GitHub names are case-insensitive, so two URLs that differ only in the
+/// casing of the Owner or Repo name the same Pull Request: `links` keeps it
+/// once (the first spelling), as it says ("without repeats"). Links that
+/// aren't Pull Requests compare exactly.
+#[test]
+fn a_pull_request_attached_twice_in_different_casings_is_one_link() {
+    let urls = [
+        "https://github.com/Acme/API/pull/4",
+        "https://github.com/acme/api/pull/4/files",
+        "https://www.figma.com/file/abc",
+        "https://www.figma.com/file/ABC",
+    ];
+    let (issue, _) = survey_issue_with(attachments(&urls, false));
+    assert_eq!(
+        issue.attachments.links,
+        [
+            pull("Acme", "API", 4),
+            link("https://www.figma.com/file/abc"),
+            link("https://www.figma.com/file/ABC"),
+        ]
+    );
+}
+
 /// An issue with more attachments than den reads in one query is marked
 /// incomplete, saying so; the ones read are kept.
 #[test]

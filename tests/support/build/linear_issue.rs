@@ -122,11 +122,10 @@ impl LinearIssueBuilder {
     }
 
     /// Attaches the Pull Request `repo` (`owner/name`) `#number`, as Linear's
-    /// GitHub integration records it.
+    /// GitHub integration records it (once, as den reads attachments).
     pub fn attached(mut self, repo: &str, number: u64) -> Self {
         self.issue
             .attachments
-            .links
             .push(Attachment::PullRequest(PullRequestRef::new(
                 repo_id(repo),
                 number,
@@ -136,7 +135,7 @@ impl LinearIssueBuilder {
 
     /// Attaches a link that isn't a Pull Request.
     pub fn link(mut self, url: &str) -> Self {
-        self.issue.attachments.links.push(Attachment::Link {
+        self.issue.attachments.push(Attachment::Link {
             url: url.to_owned(),
         });
         self

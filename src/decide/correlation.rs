@@ -296,15 +296,10 @@ fn distinct_issues(issues: &[LinearIssue]) -> Vec<&LinearIssue> {
     distinct
 }
 
-/// The Pull Requests attached to `issue`, each once.
+/// The Pull Requests attached to `issue`, each once (`Attachments` holds
+/// no repeats).
 fn attached_pull_requests(issue: &LinearIssue) -> Vec<PullRequestRef> {
-    let mut prs: Vec<PullRequestRef> = Vec::new();
-    for pr in issue.attachments.pull_requests() {
-        if !prs.iter().any(|p| p.is(&pr.repo, pr.number)) {
-            prs.push(pr.clone());
-        }
-    }
-    prs
+    issue.attachments.pull_requests().cloned().collect()
 }
 
 fn group_ref(issue: &LinearIssue) -> GroupRef {
