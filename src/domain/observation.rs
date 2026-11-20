@@ -38,17 +38,20 @@ impl Viewer {
 /// Everyone den decides "me" by: the GitHub viewer now, and, from #32, the
 /// Linear viewer of each Linear Workflow's workspace. A Linear viewer is never
 /// matched to a GitHub login (spec 0002, "Waiting On").
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Viewers {
-    pub github: Viewer,
+///
+/// It borrows the viewers from where they are recorded (the Observation), so
+/// deciding copies nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Viewers<'a> {
+    pub github: &'a Viewer,
 }
 
-impl Viewers {
+impl<'a> Viewers<'a> {
     /// The viewers an Observation recorded: its GitHub viewer (and, from #32,
     /// the Linear viewers in its Linear part).
-    pub fn of(observation: &Observation) -> Self {
+    pub fn of(observation: &'a Observation) -> Self {
         Self {
-            github: observation.viewer.clone(),
+            github: &observation.viewer,
         }
     }
 }

@@ -89,7 +89,7 @@ impl Decision {
 /// Everything a kind's rules may look at.
 pub struct Context<'a> {
     pub observation: &'a Observation,
-    pub viewers: &'a Viewers,
+    pub viewers: &'a Viewers<'a>,
     /// Each Owner's Linear Workflow policy; read it through [`Context::policy`].
     pub policies: &'a Policies,
     pub now: Timestamp,
