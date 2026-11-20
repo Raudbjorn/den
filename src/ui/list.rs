@@ -18,6 +18,25 @@ const CHROME_LINES: u16 = 3;
 /// Horizontal padding of the empty-state text, in columns per side.
 const EMPTY_PADDING_COLS: u16 = 4;
 
+// The `ListRow` template's fixed columns, in cells (its `w-[n]` spans); the
+// Repo-and-reference column (first line) and the title (second) take what is
+// left.
+/// The tick.
+const TICK_COLS: usize = 2;
+/// The Next Step's name.
+const STEP_COLS: usize = 20;
+/// The incomplete and unattributed glyphs.
+const FLAG_COLS: usize = 2;
+/// The Job glyph before the title.
+const JOB_COLS: usize = 2;
+/// The age, e.g. "146d".
+const AGE_COLS: usize = 5;
+/// The Waiting On label.
+const WAITING_COLS: usize = 14;
+/// The blank before the age and before Waiting On, so a column cut to fit
+/// never runs into them ("release.yml146d").
+const GAP_COLS: usize = 1;
+
 pub fn draw(frame: &mut Frame, theme: &Theme, list: &List, area: Rect) -> Result<(), UiError> {
     match &list.empty {
         Some(empty) if list.rows.is_empty() => {
@@ -97,7 +116,12 @@ fn draw_rows(frame: &mut Frame, theme: &Theme, list: &List, area: Rect) -> Resul
         if row_area.is_empty() {
             break;
         }
-        let ctx = row_context(row, list.selected == Some(index), &glyphs);
+        let ctx = row_context(
+            row,
+            list.selected == Some(index),
+            &glyphs,
+            usize::from(row_area.width),
+        );
         theme.draw(frame, templates::LIST_ROW, &ctx, row_area)?;
     }
     Ok(())
@@ -111,7 +135,28 @@ pub(super) fn row_area(area: Rect, first_y: u16, offset: usize, lines: u16) -> R
     Rect::new(area.x, y, area.width, height)
 }
 
-fn row_context(row: &Row, selected: bool, glyphs: &glyphs::Glyphs) -> TemplateContext {
+/// The cells the Repo-and-reference column and the title may take in a row
+/// `width` cells wide.
+fn flexible_cols(width: usize) -> (usize, usize) {
+    let place = width.saturating_sub(TICK_COLS + STEP_COLS + FLAG_COLS + GAP_COLS + AGE_COLS);
+    let title = width.saturating_sub(TICK_COLS + JOB_COLS + GAP_COLS + WAITING_COLS);
+    (place, title)
+}
+
+fn row_context(
+    row: &Row,
+    selected: bool,
+    glyphs: &glyphs::Glyphs,
+    width: usize,
+) -> TemplateContext {
+    // Cut here, with an ellipsis: left to the template, text that overflows
+    // its column wraps at a space or hyphen and loses its end without a sign.
+    let (place_cols, title_cols) = flexible_cols(width);
+    let place = glyphs.fit(
+        format!("{} {}", row.repo, row.reference).trim_end(),
+        place_cols,
+    );
+    let title = glyphs.fit(&row.title, title_cols);
     let mut flag = String::new();
     if row.incomplete {
         flag.push_str(glyphs.incomplete);
@@ -126,9 +171,8 @@ fn row_context(row: &Row, selected: bool, glyphs: &glyphs::Glyphs) -> TemplateCo
         .set("tick", if selected { glyphs.tick } else { " " })
         .set("step", row.step_label.as_str())
         .set("flag", flag)
-        .set("repo", row.repo.as_str())
-        .set("reference", row.reference.as_str())
-        .set("title", row.title.as_str())
+        .set("place", place)
+        .set("title", title)
         .set("waiting", row.waiting_label.as_str())
         .set("age", row.age.as_str())
         .set("job", job_glyph(row.job, glyphs))

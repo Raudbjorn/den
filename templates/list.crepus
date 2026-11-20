@@ -9,6 +9,10 @@ glyph, Waiting On and "unattributed" are words, incomplete data has a glyph.
 A recorded Job (#14) is a glyph before the title: a Live Job teal, a Job whose
 worktree is unknown amber, one whose worktree is gone faint.
 
+Rust cuts `place` (Repo and reference) and `title` to what the fixed columns
+leave, with an ellipsis (`ui::list`), so keep the two in step; the blank cell
+after each keeps a cut column off the age and Waiting On.
+
 --- List
 div w-full h-full flex-col bg-[#aa0000] pt-1
   div h-[1] flex-row px-2 text-[#aa000a]
@@ -34,7 +38,8 @@ div w-full h-full flex-col bg-[#aa0000]
         span w-[2] text-[#aa000b] "{tick}"
         span w-[20] font-bold text-[#aa0009] "{step}"
         span w-[2] text-[#aa000f] "{flag}"
-        span flex-1 text-[#aa000a] "{repo} {reference}"
+        span flex-1 text-[#aa000a] "{place}"
+        span w-[1] " "
         span w-[5] text-[#aa0008] "{age}"
       div h-[1] flex-row
         span w-[2] text-[#aa000b] "{tick}"
@@ -45,6 +50,7 @@ div w-full h-full flex-col bg-[#aa0000]
         else
           span w-[2] text-[#aa0008] "{job}"
         span flex-1 text-[#aa0006] "{title}"
+        span w-[1] " "
         span w-[14] text-[#aa0007] "{waiting}"
   else if {dimmed}
     div h-[2] flex-col text-[#aa0008]
@@ -52,7 +58,8 @@ div w-full h-full flex-col bg-[#aa0000]
         span w-[2] " "
         span w-[20] "{step}"
         span w-[2] "{flag}"
-        span flex-1 "{repo} {reference}"
+        span flex-1 "{place}"
+        span w-[1] " "
         span w-[5] "{age}"
       div h-[1] flex-row
         span w-[2] " "
@@ -63,6 +70,7 @@ div w-full h-full flex-col bg-[#aa0000]
         else
           span w-[2] text-[#aa0008] "{job}"
         span flex-1 "{title}"
+        span w-[1] " "
         span w-[14] "{waiting}"
   else if {has_step}
     div h-[2] flex-col
@@ -70,7 +78,8 @@ div w-full h-full flex-col bg-[#aa0000]
         span w-[2] " "
         span w-[20] text-[#aa0009] "{step}"
         span w-[2] text-[#aa000f] "{flag}"
-        span flex-1 text-[#aa000a] "{repo} {reference}"
+        span flex-1 text-[#aa000a] "{place}"
+        span w-[1] " "
         span w-[5] text-[#aa0008] "{age}"
       div h-[1] flex-row
         span w-[2] " "
@@ -81,6 +90,7 @@ div w-full h-full flex-col bg-[#aa0000]
         else
           span w-[2] text-[#aa0008] "{job}"
         span flex-1 text-[#aa0005] "{title}"
+        span w-[1] " "
         span w-[14] text-[#aa0007] "{waiting}"
   else
     div h-[2] flex-col
@@ -88,7 +98,8 @@ div w-full h-full flex-col bg-[#aa0000]
         span w-[2] " "
         span w-[20] text-[#aa0008] "{step}"
         span w-[2] text-[#aa000f] "{flag}"
-        span flex-1 text-[#aa000a] "{repo} {reference}"
+        span flex-1 text-[#aa000a] "{place}"
+        span w-[1] " "
         span w-[5] text-[#aa0008] "{age}"
       div h-[1] flex-row
         span w-[2] " "
@@ -99,4 +110,5 @@ div w-full h-full flex-col bg-[#aa0000]
         else
           span w-[2] text-[#aa0008] "{job}"
         span flex-1 text-[#aa0005] "{title}"
+        span w-[1] " "
         span w-[14] text-[#aa0007] "{waiting}"

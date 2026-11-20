@@ -9,7 +9,10 @@ Sentinels as in frame.crepus. Meaning never rides on colour alone:
   icons   fork and archived are glyphs
   upstream  a fork that targets its Upstream (#13): the "upstream →" label, in rust
   flag    incomplete coverage (filled by #8) is a glyph
-  count   Work Items with a Next Step, or a faint dot for none
+  count   Work Items with a Next Step, or a faint dot for none; Rust
+          right-aligns it in five cells (a blank always before it), and a
+          blank cell after it keeps it off the rail. Rust cuts the label to what the fixed columns leave
+          (`ui::sidebar`), so keep the two in step.
 
 --- Sidebar
 div w-full h-full flex-col bg-[#aa0001] pt-1
@@ -31,7 +34,8 @@ div w-full h-full flex-col bg-[#aa0001]
       span w-[1] " "
       span w-[2] text-[#aa0016] "{icons}"
       span w-[1] text-[#aa000f] "{flag}"
-      span w-[4] text-[#aa000b] "{count}"
+      span w-[5] text-[#aa000b] "{count}"
+      span w-[1] " "
   else if {heading}
     div h-[1] flex-row
       span w-[1] " "
@@ -41,7 +45,8 @@ div w-full h-full flex-col bg-[#aa0001]
       else
         span flex-1 text-[#aa000a] "{label}"
       span w-[1] text-[#aa000f] "{flag}"
-      span w-[4] text-[#aa0007] "{count}"
+      span w-[5] text-[#aa0007] "{count}"
+      span w-[1] " "
   else if {current}
     div h-[1] flex-row
       span w-[1] " "
@@ -52,7 +57,8 @@ div w-full h-full flex-col bg-[#aa0001]
       span w-[1] " "
       span w-[2] text-[#aa0016] "{icons}"
       span w-[1] text-[#aa000f] "{flag}"
-      span w-[4] text-[#aa0009] "{count}"
+      span w-[5] text-[#aa0009] "{count}"
+      span w-[1] " "
   else if {busy}
     div h-[1] flex-row
       span w-[1] " "
@@ -63,7 +69,8 @@ div w-full h-full flex-col bg-[#aa0001]
       span w-[1] " "
       span w-[2] text-[#aa0016] "{icons}"
       span w-[1] text-[#aa000f] "{flag}"
-      span w-[4] text-[#aa0009] "{count}"
+      span w-[5] text-[#aa0009] "{count}"
+      span w-[1] " "
   else
     div h-[1] flex-row
       span w-[1] " "
@@ -74,4 +81,5 @@ div w-full h-full flex-col bg-[#aa0001]
       span w-[1] " "
       span w-[2] text-[#aa0016] "{icons}"
       span w-[1] text-[#aa000f] "{flag}"
-      span w-[4] text-[#aa0008] "{count}"
+      span w-[5] text-[#aa0008] "{count}"
+      span w-[1] " "

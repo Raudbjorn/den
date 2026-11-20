@@ -775,3 +775,177 @@ fn every_detail_page_is_reachable_in_the_pane_and_narrow_sheet() {
         }
     }
 }
+
+/// A label of `cells` cells broken by hyphens, the way Repo names and workflow
+/// paths are: left to the template, such text wraps at a hyphen and loses its
+/// end without a sign.
+fn hyphenated(cells: usize) -> String {
+    "ab-".repeat(cells).chars().take(cells).collect()
+}
+
+/// The profile's ellipsis: the ViewModel's, in that profile's form.
+fn ellipsis(glyphs: GlyphProfile) -> &'static str {
+    match glyphs {
+        GlyphProfile::Unicode => "…",
+        GlyphProfile::Ascii => "...",
+    }
+}
+
+/// A 4-digit count, as an Owner with many Work Items has ("1101┊" touched the
+/// rail at 80 columns).
+const WIDE_COUNT: usize = 1101;
+
+/// At either size and in either glyph profile, a count as wide as its column
+/// keeps a blank cell before the sidebar's rail, and a label too long for what
+/// is left is cut with the profile's ellipsis instead of pushing into the
+/// count or losing its end unmarked. Swept over every label length up to the
+/// plate's width, so whichever length exactly fills the label column is hit.
+#[test]
+fn a_wide_sidebar_count_keeps_off_the_rail_and_long_labels_end_in_an_ellipsis() {
+    let mut problems = Vec::new();
+    for size in [MINIMUM_SIZE, DESIGN_SIZE] {
+        let harness = many_repos(size);
+        let (cols, rows) = size;
+        for glyphs in [GlyphProfile::Unicode, GlyphProfile::Ascii] {
+            let theme =
+                Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
+            let mark = ellipsis(glyphs);
+            let width = frame::regions(Rect::new(0, 0, cols, rows), &harness.view.layout)
+                .sidebar
+                .width;
+            for cells in 1..=usize::from(width) {
+                let mut view = harness.view.clone();
+                view.sidebar.focused = true;
+                view.sidebar.cursor = Some(2);
+                let label = hyphenated(cells);
+                for (i, row) in view.sidebar.rows.iter_mut().enumerate() {
+                    row.label.clone_from(&label);
+                    row.count = WIDE_COUNT;
+                    // Every other Repo targets its Upstream: the widest row.
+                    if i % 2 == 1 && row.upstream.is_none() {
+                        row.upstream = Some("up/stream".to_owned());
+                    }
+                }
+                let buffer = frame::render(&theme, &view, cols, rows).expect("renders");
+                let sidebar = frame::regions(buffer.area, &view.layout).sidebar;
+                let context = format!("{glyphs:?} {cols}x{rows}, label of {cells} cells");
+                let first_row = sidebar.y + 3;
+                for y in first_row..sidebar.bottom() {
+                    let line: String = (sidebar.left()..sidebar.right())
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect();
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    if !line.ends_with(&format!(" {WIDE_COUNT} ")) {
+                        problems.push(format!(
+                            "{context}: not a blank, the count, a blank before the rail: {line:?}"
+                        ));
+                    }
+                    if !(line.contains(&label) || line.contains(mark)) {
+                        problems.push(format!(
+                            "{context}: the label neither whole nor cut with {mark:?}: {line:?}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert_no_problems(&problems);
+}
+
+/// Fails listing every problem found (a sweep reports all of its misses, in
+/// every profile and size, not only the first).
+fn assert_no_problems(problems: &[String]) {
+    assert!(
+        problems.is_empty(),
+        "{} problems:\n{}",
+        problems.len(),
+        problems.join("\n")
+    );
+}
+
+/// A count wider than its column is drawn as a true bound, not cut to digits.
+#[test]
+fn a_five_digit_sidebar_count_is_drawn_as_a_bound_within_its_column() {
+    let mut harness = many_repos(MINIMUM_SIZE);
+    harness.view.sidebar.rows[0].count = 12_345;
+    let (cols, rows) = MINIMUM_SIZE;
+    let theme = Theme::new(TerminalProfile::new(
+        ColorProfile::Mono,
+        GlyphProfile::Ascii,
+    ))
+    .expect("theme");
+    let buffer = frame::render(&theme, &harness.view, cols, rows).expect("renders");
+    let sidebar = region_lines(
+        &buffer,
+        frame::regions(buffer.area, &harness.view.layout).sidebar,
+    );
+    let all = sidebar_row(&sidebar, "All");
+    assert_eq!(all.last().map(String::as_str), Some("10k+"), "{sidebar:#?}");
+}
+
+/// The age a Run row had when its workflow path ran into it ("release.yml146d").
+const OLD_AGE: &str = "146d";
+
+/// At either size and in either glyph profile, a Work Item row's Repo and
+/// reference keep a blank cell before the age, and its title one before Waiting
+/// On; either too long for its column is cut with the profile's ellipsis
+/// rather than running into the next column or losing its end unmarked. Swept
+/// over every length up to the plate's width, selected row and not.
+#[test]
+fn a_long_workflow_path_and_title_are_cut_with_an_ellipsis_clear_of_the_next_column() {
+    let mut problems = Vec::new();
+    for size in [MINIMUM_SIZE, DESIGN_SIZE] {
+        let harness = surveyed_harness(size);
+        let (cols, rows) = size;
+        for glyphs in [GlyphProfile::Unicode, GlyphProfile::Ascii] {
+            let theme =
+                Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
+            let mark = ellipsis(glyphs);
+            let width = frame::regions(Rect::new(0, 0, cols, rows), &harness.view.layout)
+                .list
+                .width;
+            for cells in 1..=usize::from(width) {
+                let mut view = harness.view.clone();
+                let path = format!(".github/workflows/{}", hyphenated(cells));
+                let title = hyphenated(cells);
+                for row in &mut view.list.rows {
+                    row.reference.clone_from(&path);
+                    row.title.clone_from(&title);
+                    row.age = OLD_AGE.to_owned();
+                }
+                let buffer = frame::render(&theme, &view, cols, rows).expect("renders");
+                let list = frame::regions(buffer.area, &view.layout).list;
+                let lines = region_lines(&buffer, list);
+                let text = lines.join("\n");
+                let context = format!("{glyphs:?} {cols}x{rows}, {cells} cells");
+                for row in &view.list.rows {
+                    let place = format!("{} {path}", row.repo);
+                    let first = lines
+                        .iter()
+                        .position(|l| l.contains(&row.repo))
+                        .unwrap_or_else(|| panic!("{context}: no row for {}\n{text}", row.repo));
+                    let (top, bottom) = (&lines[first], &lines[first + 1]);
+                    if !top.ends_with(&format!(" {OLD_AGE}")) {
+                        problems.push(format!("{context}: no blank before the age: {top:?}"));
+                    }
+                    if !(top.contains(&place) || top.contains(mark)) {
+                        problems.push(format!(
+                            "{context}: Repo and path neither whole nor cut with {mark:?}: {top:?}"
+                        ));
+                    }
+                    if !bottom.ends_with(&format!(" {}", row.waiting_label)) {
+                        problems.push(format!("{context}: no blank before Waiting On: {bottom:?}"));
+                    }
+                    if !(bottom.contains(&title) || bottom.contains(mark)) {
+                        problems.push(format!(
+                            "{context}: the title neither whole nor cut with {mark:?}: {bottom:?}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert_no_problems(&problems);
+}

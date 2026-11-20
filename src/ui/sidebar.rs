@@ -1,7 +1,11 @@
 //! The sidebar plate: Scopes (All Owners, each Owner, its Repos), windowed so
 //! the cursor (or, unfocused, the current Scope) stays in view.
 
-use super::{Theme, UiError, glyphs, templates};
+use super::{
+    Theme, UiError,
+    glyphs::{self, Glyphs},
+    templates,
+};
 use crate::app::view_model::{Sidebar, SidebarEntry, SidebarRow};
 use crepuscularity_tui::TemplateContext;
 use ratatui::{Frame, layout::Rect};
@@ -12,6 +16,30 @@ const CHROME_LINES: u16 = 3;
 const ROW_LINES: u16 = 1;
 /// A Repo's indent under its Owner, in columns.
 const REPO_INDENT: &str = "  ";
+
+// The `SidebarRow` template's fixed columns, in cells (its `w-[n]` spans); the
+// label takes what is left.
+/// The cursor tick, then the current-Scope glyph.
+const MARK_COLS: usize = 2;
+/// The "upstream →" label of a fork that targets its Upstream.
+const UPSTREAM_COLS: usize = 11;
+/// The blank before a Repo's fork and archived glyphs.
+const ICONS_GAP_COLS: usize = 1;
+/// Fork and archived glyphs.
+const ICONS_COLS: usize = 2;
+/// The incomplete-coverage glyph.
+const FLAG_COLS: usize = 1;
+/// The count, right-aligned with at least one blank before it, so a 4-digit
+/// count stays apart from the incomplete glyph ("⚠1101").
+const COUNT_COLS: usize = 5;
+/// The blank between the count and the sidebar's rail, so a count as wide as
+/// its column never touches the rail.
+const RAIL_GAP_COLS: usize = 1;
+/// The largest count drawn in full in [`COUNT_COLS`] (four digits and the
+/// blank); above it, [`COUNT_OVERFLOW`].
+const MAX_EXACT_COUNT: usize = 9_999;
+/// Drawn for a count above [`MAX_EXACT_COUNT`]: still true, still four cells.
+const COUNT_OVERFLOW: &str = "10k+";
 
 /// Fork and archived glyphs (each also has an ASCII form).
 struct RepoGlyphs {
@@ -87,18 +115,45 @@ pub fn draw(
             break;
         }
         let cursor = sidebar.focused && sidebar.cursor == Some(index);
-        let ctx = row_context(row, cursor, shared.tick, shared.incomplete, &marks);
+        let label_cols = label_cols(row, usize::from(row_area.width));
+        let ctx = row_context(row, cursor, &shared, &marks, label_cols);
         theme.draw(frame, templates::SIDEBAR_ROW, &ctx, row_area)?;
     }
     Ok(())
 }
 
+/// The cells a row's label may take in a row `width` cells wide: what the
+/// template's fixed columns for this kind of row leave.
+fn label_cols(row: &SidebarRow, width: usize) -> usize {
+    let fixed = if row.entry == SidebarEntry::Repo {
+        let upstream = if row.upstream.is_some() {
+            UPSTREAM_COLS
+        } else {
+            0
+        };
+        MARK_COLS + upstream + ICONS_GAP_COLS + ICONS_COLS + FLAG_COLS + COUNT_COLS + RAIL_GAP_COLS
+    } else {
+        MARK_COLS + FLAG_COLS + COUNT_COLS + RAIL_GAP_COLS
+    };
+    width.saturating_sub(fixed)
+}
+
+/// The count in [`COUNT_COLS`] cells, right-aligned; a faint dot for none.
+fn count_text(count: usize, none: &str) -> String {
+    let text = match count {
+        0 => none.to_owned(),
+        n if n > MAX_EXACT_COUNT => COUNT_OVERFLOW.to_owned(),
+        n => n.to_string(),
+    };
+    format!("{text:>COUNT_COLS$}")
+}
+
 fn row_context(
     row: &SidebarRow,
     cursor: bool,
-    tick: &str,
-    incomplete: &str,
+    glyphs: &Glyphs,
     marks: &RepoGlyphs,
+    label_cols: usize,
 ) -> TemplateContext {
     let heading = row.entry != SidebarEntry::Repo;
     let label = if heading {
@@ -106,6 +161,9 @@ fn row_context(
     } else {
         format!("{REPO_INDENT}{}", row.label)
     };
+    // Cut here, with an ellipsis: left to the template, a long label wraps at
+    // a hyphen or space and loses its end without a sign.
+    let label = glyphs.fit(&label, label_cols);
     let mut icons = String::new();
     if row.fork {
         icons.push_str(marks.fork);
@@ -113,16 +171,12 @@ fn row_context(
     if row.archived {
         icons.push_str(marks.archived);
     }
-    let count = match row.count {
-        0 => marks.none.to_owned(),
-        n => n.to_string(),
-    };
     let mut ctx = TemplateContext::default();
     ctx.set("cursor", cursor)
         .set("heading", heading)
         .set("current", row.current)
         .set("busy", row.count > 0)
-        .set("mark", if cursor { tick } else { " " })
+        .set("mark", if cursor { glyphs.tick } else { " " })
         .set(
             "scope_mark",
             if row.current {
@@ -135,7 +189,14 @@ fn row_context(
         .set("icons", icons)
         .set("has_upstream", row.upstream.is_some())
         .set("upstream", marks.upstream)
-        .set("flag", if row.incomplete { incomplete } else { " " })
-        .set("count", format!("{count:>3}"));
+        .set(
+            "flag",
+            if row.incomplete {
+                glyphs.incomplete
+            } else {
+                " "
+            },
+        )
+        .set("count", count_text(row.count, marks.none));
     ctx
 }

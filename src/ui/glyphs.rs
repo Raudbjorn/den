@@ -3,6 +3,7 @@
 use crate::app::view_model::{ELLIPSIS, ENTER_KEY, SEPARATOR};
 use raudbjorn_tui::profile::GlyphProfile;
 use std::borrow::Cow;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Glyphs {
@@ -48,6 +49,38 @@ impl Glyphs {
         }
         Cow::Owned(out)
     }
+
+    /// ViewModel text drawn in this profile (see [`Self::text`]) in at most
+    /// `width` cells: whole when it fits, otherwise cut by cell width and
+    /// ended with the profile's form of [`ELLIPSIS`], so a cut is never silent.
+    /// Narrower than the ellipsis itself, it is as much of the ellipsis as fits.
+    pub fn fit(&self, text: &str, width: usize) -> String {
+        let drawn = self.text(text);
+        if drawn.width() <= width {
+            return drawn.into_owned();
+        }
+        let ellipsis = self.ellipsis;
+        let room = width.saturating_sub(ellipsis.width());
+        let mut out = take_cells(&drawn, room);
+        out.push_str(&take_cells(ellipsis, width.saturating_sub(out.width())));
+        out
+    }
+}
+
+/// The longest prefix of `text` at most `width` cells wide (a wide character
+/// that would straddle the edge is left out).
+fn take_cells(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut cells = 0;
+    for c in text.chars() {
+        let w = c.width().unwrap_or(0);
+        if cells + w > width {
+            break;
+        }
+        out.push(c);
+        cells += w;
+    }
+    out
 }
 
 pub fn for_profile(profile: GlyphProfile) -> Glyphs {
