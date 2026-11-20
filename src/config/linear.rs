@@ -114,7 +114,7 @@ impl LinearWorkflow {
     /// issues when it names a start team.
     pub fn linear_sources(&self) -> Vec<LinearSourceKind> {
         let mut sources = vec![LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues];
-        if !self.start_teams.is_empty() || !self.state_names().is_empty() {
+        if !self.start_teams.is_empty() || self.state_names().next().is_some() {
             sources.push(LinearSourceKind::TeamStates);
         }
         if !self.start_teams.is_empty() {
@@ -125,14 +125,13 @@ impl LinearWorkflow {
 
     /// The state names the config gives (setting, name), to check against
     /// Linear's team states.
-    pub fn state_names(&self) -> Vec<(&'static str, &str)> {
+    pub fn state_names(&self) -> impl Iterator<Item = (&'static str, &str)> {
         [
             ("in_progress_state", self.in_progress_state.as_deref()),
             ("release_state", self.release_state.as_deref()),
         ]
         .into_iter()
         .filter_map(|(setting, name)| name.map(|n| (setting, n)))
-        .collect()
     }
 }
 

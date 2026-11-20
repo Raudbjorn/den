@@ -18,6 +18,7 @@
 //!   its header) and the scripted-transport seam.
 //! - [`session`]: replies to source states, paging, the rate-limit stop.
 
+mod pages;
 pub mod session;
 pub mod transport;
 
@@ -31,8 +32,7 @@ pub use transport::{
 use crate::{
     config::LinearWorkflow,
     domain::{
-        Coverage, Incompleteness, LinearIssueId, LinearSourceKind, LinearViewer, Source,
-        SourceKind, SourceState,
+        Coverage, LinearIssueId, LinearSourceKind, LinearViewer, Source, SourceKind, SourceState,
         facts::{
             Attachment, Attachments, LinearCycle, LinearIssue, LinearPriority, LinearState,
             LinearStateKind, LinearTeam, LinearUser,
@@ -314,51 +314,32 @@ fn assigned_issues(
     let mut issues: Vec<LinearIssue> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut unreadable: Vec<String> = Vec::new();
-    loop {
-        let variables = issue_page_variables(pager.cursor.as_deref());
-        let (page, page_complete) = match session.run::<AssignedData>(
-            "LinearAssignedIssues",
-            ASSIGNED_ISSUES_QUERY,
-            variables,
-        ) {
-            Answer::Lost(state) => {
-                pager.page_lost(state);
-                break;
-            }
-            Answer::Data { data, state } => {
-                let complete = state.is_complete();
-                pager.page_read(state);
-                (data.viewer.assigned_issues, complete)
-            }
-        };
-        for node in page.nodes {
-            match serde_json::from_value::<RawIssue>(node) {
-                Ok(raw) if seen.insert(raw.id.clone()) => {
-                    issues.push(raw.into_issue(
-                        workflow,
-                        LinearSourceKind::AssignedIssues,
-                        page_complete,
-                    ));
-                }
-                Ok(_) => {}
-                Err(e) => unreadable.push(e.to_string()),
-            }
-        }
-        if !pager.advance(page.page_info.has_next_page, page.page_info.end_cursor) {
-            break;
-        }
-        if !pager.may_continue() {
-            break;
-        }
+    let list = pages::List {
+        operation: "LinearAssignedIssues",
+        query: ASSIGNED_ISSUES_QUERY,
+        variables: issue_page_variables,
+        connection: |data: AssignedData| data.viewer.assigned_issues,
+    };
+    let end = pages::read_list(
+        session,
+        &mut pager,
+        MAX_LINEAR_PAGES,
+        &list,
+        |node, page_complete| match serde_json::from_value::<RawIssue>(node) {
+            Ok(raw) if seen.insert(raw.id.clone()) => issues.push(raw.into_issue(
+                workflow,
+                LinearSourceKind::AssignedIssues,
+                page_complete,
+            )),
+            Ok(_) => {}
+            Err(e) => unreadable.push(e.to_string()),
+        },
+    );
+    if end == pages::End::Cut {
+        let bound = pages::page_bound(&pager, None);
+        pager.note(bound);
     }
-    if let Some(first) = unreadable.first() {
-        pager.note(SourceState::Partial(Incompleteness::FollowUpTruncated {
-            what: format!(
-                "{} Linear Issue(s) den could not read, first: {first}",
-                unreadable.len()
-            ),
-        }));
-    }
+    pages::note_unreadable(&mut pager, &unreadable, "Linear Issue(s)");
     (issues, pager.finish())
 }
 

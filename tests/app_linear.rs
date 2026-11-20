@@ -251,7 +251,6 @@ fn a_failed_linear_source_leaves_the_owners_repos_incomplete() {
     harness.linear.push_answer(LinearSurvey {
         part: LinearPart {
             viewers: vec![linear_viewer("acme", "acme")],
-            issues: Vec::new(),
             ..LinearPart::default()
         },
         coverage: linear_coverage(SourceState::Failed {
