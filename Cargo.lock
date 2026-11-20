@@ -370,6 +370,7 @@ dependencies = [
  "ratatui",
  "raudbjorn-tui",
  "serde_json",
+ "signal-hook",
  "thiserror 2.0.21",
 ]
 

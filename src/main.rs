@@ -4,15 +4,17 @@
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use den::{
-    terminal::TerminalSession,
+    terminal::{SIGNAL_EXIT_STATUS_BASE, TerminalSession},
     ui::{Theme, UiError, frame},
 };
 use raudbjorn_tui::profile::{ProfileError, TerminalProfile};
-use std::{io, process::ExitCode};
+use std::{io, process::ExitCode, time::Duration};
 
 const EXIT_FAILURE: u8 = 1;
 const EXIT_USAGE: u8 = 2;
 const USAGE: &str = "usage: den [--dump COLSxROWS]";
+/// How long to wait for input before checking for a termination signal, in milliseconds.
+const SIGNAL_CHECK_MS: u64 = 100;
 
 #[derive(Debug, thiserror::Error)]
 enum DenError {
@@ -24,6 +26,8 @@ enum DenError {
     Ui(#[from] UiError),
     #[error("terminal: {0}")]
     Terminal(#[from] io::Error),
+    #[error("stopped by signal {0}")]
+    Signalled(i32),
     /// The session failed and then restoring the terminal failed as well.
     #[error("{outcome}; restoring the terminal also failed: {restore}")]
     RestoreAfter {
@@ -84,7 +88,13 @@ fn event_loop(session: &mut TerminalSession, theme: &Theme) -> Result<(), DenErr
             .terminal()
             .draw(|f| drawn = frame::draw_empty_frame(f, theme))?;
         drawn?;
-        // Blocks until the user does something; resizes also wake it to redraw.
+        // Waits until the user does something (resizes also wake it to redraw),
+        // checking for a termination signal in between.
+        while !event::poll(Duration::from_millis(SIGNAL_CHECK_MS))? {
+            if let Some(signal) = session.termination_signal() {
+                return Err(DenError::Signalled(signal));
+            }
+        }
         if let Event::Key(key) = event::read()?
             && is_quit(&key)
         {
@@ -112,10 +122,17 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("den: {error}");
-            match error {
-                DenError::Usage(_) => ExitCode::from(EXIT_USAGE),
-                _ => ExitCode::from(EXIT_FAILURE),
-            }
+            exit_code(&error)
         }
+    }
+}
+
+fn exit_code(error: &DenError) -> ExitCode {
+    match error {
+        DenError::Usage(_) => ExitCode::from(EXIT_USAGE),
+        DenError::Signalled(signal) => u8::try_from(SIGNAL_EXIT_STATUS_BASE + signal)
+            .map_or(ExitCode::from(EXIT_FAILURE), ExitCode::from),
+        DenError::RestoreAfter { outcome, .. } => exit_code(outcome),
+        _ => ExitCode::from(EXIT_FAILURE),
     }
 }
