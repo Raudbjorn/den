@@ -200,7 +200,7 @@ impl App {
         scope::entries(self.owners(), self.observation.as_ref(), &self.ordered)
     }
 
-    /// Re-filters the list to the Scope, keeping the selection when it is still in it.
+    /// Narrows the list to the Scope, keeping the selection when it is still in it.
     fn apply_scope(&mut self) {
         self.decisions = ordering::in_scope(&self.ordered, &self.scope.scope)
             .cloned()

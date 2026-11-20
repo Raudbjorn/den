@@ -134,7 +134,7 @@ fn a_repo_known_only_from_its_work_items_still_gets_a_sidebar_row() {
 }
 
 #[test]
-fn arrow_keys_step_the_scope_through_owners_filtering_the_list_and_naming_it_in_the_header() {
+fn arrow_keys_step_the_scope_through_owners_narrowing_the_list_and_naming_it_in_the_header() {
     let mut harness = started(two_owners());
     assert_eq!(references(&harness).len(), 4);
     assert!(harness.view.header.scope.starts_with("All Owners"));
