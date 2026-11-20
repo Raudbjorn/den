@@ -12,7 +12,7 @@
 use crate::{
     domain::{NextStep, RepoId, WorkItemId},
     files::{self, BoundedReadError},
-    handoff::PermissionMode,
+    handoff::{PermissionMode, coordination_mode},
     ordering::same_work_item,
     ports::JobStore,
 };
@@ -116,11 +116,23 @@ pub struct JobRecord {
     /// The Claude Code session name (`claude -n`).
     pub session: String,
     pub launched_at: Timestamp,
-    /// The permission mode the Job was launched in, passed again when it is
-    /// reopened (#39). Absent for coding Jobs and in older records, so the
-    /// stored shape of those is unchanged.
+    /// The permission mode the Job was launched in (#39). Absent for coding
+    /// Jobs and in older records, so the stored shape of those is unchanged.
+    /// Reopening reads [`JobRecord::reopen_mode`], never this alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<PermissionMode>,
+}
+
+impl JobRecord {
+    /// The permission mode reopening the Job passes: the recorded one, else
+    /// the mode a Job for its Next Step launches in ([`coordination_mode`]).
+    /// A den from before #39 also reads format 2, ignores `permission_mode`
+    /// and drops it when it rewrites the file, so the record alone could
+    /// reopen a coordination Job with no mode at all: this fails safe instead.
+    pub fn reopen_mode(&self) -> Option<PermissionMode> {
+        self.permission_mode
+            .or_else(|| coordination_mode(self.next_step))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

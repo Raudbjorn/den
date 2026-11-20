@@ -237,16 +237,17 @@ pub struct ReopenPlan {
 
 impl ReopenPlan {
     /// What the window runs: `claude --resume <session>` in the Job's
-    /// worktree, in the Job's recorded permission mode. Claude Code would
-    /// otherwise restore the mode the session ended in, or a settings file's
-    /// `defaultMode`, so a coordination Job passes its mode again.
+    /// worktree, in the Job's permission mode ([`JobRecord::reopen_mode`]).
+    /// Claude Code would otherwise restore the mode the session ended in, or a
+    /// settings file's `defaultMode`, so a coordination Job passes its mode
+    /// again.
     pub fn window_command(&self) -> WindowCommand {
         WindowCommand {
             directory: self.job.worktree.clone(),
             session: self.job.session.clone(),
             prompt: String::new(),
             start: SessionStart::Resume,
-            permission_mode: self.job.permission_mode,
+            permission_mode: self.job.reopen_mode(),
         }
     }
 }

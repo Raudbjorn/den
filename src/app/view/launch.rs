@@ -454,7 +454,7 @@ fn fill_reopen(view: &mut LaunchSheet, plan: &ReopenPlan) {
             Tone::Plain,
         ),
     ];
-    view.fields.extend(permissions_field(job.permission_mode));
+    view.fields.extend(permissions_field(job.reopen_mode()));
     view.fields.push(opens_field(&plan.window));
     view.command = Some(plan.command.clone());
     view.messages.push(message(
