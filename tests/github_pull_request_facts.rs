@@ -144,6 +144,9 @@ fn octo_with_list_errors(
             errors: list_errors.clone(),
         }),
         "PullRequestDetails" => details(request),
+        "OwnerIssueCounts" => Ok(data(json!({ "repositoryOwner": { "repositories": {
+            "pageInfo": page_info(false), "nodes": []
+        }}}))),
         other => panic!("unexpected {other}"),
     })
 }
