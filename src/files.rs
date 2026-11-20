@@ -1,7 +1,13 @@
 //! den's own files (cache, Job records): written atomically and readable only by
 //! the user.
 
-use std::{fs, io, io::Write, path::Path};
+use std::{
+    fs,
+    io::{self, Write},
+    path::Path,
+    thread,
+    time::{Duration, Instant},
+};
 
 /// Owner-only read and write.
 #[cfg(unix)]
@@ -9,6 +15,8 @@ const FILE_MODE: u32 = 0o600;
 /// Owner-only directories.
 #[cfg(unix)]
 const DIR_MODE: u32 = 0o700;
+/// How long to wait between attempts to take a busy lock, in milliseconds.
+const LOCK_RETRY_MS: u64 = 25;
 
 /// Creates `dir` (and its parents) as an owner-only directory, if missing.
 pub fn ensure_private_dir(dir: &Path) -> io::Result<()> {
@@ -45,6 +53,40 @@ fn write_private(path: &Path, body: &[u8]) -> io::Result<()> {
     let mut file = options.open(path)?;
     file.write_all(body)?;
     file.sync_all()
+}
+
+/// Takes an exclusive lock on the owner-only file `path` (created if missing),
+/// waiting at most `wait` for another holder, in this or another process, to
+/// let go. The lock lasts until the returned file is dropped.
+pub fn lock_exclusive(path: &Path, wait: Duration) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(FILE_MODE);
+    }
+    let file = options.open(path)?;
+    let deadline = Instant::now() + wait;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(fs::TryLockError::Error(e)) => return Err(e),
+            Err(fs::TryLockError::WouldBlock) if Instant::now() >= deadline => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "{} stayed locked by another den for {} ms",
+                        path.display(),
+                        wait.as_millis()
+                    ),
+                ));
+            }
+            Err(fs::TryLockError::WouldBlock) => {
+                thread::sleep(Duration::from_millis(LOCK_RETRY_MS));
+            }
+        }
+    }
 }
 
 /// Reads `path` if it is at most `max_bytes` long; `Ok(None)` when it doesn't exist.
