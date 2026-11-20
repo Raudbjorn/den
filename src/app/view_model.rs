@@ -102,6 +102,9 @@ pub struct SidebarRow {
     /// Work Items with a Next Step in this row's Scope.
     pub count: usize,
     pub fork: bool,
+    /// A fork whose target is its Upstream: the Upstream (`owner/name`), shown
+    /// in rust with the "upstream →" label.
+    pub upstream: Option<String>,
     pub archived: bool,
     /// This row is the current Scope.
     pub current: bool,
@@ -240,7 +243,7 @@ pub enum LaunchStatus {
     Inspecting,
     /// `Enter` launches.
     Ready,
-    /// The PR head moved since the sheet opened; `Enter` launches on the new one.
+    /// The base (a PR head, a Branch, the default branch) moved since the sheet opened; `Enter` launches on the new one.
     HeadMoved,
     Refused,
     Launching,
@@ -276,6 +279,9 @@ pub enum Tone {
     /// Needs attention: a refusal, a failure, a moved head.
     Caution,
     Muted,
+    /// The target is a fork's Upstream (rust); the text always carries the
+    /// "upstream →" label too.
+    Upstream,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

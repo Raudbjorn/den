@@ -3,7 +3,9 @@
 
 use super::{
     build::now,
-    fakes::{FakeCache, FakeGitHub, FakeJobs, FakeLauncher, FakeWorkspace, FixedClock},
+    fakes::{
+        FakeCache, FakeGitHub, FakeJobs, FakeLauncher, FakeUpstreams, FakeWorkspace, FixedClock,
+    },
 };
 use den::{
     app::{App, Effect, Event, Key, ViewModel},
@@ -21,6 +23,7 @@ pub struct Harness {
     pub workspace: Arc<FakeWorkspace>,
     pub launcher: Arc<FakeLauncher>,
     pub jobs: Arc<FakeJobs>,
+    pub upstreams: Arc<FakeUpstreams>,
     ports: Ports,
     /// Every Effect the App emitted, in order.
     pub effects: Vec<Effect>,
@@ -42,12 +45,24 @@ impl Harness {
 
     /// A harness whose cache starts as `cache`.
     pub fn with_cache(config: Result<Config, ConfigError>, cache: FakeCache) -> Self {
+        Self::with_stores(config, cache, Arc::new(FakeUpstreams::default()))
+    }
+
+    /// A harness whose cache starts as `cache` and whose App reads its Upstream
+    /// choices from `upstreams` at startup, as `main` does (a restart is a new
+    /// harness over the same `upstreams`).
+    pub fn with_stores(
+        config: Result<Config, ConfigError>,
+        cache: FakeCache,
+        upstreams: Arc<FakeUpstreams>,
+    ) -> Self {
         let github = Arc::new(FakeGitHub::default());
         let cache = Arc::new(cache);
         let workspace = Arc::new(FakeWorkspace::default());
         let launcher = Arc::new(FakeLauncher::default());
         let jobs = Arc::new(FakeJobs::default());
-        let app = App::new(config);
+        let app =
+            App::new(config).with_upstreams(den::ports::UpstreamStore::load(upstreams.as_ref()));
         let view = app.view();
         Self {
             ports: Ports {
@@ -56,6 +71,7 @@ impl Harness {
                 workspace: workspace.clone(),
                 launcher: launcher.clone(),
                 jobs: jobs.clone(),
+                upstreams: upstreams.clone(),
                 clock: Arc::new(FixedClock(now())),
             },
             app,
@@ -64,6 +80,7 @@ impl Harness {
             workspace,
             launcher,
             jobs,
+            upstreams,
             effects: Vec::new(),
             view,
         }

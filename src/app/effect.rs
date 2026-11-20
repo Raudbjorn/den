@@ -3,6 +3,7 @@
 use super::event::{LaunchId, SurveyId};
 use crate::{
     cache::CachedObservation,
+    domain::UpstreamTargets,
     handoff::{InspectRequest, LaunchPlan, ReopenPlan},
     ports::SurveyRequest,
 };
@@ -46,6 +47,9 @@ pub enum Effect {
     /// Open a Live Job's window again, resuming its session (#14); answered by
     /// `Event::LaunchFinished`.
     Reopen { id: LaunchId, plan: Box<ReopenPlan> },
+    /// Save which forks target their Upstream (#13); answered by
+    /// `Event::UpstreamsStored`.
+    StoreUpstreams { upstreams: UpstreamTargets },
     /// Leave den.
     Quit,
     /// Write to den's structured log.

@@ -28,10 +28,16 @@ pub fn describe(state: &State<'_>) -> (String, Vec<ScopeSegment>) {
             if let Some(repo) = repo {
                 match (&repo.parent, repo.is_fork) {
                     (Some(parent), true) => {
-                        sentence.push_str(&format!(" {SEPARATOR} fork of {parent}"));
+                        sentence.push_str(&format!(" {SEPARATOR} fork of {}", parent.id));
                     }
                     (None, true) => sentence.push_str(&format!(" {SEPARATOR} fork")),
                     _ => {}
+                }
+                if repo.is_fork && state.upstreams.contains(&repo.id) {
+                    let upstream = repo
+                        .upstream()
+                        .map_or_else(|| "(not visible)".to_owned(), |u| u.id.to_string());
+                    sentence.push_str(&format!(" · {} {upstream}", super::launch::UPSTREAM_LABEL));
                 }
                 if repo.is_archived {
                     sentence.push_str(&format!(" {SEPARATOR} archived"));

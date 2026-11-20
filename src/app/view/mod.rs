@@ -18,7 +18,7 @@ use crate::{
     cache::Carried,
     config::{Config, ConfigError},
     decide::Decision,
-    domain::Observation,
+    domain::{Observation, UpstreamTargets},
     handoff::JobCheck,
     layout::Layout,
     ordering::Scope,
@@ -51,6 +51,10 @@ pub struct State<'a> {
     pub overlay: Option<&'a OverlayState>,
     /// The recorded Jobs' worktree states (#14).
     pub job_checks: &'a [JobCheck],
+    /// The forks whose target is their Upstream (#13).
+    pub upstreams: &'a UpstreamTargets,
+    /// Something wrong with the Upstream choices, for the header.
+    pub upstream_note: Option<String>,
 }
 
 pub fn build(state: &State<'_>) -> ViewModel {

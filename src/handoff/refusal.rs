@@ -2,7 +2,7 @@
 //! silently picks another target instead.
 
 use super::{Remote, short_commit};
-use crate::domain::{RepoId, WorkItemKind};
+use crate::domain::RepoId;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf};
@@ -31,10 +31,6 @@ impl fmt::Display for Refusal {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RefusalReason {
     NoNextStep,
-    /// Launching for this kind of Work Item arrives later (#12).
-    NotYetLaunchable {
-        kind: WorkItemKind,
-    },
     /// The Work Item is not in what den last observed.
     WorkItemGone,
     RepoUnknown {
@@ -43,9 +39,25 @@ pub enum RefusalReason {
     RepoArchived {
         repo: RepoId,
     },
-    /// The PR's head branch lives in another Repo (#13), or that Repo was deleted.
-    CrossRepoHead {
-        head_repo: Option<RepoId>,
+    /// The Repo is empty: there is no default branch to start a new branch from.
+    NoDefaultBranch {
+        repo: RepoId,
+    },
+    /// The Upstream is the target, but the Work Item's Repo is not a fork (the
+    /// stored choice outlived the fork, or `u` was pressed elsewhere).
+    NotAFork {
+        repo: RepoId,
+    },
+    /// The Upstream is the target, but den can't see the fork's Upstream.
+    UpstreamUnknown {
+        fork: RepoId,
+    },
+    /// A PR is fetched from the Repo it is in; another target (a fork's
+    /// Upstream) would fetch a different PR of the same number.
+    PullRequestNotInTarget {
+        repo: RepoId,
+        number: u64,
+        target: RepoId,
     },
     PromptsUnusable {
         error: String,
@@ -62,6 +74,25 @@ pub enum RefusalReason {
         search_error: Option<String>,
         /// Clones named like the Repo whose remotes point elsewhere.
         near_misses: Vec<(PathBuf, Vec<Remote>)>,
+    },
+    /// No Main Clone, and both folders a clone could go into already exist.
+    CloneFoldersTaken {
+        repo: RepoId,
+        folders: Vec<PathBuf>,
+    },
+    /// No Main Clone, and den can't tell whether the folder it would clone into is free.
+    CloneFolderUnknown {
+        path: PathBuf,
+        error: String,
+    },
+    /// No Main Clone, and the folder clones go under can't take one.
+    CloneRootUnusable {
+        root: PathBuf,
+        why: String,
+    },
+    /// The folder den was to clone into appeared after the sheet opened.
+    CloneFolderAppeared {
+        path: PathBuf,
     },
     ConfiguredCloneUnreadable {
         path: PathBuf,
@@ -97,6 +128,8 @@ pub enum RefusalReason {
     LocalBranchDiffers {
         branch: String,
         commit: String,
+        /// What the base is, in words: "the PR head", "main".
+        base_name: String,
         base: String,
     },
     /// The local branch is already checked out in another worktree; git checks
@@ -120,6 +153,27 @@ pub enum RefusalReason {
     HeadBranchGone {
         remote: String,
         branch: String,
+    },
+    /// The branch a Branch Work Item or a new branch starts from is not on
+    /// `from` (a remote, or the URL a clone would come from).
+    BaseBranchGone {
+        from: String,
+        branch: String,
+    },
+    /// den couldn't ask `from` where the base branch is.
+    BaseUnreadable {
+        from: String,
+        branch: String,
+        error: String,
+    },
+    /// Every suffixed worktree name is taken by other Work Items' Jobs.
+    NoFreeWorktreeName {
+        wanted: String,
+    },
+    /// The target's remote has no `refs/pull/<number>/head`.
+    PullRefGone {
+        remote: String,
+        number: u64,
     },
     ClaudeMissing,
     /// Open existing (#14): the Job's worktree is not (or no longer) present.
@@ -147,23 +201,56 @@ impl fmt::Display for RefusalReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoNextStep => f.write_str("this Work Item has no Next Step to hand off"),
-            Self::NotYetLaunchable { kind } => write!(
-                f,
-                "launching a Job for {} isn't built yet (only Pull Requests so far)",
-                kind_plural(*kind)
-            ),
             Self::WorkItemGone => f.write_str("this Work Item is no longer in the survey"),
             Self::RepoUnknown { repo } => write!(f, "den has no facts about the Repo {repo}"),
             Self::RepoArchived { repo } => {
                 write!(f, "{repo} is archived, so work there can't be pushed")
             }
-            Self::CrossRepoHead { head_repo: Some(head) } => write!(
+            Self::NoDefaultBranch { repo } => write!(
                 f,
-                "the PR's head branch lives in another Repo ({head}); launching for cross-Repo heads isn't built yet"
+                "{repo} is empty: it has no default branch to start a new branch from"
             ),
-            Self::CrossRepoHead { head_repo: None } => {
-                f.write_str("the Repo holding the PR's head branch was deleted")
-            }
+            Self::CloneFoldersTaken { repo, folders } => write!(
+                f,
+                "den won't clone {repo} into a folder that exists: {} {}",
+                folders
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" and "),
+                if folders.len() == 1 { "exists" } else { "both exist" }
+            ),
+            Self::CloneFolderUnknown { path, error } => write!(
+                f,
+                "den can't tell whether {} is free to clone into: {error}",
+                path.display()
+            ),
+            Self::CloneRootUnusable { root, why } => write!(
+                f,
+                "den can't clone into {}: {why}",
+                root.display()
+            ),
+            Self::CloneFolderAppeared { path } => write!(
+                f,
+                "{} appeared since the sheet opened; den won't clone into it. Open the sheet again",
+                path.display()
+            ),
+            Self::NotAFork { repo } => write!(
+                f,
+                "{repo} is not a fork, so it has no Upstream to target; press u to target {repo}"
+            ),
+            Self::UpstreamUnknown { fork } => write!(
+                f,
+                "the target is {fork}'s Upstream, but den can't see that Upstream (private, or deleted); press u to target {fork} itself"
+            ),
+            Self::PullRequestNotInTarget {
+                repo,
+                number,
+                target,
+            } => write!(
+                f,
+                "PR #{number} is in {repo}, not in {target}: den fetches a PR only from the Repo it is in, and #{number} in {target} would be another PR; press u to target {repo} for this Job"
+            ),
             Self::PromptsUnusable { error } => write!(f, "the prompts file is unusable: {error}"),
             Self::JobRecordsUnreadable { error } => write!(
                 f,
@@ -244,10 +331,11 @@ impl fmt::Display for RefusalReason {
             Self::LocalBranchDiffers {
                 branch,
                 commit,
+                base_name,
                 base,
             } => write!(
                 f,
-                "a local branch {branch} already exists at {}, not at the PR head {}; den won't move it",
+                "a local branch {branch} already exists at {}, not at {base_name} {}; den won't move it",
                 short_commit(commit),
                 short_commit(base)
             ),
@@ -271,6 +359,22 @@ impl fmt::Display for RefusalReason {
             Self::HeadBranchGone { remote, branch } => {
                 write!(f, "the PR's head branch {branch} is gone from {remote}")
             }
+            Self::BaseBranchGone { from, branch } => {
+                write!(f, "the branch {branch} is not on {from}")
+            }
+            Self::BaseUnreadable {
+                from,
+                branch,
+                error,
+            } => write!(f, "den couldn't ask {from} where {branch} is: {error}"),
+            Self::NoFreeWorktreeName { wanted } => write!(
+                f,
+                "the worktree name {wanted} and every numbered variant of it are taken by other Work Items' Jobs"
+            ),
+            Self::PullRefGone { remote, number } => write!(
+                f,
+                "{remote} has no refs/pull/{number}/head, so the PR's head can't be fetched from it"
+            ),
             Self::ClaudeMissing => f.write_str("Claude Code (claude) is not on PATH"),
             Self::JobNotLive { worktree, why } => write!(
                 f,
@@ -295,15 +399,6 @@ impl fmt::Display for RefusalReason {
                 "every fresh worktree name up to -{last_tried} is taken by a Job or a worktree; den deletes none of them"
             ),
         }
-    }
-}
-
-fn kind_plural(kind: WorkItemKind) -> &'static str {
-    match kind {
-        WorkItemKind::Issue => "Issues",
-        WorkItemKind::PullRequest => "Pull Requests",
-        WorkItemKind::Branch => "Branches",
-        WorkItemKind::Run => "Runs",
     }
 }
 

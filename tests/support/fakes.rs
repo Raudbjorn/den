@@ -5,14 +5,16 @@
 
 use den::{
     cache::{CacheError, CachedObservation},
-    domain::Observation,
+    domain::{Observation, UpstreamTargets},
     github::graphql::{GraphQl, GraphQlRequest, GraphQlResponse, TransportError},
     handoff::{PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode, Writability},
     jobs::{JobRecord, JobStoreError},
     ports::{
         Clock, GitHubSource, JobStore, LaunchError, Launcher, ObservationCache, Ports,
-        SurveyFailure, SurveyRequest, Workspace, WorkspaceError, WorktreeAdd, WorktreeStart,
+        SurveyFailure, SurveyRequest, UpstreamStore, Workspace, WorkspaceError, WorktreeAdd,
+        WorktreeStart,
     },
+    upstreams::UpstreamStoreError,
 };
 use jiff::Timestamp;
 use std::{
@@ -87,6 +89,11 @@ pub enum WorkspaceCall {
         clone: PathBuf,
         add: WorktreeAdd,
     },
+    Clone {
+        url: String,
+        remote: String,
+        into: PathBuf,
+    },
 }
 
 #[derive(Default)]
@@ -94,10 +101,14 @@ struct WorkspaceState {
     clones: BTreeMap<PathBuf, FakeClone>,
     /// Other paths that exist (worktrees added, folders in the way).
     existing: BTreeSet<PathBuf>,
-    /// Paths den can't inspect, and why.
-    uninspectable: BTreeMap<PathBuf, String>,
-    /// Operation name ("fetch", "add_worktree", "ls-remote") → error.
+    /// Operation name ("fetch", "add_worktree", "ls-remote", "clone") → error.
     failures: BTreeMap<String, String>,
+    /// Paths den can't inspect, with the error.
+    unknown: BTreeMap<PathBuf, String>,
+    /// Folders (not clones) den may not write in.
+    unwritable: BTreeSet<PathBuf>,
+    /// Repos reachable by URL (not cloned): URL → branch → commit.
+    hosted: BTreeMap<String, BTreeMap<String, String>>,
     calls: Vec<WorkspaceCall>,
 }
 
@@ -137,11 +148,42 @@ impl FakeWorkspace {
         );
     }
 
+    /// The Repo at `url` (reachable, not cloned) has `branch` at `commit`.
+    pub fn host(&self, url: &str, branch: &str, commit: &str) {
+        self.state
+            .lock()
+            .expect("lock")
+            .hosted
+            .entry(url.to_owned())
+            .or_default()
+            .insert(branch.to_owned(), commit.to_owned());
+    }
+
+    /// The hosted Repo at `url` has PR `number` whose head is at `commit`
+    /// (`refs/pull/<number>/head`); a clone of it can fetch that ref.
+    pub fn host_pull_head(&self, url: &str, number: u64, commit: &str) {
+        self.state
+            .lock()
+            .expect("lock")
+            .hosted
+            .entry(url.to_owned())
+            .or_default()
+            .insert(pull_ref(number), commit.to_owned());
+    }
+
     /// `branch` on `remote` points at `commit` (what `ls-remote` answers and `fetch` brings).
     pub fn set_remote_head(&self, clone: &str, remote: &str, branch: &str, commit: &str) {
         self.with_clone(clone, |c| {
             c.remote_heads
                 .insert((remote.to_owned(), branch.to_owned()), commit.to_owned());
+        });
+    }
+
+    /// PR `number`'s ref (`refs/pull/<n>/head`) on `remote` points at `commit`.
+    pub fn set_remote_pull_head(&self, clone: &str, remote: &str, number: u64, commit: &str) {
+        self.with_clone(clone, |c| {
+            c.remote_heads
+                .insert((remote.to_owned(), pull_ref(number)), commit.to_owned());
         });
     }
 
@@ -178,15 +220,6 @@ impl FakeWorkspace {
         });
     }
 
-    /// den can't inspect `path` (`path_state` answers unknown).
-    pub fn make_uninspectable(&self, path: &str, why: &str) {
-        self.state
-            .lock()
-            .expect("lock")
-            .uninspectable
-            .insert(path.into(), why.to_owned());
-    }
-
     /// Something at `path` is gone (a folder removed by hand).
     pub fn remove_existing(&self, path: &str) {
         self.state
@@ -198,6 +231,22 @@ impl FakeWorkspace {
 
     pub fn make_unwritable(&self, clone: &str) {
         self.with_clone(clone, |c| c.not_writable = true);
+    }
+
+    /// den can't inspect `path`.
+    pub fn make_unknown(&self, path: &str, error: &str) {
+        self.state
+            .lock()
+            .expect("lock")
+            .unknown
+            .insert(path.into(), error.to_owned());
+    }
+
+    /// A folder (not a clone) at `path` that den may not write in.
+    pub fn add_unwritable_folder(&self, path: &str) {
+        let mut state = self.state.lock().expect("lock");
+        state.existing.insert(path.into());
+        state.unwritable.insert(path.into());
     }
 
     /// Something already exists at `path`.
@@ -264,9 +313,15 @@ impl Workspace for FakeWorkspace {
 
     fn path_state(&self, path: &Path) -> PathState {
         let state = self.state.lock().expect("lock");
-        if let Some(why) = state.uninspectable.get(path) {
-            return PathState::Unknown(why.clone());
+        if let Some(error) = state.unknown.get(path) {
+            return PathState::Unknown(error.clone());
         }
+        // Folders holding a clone or an existing path exist too.
+        let holds_something = state
+            .clones
+            .keys()
+            .chain(state.existing.iter())
+            .any(|p| p.starts_with(path));
         match state.clones.get(path) {
             Some(clone) => PathState::Exists {
                 writable: if clone.not_writable {
@@ -275,8 +330,12 @@ impl Workspace for FakeWorkspace {
                     Writability::Writable
                 },
             },
-            None if state.existing.contains(path) => PathState::Exists {
-                writable: Writability::Writable,
+            None if state.existing.contains(path) || holds_something => PathState::Exists {
+                writable: if state.unwritable.contains(path) {
+                    Writability::NotWritable
+                } else {
+                    Writability::Writable
+                },
             },
             None => PathState::Missing,
         }
@@ -301,6 +360,25 @@ impl Workspace for FakeWorkspace {
             .remote_heads
             .get(&(remote.to_owned(), branch.to_owned()))
             .cloned())
+    }
+
+    fn remote_pull_head(
+        &self,
+        clone: &Path,
+        remote: &str,
+        number: u64,
+    ) -> Result<Option<String>, WorkspaceError> {
+        let state = self.state.lock().expect("lock");
+        Self::failure(&state, "ls-remote")?;
+        let clone = state.clones.get(clone).ok_or_else(|| no_clone(clone))?;
+        Ok(clone
+            .remote_heads
+            .get(&(remote.to_owned(), pull_ref(number)))
+            .cloned())
+    }
+
+    fn check_tracking(&self, _: &Path, _: &str, _: &str, _: &str) -> Result<(), WorkspaceError> {
+        Self::failure(&self.state.lock().expect("lock"), "check_tracking")
     }
 
     /// Like `git worktree list`: the clone's own checkout first.
@@ -328,7 +406,8 @@ impl Workspace for FakeWorkspace {
         });
         Self::failure(&state, "fetch")?;
         let fake = state.clones.get_mut(clone).ok_or_else(|| no_clone(clone))?;
-        // `+refs/heads/<b>:refs/remotes/<r>/<b>`
+        // `+refs/heads/<b>:refs/remotes/<r>/<b>`, or a PR ref
+        // `+refs/pull/<n>/head:refs/den/pull/<r>/<n>` (kept whole as the key).
         let (source, destination) = refspec
             .trim_start_matches('+')
             .split_once(':')
@@ -352,7 +431,10 @@ impl Workspace for FakeWorkspace {
         });
         Self::failure(&state, "add_worktree")?;
         let fake = state.clones.get_mut(clone).ok_or_else(|| no_clone(clone))?;
-        if let WorktreeStart::NewBranchTracking { start } = &add.start {
+        if let WorktreeStart::NewBranchTracking { start }
+        | WorktreeStart::ClonedBranchTracking { start }
+        | WorktreeStart::NewBranch { start } = &add.start
+        {
             let commit = fake.refs.get(start).cloned().expect("the start ref exists");
             fake.refs
                 .insert(format!("refs/heads/{}", add.branch), commit);
@@ -364,6 +446,63 @@ impl Workspace for FakeWorkspace {
             prunable: false,
         });
         state.existing.insert(add.path.clone());
+        Ok(())
+    }
+
+    fn url_branch_head(&self, url: &str, branch: &str) -> Result<Option<String>, WorkspaceError> {
+        let state = self.state.lock().expect("lock");
+        Self::failure(&state, "ls-remote")?;
+        let hosted = state.hosted.get(url).ok_or_else(|| WorkspaceError {
+            operation: format!("ask {url} for {branch}"),
+            detail: "repository not found".to_owned(),
+        })?;
+        Ok(hosted.get(branch).cloned())
+    }
+
+    fn url_pull_head(&self, url: &str, number: u64) -> Result<Option<String>, WorkspaceError> {
+        let state = self.state.lock().expect("lock");
+        Self::failure(&state, "ls-remote")?;
+        let hosted = state.hosted.get(url).ok_or_else(|| WorkspaceError {
+            operation: format!("ask {url} for PR {number}'s head"),
+            detail: "repository not found".to_owned(),
+        })?;
+        Ok(hosted.get(&pull_ref(number)).cloned())
+    }
+
+    /// Makes a clone at `into` whose remote `remote` is `url`, with the
+    /// hosted Repo's branches as remote-tracking refs.
+    fn clone_repo(&self, url: &str, remote: &str, into: &Path) -> Result<(), WorkspaceError> {
+        let mut state = self.state.lock().expect("lock");
+        state.calls.push(WorkspaceCall::Clone {
+            url: url.to_owned(),
+            remote: remote.to_owned(),
+            into: into.to_owned(),
+        });
+        Self::failure(&state, "clone")?;
+        if state.clones.contains_key(into) || state.existing.contains(into) {
+            return Err(WorkspaceError {
+                operation: format!("clone into {}", into.display()),
+                detail: "something already exists there".to_owned(),
+            });
+        }
+        let branches = state.hosted.get(url).cloned().unwrap_or_default();
+        let clone = FakeClone {
+            remotes: vec![Remote {
+                name: remote.to_owned(),
+                url: url.to_owned(),
+            }],
+            refs: branches
+                .iter()
+                .filter(|(b, _)| !b.starts_with("refs/"))
+                .map(|(b, c)| (format!("refs/remotes/{remote}/{b}"), c.clone()))
+                .collect(),
+            remote_heads: branches
+                .iter()
+                .map(|(b, c)| ((remote.to_owned(), b.clone()), c.clone()))
+                .collect(),
+            ..FakeClone::default()
+        };
+        state.clones.insert(into.to_owned(), clone);
         Ok(())
     }
 }
@@ -527,6 +666,61 @@ impl ObservationCache for FakeCache {
     }
 }
 
+/// Upstream choices in memory: what `load` answers, and every `store`.
+#[derive(Default)]
+pub struct FakeUpstreams {
+    held: Mutex<UpstreamTargets>,
+    stored: Mutex<Vec<UpstreamTargets>>,
+    store_error: Mutex<Option<UpstreamStoreError>>,
+    load_error: Mutex<Option<UpstreamStoreError>>,
+}
+
+impl FakeUpstreams {
+    /// A store already holding `upstreams` (set in an earlier session).
+    pub fn holding(upstreams: UpstreamTargets) -> Self {
+        Self {
+            held: Mutex::new(upstreams),
+            ..Self::default()
+        }
+    }
+
+    /// Loading fails with `error` (an unreadable file).
+    pub fn failing_load(error: UpstreamStoreError) -> Self {
+        Self {
+            load_error: Mutex::new(Some(error)),
+            ..Self::default()
+        }
+    }
+
+    /// Every set of choices stored, in order.
+    pub fn stored(&self) -> Vec<UpstreamTargets> {
+        self.stored.lock().expect("lock").clone()
+    }
+
+    /// The next stores fail with `error`.
+    pub fn fail_store(&self, error: UpstreamStoreError) {
+        *self.store_error.lock().expect("lock") = Some(error);
+    }
+}
+
+impl UpstreamStore for FakeUpstreams {
+    fn load(&self) -> Result<UpstreamTargets, UpstreamStoreError> {
+        if let Some(error) = self.load_error.lock().expect("lock").clone() {
+            return Err(error);
+        }
+        Ok(self.held.lock().expect("lock").clone())
+    }
+
+    fn store(&self, upstreams: &UpstreamTargets) -> Result<(), UpstreamStoreError> {
+        if let Some(error) = self.store_error.lock().expect("lock").clone() {
+            return Err(error);
+        }
+        self.stored.lock().expect("lock").push(upstreams.clone());
+        upstreams.clone_into(&mut self.held.lock().expect("lock"));
+        Ok(())
+    }
+}
+
 pub fn ports(github: Arc<FakeGitHub>, now: Timestamp) -> Ports {
     ports_with_cache(github, Arc::new(FakeCache::default()), now)
 }
@@ -538,6 +732,7 @@ pub fn ports_with_cache(github: Arc<FakeGitHub>, cache: Arc<FakeCache>, now: Tim
         workspace: Arc::new(FakeWorkspace::default()),
         launcher: Arc::new(FakeLauncher::default()),
         jobs: Arc::new(FakeJobs::default()),
+        upstreams: Arc::new(FakeUpstreams::default()),
         clock: Arc::new(FixedClock(now)),
     }
 }
@@ -592,4 +787,9 @@ pub fn data(value: serde_json::Value) -> GraphQlResponse {
         data: Some(value),
         errors: Vec::new(),
     }
+}
+
+/// A PR ref as the fakes key it: `refs/pull/<number>/head`.
+fn pull_ref(number: u64) -> String {
+    format!("refs/pull/{number}/head")
 }

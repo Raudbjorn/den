@@ -9,7 +9,8 @@
 //! - [`github`]: the real GitHub source over `gh api graphql`.
 //! - [`cache`]: the last Observation per viewer on disk, merged with each refresh by source.
 //! - [`handoff`]: launching a Job: inspect the workspace, plan (pure), execute.
-//! - [`workspace`], [`launcher`], [`jobs`]: the real git, kitty/clipboard and Job-record adapters.
+//! - [`workspace`], [`launcher`], [`jobs`], [`upstreams`]: the real git, kitty/clipboard,
+//!   Job-record and Upstream-choice adapters.
 //! - [`runtime`]: performing Effects (background worker, or synchronously).
 //! - [`ordering`], [`config`], [`paths`], [`logging`], [`process`].
 //! - [`layout`]: the responsive layout (plate widths, narrow terminals).
@@ -35,4 +36,5 @@ pub mod process;
 pub mod runtime;
 pub mod terminal;
 pub mod ui;
+pub mod upstreams;
 pub mod workspace;

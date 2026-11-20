@@ -43,8 +43,10 @@ pub struct Repo {
     pub is_archived: bool,
     /// `None` for an empty Repo.
     pub default_branch: Option<String>,
-    /// The fork's Upstream, when it is a fork whose parent is visible.
-    pub parent: Option<RepoId>,
+    /// The fork's Upstream as GitHub described it, when it is a fork whose
+    /// Upstream den can see. Its own `parent` is never read (always `None`).
+    /// den ignores it unless the Upstream is chosen as the target (ADR-0003).
+    pub parent: Option<Box<Repo>>,
 }
 
 /// One survey. Each Work Item kind has its own slot; a slot is empty either
@@ -61,6 +63,13 @@ pub struct Observation {
     pub branches: Vec<Branch>,
     pub runs: Vec<Run>,
     pub coverage: Coverage,
+}
+
+impl Repo {
+    /// The Upstream, when this Repo is a fork whose Upstream den can see.
+    pub fn upstream(&self) -> Option<&Repo> {
+        self.parent.as_deref().filter(|_| self.is_fork)
+    }
 }
 
 impl Observation {

@@ -23,7 +23,7 @@ use den::{
 };
 use std::{collections::BTreeMap, path::PathBuf};
 use support::{
-    build::{ME, ObservationBuilder, issue, now, pr},
+    build::{ME, ObservationBuilder, now, pr},
     fakes::WorkspaceCall,
     harness::Harness,
 };
@@ -252,13 +252,17 @@ fn the_same_pr_number_in_two_repos_where_the_main_clone_points_at_the_other_repo
         .pull_request(pr("other/app", 7).author(ME).changes_requested())
         .build();
     let mut harness = started(launch_config(&[]), observation);
-    // The only clone named `app` is other/app's.
+    // The only clone named `app` is other/app's, and the folder den would
+    // clone octo/app into instead (#12) is taken too.
     harness
         .workspace
         .add_clone(CLONE, &[("origin", "git@github.com:other/app.git")]);
     harness
         .workspace
         .set_remote_head(CLONE, "origin", "feature-7", HEAD_7);
+    harness
+        .workspace
+        .add_existing("/home/me/dev/octo-app/notes.txt");
     let octo_row = harness
         .view
         .list
@@ -281,6 +285,10 @@ fn the_same_pr_number_in_two_repos_where_the_main_clone_points_at_the_other_repo
     );
     assert!(
         text.contains("/home/me/dev/app is named like it but its remotes are origin → git@github.com:other/app.git"),
+        "{text}"
+    );
+    assert!(
+        text.contains("den won't clone octo/app into a folder that exists: /home/me/dev/app and /home/me/dev/octo-app both exist"),
         "{text}"
     );
     press(&mut harness, Key::Enter);
@@ -719,20 +727,16 @@ fn a_main_clone_den_cannot_write_in_is_refused() {
 }
 
 #[test]
-fn work_items_den_cannot_launch_yet_are_refused_with_the_reason() {
+fn prs_den_cannot_launch_are_refused_with_the_reason() {
     let mut harness = started(
         launch_config(&[]),
         ObservationBuilder::new()
             .owner("octo")
             .repo("octo/app")
-            .pull_request(
-                pr("octo/app", 7)
-                    .author(ME)
-                    .changes_requested()
-                    .head_from("someone/app"),
-            )
+            // #13 made cross-Repo heads launchable (fetched as the PR ref), so
+            // the cross-Repo PR #7 that was refused here moved to
+            // `tests/app_upstream.rs`, which asserts it launches.
             .pull_request(pr("octo/app", 8).author(ME).pending("CI"))
-            .issue(issue("octo/app", 9))
             .build(),
     );
     with_upstream_clone(&harness);
@@ -753,16 +757,8 @@ fn work_items_den_cannot_launch_yet_are_refused_with_the_reason() {
         press(&mut harness, Key::Esc);
     }
     assert_eq!(
-        seen["octo/app#7"],
-        "the PR's head branch lives in another Repo (someone/app); launching for cross-Repo heads isn't built yet"
-    );
-    assert_eq!(
         seen["octo/app#8"],
         "this Work Item has no Next Step to hand off"
-    );
-    assert_eq!(
-        seen["octo/app#9"],
-        "launching a Job for Issues isn't built yet (only Pull Requests so far)"
     );
 }
 

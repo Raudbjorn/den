@@ -5,6 +5,7 @@ use crate::{
     domain::Observation,
     handoff::{JobsCheck, LaunchReport, WorkspaceView},
     ports::SurveyFailure,
+    upstreams::UpstreamStoreError,
 };
 use jiff::Timestamp;
 
@@ -80,5 +81,9 @@ pub enum Event {
     /// couldn't be read.
     JobsChecked {
         outcome: Result<Box<JobsCheck>, String>,
+    },
+    /// The Upstream choices were saved, or why not.
+    UpstreamsStored {
+        outcome: Result<(), UpstreamStoreError>,
     },
 }

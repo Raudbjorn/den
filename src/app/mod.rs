@@ -9,6 +9,7 @@ mod event;
 mod launch;
 mod overlay;
 mod scope;
+mod upstream;
 mod view;
 pub mod view_model;
 
@@ -21,7 +22,7 @@ use crate::{
     cache::{self, CacheError, CachedObservation},
     config::{Config, ConfigError},
     decide::{self, Decision},
-    domain::{Observation, SourceState, WorkItemId},
+    domain::{Observation, SourceState, UpstreamTargets, WorkItemId},
     handoff::{
         JobCheck, JobsCheck,
         prompts::{Prompts, PromptsError},
@@ -75,6 +76,13 @@ pub struct App {
     /// The recorded Jobs' worktree states (#14), newest first; refreshed at
     /// start, on `r`, after a launch, and per Work Item by a sheet's inspection.
     job_checks: Vec<JobCheck>,
+    /// The forks whose target is their Upstream (#13).
+    upstreams: UpstreamTargets,
+    /// Why the stored Upstream choices couldn't be read at startup, if they
+    /// couldn't; `u` then changes nothing.
+    upstreams_unreadable: Option<String>,
+    /// The last thing that went wrong with a `u` (not saved, Upstream not visible).
+    upstream_problem: Option<String>,
 }
 
 impl App {
@@ -97,6 +105,9 @@ impl App {
             default_clone_root: None,
             next_launch: 0,
             job_checks: Vec::new(),
+            upstreams: UpstreamTargets::default(),
+            upstreams_unreadable: None,
+            upstream_problem: None,
         }
     }
 
@@ -133,6 +144,7 @@ impl App {
             Event::LaunchInspected { id, view } => self.launch_inspected(id, view),
             Event::LaunchFinished { id, report } => self.launch_finished(id, report),
             Event::JobsChecked { outcome } => self.jobs_checked(outcome),
+            Event::UpstreamsStored { outcome } => self.upstreams_stored(outcome),
         };
         (self.view(), effects)
     }
@@ -156,6 +168,8 @@ impl App {
             layout: Layout::for_size(self.size),
             overlay: self.overlay.as_ref(),
             job_checks: &self.job_checks,
+            upstreams: &self.upstreams,
+            upstream_note: self.upstream_note(),
         })
     }
 
@@ -164,11 +178,18 @@ impl App {
             Ok(config) => {
                 let request = SurveyRequest {
                     owners: config.owners.clone(),
+                    upstreams: self.upstreams.clone(),
                 };
                 // The cache is read first, so it shows before the survey answers;
                 // then the Jobs (local and bounded), so their markers don't wait
                 // for gh on the single worker.
                 let mut effects = vec![Effect::LoadCache, Effect::CheckJobs];
+                if let Some(error) = &self.upstreams_unreadable {
+                    effects.push(Effect::log(
+                        LogLevel::Warn,
+                        format!("ignored the Upstream choices: {error}; every fork targets itself"),
+                    ));
+                }
                 effects.extend(self.begin_survey(request));
                 effects
             }
@@ -233,6 +254,7 @@ impl App {
             }
             Key::Char('r') => self.refresh(),
             Key::Char('c') => self.open_launch_sheet(),
+            Key::Char('u') if self.scope.focus == Focus::Sidebar => self.toggle_upstream(),
             Key::Enter
             | Key::Esc
             | Key::Char(_)
@@ -301,6 +323,7 @@ impl App {
             Ok(config) => {
                 let request = SurveyRequest {
                     owners: config.owners.clone(),
+                    upstreams: self.upstreams.clone(),
                 };
                 let mut effects = vec![Effect::CheckJobs];
                 effects.extend(self.begin_survey(request));
@@ -357,9 +380,31 @@ impl App {
 
     /// Shows `shown`, deciding its Work Items as of `now`, keeping the selection.
     fn show(&mut self, shown: CachedObservation, now: Timestamp) {
-        let observation = &shown.observation;
-        self.ordered = ordering::order(decide::decide(observation, &observation.viewer, now));
         self.shown = Some(shown);
+        self.decide_shown(now);
+    }
+
+    /// Decides what is shown again (the Upstream choices changed).
+    fn redecide(&mut self) {
+        if let Some(now) = self
+            .now
+            .or_else(|| self.shown.as_ref().map(|s| s.observation.observed_at))
+        {
+            self.decide_shown(now);
+        }
+    }
+
+    fn decide_shown(&mut self, now: Timestamp) {
+        let Some(shown) = &self.shown else {
+            return;
+        };
+        let observation = &shown.observation;
+        self.ordered = ordering::order(decide::decide_with(
+            observation,
+            &observation.viewer,
+            &self.upstreams,
+            now,
+        ));
         self.apply_scope();
     }
 

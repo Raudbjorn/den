@@ -268,8 +268,7 @@ fn each_way_den_cannot_inspect_a_worktree_is_unknown_never_missing() {
         h.workspace.add_existing(&worktree(8));
         // The path can't be inspected.
         h.jobs.holding(job(9));
-        h.workspace
-            .make_uninspectable(&worktree(9), "permission denied");
+        h.workspace.make_unknown(&worktree(9), "permission denied");
         // A record pointing at the Main Clone itself, not a Job's worktree.
         h.jobs.holding(JobRecord {
             worktree: CLONE.into(),
@@ -499,6 +498,8 @@ fn start_fresh_plans_a_distinct_worktree_branch_and_session_and_leaves_the_old_o
         .into_iter()
         .filter_map(|c| match c {
             WorkspaceCall::AddWorktree { add, .. } => Some(add.path),
+            // A clone makes a folder too: it would count as touched.
+            WorkspaceCall::Clone { into, .. } => Some(into),
             WorkspaceCall::Fetch { .. } => None,
         })
         .collect();

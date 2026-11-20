@@ -19,6 +19,8 @@ use std::{
 pub const GIT_TIMEOUT_SECS: u64 = 30;
 /// The most a git call that talks to a remote (fetch, ls-remote) may take, in seconds.
 pub const GIT_NETWORK_TIMEOUT_SECS: u64 = 120;
+/// The most `git clone` may take, in seconds: a whole Repo comes over the network.
+pub const GIT_CLONE_TIMEOUT_SECS: u64 = 900;
 /// How deep under the search root Main Clones are looked for, in folder levels
 /// (`~/dev/den` is 1, `~/dev/wrk/den` is 2).
 pub const MAIN_CLONE_SEARCH_DEPTH: usize = 2;
@@ -93,6 +95,27 @@ impl GitWorkspace {
             })
         }
     }
+
+    /// The commit `wanted` (a full ref) is at in the Repo at `url`, asked with
+    /// `ls-remote` outside any clone; `Ok(None)` when it has no such ref.
+    fn url_ref_head(
+        &self,
+        url: &str,
+        wanted: &str,
+        operation: impl Fn() -> String,
+    ) -> Result<Option<String>, WorkspaceError> {
+        let url = checked_url(url, &operation)?;
+        // Outside any clone, so no clone's own config applies.
+        let invocation = self
+            .git(&std::env::temp_dir())
+            .args(["ls-remote", "--", url])
+            .arg(wanted);
+        let output = self.run_ok(&invocation, operation, GIT_NETWORK_TIMEOUT_SECS)?;
+        Ok(output.stdout_text().lines().find_map(|line| {
+            let (commit, name) = line.split_once('\t')?;
+            (name.trim() == wanted).then(|| commit.trim().to_owned())
+        }))
+    }
 }
 
 fn failure_detail(output: &Output) -> String {
@@ -102,6 +125,17 @@ fn failure_detail(output: &Output) -> String {
     } else {
         stderr
     }
+}
+
+/// A URL to clone or ask must not look like an option to git.
+fn checked_url(url: &str, operation: impl Fn() -> String) -> Result<&str, WorkspaceError> {
+    if url.trim().is_empty() || url.starts_with('-') {
+        return Err(WorkspaceError {
+            operation: operation(),
+            detail: format!("{url:?} is not a usable Repo URL"),
+        });
+    }
+    Ok(url)
 }
 
 /// Remote names come from the clone's own config; one that looks like an option
@@ -226,6 +260,67 @@ impl Workspace for GitWorkspace {
         }))
     }
 
+    fn remote_pull_head(
+        &self,
+        clone: &Path,
+        remote: &str,
+        number: u64,
+    ) -> Result<Option<String>, WorkspaceError> {
+        let operation = || {
+            format!(
+                "ask {remote} for PR {number}'s head (from {})",
+                clone.display()
+            )
+        };
+        let remote = checked_remote(remote, operation)?;
+        let wanted = format!("refs/pull/{number}/head");
+        let invocation = self.git(clone).args(["ls-remote", remote]).arg(&wanted);
+        let output = self.run_ok(&invocation, operation, GIT_NETWORK_TIMEOUT_SECS)?;
+        Ok(output.stdout_text().lines().find_map(|line| {
+            let (commit, name) = line.split_once('\t')?;
+            (name.trim() == wanted).then(|| commit.trim().to_owned())
+        }))
+    }
+
+    fn check_tracking(
+        &self,
+        clone: &Path,
+        branch: &str,
+        remote: &str,
+        remote_branch: &str,
+    ) -> Result<(), WorkspaceError> {
+        let operation = || format!("check the upstream of {branch}");
+        for (setting, expected) in [
+            ("remote", remote.to_owned()),
+            ("merge", format!("refs/heads/{remote_branch}")),
+        ] {
+            let output = self.run(
+                &self.git(clone).args([
+                    "config",
+                    "--get-all",
+                    &format!("branch.{branch}.{setting}"),
+                ]),
+                operation,
+                GIT_TIMEOUT_SECS,
+            )?;
+            if !output.status.success() && output.status.code() != Some(1) {
+                return Err(WorkspaceError {
+                    operation: operation(),
+                    detail: failure_detail(&output),
+                });
+            }
+            if !output.status.success() || output.stdout_text() != expected {
+                return Err(WorkspaceError {
+                    operation: operation(),
+                    detail: format!(
+                        "the branch must track {remote}/{remote_branch}; its {setting} is not {expected:?}; tracking was not changed"
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn worktrees(&self, clone: &Path) -> Result<Vec<RegisteredWorktree>, WorkspaceError> {
         let invocation = self.git(clone).args(["worktree", "list", "--porcelain"]);
         let output = self.run_ok(
@@ -256,18 +351,140 @@ impl Workspace for GitWorkspace {
             )
         };
         let invocation = match &add.start {
-            WorktreeStart::NewBranchTracking { start } => self
-                .git(clone)
-                .args(["worktree", "add", "--track", "-b", add.branch.as_str()])
-                .arg(&add.path)
-                .arg(start),
+            WorktreeStart::NewBranchTracking { start }
+            | WorktreeStart::ClonedBranchTracking { start } => {
+                let remote = start
+                    .strip_prefix("refs/remotes/")
+                    .and_then(|r| r.strip_suffix(&format!("/{}", add.branch)))
+                    .ok_or_else(|| WorkspaceError {
+                        operation: operation(),
+                        detail: "the tracking ref does not name the Job's branch".to_owned(),
+                    })?;
+                let remote = checked_remote(remote, operation)?;
+                // Explicit fetches do not extend a single-branch clone's mapping.
+                let mapping = format!("+refs/heads/{}:{start}", add.branch);
+                let mappings = self.run(
+                    &self.git(clone).args([
+                        "config",
+                        "--get-all",
+                        &format!("remote.{remote}.fetch"),
+                    ]),
+                    operation,
+                    GIT_TIMEOUT_SECS,
+                )?;
+                if !mappings.status.success() && mappings.status.code() != Some(1) {
+                    return Err(WorkspaceError {
+                        operation: operation(),
+                        detail: failure_detail(&mappings),
+                    });
+                }
+                let wildcard = format!("+refs/heads/*:refs/remotes/{remote}/*");
+                if !mappings
+                    .stdout_text()
+                    .lines()
+                    .any(|m| m == mapping || m == wildcard)
+                {
+                    self.run_ok(
+                        &self.git(clone).args([
+                            "remote",
+                            "set-branches",
+                            "--add",
+                            remote,
+                            &add.branch,
+                        ]),
+                        operation,
+                        GIT_TIMEOUT_SECS,
+                    )?;
+                }
+                let existing = if matches!(add.start, WorktreeStart::ClonedBranchTracking { .. }) {
+                    self.resolve(clone, &format!("refs/heads/{}", add.branch))?
+                } else {
+                    None
+                };
+                if let Some(commit) = existing {
+                    if self.resolve(clone, start)?.as_ref() != Some(&commit) {
+                        return Err(WorkspaceError {
+                            operation: operation(),
+                            detail: "the cloned branch differs from the fetched head".to_owned(),
+                        });
+                    }
+                    self.check_tracking(clone, &add.branch, remote, &add.branch)?;
+                    self.run_ok(
+                        &self.git(clone).args(["switch", "--detach"]),
+                        operation,
+                        GIT_TIMEOUT_SECS,
+                    )?;
+                    self.git(clone)
+                        .args(["worktree", "add"])
+                        .arg(&add.path)
+                        .arg(&add.branch)
+                } else {
+                    self.git(clone)
+                        .args(["worktree", "add", "--track", "-b", add.branch.as_str()])
+                        .arg(&add.path)
+                        .arg(start)
+                }
+            }
             WorktreeStart::ExistingBranch => self
                 .git(clone)
                 .args(["worktree", "add"])
                 .arg(&add.path)
                 .arg(&add.branch),
+            WorktreeStart::NewBranch { start } => self
+                .git(clone)
+                .args(["worktree", "add", "--no-track", "-b", add.branch.as_str()])
+                .arg(&add.path)
+                .arg(start),
         };
         self.run_ok(&invocation, operation, GIT_TIMEOUT_SECS)
+            .map(|_| ())
+    }
+
+    fn url_branch_head(&self, url: &str, branch: &str) -> Result<Option<String>, WorkspaceError> {
+        let operation = || format!("ask {url} for {branch}");
+        self.url_ref_head(url, &format!("refs/heads/{branch}"), operation)
+    }
+
+    fn url_pull_head(&self, url: &str, number: u64) -> Result<Option<String>, WorkspaceError> {
+        let operation = || format!("ask {url} for PR {number}'s head");
+        self.url_ref_head(url, &format!("refs/pull/{number}/head"), operation)
+    }
+
+    fn clone_repo(&self, url: &str, remote: &str, into: &Path) -> Result<(), WorkspaceError> {
+        let operation = || format!("git clone {url} {}", into.display());
+        let url = checked_url(url, operation)?;
+        let remote = checked_remote(remote, operation)?;
+        // git would clone into an empty folder that exists; den never does.
+        match fs::symlink_metadata(into) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Ok(_) => {
+                return Err(WorkspaceError {
+                    operation: operation(),
+                    detail: "something already exists there".to_owned(),
+                });
+            }
+            Err(e) => {
+                return Err(WorkspaceError {
+                    operation: operation(),
+                    detail: e.to_string(),
+                });
+            }
+        }
+        let (Some(parent), Some(folder)) = (into.parent(), into.file_name()) else {
+            return Err(WorkspaceError {
+                operation: operation(),
+                detail: "it has no parent folder".to_owned(),
+            });
+        };
+        // git resolves the destination after `-C <parent>`, so it gets only the
+        // folder's name: a relative `into` (`dev/app`) would otherwise land at
+        // `dev/dev/app`. `--origin` names the remote, overriding the user's
+        // `clone.defaultRemoteName`.
+        let invocation = self
+            .git(parent)
+            .args(["clone", "--origin", remote, "--", url])
+            .arg(folder);
+        self.run_ok(&invocation, operation, GIT_CLONE_TIMEOUT_SECS)
             .map(|_| ())
     }
 }

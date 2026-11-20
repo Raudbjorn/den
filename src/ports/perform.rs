@@ -66,6 +66,9 @@ pub fn perform(effect: &Effect, ports: &Ports) -> Vec<Event> {
                 ports.launcher.as_ref(),
             )),
         }],
+        Effect::StoreUpstreams { upstreams } => vec![Event::UpstreamsStored {
+            outcome: ports.upstreams.store(upstreams),
+        }],
         Effect::Quit | Effect::Log(_) => Vec::new(),
     }
 }

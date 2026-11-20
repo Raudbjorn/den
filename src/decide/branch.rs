@@ -6,9 +6,18 @@
 //! [`STALE_BRANCH_AGE_DAYS`] → Open PR; older (a Stale Branch) → Prune or
 //! revive. Both are Waiting On the author of the last commit; an author GitHub
 //! could not match to a login leaves the item Waiting On nobody, unattributed.
+//!
+//! The comparison branch is the Repo's own default branch, or, for a fork whose
+//! target is its Upstream (#13), the Upstream's. A Branch whose commits were
+//! counted against anything else (counted before the target was switched, or
+//! kept from an earlier survey) gets no Next Step until a survey compares it
+//! again: den never judges it against a branch the user didn't choose.
 
 use super::{Attribution, Context, Decision, Explanation, WorkItem};
-use crate::domain::{NextStep, facts::Branch};
+use crate::domain::{
+    Comparison, NextStep, comparison_for,
+    facts::{Branch, ComparisonBranch},
+};
 use jiff::{SignedDuration, Timestamp};
 
 /// A Branch whose last commit is more than this many days old is a Stale Branch.
@@ -52,6 +61,21 @@ fn decide(ctx: &Context<'_>, branch: &Branch) -> Decision {
         updated_at: branch.last_commit_at,
     };
     let base = branch.comparison.describe(&branch.repo);
+    if let Some(reason) = stale_comparison(ctx, branch) {
+        return Decision::new(
+            ctx,
+            item,
+            None,
+            Attribution::nobody("no Next Step"),
+            Explanation {
+                no_step_reason: Some(reason),
+                unknowns: vec![format!(
+                    "commits ahead of the comparison branch it should have (it was compared against {base})"
+                )],
+                ..Explanation::default()
+            },
+        );
+    }
     let Some(ahead) = branch.commits_ahead else {
         return Decision::new(
             ctx,
@@ -115,6 +139,35 @@ fn decide(ctx: &Context<'_>, branch: &Branch) -> Decision {
             unknowns,
         },
     )
+}
+
+/// Why `branch`'s comparison is not the one its Repo's target calls for, if it
+/// isn't. A Repo den knows nothing about is taken as compared correctly.
+fn stale_comparison(ctx: &Context<'_>, branch: &Branch) -> Option<String> {
+    let repo = ctx.observation.repo(&branch.repo)?;
+    let compared = branch.comparison.describe(&branch.repo);
+    let expected: ComparisonBranch = match comparison_for(repo, ctx.upstreams) {
+        Comparison::Against(expected) => expected,
+        Comparison::Nothing => return None,
+        Comparison::UpstreamUnavailable { fork } => {
+            return Some(format!(
+                "{fork}'s target is its Upstream, but den can't see the Upstream's default branch to compare against (its commits were counted against {compared})"
+            ));
+        }
+    };
+    if expected == branch.comparison {
+        return None;
+    }
+    let target = if expected.repo == branch.repo {
+        "its own default branch"
+    } else {
+        "its Upstream's default branch"
+    };
+    Some(format!(
+        "its commits were counted against {compared}, but {} now compares against {target} {}; refresh (r) to compare again",
+        branch.repo,
+        expected.describe(&branch.repo)
+    ))
 }
 
 /// How old the last commit is; a commit dated in the future counts as new.

@@ -20,7 +20,7 @@ pub const JOBS_FILE: &str = "jobs.json";
 /// The Job records file format. Bump it when a change to [`JobRecord`] would
 /// make older files decode wrongly.
 pub const JOBS_FORMAT: u32 = 1;
-/// The largest Job records file den will read, in bytes.
+/// The largest Job records file den will read or write, in bytes.
 pub const MAX_JOBS_BYTES: u64 = 8 * 1024 * 1024;
 /// The lock file held while a record is appended, beside the records file.
 pub const JOBS_LOCK_FILE_SUFFIX: &str = ".lock";
@@ -152,6 +152,11 @@ impl JobStore for FileJobStore {
             jobs,
         })
         .map_err(|e| self.write_error(e))?;
+        if body.len() as u64 > MAX_JOBS_BYTES {
+            return Err(self.write_error(format!(
+                "adding this Job would exceed the {MAX_JOBS_BYTES}-byte records limit; existing records were kept"
+            )));
+        }
         files::write_atomically(&self.path, &body).map_err(|e| self.write_error(e))
     }
 }

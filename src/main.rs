@@ -7,8 +7,10 @@
 //! `den --dump COLSxROWS` runs one survey and prints the frame as plain text
 //! instead (a debugging aid).
 //!
-//! `den --launch OWNER/REPO#N [--prompt TEXT] [--yes]` drives the launch sheet
-//! without the TUI (for manual runs): it surveys, selects that PR, presses `c`,
+//! `den --launch ITEM [--prompt TEXT] [--yes]` drives the launch sheet without
+//! the TUI (for manual runs). ITEM is `OWNER/REPO#N` (an Issue or a PR),
+//! `OWNER/REPO:BRANCH` or `OWNER/REPO@WORKFLOW` (a workflow file such as
+//! `ci.yml`). It surveys, selects that Work Item, presses `c`,
 //! optionally replaces the prompt by typing it into the sheet's field, and
 //! prints the sheet. Only with `--yes` does it press `Enter` and launch.
 //!
@@ -32,7 +34,7 @@ use den::{
     launcher::{KittyLauncher, LaunchEnvironment},
     logging::{self, LoggingError},
     paths::{Paths, PathsError},
-    ports::{Ports, SystemClock},
+    ports::{Ports, SystemClock, UpstreamStore},
     runtime::{self, Worker},
     terminal::{SIGNAL_EXIT_STATUS_BASE, TerminalSession},
     ui::{
@@ -40,6 +42,7 @@ use den::{
         bear::{BearArt, BearError, GRAPHICS_ENV, Graphics},
         frame,
     },
+    upstreams::FileUpstreamStore,
     workspace::GitWorkspace,
 };
 use jiff::Timestamp;
@@ -53,7 +56,7 @@ use std::{
 
 const EXIT_FAILURE: u8 = 1;
 const EXIT_USAGE: u8 = 2;
-const USAGE: &str = "usage: den [--dump COLSxROWS | --launch OWNER/REPO#N [--prompt TEXT] [--yes]]";
+const USAGE: &str = "usage: den [--dump COLSxROWS | --launch OWNER/REPO#N|OWNER/REPO:BRANCH|OWNER/REPO@WORKFLOW [--switch-target] [--prompt TEXT] [--yes]]";
 /// The terminal size `--launch` lays the sheet out for, in cells.
 const LAUNCH_DUMP_SIZE: (u16, u16) = (160, 45);
 /// The largest `--dump` width or height, in cells. The dump buffer holds
@@ -102,9 +105,12 @@ enum Mode {
         rows: u16,
     },
     Launch {
-        item: WorkItemId,
+        item: LaunchTarget,
         prompt: Option<String>,
         confirm: bool,
+        /// Press `u` on the sheet: a fork's Work Item targets the other of
+        /// the fork and its Upstream, for this Job only (#13).
+        switch_target: bool,
     },
 }
 
@@ -132,31 +138,100 @@ fn parse_args(args: &[String]) -> Result<Mode, DenError> {
     }
 }
 
+/// The Work Item `--launch` names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LaunchTarget {
+    /// `OWNER/REPO#N`: the Issue or PR numbered N.
+    Numbered { repo: RepoId, number: u64 },
+    /// `OWNER/REPO:BRANCH`.
+    Branch { repo: RepoId, name: String },
+    /// `OWNER/REPO@WORKFLOW`: a workflow by its file name or path.
+    Workflow { repo: RepoId, workflow: String },
+}
+
+impl LaunchTarget {
+    fn parse(item: &str) -> Option<Self> {
+        let split = item.find(['#', ':', '@'])?;
+        let (repo, rest) = item.split_at(split);
+        let (owner, name) = repo.split_once('/')?;
+        if owner.is_empty() || name.is_empty() {
+            return None;
+        }
+        let repo = RepoId::new(owner, name);
+        let (marker, what) = rest.split_at(1);
+        if what.is_empty() {
+            return None;
+        }
+        match marker {
+            "#" => Some(Self::Numbered {
+                repo,
+                number: what.parse().ok()?,
+            }),
+            ":" => Some(Self::Branch {
+                repo,
+                name: what.to_owned(),
+            }),
+            _ => Some(Self::Workflow {
+                repo,
+                workflow: what.to_owned(),
+            }),
+        }
+    }
+
+    fn matches(&self, id: &WorkItemId) -> bool {
+        match (self, id) {
+            (
+                Self::Numbered { repo, number },
+                WorkItemId::Issue { repo: r, number: n }
+                | WorkItemId::PullRequest { repo: r, number: n },
+            ) => repo == r && number == n,
+            (Self::Branch { repo, name }, WorkItemId::Branch { repo: r, name: n }) => {
+                repo == r && name == n
+            }
+            (
+                Self::Workflow { repo, workflow },
+                WorkItemId::Run {
+                    repo: r,
+                    workflow: w,
+                },
+            ) => repo == r && (w.0 == *workflow || w.0.ends_with(&format!("/{workflow}"))),
+            _ => false,
+        }
+    }
+}
+
+impl std::fmt::Display for LaunchTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Numbered { repo, number } => write!(f, "{repo}#{number}"),
+            Self::Branch { repo, name } => write!(f, "{repo}:{name}"),
+            Self::Workflow { repo, workflow } => write!(f, "{repo}@{workflow}"),
+        }
+    }
+}
+
 fn parse_launch(item: &str, rest: &[String]) -> Result<Mode, DenError> {
-    let item = item
-        .split_once('#')
-        .and_then(|(repo, number)| {
-            let (owner, name) = repo.split_once('/')?;
-            Some(WorkItemId::PullRequest {
-                repo: RepoId::new(owner, name),
-                number: number.parse().ok()?,
-            })
-        })
-        .ok_or_else(|| {
-            DenError::Usage(format!(
-                "--launch expects OWNER/REPO#N such as Raudbjorn/den#12, got {item:?}"
-            ))
-        })?;
+    let item = LaunchTarget::parse(item).ok_or_else(|| {
+        DenError::Usage(format!(
+            "--launch expects OWNER/REPO#N, OWNER/REPO:BRANCH or OWNER/REPO@WORKFLOW such as Raudbjorn/den#12, got {item:?}"
+        ))
+    })?;
     let mut prompt = None;
     let mut confirm = false;
+    let mut switch_target = false;
     let mut args = rest.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--prompt" => match args.next() {
-                Some(text) => prompt = Some(text.clone()),
+                Some(text) => {
+                    den::handoff::check_prompt(text)
+                        .map_err(|e| DenError::Usage(format!("--prompt: {e}")))?;
+                    prompt = Some(text.clone());
+                }
                 None => return Err(DenError::Usage("--prompt needs the prompt text".to_owned())),
             },
             "--yes" => confirm = true,
+            "--switch-target" => switch_target = true,
             other => {
                 return Err(DenError::Usage(format!("unexpected argument {other:?}")));
             }
@@ -166,6 +241,7 @@ fn parse_launch(item: &str, rest: &[String]) -> Result<Mode, DenError> {
         item,
         prompt,
         confirm,
+        switch_target,
     })
 }
 
@@ -321,7 +397,14 @@ fn run(args: &[String]) -> Result<(), DenError> {
     if let Err(error) = &prompts {
         tracing::error!(%error, "prompts");
     }
-    let mut app = App::new(config).with_launch_settings(prompts, paths.default_clone_root.clone());
+    let upstream_store = FileUpstreamStore::in_state_dir(&paths.state_dir);
+    let upstreams = upstream_store.load();
+    if let Err(error) = &upstreams {
+        tracing::error!(%error, "upstream choices");
+    }
+    let mut app = App::new(config)
+        .with_launch_settings(prompts, paths.default_clone_root.clone())
+        .with_upstreams(upstreams);
     let ports = Ports {
         github: Arc::new(GhSource::new(GhCli::new())),
         cache: Arc::new(FileCache::in_state_dir(&paths.state_dir)),
@@ -330,6 +413,7 @@ fn run(args: &[String]) -> Result<(), DenError> {
             std::env::var_os(name)
         }))),
         jobs: Arc::new(FileJobStore::in_state_dir(&paths.state_dir)),
+        upstreams: Arc::new(upstream_store),
         clock: Arc::new(SystemClock),
     };
     match mode {
@@ -349,8 +433,27 @@ fn run(args: &[String]) -> Result<(), DenError> {
             item,
             prompt,
             confirm,
-        } => run_launch(&theme, app, &ports, &item, prompt.as_deref(), confirm),
+            switch_target,
+        } => run_launch(
+            &theme,
+            app,
+            &ports,
+            &LaunchArgs {
+                item: &item,
+                prompt: prompt.as_deref(),
+                confirm,
+                switch_target,
+            },
+        ),
     }
+}
+
+/// What `--launch` was asked for.
+struct LaunchArgs<'a> {
+    item: &'a LaunchTarget,
+    prompt: Option<&'a str>,
+    confirm: bool,
+    switch_target: bool,
 }
 
 /// `--launch`: the same keys a user would press, through the same App and
@@ -359,26 +462,30 @@ fn run_launch(
     theme: &Theme,
     mut app: App,
     ports: &Ports,
-    item: &WorkItemId,
-    prompt: Option<&str>,
-    confirm: bool,
+    args: &LaunchArgs<'_>,
 ) -> Result<(), DenError> {
+    let LaunchArgs {
+        item,
+        prompt,
+        confirm,
+        switch_target,
+    } = *args;
     let (cols, rows) = LAUNCH_DUMP_SIZE;
     app.handle(Event::Resized { cols, rows });
     let started = Event::Started {
         now: Timestamp::now(),
     };
     let (mut view, _) = runtime::settle(&mut app, started, ports);
-    // Select the PR the way a user would: ↓ until it is the selected row.
+    // Select the Work Item the way a user would: ↓ until it is the selected row.
     for _ in 0..view.list.rows.len() {
         let selected = view.list.selected.and_then(|i| view.list.rows.get(i));
-        if selected.is_some_and(|row| &row.id == item) {
+        if selected.is_some_and(|row| item.matches(&row.id)) {
             break;
         }
         view = app.handle(Event::Key(Key::Down)).0;
     }
     let selected = view.list.selected.and_then(|i| view.list.rows.get(i));
-    if selected.is_none_or(|row| &row.id != item) {
+    if selected.is_none_or(|row| !item.matches(&row.id)) {
         let why = view
             .list
             .empty
@@ -390,6 +497,9 @@ fn run_launch(
         )));
     }
     view = runtime::settle(&mut app, Event::Key(Key::Char('c')), ports).0;
+    if switch_target {
+        view = runtime::settle(&mut app, Event::Key(Key::Char('u')), ports).0;
+    }
     if let Some(prompt) = prompt {
         view = type_prompt(&mut app, &view, prompt);
     }
@@ -504,5 +614,29 @@ fn exit_code(error: &DenError) -> ExitCode {
             .map_or(ExitCode::from(EXIT_FAILURE), ExitCode::from),
         DenError::RestoreAfter { outcome, .. } => exit_code(outcome),
         _ => ExitCode::from(EXIT_FAILURE),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_prompts_are_validated_before_the_editor_can_truncate_them() {
+        for character in ["x", "界"] {
+            let limit = character.repeat(den::handoff::MAX_PROMPT_CHARS);
+            let args = vec!["--prompt".to_owned(), limit.clone(), "--yes".to_owned()];
+            assert!(
+                matches!(parse_launch("octo/app#7", &args), Ok(Mode::Launch { prompt: Some(p), confirm: true, .. }) if p == limit)
+            );
+            let args = vec![
+                "--prompt".to_owned(),
+                format!("{limit}{character}"),
+                "--yes".to_owned(),
+            ];
+            assert!(
+                matches!(parse_launch("octo/app#7", &args), Err(DenError::Usage(e)) if e.contains("longer than 8000 characters"))
+            );
+        }
     }
 }

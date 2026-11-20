@@ -1,10 +1,14 @@
 //! Key hints.
 
 use super::State;
-use crate::app::{
-    Focus, OverlayState,
-    launch::{Sheet, SheetState},
-    view_model::{ENTER_KEY, Footer, KeyHint},
+use crate::{
+    app::{
+        Focus, OverlayState,
+        launch::{Sheet, SheetState},
+        view_model::{ENTER_KEY, Footer, KeyHint},
+    },
+    handoff::TargetChoice,
+    ordering::{Scope, same_repo},
 };
 
 pub fn build(state: &State<'_>) -> Footer {
@@ -17,6 +21,9 @@ pub fn build(state: &State<'_>) -> Footer {
     if state.scope.focus == Focus::Sidebar {
         hints.push(hint("↑↓", "move"));
         hints.push(hint(&ENTER_KEY.to_string(), "scope to"));
+        if let Some(label) = sidebar_upstream_hint(state) {
+            hints.push(hint("u", label));
+        }
         hints.push(hint("esc", "back"));
     } else if !state.decisions.is_empty() {
         hints.push(hint("↑↓", "select"));
@@ -62,26 +69,61 @@ fn launch_hints(sheet: &Sheet) -> Vec<KeyHint> {
             hint("esc", "done"),
         ];
     }
+    let switch = sheet_upstream_hint(sheet).map(|label| hint("u", label));
     match sheet.state {
-        SheetState::Ready { .. } => vec![
-            hint("⏎", "launch"),
-            hint("e", "edit"),
-            hint("esc", "cancel"),
-        ],
+        SheetState::Ready { .. } => [hint("⏎", "launch"), hint("e", "edit")]
+            .into_iter()
+            .chain(switch)
+            .chain([hint("esc", "cancel")])
+            .collect(),
         SheetState::LiveJob { .. } if sheet.launch_refused.is_some() => {
-            vec![hint("o", "open existing"), hint("esc", "cancel")]
+            [hint("o", "open existing")]
+                .into_iter()
+                .chain(switch)
+                .chain([hint("esc", "cancel")])
+                .collect()
         }
-        SheetState::LiveJob { .. } => vec![
-            hint("o", "open existing"),
-            hint("f", "start fresh"),
-            hint("esc", "cancel"),
-        ],
-        SheetState::JobUnknown { .. } => vec![hint("f", "start fresh"), hint("esc", "cancel")],
+        SheetState::LiveJob { .. } => [hint("o", "open existing"), hint("f", "start fresh")]
+            .into_iter()
+            .chain(switch)
+            .chain([hint("esc", "cancel")])
+            .collect(),
+        SheetState::JobUnknown { .. } => [hint("f", "start fresh")]
+            .into_iter()
+            .chain(switch)
+            .chain([hint("esc", "cancel")])
+            .collect(),
         SheetState::ReopenReady { .. } => vec![hint("⏎", "open"), hint("esc", "cancel")],
-        SheetState::Inspecting => vec![hint("esc", "cancel")],
+        SheetState::Inspecting => switch.into_iter().chain([hint("esc", "cancel")]).collect(),
         SheetState::Launching { .. } | SheetState::Reopening { .. } => Vec::new(),
-        SheetState::Refused(_) | SheetState::Finished { .. } | SheetState::Reopened { .. } => {
-            vec![hint("esc", "close")]
-        }
+        SheetState::Refused(_) => switch.into_iter().chain([hint("esc", "close")]).collect(),
+        SheetState::Finished { .. } | SheetState::Reopened { .. } => vec![hint("esc", "close")],
+    }
+}
+
+/// What `u` on the sheet would switch this Job's target to, when it can.
+fn sheet_upstream_hint(sheet: &Sheet) -> Option<&'static str> {
+    let fork = sheet.fork.as_ref()?;
+    match sheet.choice {
+        TargetChoice::Upstream => Some("the fork"),
+        TargetChoice::OwnRepo => fork.upstream.as_ref().map(|_| "upstream"),
+    }
+}
+
+/// What `u` in the sidebar would do to the fork under the cursor, if it is one.
+fn sidebar_upstream_hint(state: &State<'_>) -> Option<&'static str> {
+    let Scope::Repo(id) = &state.scope.cursor else {
+        return None;
+    };
+    let repo = state
+        .observation?
+        .repos
+        .iter()
+        .find(|r| same_repo(&r.id, id))
+        .filter(|r| r.is_fork)?;
+    if state.upstreams.contains(&repo.id) {
+        Some("the fork")
+    } else {
+        repo.upstream().map(|_| "upstream")
     }
 }

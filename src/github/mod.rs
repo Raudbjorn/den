@@ -18,8 +18,8 @@ pub mod viewer;
 
 use crate::{
     domain::{
-        CoverageEntry, Observation, Repo,
-        facts::{Branch, Issue, PullRequest, Run},
+        Comparison, CoverageEntry, Observation, Repo, UpstreamTargets, comparison_for,
+        facts::{Branch, ComparisonBranch, Issue, PullRequest, Run},
     },
     ports::{GitHubSource, SurveyFailure, SurveyRequest},
 };
@@ -35,6 +35,17 @@ pub fn survey(
     owners: &[String],
     observed_at: Timestamp,
 ) -> Result<Observation, SurveyFailure> {
+    survey_with(gql, owners, &UpstreamTargets::default(), observed_at)
+}
+
+/// [`survey`], comparing the Branches of the forks in `upstreams` against their
+/// Upstream's default branch (#13) instead of their own.
+pub fn survey_with(
+    gql: &dyn GraphQl,
+    owners: &[String],
+    upstreams: &UpstreamTargets,
+    observed_at: Timestamp,
+) -> Result<Observation, SurveyFailure> {
     let rate_limit = RateLimitMemo::default();
     let (viewer, viewer_coverage) = viewer::fetch(&Session::new(gql, &rate_limit))?;
     let mut observation = Observation::empty(observed_at, viewer, owners.to_vec());
@@ -44,7 +55,7 @@ pub fn survey(
             .iter()
             .map(|owner| {
                 let rate_limit = &rate_limit;
-                scope.spawn(move || survey_owner(&Session::new(gql, rate_limit), owner))
+                scope.spawn(move || survey_owner(&Session::new(gql, rate_limit), owner, upstreams))
             })
             .collect();
         handles
@@ -84,11 +95,16 @@ struct OwnerSurvey {
     coverage: Vec<CoverageEntry>,
 }
 
-fn survey_owner(session: &Session<'_>, owner: &str) -> Result<OwnerSurvey, SurveyFailure> {
+fn survey_owner(
+    session: &Session<'_>,
+    owner: &str,
+    upstreams: &UpstreamTargets,
+) -> Result<OwnerSurvey, SurveyFailure> {
     let repos = repos::fetch(session, owner)?;
     let pull_requests = pull_requests::fetch(session, owner)?;
     let issues = issues::fetch(session, owner, &repos.items)?;
-    let branches = branches::fetch(session, owner, &repos.items)?;
+    let comparison = |repo: &Repo| comparison_branch(repo, upstreams);
+    let branches = branches::fetch_against(session, owner, &repos.items, &comparison)?;
     // Each kind is never more complete than the Repo list: Coverage::record
     // applies that when the Owner's coverage is recorded.
     let runs = runs::fetch(session, owner, &repos.items)?;
@@ -110,6 +126,18 @@ fn survey_owner(session: &Session<'_>, owner: &str) -> Result<OwnerSurvey, Surve
     })
 }
 
+/// What a Repo's Branches are compared against. When its target is its Upstream
+/// but den can't see the Upstream's default branch, they are compared against
+/// the fork's own (still facts worth having); `decide` sees the mismatch and
+/// gives them no Next Step rather than judge them against the wrong branch.
+fn comparison_branch(repo: &Repo, upstreams: &UpstreamTargets) -> Option<ComparisonBranch> {
+    match comparison_for(repo, upstreams) {
+        Comparison::Against(branch) => Some(branch),
+        Comparison::Nothing => None,
+        Comparison::UpstreamUnavailable { .. } => branches::own_default_branch(repo),
+    }
+}
+
 fn record(observation: &mut Observation, entries: impl IntoIterator<Item = CoverageEntry>) {
     for entry in entries {
         observation.coverage.record(entry.source, entry.state);
@@ -129,6 +157,11 @@ impl<G: GraphQl> GhSource<G> {
 
 impl<G: GraphQl> GitHubSource for GhSource<G> {
     fn survey(&self, request: &SurveyRequest) -> Result<Observation, SurveyFailure> {
-        survey(&self.gql, &request.owners, Timestamp::now())
+        survey_with(
+            &self.gql,
+            &request.owners,
+            &request.upstreams,
+            Timestamp::now(),
+        )
     }
 }

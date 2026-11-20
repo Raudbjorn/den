@@ -13,6 +13,7 @@ use super::{
 use crate::app::view_model::{LaunchSheet, LaunchStatus, PromptField, SheetField, Tone};
 use crepuscularity_tui::{TemplateContext, TemplateValue};
 use ratatui::{Frame, layout::Rect};
+use unicode_width::UnicodeWidthStr;
 
 /// Columns lost to the plate's horizontal padding.
 const PADDING_COLS: u16 = 4;
@@ -170,18 +171,19 @@ fn field_lines(
     let mut lines = Vec::new();
     for field in fields {
         let (glyph, style) = tone(field.tone, glyphs);
+        // An Upstream target's value is rust too; other values are plain.
+        let value_style = if style == LineStyle::Upstream {
+            style
+        } else {
+            LineStyle::Plain
+        };
         match (&field.note, notes) {
             (Some(note), Notes::OwnLine) => {
-                lines.extend(labelled(
-                    &field.label,
-                    &field.value,
-                    width,
-                    LineStyle::Plain,
-                ));
+                lines.extend(labelled(&field.label, &field.value, width, value_style));
                 lines.extend(labelled("", &prefixed(glyph, note), width, style));
             }
             (Some(note), Notes::Inline) => {
-                let style = if style == LineStyle::Caution {
+                let style = if matches!(style, LineStyle::Caution | LineStyle::Upstream) {
                     style
                 } else {
                     LineStyle::Plain
@@ -189,18 +191,13 @@ fn field_lines(
                 let text = format!("{} · {}", field.value, prefixed(glyph, note));
                 lines.extend(labelled(&field.label, &text, width, style));
             }
-            _ => lines.extend(labelled(
-                &field.label,
-                &field.value,
-                width,
-                LineStyle::Plain,
-            )),
+            _ => lines.extend(labelled(&field.label, &field.value, width, value_style)),
         }
     }
     lines
 }
 
-/// The prompt, wrapped by characters (so the cursor maps to a cell), with the
+/// The prompt, wrapped by terminal cells, with the
 /// cursor drawn while editing, scrolled so the cursor's row shows.
 fn prompt_lines(prompt: &PromptField, width: usize, glyphs: glyphs::Glyphs) -> Vec<Line> {
     let mut chars: Vec<String> = prompt.text.chars().map(String::from).collect();
@@ -208,12 +205,22 @@ fn prompt_lines(prompt: &PromptField, width: usize, glyphs: glyphs::Glyphs) -> V
     if prompt.editing {
         chars.insert(cursor, glyphs.cursor.to_owned());
     }
-    let rows: Vec<String> = if chars.is_empty() {
-        vec![String::new()]
-    } else {
-        chars.chunks(width).map(|c| c.concat()).collect()
-    };
-    let cursor_row = cursor / width;
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    let mut cursor_row = 0;
+    for (i, character) in chars.iter().enumerate() {
+        let previous_len = row.len();
+        row.push_str(character);
+        if previous_len > 0 && row.width() > width.max(1) {
+            row.truncate(previous_len);
+            rows.push(std::mem::take(&mut row));
+            row.push_str(character);
+        }
+        if i == cursor {
+            cursor_row = rows.len();
+        }
+    }
+    rows.push(row);
     let first = cursor_row
         .saturating_sub(PROMPT_MAX_ROWS - 1)
         .min(rows.len());
@@ -271,5 +278,46 @@ fn tone(tone: Tone, glyphs: glyphs::Glyphs) -> (Option<&'static str>, LineStyle)
         Tone::Caution => (Some(glyphs.incomplete), LineStyle::Caution),
         Tone::Muted => (None, LineStyle::Muted),
         Tone::Plain => (None, LineStyle::Plain),
+        // The "upstream →" label is in the text itself.
+        Tone::Upstream => (None, LineStyle::Upstream),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use raudbjorn_tui::profile::GlyphProfile;
+
+    #[test]
+    fn prompt_rows_use_cell_width_for_wrapping_and_cursor_scrolling() {
+        for profile in [GlyphProfile::Unicode, GlyphProfile::Ascii] {
+            let glyphs = glyphs::for_profile(profile);
+            for (text, cursor) in [
+                ("界".repeat(40), 40),
+                ("界".repeat(40), 30),
+                ("界".repeat(400), 400),
+                ("e\u{301}界".repeat(20), 60),
+            ] {
+                let prompt = PromptField {
+                    text: text.clone(),
+                    cursor,
+                    editing: true,
+                };
+                let rows = prompt_lines(&prompt, 58, glyphs);
+                assert!(rows.iter().all(|(_, row, _)| row.width() <= 58));
+                assert!(
+                    rows.iter()
+                        .take(PROMPT_MAX_ROWS)
+                        .any(|(_, row, _)| row.contains(glyphs.cursor))
+                );
+                if text.chars().count() <= 60 {
+                    let displayed = rows
+                        .iter()
+                        .map(|(_, row, _)| row.as_str())
+                        .collect::<String>();
+                    assert_eq!(displayed.replace(glyphs.cursor, ""), text);
+                }
+            }
+        }
     }
 }

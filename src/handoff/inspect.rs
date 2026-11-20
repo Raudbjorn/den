@@ -1,9 +1,12 @@
 //! Looking at the local workspace for a launch, through the ports only. It
-//! reads; it changes nothing (no fetch, no network).
+//! reads; it changes nothing (no fetch). The one network call is asking a
+//! remote where a base branch is (`ls-remote`) when GitHub's facts don't say:
+//! for Issues, Branches and Runs, not PRs.
 
 use super::{
     PathState, RegisteredWorktree, WindowMode,
     clone::{self, Candidate, Remote},
+    cloning::{self, NewCloneView},
     live::{self, JOB_CHECK_BUDGET_SECS, JobCheck, MAX_FRESH_BRANCH_CHARS},
     names, worktree_path,
 };
@@ -17,18 +20,23 @@ use std::{path::PathBuf, time::Duration};
 /// What to look at for one launch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectRequest {
-    /// The Work Item being launched; its recorded Jobs are checked (#14).
-    pub item: WorkItemId,
     pub target: RepoId,
     pub target_url: String,
     /// The Main Clone set for this Repo in the config, if any.
     pub configured_clone: Option<PathBuf>,
     /// Where to search for Main Clones otherwise.
     pub search_root: PathBuf,
-    /// The worktree's folder name under `.claude/worktrees/`.
+    /// The worktree's folder name under `.claude/worktrees/`, before any suffix.
     pub worktree_name: String,
     /// The Job's local branch name.
     pub branch: String,
+    /// The Work Item launched: its recorded Jobs are checked (#14), and its
+    /// own Jobs don't make a name taken.
+    pub item: WorkItemId,
+    /// A new branch, named like the worktree (suffix included).
+    pub fresh: bool,
+    /// Ask the target's remote where this branch is (GitHub's facts don't say).
+    pub base_branch: Option<String>,
 }
 
 impl InspectRequest {
@@ -59,6 +67,9 @@ impl InspectRequest {
             search_root: PathBuf::new(),
             worktree_name,
             branch: job.branch.clone(),
+            // The Job's branch already exists; nothing is asked of the remote.
+            fresh: false,
+            base_branch: None,
         })
     }
 }
@@ -87,6 +98,9 @@ pub enum CloneSearch {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChosenClone {
     pub path: PathBuf,
+    /// The worktree name inspected: the wanted one, or its suffixed variant
+    /// when another Work Item's Job has it.
+    pub worktree_name: String,
     pub state: PathState,
     pub worktree: PathState,
     /// The commit of the local branch named like the Job's branch, if it exists.
@@ -107,6 +121,11 @@ pub struct WorkspaceView {
     /// This Work Item's recorded Jobs and their worktrees' states, newest
     /// first (#14); empty when the records couldn't be read.
     pub job_checks: Vec<JobCheck>,
+    /// Where the base branch is on the target, when den asked: `Ok(None)`
+    /// when the target has no such branch.
+    pub base_tip: Option<Result<Option<String>, String>>,
+    /// When no clone qualifies as Main Clone: the folders a clone could go into.
+    pub new_clone: Option<NewCloneView>,
 }
 
 /// Gathers the WorkspaceView for `request`.
@@ -123,23 +142,46 @@ pub fn inspect(
         },
         None => search(request, workspace),
     };
-    let chosen_path = match &clones {
-        CloneSearch::Configured { path, .. } => Some(path.clone()),
+    let jobs = jobs.load().map_err(|e| e.to_string());
+    let records = jobs.as_ref().map_or(&[][..], Vec::as_slice);
+    // The clone, and its remote for the target when it has one.
+    let chosen_clone: Option<(PathBuf, Option<Remote>)> = match &clones {
+        CloneSearch::Configured { path, remotes } => Some((
+            path.clone(),
+            remotes
+                .as_ref()
+                .ok()
+                .and_then(|r| clone::remote_for(r, &request.target_url))
+                .cloned(),
+        )),
         CloneSearch::Searched { candidates, .. } => {
-            clone::choose(candidates, &request.target_url, &request.target.name).map(|c| c.path)
+            clone::choose(candidates, &request.target_url, &request.target.name)
+                .map(|c| (c.path, Some(c.remote)))
         }
         CloneSearch::SearchFailed { .. } => None,
     };
-    let chosen = chosen_path.map(|path| ChosenClone {
-        state: workspace.path_state(&path),
-        worktree: workspace.path_state(&worktree_path(&path, &request.worktree_name)),
-        local_branch: workspace
-            .resolve(&path, &format!("refs/heads/{}", request.branch))
-            .map_err(|e| e.to_string()),
-        worktrees: workspace.worktrees(&path).map_err(|e| e.to_string()),
-        path,
+    let chosen = chosen_clone
+        .as_ref()
+        .map(|(path, _)| look_at_clone(request, path, records, workspace));
+    let new_clone = match (&clones, &chosen) {
+        (CloneSearch::Searched { root, .. }, None) => {
+            Some(look_for_clone_folders(root, &request.target, workspace))
+        }
+        _ => None,
+    };
+    let base_tip = request.base_branch.as_ref().and_then(|branch| {
+        let tip = match (&chosen_clone, &new_clone) {
+            (Some((path, Some(remote))), _) => {
+                workspace.remote_branch_head(path, &remote.name, branch)
+            }
+            // Only worth asking when den would clone.
+            (None, Some(folders)) if cloning::choose(folders, &request.target).is_ok() => {
+                workspace.url_branch_head(&request.target_url, branch)
+            }
+            _ => return None,
+        };
+        Some(tip.map_err(|e| e.to_string()))
     });
-    let jobs = jobs.load().map_err(|e| e.to_string());
     let job_checks = match &jobs {
         Ok(records) => {
             let mine: Vec<JobRecord> = records
@@ -158,6 +200,59 @@ pub fn inspect(
         claude_available: launcher.claude_available(),
         jobs,
         job_checks,
+        base_tip,
+        new_clone,
+    }
+}
+
+/// The clone's state, with the worktree name suffixed when other Work Items'
+/// Jobs have it.
+fn look_at_clone(
+    request: &InspectRequest,
+    path: &std::path::Path,
+    records: &[JobRecord],
+    workspace: &dyn Workspace,
+) -> ChosenClone {
+    let worktree_name = names::free_worktree_name(
+        &request.worktree_name,
+        path,
+        &request.item,
+        request.fresh,
+        records,
+    )
+    .map_or_else(|| request.worktree_name.clone(), |(name, _)| name);
+    let branch = if request.fresh {
+        &worktree_name
+    } else {
+        &request.branch
+    };
+    ChosenClone {
+        state: workspace.path_state(path),
+        worktree: workspace.path_state(&worktree_path(path, &worktree_name)),
+        local_branch: workspace
+            .resolve(path, &format!("refs/heads/{branch}"))
+            .map_err(|e| e.to_string()),
+        worktrees: workspace.worktrees(path).map_err(|e| e.to_string()),
+        path: path.to_path_buf(),
+        worktree_name,
+    }
+}
+
+fn look_for_clone_folders(
+    root: &std::path::Path,
+    repo: &RepoId,
+    workspace: &dyn Workspace,
+) -> NewCloneView {
+    NewCloneView {
+        root: root.to_path_buf(),
+        root_state: workspace.path_state(root),
+        folders: cloning::folders(root, repo)
+            .into_iter()
+            .map(|folder| {
+                let state = workspace.path_state(&folder);
+                (folder, state)
+            })
+            .collect(),
     }
 }
 

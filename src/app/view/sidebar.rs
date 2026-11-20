@@ -1,6 +1,7 @@
 //! The sidebar: every Repo of the watched Owners, grouped by Owner, with its
 //! count of Work Items that have a Next Step, and whether it is a fork or
-//! archived. Each row is a Scope the user can switch to.
+//! archived, and, for a fork that targets its Upstream, which Upstream (#13).
+//! Each row is a Scope the user can switch to.
 
 use super::{State, coverage};
 use crate::{
@@ -49,6 +50,12 @@ fn row(state: &State<'_>, scope: &Scope) -> SidebarRow {
         label,
         count,
         fork: repo.is_some_and(|r| r.is_fork),
+        upstream: repo
+            .filter(|r| r.is_fork && state.upstreams.contains(&r.id))
+            .map(|r| {
+                r.upstream()
+                    .map_or_else(|| "(not visible)".to_owned(), |u| u.id.to_string())
+            }),
         archived: repo.is_some_and(|r| r.is_archived),
         current: state.scope.scope.same(scope),
         // No Observation yet is not "incomplete coverage": nothing was read.

@@ -2,12 +2,25 @@
 //! as a path component and as a Claude Code session name. Branch names are
 //! written by whoever opened the PR, so nothing here trusts them.
 
-use crate::domain::{NextStep, RepoId};
+use super::worktree_path;
+use crate::{
+    domain::{NextStep, RepoId, WorkItemId},
+    jobs::JobRecord,
+};
+use std::path::Path;
 
 /// The longest worktree folder name den makes, in characters.
 pub const MAX_WORKTREE_NAME_CHARS: usize = 100;
 /// The longest session name den makes, in characters.
 pub const MAX_SESSION_NAME_CHARS: usize = 80;
+/// The longest `<slug>` of a new `<type>_<slug>` branch, in characters.
+pub const MAX_SLUG_CHARS: usize = 48;
+/// The first numeric suffix tried when a name is taken (`name-2`).
+pub const FIRST_NAME_SUFFIX: u32 = 2;
+/// The highest numeric suffix den tries before refusing.
+pub const MAX_NAME_SUFFIX: u32 = 99;
+/// Separates `<type>` from `<slug>` in a new branch's name.
+const TYPE_SEPARATOR: char = '_';
 /// Used when a name has nothing usable left after cleaning.
 const FALLBACK_NAME: &str = "job";
 
@@ -39,6 +52,166 @@ pub fn suffixed_within(name: &str, n: u32, max_chars: usize) -> String {
     let base = base.trim_end_matches(['.', '-', '/']);
     let base = if base.is_empty() { FALLBACK_NAME } else { base };
     format!("{base}{suffix}")
+}
+
+/// The Claude Code session name for any Work Item's Job:
+/// `<repo>-pr12-<step>`, `<repo>-issue9-<step>`, `<repo>-<branch>-<step>` or
+/// `<repo>-<workflow>-<step>`.
+pub fn session_name(item: &WorkItemId, step: NextStep) -> String {
+    let what = match item {
+        WorkItemId::PullRequest { repo, number } => return pr_session_name(repo, *number, step),
+        WorkItemId::Issue { number, .. } => format!("issue{number}"),
+        WorkItemId::Branch { name, .. } => name.clone(),
+        WorkItemId::Run { workflow, .. } => slug(workflow_stem(&workflow.0)),
+    };
+    clean(
+        &format!("{}-{what}-{}", item.repo().name, step_slug(step)),
+        MAX_SESSION_NAME_CHARS,
+    )
+}
+
+/// A workflow's file name without its folder and extension:
+/// `.github/workflows/ci.yml` → `ci`.
+fn workflow_stem(workflow: &str) -> &str {
+    let file = workflow.rsplit('/').next().unwrap_or(workflow);
+    file.strip_suffix(".yml")
+        .or_else(|| file.strip_suffix(".yaml"))
+        .unwrap_or(file)
+}
+
+/// A new branch's name, `<type>_<slug>`: the type is the Next Step
+/// (`implement`, `triage`, `fix-ci`), the slug names the Work Item.
+pub fn new_branch_name(step: NextStep, slug: &str) -> String {
+    clean(
+        &format!("{}{TYPE_SEPARATOR}{slug}", step_slug(step)),
+        MAX_WORKTREE_NAME_CHARS,
+    )
+}
+
+/// An Issue's slug: its number, then its title in lower-case words
+/// (`42-add-a-login-page`), whole words up to [`MAX_SLUG_CHARS`]. Nordic
+/// letters are spelled in ASCII (`þ` → `th`); anything else outside ASCII
+/// letters and digits separates words, so the slug is always a safe ref and
+/// folder name.
+pub fn issue_slug(number: u64, title: &str) -> String {
+    let number = number.to_string();
+    within_slug_limit(std::iter::once(number.clone()).chain(words(title))).unwrap_or(number)
+}
+
+/// Lower-case ASCII words joined by `-`, at most [`MAX_SLUG_CHARS`] long.
+pub fn slug(text: &str) -> String {
+    within_slug_limit(words(text).into_iter()).unwrap_or_default()
+}
+
+/// Letters spelled in ASCII for slugs (Icelandic and other Nordic and Latin
+/// letters); any other non-ASCII character separates words.
+const TRANSLITERATIONS: [(char, &str); 16] = [
+    ('á', "a"),
+    ('à', "a"),
+    ('ä', "a"),
+    ('å', "a"),
+    ('æ', "ae"),
+    ('ð', "d"),
+    ('é', "e"),
+    ('è', "e"),
+    ('í', "i"),
+    ('ó', "o"),
+    ('ö', "o"),
+    ('ø', "o"),
+    ('þ', "th"),
+    ('ú', "u"),
+    ('ü', "u"),
+    ('ý', "y"),
+];
+
+fn words(text: &str) -> Vec<String> {
+    let ascii: String = text
+        .to_lowercase()
+        .chars()
+        .map(
+            |c| match TRANSLITERATIONS.iter().find(|(from, _)| *from == c) {
+                Some((_, to)) => (*to).to_owned(),
+                None if c.is_ascii_alphanumeric() => c.to_string(),
+                None => " ".to_owned(),
+            },
+        )
+        .collect();
+    ascii
+        .split(' ')
+        .filter(|w| !w.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whole words joined by `-` while they fit in [`MAX_SLUG_CHARS`]; a first
+/// word longer than that is cut. `None` when there are no words.
+fn within_slug_limit(mut words: impl Iterator<Item = String>) -> Option<String> {
+    let first = words.next()?;
+    let mut joined: String = first.chars().take(MAX_SLUG_CHARS).collect();
+    for word in words {
+        if joined.len() + 1 + word.len() > MAX_SLUG_CHARS {
+            break;
+        }
+        joined.push('-');
+        joined.push_str(&word);
+    }
+    Some(joined)
+}
+
+/// `name` with numeric suffix `n`: `implement_9-x-2`.
+pub fn suffixed(name: &str, n: u32) -> String {
+    format!("{name}-{n}")
+}
+
+/// The first of `wanted`, `wanted-2`, `wanted-3`, … that `taken` doesn't
+/// claim, with the Work Items that claimed the ones passed over; `None` when
+/// every name up to [`MAX_NAME_SUFFIX`] is taken. `taken` says which other
+/// Work Items' Jobs hold a name (empty when it is free).
+pub fn free_name(
+    wanted: &str,
+    taken: impl Fn(&str) -> Vec<WorkItemId>,
+) -> Option<(String, Vec<WorkItemId>)> {
+    let mut passed_over: Vec<WorkItemId> = Vec::new();
+    let candidates = std::iter::once(wanted.to_owned())
+        .chain((FIRST_NAME_SUFFIX..=MAX_NAME_SUFFIX).map(|n| suffixed(wanted, n)));
+    for candidate in candidates {
+        let holders = taken(&candidate);
+        if holders.is_empty() {
+            return Some((candidate, passed_over));
+        }
+        for holder in holders {
+            if !passed_over.contains(&holder) {
+                passed_over.push(holder);
+            }
+        }
+    }
+    None
+}
+
+/// The worktree name for `item`'s Job in `clone`: `wanted`, or the first
+/// suffixed name no other Work Item's Job has (spec, "Launch handoff"). A Job
+/// holds a name when its worktree is `clone`'s `.claude/worktrees/<name>`, or,
+/// for a `fresh` branch (whose name is the worktree name), when its branch in
+/// `clone` is named so. This Work Item's own Jobs never count: an existing
+/// Job of the same Work Item is the Live Job question (#14), not a collision.
+pub fn free_worktree_name(
+    wanted: &str,
+    clone: &Path,
+    item: &WorkItemId,
+    fresh: bool,
+    jobs: &[JobRecord],
+) -> Option<(String, Vec<WorkItemId>)> {
+    free_name(wanted, |name| {
+        let path = worktree_path(clone, name);
+        jobs.iter()
+            .filter(|job| &job.work_item != item)
+            .filter(|job| {
+                job.worktree == path
+                    || (fresh && job.main_clone.as_path() == clone && job.branch == name)
+            })
+            .map(|job| job.work_item.clone())
+            .collect()
+    })
 }
 
 /// The Next Step as a lower-case slug: "Address review" → `address-review`.
