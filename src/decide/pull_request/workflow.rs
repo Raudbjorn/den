@@ -25,7 +25,7 @@
 //!   replaces it, so a second required approval or a code owner's is still
 //!   asked for. With it off: GitHub's review decision, as in milestone 1.
 //! - **Awaiting re-review**: a user other than the author, not currently
-//!   requested, not a fresh approver and whose latest review of any kind is
+//!   requested, not an approver at the current head and whose latest review is
 //!   not on the current head, whose standing or latest review requested
 //!   changes on an older head, or whose latest review only commented on an
 //!   older head when comment reviews need re-review. A review whose commit
@@ -36,8 +36,8 @@
 //!   at the current head (by anyone); changes requested on an older head fall
 //!   through. Changes requested at the current head also stop Merge.
 //! - **Suggested reviewers**: the configured reviewers plus those awaiting
-//!   re-review, minus fresh approvers, pending requests and the author. When
-//!   den didn't read all of the requests or reviews, the set says so.
+//!   re-review, minus approvers at the current head, pending requests and the
+//!   author. When den didn't read all of the requests or reviews, the set says so.
 
 use super::{Approval, Finding, ReviewFindings, approval as github_approval, unresolved_threads};
 use crate::domain::{
@@ -424,7 +424,7 @@ impl Reading<'_> {
         &self.details.latest_reviews_with_comments.items
     }
 
-    /// Users whose standing approval counts.
+    /// Users who approved the current head, independently of the approval switch.
     fn fresh_approvers(&self) -> Vec<String> {
         let mut approvers = Vec::new();
         for review in self.standing() {
@@ -434,7 +434,7 @@ impl Reading<'_> {
             let counts = review.verdict == ReviewVerdict::Approved
                 && review.author_kind == ActorKind::User
                 && !self.is_author(login)
-                && (!self.exact_head || self.at_head(review));
+                && self.at_head(review);
             if counts {
                 push_login(&mut approvers, login);
             }
@@ -541,9 +541,9 @@ fn push_login(logins: &mut Vec<String>, login: &str) {
     }
 }
 
-/// The configured reviewers plus those awaiting re-review, minus fresh
-/// approvers, pending requests and the author. `requests` is `None` when the
-/// review requests could not be read.
+/// The configured reviewers plus those awaiting re-review, minus approvers
+/// at the current head, pending requests and the author. `requests` is `None`
+/// when the review requests could not be read.
 fn suggested(
     configured: &[Reviewer],
     awaiting: &[String],
