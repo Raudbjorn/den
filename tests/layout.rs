@@ -177,16 +177,28 @@ fn a_terminal_smaller_than_80_by_24_is_flagged_and_80_by_24_is_not() {
 fn the_footer_offers_enter_when_narrow_and_esc_while_the_sheet_is_open() {
     let mut harness = surveyed_at(MIN_COLS, MIN_ROWS);
     assert!(hint_keys(&harness).contains(&ENTER_KEY.to_string()));
+    // Keep refresh available alongside the layout-specific hints after integration.
+    assert!(hint_keys(&harness).contains(&"r".to_owned()));
 
     harness.key(Key::Enter);
     let keys = hint_keys(&harness);
     assert!(keys.contains(&"esc".to_owned()), "{keys:?}");
     assert!(!keys.contains(&ENTER_KEY.to_string()), "{keys:?}");
+    assert!(keys.contains(&"r".to_owned()), "{keys:?}");
+
+    let effects = harness.key(Key::Char('r'));
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, den::app::Effect::Survey { .. }))
+    );
+    assert_eq!(harness.view.overlay, Some(Overlay::DetailSheet));
 
     resize(&mut harness, DESIGN_COLS, MIN_ROWS);
     let keys = hint_keys(&harness);
     assert!(!keys.contains(&ENTER_KEY.to_string()), "{keys:?}");
     assert!(!keys.contains(&"esc".to_owned()), "{keys:?}");
+    assert!(keys.contains(&"r".to_owned()), "{keys:?}");
 }
 
 #[test]

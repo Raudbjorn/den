@@ -17,11 +17,12 @@
 //! and the Explanation says what stops it from merging.
 //!
 //! Waiting On: the PR author, except for Review (the requested reviewers;
-//! me when I or a team of mine is requested).
+//! me when I or a team of mine is requested; unattributed when den read too
+//! little of the requests or of my teams to say it is not me).
 
 use super::{Attribution, Context, Decision, Explanation, WorkItem};
 use crate::domain::{
-    NextStep, Viewer,
+    NextStep, Source, SourceState, Viewer,
     facts::{
         Check, CheckOutcome, MergeState, Mergeability, PrDetails, PullRequest, ReviewDecision,
         ReviewVerdict, Reviewer,
@@ -151,7 +152,7 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         ctx,
         item,
         Some(step),
-        waiting_on(step, pr, ctx.viewer),
+        waiting_on(step, pr, ctx),
         Explanation {
             winning_rule: Some(winning_rule),
             other_conditions,
@@ -161,7 +162,8 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
     )
 }
 
-fn waiting_on(step: NextStep, pr: &PullRequest, viewer: &Viewer) -> Attribution {
+fn waiting_on(step: NextStep, pr: &PullRequest, ctx: &Context<'_>) -> Attribution {
+    let viewer = ctx.viewer;
     if step != NextStep::Review {
         return Attribution::person(viewer, pr.author.as_deref(), AUTHOR_ROLE);
     }
@@ -178,7 +180,21 @@ fn waiting_on(step: NextStep, pr: &PullRequest, viewer: &Viewer) -> Attribution 
             Reviewer::Team(team) => teams.push(team.clone()),
         }
     }
-    Attribution::any_of(viewer, &users, &teams, REVIEWERS_ROLE)
+    // What den did not read that could make the review mine.
+    let mut unread = Vec::new();
+    match &pr.details {
+        None => unread.push("the review requests could not be read".to_owned()),
+        Some(details) if !details.review_requests.complete => {
+            unread.push("not every review request was read".to_owned());
+        }
+        Some(_) => {}
+    }
+    let my_teams_known =
+        ctx.observation.coverage.get(&Source::Viewer) == Some(&SourceState::Complete);
+    if !teams.is_empty() && !my_teams_known {
+        unread.push("your team memberships were not read in full".to_owned());
+    }
+    Attribution::any_of(viewer, &users, &teams, REVIEWERS_ROLE, &unread)
 }
 
 fn draft(pr: &PullRequest) -> Finding {

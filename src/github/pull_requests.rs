@@ -11,7 +11,7 @@ use super::{
 };
 use crate::{
     domain::{
-        CoverageEntry, RepoId, Source, SourceKind,
+        CoverageEntry, RepoId, Source, SourceKind, SourceState,
         facts::{MergeState, Mergeability, PullRequest, ReviewDecision},
     },
     ports::SurveyFailure,
@@ -23,6 +23,13 @@ use serde_json::json;
 const FACTS: &str = include_str!("queries/pull_request_facts.graphql");
 const OWNER_QUERY: &str = include_str!("queries/pull_requests_owner.graphql");
 const REPO_QUERY: &str = include_str!("queries/pull_requests_repo.graphql");
+
+/// Repos per OwnerPullRequests page. Each Repo carries up to 50 PRs with their
+/// facts, so a page of many Repos can cost more than GitHub will answer.
+pub const OWNER_REPOS_PER_PAGE: u32 = 25;
+/// The fewest Repos per page den reads a lost Owner page again with, halving
+/// from [`OWNER_REPOS_PER_PAGE`], before it gives the page up.
+pub const MIN_OWNER_REPOS_PER_PAGE: u32 = 5;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -178,17 +185,29 @@ pub fn fetch(session: &Session<'_>, owner: &str) -> Result<KindFetch<PullRequest
     let mut out = KindFetch::default();
     let mut found_prs: Vec<(String, PullRequest)> = Vec::new();
     let mut pager = Pager::new(None);
+    let mut batch = OWNER_REPOS_PER_PAGE;
     while pager.may_continue() {
-        let (page, page_complete) = match session.run::<OwnerData>(
+        let (page, page_state) = match session.run::<OwnerData>(
             &owner_query,
-            json!({ "owner": owner, "after": pager.cursor }),
+            json!({ "owner": owner, "after": pager.cursor, "repos": batch }),
         )? {
             Fetched::Data { data, state } => {
-                let complete = state.is_complete();
-                pager.page_read(state);
-                (data, complete)
+                pager.page_read(state.clone());
+                (data, state)
             }
             Fetched::Lost(state) => {
+                // Read the same page again with fewer Repos; the cursor has not moved.
+                if let Some(smaller) = smaller_batch(batch, &state) {
+                    tracing::warn!(
+                        owner,
+                        batch,
+                        smaller,
+                        error = %state.describe(),
+                        "an Owner's PR page was lost; reading it again with fewer Repos"
+                    );
+                    batch = smaller;
+                    continue;
+                }
                 pager.page_lost(state);
                 break;
             }
@@ -205,16 +224,24 @@ pub fn fetch(session: &Session<'_>, owner: &str) -> Result<KindFetch<PullRequest
                 prs.nodes
                     .into_iter()
                     .flatten()
-                    .map(|pr| pr.into_fact(&repo, page_complete)),
+                    .map(|pr| pr.into_fact(&repo, page_state.is_complete())),
             );
             if prs.page_info.has_next_page {
                 fetch_rest_of_repo(
                     session,
                     &repo,
+                    page_state.clone(),
                     prs.page_info.end_cursor,
                     &mut found_prs,
                     &mut out.coverage,
                 )?;
+            } else {
+                // All of this Repo's PRs came on this page, so its own coverage
+                // is this page's: a later Owner page lost does not touch it.
+                out.coverage.push(CoverageEntry {
+                    source: repo_source(&repo),
+                    state: page_state.clone(),
+                });
             }
         }
         if !pager.advance(repos.page_info.has_next_page, repos.page_info.end_cursor) {
@@ -230,18 +257,30 @@ pub fn fetch(session: &Session<'_>, owner: &str) -> Result<KindFetch<PullRequest
     Ok(out)
 }
 
+/// The batch to read a lost Owner page again with, if any: half the Repos, down
+/// to [`MIN_OWNER_REPOS_PER_PAGE`]. A page lost to the rate limit is not retried;
+/// a smaller request would hit the same limit.
+fn smaller_batch(batch: u32, lost: &SourceState) -> Option<u32> {
+    if batch <= MIN_OWNER_REPOS_PER_PAGE || !matches!(lost, SourceState::Failed { .. }) {
+        return None;
+    }
+    Some((batch / 2).max(MIN_OWNER_REPOS_PER_PAGE))
+}
+
 /// Reads one Repo's remaining PR pages; records that Repo's own coverage.
 fn fetch_rest_of_repo(
     session: &Session<'_>,
     repo: &RepoId,
+    first_page: crate::domain::SourceState,
     cursor: Option<String>,
     found_prs: &mut Vec<(String, PullRequest)>,
     coverage: &mut Vec<CoverageEntry>,
 ) -> Result<(), SurveyFailure> {
     let query = with_facts(REPO_QUERY);
     let mut pager = Pager::new(None);
-    // The first page came with the Owner query.
-    pager.page_read(crate::domain::SourceState::Complete);
+    // The first page came with the Owner query, so it carries that page's
+    // state: an error there may have nulled some of this Repo's PRs.
+    pager.page_read(first_page);
     if !pager.advance(true, cursor) {
         coverage.push(pager.finish(repo_source(repo)));
         return Ok(());
