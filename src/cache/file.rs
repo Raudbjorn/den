@@ -50,7 +50,9 @@ pub const CACHE_SUBDIR: &str = "cache";
 /// wrote is refused here.
 /// 11: 10 with #37's member states: the second review round's merged shape
 /// plus Land and Mark for release.
-pub const CACHE_FORMAT: u32 = 11;
+/// 12: an Observation records the members den asked about and got no state
+/// for, with when it last asked (#37), so a bounded read rotates past them.
+pub const CACHE_FORMAT: u32 = 12;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// Names the viewer whose cache startup shows.
