@@ -190,6 +190,8 @@ fn no_step_of_its_own() -> Attribution {
     Attribution::nobody("no Next Step of its own")
 }
 
+/// Waiting On the Linear assignee, for Implement, Land and Mark for release:
+/// me when that is the Linear viewer of the issue's workspace.
 fn assignee(ctx: &Context<'_>, issue: &LinearIssue) -> Attribution {
     let viewer = ctx.viewers.linear(&issue.id.workspace);
     Attribution::linear_person(
@@ -564,17 +566,16 @@ fn by_assignment(
     other_conditions: Vec<String>,
     unknowns: Vec<String>,
 ) -> Decision {
-    let viewer = ctx.viewers.linear(&issue.id.workspace);
     match &issue.assignee {
-        Some(assignee) => Decision::new(
+        Some(person) => Decision::new(
             ctx,
             item,
             Some(NextStep::Implement),
-            Attribution::linear_person(viewer, &issue.id.workspace, Some(assignee), ASSIGNEE_ROLE),
+            assignee(ctx, issue),
             Explanation {
                 winning_rule: Some(format!(
                     "the Linear Issue is assigned to {} and no Pull Request is attached to it",
-                    assignee.name
+                    person.name
                 )),
                 other_conditions,
                 unknowns,
