@@ -24,7 +24,7 @@ use crate::{
     decide::{self, Decision},
     domain::{
         Coverage, Observation, Policies, Source, SourceKind, SourceState, UpstreamTargets, Viewer,
-        Viewers, WorkItemId,
+        Viewers, WorkItemId, facts::PullRequestRef,
     },
     handoff::{
         JobCheck, JobsCheck,
@@ -452,14 +452,17 @@ impl App {
                 self.record_unanswered_linear(&mut merged.observation.coverage);
                 // Linear's kept data was logged when its answer arrived.
                 effects.extend(carried_log(&merged, |source| !source.is_linear()));
-                self.show(merged.clone(), now);
+                self.show(merged, now);
                 self.from_cache = false;
                 self.failure = None;
                 self.linear_unsaved = false;
-                effects.push(Effect::StoreCache {
-                    cached: Box::new(merged),
-                });
-                effects.extend(self.read_member_states(id));
+                let wanted = self.settle_member_states(now);
+                if let Some(shown) = &self.shown {
+                    effects.push(Effect::StoreCache {
+                        cached: Box::new(shown.clone()),
+                    });
+                }
+                effects.extend(self.read_member_states(id, wanted));
                 effects
             }
             Err(failure) => {
@@ -741,33 +744,60 @@ impl App {
         };
         // GitHub's kept data was logged when its answer arrived.
         effects.extend(carried_log(&merged, Source::is_linear));
-        self.show(merged.clone(), now);
-        if !has_github_viewer(&merged) {
+        self.show(merged, now);
+        let wanted = self.settle_member_states(now);
+        match &self.shown {
             // The Linear-only stand-in: never saved.
-        } else if self.running == Some(id) {
-            self.linear_unsaved = true;
-        } else {
-            effects.push(Effect::StoreCache {
-                cached: Box::new(merged),
-            });
+            Some(shown) if !has_github_viewer(shown) => {}
+            Some(_) if self.running == Some(id) => self.linear_unsaved = true,
+            Some(shown) => effects.push(Effect::StoreCache {
+                cached: Box::new(shown.clone()),
+            }),
+            None => {}
         }
-        effects.extend(self.read_member_states(id));
+        effects.extend(self.read_member_states(id, wanted));
         effects
     }
 
-    /// Once both surveys of round `id` have answered: asks for the states of
-    /// the Landing Group members that weren't among the open Pull Requests
-    /// and aren't known merged (#37), if there are any. Merged is final, so
-    /// a member read merged is never asked about again; one read closed is,
-    /// in case it was reopened and merged since.
-    fn read_member_states(&mut self, id: SurveyId) -> Vec<Effect> {
+    /// Once neither survey of the round is still running: settles the
+    /// members' states against the Landing Groups just decided
+    /// ([`cache::settle_member_states`]) and returns the members whose state
+    /// den should read, unread ones first. Empty while a survey of the
+    /// round is still out.
+    fn settle_member_states(&mut self, now: Timestamp) -> Vec<PullRequestRef> {
         if self.running.is_some() || self.linear_running.is_some() {
             return Vec::new();
         }
-        let Some(shown) = &self.shown else {
+        let Some(shown) = self.shown.take() else {
             return Vec::new();
         };
-        let pull_requests = members_to_read(&shown.observation);
+        let (members, wanted) = landing_members(&self.ordered);
+        let size = |c: &CachedObservation| {
+            (
+                c.observation.member_states.len(),
+                c.observation.coverage.entries().len(),
+            )
+        };
+        let before = size(&shown);
+        let settled = cache::settle_member_states(shown, &members, &wanted);
+        if size(&settled) == before {
+            self.shown = Some(settled);
+        } else {
+            self.show(settled, now);
+        }
+        wanted
+    }
+
+    /// After round `id`: asks for the states of `pull_requests`, the Landing
+    /// Group members that weren't among the open Pull Requests and aren't
+    /// known merged (#37), if there are any. Merged is final, so a member
+    /// read merged is never asked about again; one read closed is, in case
+    /// it was reopened and merged since.
+    fn read_member_states(
+        &mut self,
+        id: SurveyId,
+        pull_requests: Vec<PullRequestRef>,
+    ) -> Vec<Effect> {
         if pull_requests.is_empty() {
             return Vec::new();
         }
@@ -926,29 +956,42 @@ fn merge_linear_logged(
     merge.cached
 }
 
-/// The Landing Group members whose state den should read: attached to a
-/// Linear Issue, not among their Repo's open Pull Requests (which den read
-/// completely), and not known merged. Each once.
-fn members_to_read(observation: &Observation) -> Vec<crate::domain::facts::PullRequestRef> {
-    use decide::correlation::MemberStatus;
-    let correlation = decide::correlate(observation);
-    let mut wanted: Vec<crate::domain::facts::PullRequestRef> = Vec::new();
-    for issue in &observation.linear.issues {
-        for member in correlation.for_issue(&issue.id).members {
-            let unsettled = matches!(
-                member.status,
-                MemberStatus::NotOpen | MemberStatus::OpenAgain | MemberStatus::Closed
-            );
-            if unsettled
-                && !wanted
-                    .iter()
-                    .any(|p| p.is(&member.pr.repo, member.pr.number))
-            {
-                wanted.push(member.pr);
+/// From the Linear Issues' Decisions (their Landing Groups, already
+/// correlated while deciding): every member, and the members whose state den
+/// should read, each once. Those are attached, not among their Repo's open
+/// Pull Requests (which den read completely), and not known merged. They
+/// come unread first (no state yet), then open again, then read closed: the read is
+/// bounded, and members re-read every round must never keep one den hasn't
+/// read yet beyond the bound.
+fn landing_members(decisions: &[Decision]) -> (Vec<PullRequestRef>, Vec<PullRequestRef>) {
+    use decide::correlation::{MemberStatus, PullRequestKey};
+    use std::collections::HashSet;
+    let mut members: Vec<PullRequestRef> = Vec::new();
+    let mut seen: HashSet<PullRequestKey> = HashSet::new();
+    let mut asked: HashSet<PullRequestKey> = HashSet::new();
+    let (mut unread, mut open_again, mut closed) = (Vec::new(), Vec::new(), Vec::new());
+    for member in decisions.iter().flat_map(|d| &d.landing.members) {
+        let key = PullRequestKey::of(&member.pr.repo, member.pr.number);
+        if seen.insert(key.clone()) {
+            members.push(member.pr.clone());
+        }
+        let queue = match member.status {
+            MemberStatus::NotOpen => &mut unread,
+            MemberStatus::OpenAgain => &mut open_again,
+            MemberStatus::Closed => &mut closed,
+            MemberStatus::Open { .. }
+            | MemberStatus::Merged { .. }
+            | MemberStatus::NotSurveyed(_) => {
+                continue;
             }
+        };
+        if asked.insert(key) {
+            queue.push(member.pr.clone());
         }
     }
-    wanted
+    unread.extend(open_again);
+    unread.extend(closed);
+    (members, unread)
 }
 
 fn linear_log(id: SurveyId, survey: &LinearSurvey) -> Effect {

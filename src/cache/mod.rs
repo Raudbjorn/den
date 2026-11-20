@@ -4,8 +4,9 @@
 //! - [`CachedObservation`]: the Observation den shows, plus the age of any data it
 //!   carried over from an earlier survey because the latest one could not read
 //!   that source.
-//! - [`merge`] (a GitHub survey), [`merge_linear`] (a Linear survey) and
-//!   [`merge_member_states`] (Landing Group members' states, #37): pure. A
+//! - [`merge`] (a GitHub survey), [`merge_linear`] (a Linear survey),
+//!   [`merge_member_states`] (Landing Group members' states, #37) and
+//!   [`settle_member_states`] (those states against the groups shown): pure. A
 //!   source the refresh read completely is replaced; a source it could not read
 //!   (failed, partial, not fetched) keeps the earlier data, marked with that
 //!   data's own age. One error never wipes the list, and a refresh of one service
@@ -21,7 +22,9 @@ mod file;
 mod merge;
 
 pub use file::{CACHE_FORMAT, CACHE_SUBDIR, FileCache, MAX_CACHE_BYTES};
-pub use merge::{GitHubMerge, LinearMerge, merge, merge_linear, merge_member_states};
+pub use merge::{
+    GitHubMerge, LinearMerge, merge, merge_linear, merge_member_states, settle_member_states,
+};
 
 use crate::domain::{
     LinearSourceKind, Observation, Source, SourceKind, SourceState, ids::same_login,

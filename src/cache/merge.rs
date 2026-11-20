@@ -41,7 +41,7 @@ use super::{CachedObservation, Carried, source_owner};
 use crate::{
     domain::{
         Coverage, LinearPart, LinearSourceKind, Observation, RepoId, Source, SourceKind,
-        SourceState, ids::same_login,
+        SourceState, facts::PullRequestRef, ids::same_login,
     },
     ports::{LinearSurvey, MemberStatesRead},
 };
@@ -208,6 +208,44 @@ pub fn merge_member_states(
             .coverage
             .record(entry.source.clone(), entry.state.clone());
     }
+    previous
+}
+
+/// Settles the members' states (#37) once both surveys of a round have
+/// answered, against the Landing Groups now decided: `members` are every
+/// member of them, `wanted` the ones den is about to read the state of.
+///
+/// - A state of a Pull Request no longer a member of any group is dropped,
+///   so the states kept (in memory and in the cache file) never outgrow the
+///   groups den shows.
+/// - An Owner's member-state coverage is dropped when den wants none of its
+///   members' states: no read will replace it, and an old failure must not
+///   leave the picture incomplete for good. An Owner den is about to read
+///   keeps its entry until that read answers.
+pub fn settle_member_states(
+    mut previous: CachedObservation,
+    members: &[PullRequestRef],
+    wanted: &[PullRequestRef],
+) -> CachedObservation {
+    let fold = |pr: &PullRequestRef| {
+        (
+            pr.repo.owner.to_ascii_lowercase(),
+            pr.repo.name.to_ascii_lowercase(),
+            pr.number,
+        )
+    };
+    let current: HashSet<_> = members.iter().map(fold).collect();
+    let observation = &mut previous.observation;
+    observation
+        .member_states
+        .retain(|kept| current.contains(&fold(&kept.pr)));
+    observation.coverage.retain(|e| match &e.source {
+        Source::Owner {
+            owner,
+            kind: SourceKind::MemberStates,
+        } => wanted.iter().any(|pr| same_login(&pr.repo.owner, owner)),
+        _ => true,
+    });
     previous
 }
 
