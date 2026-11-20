@@ -511,6 +511,43 @@ fn start_fresh_plans_a_distinct_worktree_branch_and_session_and_leaves_the_old_o
 }
 
 #[test]
+fn start_fresh_on_a_pr_ends_the_prompt_with_how_to_push_back_to_the_prs_branch() {
+    // Decision c: the fresh Job's branch is `feature-7-2`, tracking
+    // `upstream/feature-7`; a plain `git push` would refuse (push.default
+    // simple), so the prompt's last line says how to push to the PR.
+    let mut harness = harness_with(|h| live_job(h, 7));
+    select(&mut harness, 7);
+    press(&mut harness, Key::Char('c'));
+    press(&mut harness, Key::Char('f'));
+    let ready = sheet(&harness).clone();
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    let push_line = "Push with: git push upstream HEAD:feature-7";
+    let shown = ready.prompt.as_ref().expect("a prompt").text.clone();
+    assert!(shown.ends_with(push_line), "{shown}");
+
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1, "{plans:?}");
+    assert_eq!(
+        plans[0].prompt,
+        format!("/gh-resolve https://github.com/octo/app/pull/7 {push_line}")
+    );
+    assert!(plans[0].command.contains(push_line), "{}", plans[0].command);
+}
+
+#[test]
+fn a_plain_launch_on_the_prs_own_branch_has_no_push_line() {
+    // Without a fresh start the Job is on `feature-7` itself: `git push` works.
+    let mut harness = harness_with(|_| {});
+    select(&mut harness, 7);
+    press(&mut harness, Key::Char('c'));
+    let ready = sheet(&harness).clone();
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    let shown = ready.prompt.as_ref().expect("a prompt").text.clone();
+    assert!(!shown.contains("Push with"), "{shown}");
+}
+
+#[test]
 fn start_fresh_skips_suffixes_another_job_or_worktree_already_uses() {
     let mut harness = harness_with(|h| {
         live_job(h, 7);
@@ -734,4 +771,49 @@ fn the_live_job_marker_is_a_teal_glyph_before_the_title_and_unknown_is_amber() {
         .expect("listed")
         .title;
     assert!(text.contains(&format!("* {title_7}")), "{text}");
+}
+
+#[test]
+fn fresh_push_instructions_preserve_shell_metacharacters_in_remote_and_branch() {
+    for branch in [
+        "fix/$USER",
+        "fix/quote'",
+        "fix/$(whoami)",
+        "fix/semicolon;name",
+    ] {
+        let remote = "up$stream";
+        let observed = ObservationBuilder::new()
+            .owner("octo")
+            .repo("octo/app")
+            .pull_request(
+                pr("octo/app", 7)
+                    .author(ME)
+                    .changes_requested()
+                    .head_ref(branch),
+            );
+        let mut harness = harness_observing(observed, |h| {
+            h.workspace
+                .add_clone(CLONE, &[(remote, "git@github.com:octo/app.git")]);
+            h.workspace.set_remote_head(CLONE, remote, branch, HEAD_7);
+            live_job(h, 7);
+        });
+        press(&mut harness, Key::Char('c'));
+        press(&mut harness, Key::Char('f'));
+        let ready = sheet(&harness);
+        assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(ready));
+        let prompt = &ready.prompt.as_ref().unwrap().text;
+        let command = prompt.split_once("Push with: ").unwrap().1;
+        // Parse the displayed instruction with a real shell, replacing git with an argv recorder.
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("git() {{ printf '%s\\n' \"$@\"; }}; {command}"))
+            .env("USER", "unexpected-expansion")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{command}: {output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!("push\n{remote}\nHEAD:{branch}\n")
+        );
+    }
 }

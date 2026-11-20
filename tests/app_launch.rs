@@ -175,6 +175,7 @@ fn c_then_enter_on_a_pr_produces_exactly_one_launch_plan_fetching_from_the_remot
                     path: WORKTREE.into(),
                     branch: "feature-7".to_owned(),
                     start: WorktreeStart::NewBranchTracking {
+                        remote: "upstream".to_owned(),
                         start: "refs/remotes/upstream/feature-7".to_owned()
                     },
                 },

@@ -19,6 +19,8 @@ pub const MAX_SLUG_CHARS: usize = 48;
 pub const FIRST_NAME_SUFFIX: u32 = 2;
 /// The highest numeric suffix den tries before refusing.
 pub const MAX_NAME_SUFFIX: u32 = 99;
+/// The longest local branch name den makes by suffixing one, in characters.
+pub const MAX_BRANCH_NAME_CHARS: usize = 200;
 /// Separates `<type>` from `<slug>` in a new branch's name.
 const TYPE_SEPARATOR: char = '_';
 /// Used when a name has nothing usable left after cleaning.
@@ -39,19 +41,6 @@ pub fn pr_session_name(repo: &RepoId, number: u64, step: NextStep) -> String {
         &format!("{}-pr{number}-{}", repo.name, step_slug(step)),
         MAX_SESSION_NAME_CHARS,
     )
-}
-
-/// `name` with a numeric suffix, `<name>-<n>`, for a Job started fresh beside a
-/// Live Job (#14). `name` is already clean (from [`worktree_name`],
-/// [`pr_session_name`] or a branch name); it is shortened, never the suffix, so
-/// the result stays within `max_chars` and stays distinct.
-pub fn suffixed_within(name: &str, n: u32, max_chars: usize) -> String {
-    let suffix = format!("-{n}");
-    let room = max_chars.saturating_sub(suffix.chars().count());
-    let base: String = name.chars().take(room).collect();
-    let base = base.trim_end_matches(['.', '-', '/']);
-    let base = if base.is_empty() { FALLBACK_NAME } else { base };
-    format!("{base}{suffix}")
 }
 
 /// The Claude Code session name for any Work Item's Job:
@@ -158,26 +147,50 @@ fn within_slug_limit(mut words: impl Iterator<Item = String>) -> Option<String> 
     Some(joined)
 }
 
-/// `name` with numeric suffix `n`: `implement_9-x-2`.
-pub fn suffixed(name: &str, n: u32) -> String {
-    format!("{name}-{n}")
+/// `name` with the numeric suffix `n`, `<name>-<n>`: den's one suffix rule,
+/// for worktree names, branches and session names alike, whether the name is
+/// taken by another Work Item's Job (#12) or the Job starts fresh beside a
+/// Live Job of the same Work Item (#14). `name` is already clean; it is
+/// shortened, never the suffix, so the result stays within `max_chars` and
+/// stays distinct (`implement_9-x-2`).
+pub fn suffixed(name: &str, n: u32, max_chars: usize) -> String {
+    let suffix = format!("-{n}");
+    let room = max_chars.saturating_sub(suffix.chars().count());
+    let base: String = name.chars().take(room).collect();
+    let base = base.trim_end_matches(['.', '-', '/']);
+    let base = if base.is_empty() { FALLBACK_NAME } else { base };
+    format!("{base}{suffix}")
+}
+
+/// A name no other Work Item's Job has.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FreeName {
+    pub name: String,
+    /// The suffix added to the wanted name (`None`: it was free), so the
+    /// Job's other names can carry the same one.
+    pub suffix: Option<u32>,
+    /// The Work Items whose Jobs held the names passed over.
+    pub passed_over: Vec<WorkItemId>,
 }
 
 /// The first of `wanted`, `wanted-2`, `wanted-3`, … that `taken` doesn't
 /// claim, with the Work Items that claimed the ones passed over; `None` when
 /// every name up to [`MAX_NAME_SUFFIX`] is taken. `taken` says which other
 /// Work Items' Jobs hold a name (empty when it is free).
-pub fn free_name(
-    wanted: &str,
-    taken: impl Fn(&str) -> Vec<WorkItemId>,
-) -> Option<(String, Vec<WorkItemId>)> {
+pub fn free_name(wanted: &str, taken: impl Fn(&str) -> Vec<WorkItemId>) -> Option<FreeName> {
     let mut passed_over: Vec<WorkItemId> = Vec::new();
-    let candidates = std::iter::once(wanted.to_owned())
-        .chain((FIRST_NAME_SUFFIX..=MAX_NAME_SUFFIX).map(|n| suffixed(wanted, n)));
-    for candidate in candidates {
+    let candidates = std::iter::once((wanted.to_owned(), None)).chain(
+        (FIRST_NAME_SUFFIX..=MAX_NAME_SUFFIX)
+            .map(|n| (suffixed(wanted, n, MAX_WORKTREE_NAME_CHARS), Some(n))),
+    );
+    for (candidate, suffix) in candidates {
         let holders = taken(&candidate);
         if holders.is_empty() {
-            return Some((candidate, passed_over));
+            return Some(FreeName {
+                name: candidate,
+                suffix,
+                passed_over,
+            });
         }
         for holder in holders {
             if !passed_over.contains(&holder) {
@@ -191,27 +204,39 @@ pub fn free_name(
 /// The worktree name for `item`'s Job in `clone`: `wanted`, or the first
 /// suffixed name no other Work Item's Job has (spec, "Launch handoff"). A Job
 /// holds a name when its worktree is `clone`'s `.claude/worktrees/<name>`, or,
-/// for a `fresh` branch (whose name is the worktree name), when its branch in
-/// `clone` is named so. This Work Item's own Jobs never count: an existing
+/// for a new branch (`new_branch`: named like its worktree), when its branch
+/// in `clone` is named so. This Work Item's own Jobs never count: an existing
 /// Job of the same Work Item is the Live Job question (#14), not a collision.
 pub fn free_worktree_name(
     wanted: &str,
     clone: &Path,
     item: &WorkItemId,
-    fresh: bool,
+    new_branch: bool,
     jobs: &[JobRecord],
-) -> Option<(String, Vec<WorkItemId>)> {
+) -> Option<FreeName> {
     free_name(wanted, |name| {
         let path = worktree_path(clone, name);
         jobs.iter()
             .filter(|job| &job.work_item != item)
             .filter(|job| {
                 job.worktree == path
-                    || (fresh && job.main_clone.as_path() == clone && job.branch == name)
+                    || (new_branch && job.main_clone.as_path() == clone && job.branch == name)
             })
             .map(|job| job.work_item.clone())
             .collect()
     })
+}
+
+/// The local branch for a cross-Repo PR head whose own name would clash in
+/// the Main Clone (its default branch, or a branch already there):
+/// `pr-<n>-<head>`, the head branch slugged (`pr-7-main`, `pr-12-fix-login`).
+pub fn pr_head_branch(number: u64, head: &str) -> String {
+    let slug = slug(head);
+    if slug.is_empty() {
+        format!("pr-{number}")
+    } else {
+        format!("pr-{number}-{slug}")
+    }
 }
 
 /// The Next Step as a lower-case slug: "Address review" → `address-review`.

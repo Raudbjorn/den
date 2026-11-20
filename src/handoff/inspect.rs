@@ -7,7 +7,7 @@ use super::{
     PathState, RegisteredWorktree, WindowMode,
     clone::{self, Candidate, Remote},
     cloning::{self, NewCloneView},
-    live::{self, JOB_CHECK_BUDGET_SECS, JobCheck, MAX_FRESH_BRANCH_CHARS},
+    live::{self, JOB_CHECK_BUDGET_SECS, JobCheck},
     names, worktree_path,
 };
 use crate::{
@@ -30,23 +30,31 @@ pub struct InspectRequest {
     pub worktree_name: String,
     /// The Job's local branch name.
     pub branch: String,
-    /// The Work Item launched: its recorded Jobs are checked (#14), and its
-    /// own Jobs don't make a name taken.
+    /// The Work Item launched: its own Jobs don't make a name taken (#12),
+    /// and its recorded Jobs are checked (#14).
     pub item: WorkItemId,
-    /// A new branch, named like the worktree (suffix included).
-    pub fresh: bool,
+    /// A new `<type>_<slug>` branch, named like the worktree (suffix included).
+    pub new_branch: bool,
     /// Ask the target's remote where this branch is (GitHub's facts don't say).
     pub base_branch: Option<String>,
+    /// A cross-Repo PR head: the local branch den uses instead of `branch`
+    /// when that name clashes in the Main Clone (`pr-<n>-<head>`); den looks
+    /// at it too.
+    pub clash_branch: Option<String>,
 }
 
 impl InspectRequest {
     /// The same request for a fresh start beside a Live Job (#14): the
-    /// worktree folder and the local branch get the suffix `n`.
+    /// worktree folder and the local branch get the suffix `n`
+    /// ([`names::suffixed`], the same rule as a name another Work Item's Job has).
     #[must_use]
-    pub fn beside_live_job(mut self, n: u32) -> Self {
+    pub fn fresh(mut self, n: u32) -> Self {
         self.worktree_name =
-            names::suffixed_within(&self.worktree_name, n, names::MAX_WORKTREE_NAME_CHARS);
-        self.branch = names::suffixed_within(&self.branch, n, MAX_FRESH_BRANCH_CHARS);
+            names::suffixed(&self.worktree_name, n, names::MAX_WORKTREE_NAME_CHARS);
+        self.branch = names::suffixed(&self.branch, n, names::MAX_BRANCH_NAME_CHARS);
+        self.clash_branch = self
+            .clash_branch
+            .map(|branch| names::suffixed(&branch, n, names::MAX_BRANCH_NAME_CHARS));
         self
     }
 
@@ -68,7 +76,8 @@ impl InspectRequest {
             worktree_name,
             branch: job.branch.clone(),
             // The Job's branch already exists; nothing is asked of the remote.
-            fresh: false,
+            new_branch: false,
+            clash_branch: None,
             base_branch: None,
         })
     }
@@ -105,6 +114,8 @@ pub struct ChosenClone {
     pub worktree: PathState,
     /// The commit of the local branch named like the Job's branch, if it exists.
     pub local_branch: Result<Option<String>, String>,
+    /// The same for the request's `clash_branch`, when it has one.
+    pub clash_branch: Option<Result<Option<String>, String>>,
     /// The worktrees git has registered for the clone.
     pub worktrees: Result<Vec<RegisteredWorktree>, String>,
 }
@@ -118,14 +129,14 @@ pub struct WorkspaceView {
     pub window: WindowMode,
     pub claude_available: bool,
     pub jobs: Result<Vec<JobRecord>, String>,
-    /// This Work Item's recorded Jobs and their worktrees' states, newest
-    /// first (#14); empty when the records couldn't be read.
-    pub job_checks: Vec<JobCheck>,
     /// Where the base branch is on the target, when den asked: `Ok(None)`
     /// when the target has no such branch.
     pub base_tip: Option<Result<Option<String>, String>>,
     /// When no clone qualifies as Main Clone: the folders a clone could go into.
     pub new_clone: Option<NewCloneView>,
+    /// This Work Item's recorded Jobs and their worktrees' states, newest
+    /// first (#14); empty when the records couldn't be read.
+    pub job_checks: Vec<JobCheck>,
 }
 
 /// Gathers the WorkspaceView for `request`.
@@ -199,9 +210,9 @@ pub fn inspect(
         window: launcher.window_mode(),
         claude_available: launcher.claude_available(),
         jobs,
-        job_checks,
         base_tip,
         new_clone,
+        job_checks,
     }
 }
 
@@ -217,11 +228,11 @@ fn look_at_clone(
         &request.worktree_name,
         path,
         &request.item,
-        request.fresh,
+        request.new_branch,
         records,
     )
-    .map_or_else(|| request.worktree_name.clone(), |(name, _)| name);
-    let branch = if request.fresh {
+    .map_or_else(|| request.worktree_name.clone(), |free| free.name);
+    let branch = if request.new_branch {
         &worktree_name
     } else {
         &request.branch
@@ -232,6 +243,11 @@ fn look_at_clone(
         local_branch: workspace
             .resolve(path, &format!("refs/heads/{branch}"))
             .map_err(|e| e.to_string()),
+        clash_branch: request.clash_branch.as_ref().map(|branch| {
+            workspace
+                .resolve(path, &format!("refs/heads/{branch}"))
+                .map_err(|e| e.to_string())
+        }),
         worktrees: workspace.worktrees(path).map_err(|e| e.to_string()),
         path: path.to_path_buf(),
         worktree_name,

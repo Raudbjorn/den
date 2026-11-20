@@ -431,8 +431,8 @@ impl Workspace for FakeWorkspace {
         });
         Self::failure(&state, "add_worktree")?;
         let fake = state.clones.get_mut(clone).ok_or_else(|| no_clone(clone))?;
-        if let WorktreeStart::NewBranchTracking { start }
-        | WorktreeStart::ClonedBranchTracking { start }
+        if let WorktreeStart::NewBranchTracking { start, .. }
+        | WorktreeStart::ClonedBranchTracking { start, .. }
         | WorktreeStart::NewBranch { start } = &add.start
         {
             let commit = fake.refs.get(start).cloned().expect("the start ref exists");

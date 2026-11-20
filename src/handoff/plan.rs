@@ -10,7 +10,6 @@ use super::{
     cloning, command,
     inspect::CloneSearch,
     kinds::{self, Facts},
-    live::MAX_FRESH_BRANCH_CHARS,
     names,
     prompts::{PromptFields, Prompts, PromptsError},
     worktree_path,
@@ -21,6 +20,9 @@ use crate::{
     domain::{Observation, WorkItemId},
 };
 use std::{collections::BTreeMap, path::PathBuf};
+
+/// How a fresh start's prompt tells Claude to push back to the branch it tracks.
+const PUSH_LINE_PREFIX: &str = "Push with: git push";
 
 /// Where to look for Main Clones: the config's settings, with den's default root.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -125,7 +127,7 @@ fn facts(
             base,
             base_commit: Some(pr.head_commit.clone()),
             branch: pr.head_ref.clone(),
-            fresh: false,
+            new_branch: false,
         }),
         _ => Err(Refusal { reasons }),
     }
@@ -147,6 +149,7 @@ pub fn inspect_request(
         (Some(_), None) => PathBuf::new(),
         (None, None) => return Err(Refusal::one(RefusalReason::NoSearchRoot)),
     };
+    let clash_branch = clash_branch(&facts);
     Ok(InspectRequest {
         target: facts.target.repo.clone(),
         target_url: facts.target.url.clone(),
@@ -160,7 +163,8 @@ pub fn inspect_request(
             .flatten(),
         branch: facts.branch,
         item: decision.item.id.clone(),
-        fresh: facts.fresh,
+        new_branch: facts.new_branch,
+        clash_branch,
     })
 }
 
@@ -193,20 +197,20 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         .map_err(|why| reasons.extend(why))
         .ok();
 
-    // Starting fresh beside a Live Job (#14) suffixes the worktree name, the
-    // local branch and the session, before any other collision is considered.
-    let beside_live_job = |name: String, max_chars: usize| match input.fresh {
-        Some(n) => names::suffixed_within(&name, n, max_chars),
+    // Start fresh beside a Live Job (#14): the worktree name, the local branch
+    // and the session get the suffix, by the same rule as below.
+    let fresh = |name: String, max_chars: usize| match input.fresh {
+        Some(n) => names::suffixed(&name, n, max_chars),
         None => name,
     };
-    // The worktree name: suffixed (again) when other Work Items' Jobs have it.
-    let wanted = beside_live_job(
+    // The worktree name: suffixed when other Work Items' Jobs have it (#12).
+    let wanted = fresh(
         names::worktree_name(&facts.branch),
         names::MAX_WORKTREE_NAME_CHARS,
     );
     let records = view.jobs.as_ref().map_or(&[][..], Vec::as_slice);
     let named = found.as_ref().and_then(|(clone, _)| {
-        let free = names::free_worktree_name(&wanted, &clone.path, item, facts.fresh, records);
+        let free = names::free_worktree_name(&wanted, &clone.path, item, facts.new_branch, records);
         if free.is_none() {
             reasons.push(RefusalReason::NoFreeWorktreeName {
                 wanted: wanted.clone(),
@@ -216,13 +220,31 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     });
     let worktree_name = named
         .as_ref()
-        .map_or_else(|| wanted.clone(), |(name, _)| name.clone());
-    let branch_name = if facts.fresh {
+        .map_or_else(|| wanted.clone(), |free| free.name.clone());
+    // A new `<type>_<slug>` branch is named like its worktree. Otherwise a
+    // fresh start's local branch is new, beside the Live Job's, and still
+    // tracks the same branch on the target's remote.
+    let branch_name = if facts.new_branch {
         worktree_name.clone()
     } else {
-        // Beside a Live Job the local branch is new and tracks the same branch
-        // on the target's remote.
-        beside_live_job(facts.branch.clone(), MAX_FRESH_BRANCH_CHARS)
+        fresh(facts.branch.clone(), names::MAX_BRANCH_NAME_CHARS)
+    };
+
+    // A cross-Repo PR head named like the Main Clone's default branch or a
+    // branch already there gets `pr-<n>-<head>` instead (decision d).
+    let chosen = found
+        .as_ref()
+        .and_then(|(clone, _)| view.chosen.as_ref().filter(|c| c.path == clone.path));
+    let clashing = clash_branch(&facts)
+        .map(|name| fresh(name, names::MAX_BRANCH_NAME_CHARS))
+        .filter(|_| {
+            let is_default = facts.target.default_branch.as_deref() == Some(branch_name.as_str());
+            let is_there = chosen.is_some_and(|c| matches!(c.local_branch, Ok(Some(_))));
+            is_default || is_there
+        });
+    let (branch_name, renamed_from) = match clashing {
+        Some(name) => (name, Some(branch_name)),
+        None => (branch_name, None),
     };
 
     let base_commit = found
@@ -233,39 +255,46 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     let mut writable = Writability::Unknown("not inspected".to_owned());
     match &found {
         Some((clone, remote)) if matches!(clone.source, CloneSource::ToClone { .. }) => {
-            // Execution reuses the branch if cloning creates it, detaching
-            // only the Main Clone created by this launch before worktree add.
+            // Execution reuses a branch created by cloning, detaching only the new Main Clone.
             writable = clone.writable.clone();
             branch_start = Some(new_branch_start(&facts, remote));
         }
-        Some((clone, remote)) => {
-            let chosen = view.chosen.as_ref().filter(|c| c.path == clone.path);
-            match chosen {
-                Some(state) if state.worktree_name == worktree_name => {
-                    let checked = Checked {
-                        facts: &facts,
-                        item,
-                        view,
-                        clone,
-                        remote,
-                        branch: &branch_name,
-                        worktree: worktree_path(&clone.path, &worktree_name),
-                        base_commit: base_commit.as_deref(),
-                    };
-                    writable = check_clone(&checked, state, &mut reasons);
-                    branch_start = check_branch(&checked, state, &mut reasons);
-                }
-                Some(state) => reasons.push(RefusalReason::InspectionFailed {
-                    error: format!(
-                        "the worktree name {worktree_name} was not inspected ({} was)",
-                        state.worktree_name
-                    ),
-                }),
-                None => reasons.push(RefusalReason::InspectionFailed {
-                    error: format!("{} was not inspected", clone.path.display()),
-                }),
+        Some((clone, remote)) => match chosen {
+            Some(state) if state.worktree_name == worktree_name => {
+                let checked = Checked {
+                    facts: &facts,
+                    item,
+                    view,
+                    clone,
+                    remote,
+                    branch: &branch_name,
+                    worktree: worktree_path(&clone.path, &worktree_name),
+                    base_commit: base_commit.as_deref(),
+                };
+                writable = check_clone(&checked, state, &mut reasons);
+                let local = match (&renamed_from, &state.clash_branch) {
+                    (None, _) => Some(&state.local_branch),
+                    (Some(_), Some(local)) => Some(local),
+                    (Some(_), None) => {
+                        reasons.push(RefusalReason::InspectionFailed {
+                            error: format!("the local branch {branch_name} was not inspected"),
+                        });
+                        None
+                    }
+                };
+                branch_start =
+                    local.and_then(|local| check_branch(&checked, local, state, &mut reasons));
             }
-        }
+            Some(state) => reasons.push(RefusalReason::InspectionFailed {
+                error: format!(
+                    "the worktree name {worktree_name} was not inspected ({} was)",
+                    state.worktree_name
+                ),
+            }),
+            None => reasons.push(RefusalReason::InspectionFailed {
+                error: format!("{} was not inspected", clone.path.display()),
+            }),
+        },
         None => {}
     }
 
@@ -288,16 +317,32 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             number: facts.number,
             url: decision.item.url.clone(),
             title: decision.item.title.clone(),
-            branch: branch_name.clone(),
+            // The branch the Work Item is about (a PR's head, a Branch), or
+            // the new branch.
+            branch: if facts.new_branch {
+                branch_name.clone()
+            } else {
+                facts.branch.clone()
+            },
         },
     );
-    let session = beside_live_job(
+    let prompt = with_push_line(prompt, &facts, &branch_name, &remote);
+    // One suffix rule for the Job's names: the session carries the suffix the
+    // worktree got, whether for a fresh start or a name another Job has.
+    let session = fresh(
         names::session_name(item, facts.step),
         names::MAX_SESSION_NAME_CHARS,
     );
+    let session = match named.as_ref().and_then(|free| free.suffix) {
+        Some(n) => names::suffixed(&session, n, names::MAX_SESSION_NAME_CHARS),
+        None => session,
+    };
     let renamed = named
-        .filter(|(name, _)| *name != wanted)
-        .map(|(_, taken_by)| Renamed { wanted, taken_by });
+        .filter(|free| free.suffix.is_some())
+        .map(|free| Renamed {
+            wanted,
+            taken_by: free.passed_over,
+        });
     let mut plan = LaunchPlan {
         work_item: decision.item.id.clone(),
         title: decision.item.title.clone(),
@@ -313,6 +358,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         branch: JobBranch {
             name: branch_name,
             start,
+            renamed_from,
         },
         worktree,
         renamed,
@@ -323,6 +369,35 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     };
     plan.command = command::display(&plan.window, &plan.window_command());
     Ok(plan)
+}
+
+/// For a cross-Repo PR head (decision d): the local branch den uses when the
+/// head's own name clashes in the Main Clone, before any fresh-start suffix.
+fn clash_branch(facts: &Facts) -> Option<String> {
+    match (&facts.base, facts.number) {
+        (BaseRef::PullHead { .. }, Some(number)) => {
+            Some(names::pr_head_branch(number, &facts.branch))
+        }
+        _ => None,
+    }
+}
+
+/// A fresh start's local branch (`feature-7-2`) tracks a branch of another
+/// name (`origin/feature-7`), so a plain `git push` refuses (push.default
+/// simple). The prompt then ends with the one line that pushes back to it.
+/// Only for a branch of the target (a same-Repo PR head, a Branch): a
+/// cross-Repo PR head lives in another Repo, which the target's remote is not.
+fn with_push_line(prompt: String, facts: &Facts, local: &str, remote: &Remote) -> String {
+    match &facts.base {
+        BaseRef::HeadBranch(branch) if !facts.new_branch && local != branch => {
+            format!(
+                "{prompt} {PUSH_LINE_PREFIX} {} {}",
+                command::shell_quote(&remote.name),
+                command::shell_quote(&format!("HEAD:{branch}"))
+            )
+        }
+        _ => prompt,
+    }
 }
 
 /// The commit the Job starts on: the PR head GitHub reported, or where the
@@ -362,12 +437,12 @@ fn base_commit(
     None
 }
 
-/// A local branch the Job creates: a fresh `<type>_<slug>` branch tracking
+/// A local branch the Job creates: a new `<type>_<slug>` branch tracking
 /// nothing, the target's branch tracked under its remote, or a cross-Repo PR
 /// head (a PR ref) tracking nothing.
 fn new_branch_start(facts: &Facts, remote: &Remote) -> BranchStart {
     match facts.base.branch() {
-        _ if facts.fresh => BranchStart::Fresh,
+        _ if facts.new_branch => BranchStart::Fresh,
         Some(branch) => BranchStart::New {
             tracking: format!("{}/{branch}", remote.name),
         },
@@ -382,7 +457,7 @@ struct Checked<'a> {
     view: &'a WorkspaceView,
     clone: &'a MainClone,
     remote: &'a Remote,
-    /// The Job's local branch name (suffixed for a fresh branch).
+    /// The Job's local branch name (suffixed for a new branch or a fresh start).
     branch: &'a str,
     worktree: PathBuf,
     /// `None` when it couldn't be established (already a reason).
@@ -456,14 +531,16 @@ fn registered<'a>(
     }
 }
 
-/// How the Job's local branch starts, given what is there locally.
+/// How the Job's local branch starts, given what is there locally (`local`:
+/// the commit of the local branch named like it, if any).
 fn check_branch(
     checked: &Checked<'_>,
+    local: &Result<Option<String>, String>,
     state: &ChosenClone,
     reasons: &mut Vec<RefusalReason>,
 ) -> Option<BranchStart> {
     let branch = checked.branch;
-    match &state.local_branch {
+    match local {
         Ok(None) => Some(new_branch_start(checked.facts, checked.remote)),
         Ok(Some(commit)) if Some(commit.as_str()) == checked.base_commit => {
             // Already reported when the list couldn't be read.

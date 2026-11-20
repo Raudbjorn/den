@@ -31,7 +31,7 @@ use crate::{
     handoff::{
         self, InspectRequest, JobCheck, LaunchOutcome, LaunchPlan, LaunchReport, LaunchSettings,
         PlanInput, Refusal, RefusalReason, ReopenPlan, TargetChoice, WorkspaceView, WorktreeState,
-        check_prompt, live, short_commit,
+        check_prompt, live, names, short_commit,
     },
 };
 
@@ -53,8 +53,10 @@ pub(super) struct Sheet {
     pub accepted_head: Option<String>,
     /// This Job's target: the Work Item's Repo or, for a fork, its Upstream.
     pub choice: TargetChoice,
-    /// The fork's own setting when the sheet opened; `choice` differs from it
-    /// only after `u` on the sheet (a one-Job override).
+    /// The target the sheet opened on: the fork's own setting for an Issue or
+    /// a Run, always the Work Item's own Repo for a PR or a Branch
+    /// ([`TargetChoice::default_for`]). `choice` differs from it only after
+    /// `u` on the sheet (a one-Job override).
     pub fork_choice: TargetChoice,
     /// The Work Item's Repo, when it is a fork (so `u` means something), and
     /// its Upstream if den can see it.
@@ -79,6 +81,8 @@ pub(super) struct Sheet {
 pub(super) struct ForkTargets {
     pub fork: RepoId,
     pub upstream: Option<RepoId>,
+    /// The fork's own setting (sidebar `u`) targets its Upstream.
+    pub set_to_upstream: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -136,12 +140,16 @@ impl App {
             repo.is_fork.then(|| ForkTargets {
                 fork: repo.id.clone(),
                 upstream: repo.upstream().map(|u| u.id.clone()),
+                set_to_upstream: self.upstreams.contains(&repo.id),
             })
         });
-        let fork_choice = match &fork {
-            Some(fork) if self.upstreams.contains(&fork.fork) => TargetChoice::Upstream,
+        let fork_setting = match &fork {
+            Some(fork) if fork.set_to_upstream => TargetChoice::Upstream,
             _ => TargetChoice::OwnRepo,
         };
+        // A PR's or Branch's Job starts on its own Repo whatever the fork's
+        // setting; Issues and Runs follow it.
+        let fork_choice = TargetChoice::default_for(&decision.item.id, fork_setting);
         let mut sheet = Sheet {
             id,
             item: decision.item.id.clone(),
@@ -417,10 +425,10 @@ impl App {
             })
             .and_then(|request| {
                 live::fresh_suffix(view, &request.worktree_name, &request.branch)
-                    .map(|n| (n, request.beside_live_job(n)))
+                    .map(|n| (n, request.fresh(n)))
                     .ok_or_else(|| {
                         Refusal::one(RefusalReason::NoFreshName {
-                            last_tried: live::MAX_FRESH_SUFFIX,
+                            last_tried: names::MAX_NAME_SUFFIX,
                         })
                     })
             });

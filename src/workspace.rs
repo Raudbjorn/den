@@ -354,18 +354,19 @@ impl Workspace for GitWorkspace {
             )
         };
         let invocation = match &add.start {
-            WorktreeStart::NewBranchTracking { start }
-            | WorktreeStart::ClonedBranchTracking { start } => {
-                let remote = start
-                    .strip_prefix("refs/remotes/")
-                    .and_then(|r| r.strip_suffix(&format!("/{}", add.branch)))
+            WorktreeStart::NewBranchTracking { start, remote }
+            | WorktreeStart::ClonedBranchTracking { start, remote } => {
+                let remote = checked_remote(remote, operation)?;
+                let remote_branch = start
+                    .strip_prefix(&format!("refs/remotes/{remote}/"))
+                    .filter(|branch| !branch.is_empty())
                     .ok_or_else(|| WorkspaceError {
                         operation: operation(),
-                        detail: "the tracking ref does not name the Job's branch".to_owned(),
+                        detail: "the tracking ref does not name a branch on the planned remote"
+                            .to_owned(),
                     })?;
-                let remote = checked_remote(remote, operation)?;
                 // Explicit fetches do not extend a single-branch clone's mapping.
-                let mapping = format!("+refs/heads/{}:{start}", add.branch);
+                let mapping = format!("+refs/heads/{remote_branch}:{start}");
                 let mappings = self.run(
                     &self.git(clone).args([
                         "config",
@@ -393,7 +394,7 @@ impl Workspace for GitWorkspace {
                             "set-branches",
                             "--add",
                             remote,
-                            &add.branch,
+                            remote_branch,
                         ]),
                         operation,
                         GIT_TIMEOUT_SECS,
@@ -411,7 +412,7 @@ impl Workspace for GitWorkspace {
                             detail: "the cloned branch differs from the fetched head".to_owned(),
                         });
                     }
-                    self.check_tracking(clone, &add.branch, remote, &add.branch)?;
+                    self.check_tracking(clone, &add.branch, remote, remote_branch)?;
                     self.run_ok(
                         &self.git(clone).args(["switch", "--detach"]),
                         operation,

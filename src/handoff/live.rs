@@ -39,12 +39,6 @@ pub const MAX_JOBS_CHECKED: usize = 200;
 /// The most one check of Job worktrees may take, in seconds; Jobs left when it
 /// runs out are reported unknown, not missing.
 pub const JOB_CHECK_BUDGET_SECS: u64 = 20;
-/// The first suffix a fresh start tries (`<name>-2`).
-pub const FIRST_FRESH_SUFFIX: u32 = 2;
-/// The last suffix a fresh start tries before giving up.
-pub const MAX_FRESH_SUFFIX: u32 = 99;
-/// The longest local branch name a fresh start makes, in characters.
-pub const MAX_FRESH_BRANCH_CHARS: usize = 200;
 
 /// What a recorded Job's worktree looks like now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,7 +201,7 @@ pub fn most_telling<'a>(checks: &'a [JobCheck], item: &WorkItemId) -> Option<&'a
 
 /// The smallest suffix `n` for which `<worktree_name>-n` and `<branch>-n` are
 /// used by no recorded Job and no registered worktree in `view`; `None` when
-/// none up to [`MAX_FRESH_SUFFIX`] is free. The inspection that follows still
+/// none up to [`names::MAX_NAME_SUFFIX`] is free. The inspection that follows still
 /// checks the path is free and the branch doesn't exist.
 pub fn fresh_suffix(view: &WorkspaceView, worktree_name: &str, branch: &str) -> Option<u32> {
     let mut names_taken = BTreeSet::new();
@@ -222,12 +216,12 @@ pub fn fresh_suffix(view: &WorkspaceView, worktree_name: &str, branch: &str) -> 
         names_taken.extend(file_name(&worktree.path));
         branches_taken.extend(worktree.branch.clone());
     }
-    (FIRST_FRESH_SUFFIX..=MAX_FRESH_SUFFIX).find(|&n| {
-        !names_taken.contains(&names::suffixed_within(
+    (names::FIRST_NAME_SUFFIX..=names::MAX_NAME_SUFFIX).find(|&n| {
+        !names_taken.contains(&names::suffixed(
             worktree_name,
             n,
             names::MAX_WORKTREE_NAME_CHARS,
-        )) && !branches_taken.contains(&names::suffixed_within(branch, n, MAX_FRESH_BRANCH_CHARS))
+        )) && !branches_taken.contains(&names::suffixed(branch, n, names::MAX_BRANCH_NAME_CHARS))
     })
 }
 

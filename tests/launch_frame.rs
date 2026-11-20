@@ -17,7 +17,7 @@ use ratatui::{buffer::Buffer, layout::Rect};
 use raudbjorn_tui::profile::{ColorProfile, GlyphProfile, TerminalProfile};
 use std::{collections::BTreeMap, path::PathBuf};
 use support::{
-    build::{ME, ObservationBuilder, pr},
+    build::{ME, ObservationBuilder, issue, pr},
     harness::Harness,
 };
 
@@ -182,7 +182,9 @@ fn upstream_sheet_open((cols, rows): (u16, u16)) -> Harness {
     harness.answer(Ok(ObservationBuilder::new()
         .owner("octo")
         .fork("octo/app", Some("up/app"))
-        .pull_request(pr("octo/app", 7).author(ME).changes_requested())
+        // An Issue, not a PR: since decision b a PR's sheet starts on the
+        // PR's own Repo whatever the fork's setting; an Issue's follows it.
+        .issue(issue("octo/app", 9).assignee(ME))
         .build()));
     harness.start();
     harness.settle(Event::Key(Key::Char('c')));
