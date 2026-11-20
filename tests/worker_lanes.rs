@@ -40,6 +40,12 @@ impl LinearSource for HeldLinear {
         let _ = self.release.lock().expect("lock").recv();
         LinearSurvey::default()
     }
+
+    fn read_issue(&self, _request: &den::ports::LinearIssueRequest) -> den::ports::LinearIssueRead {
+        den::ports::LinearIssueRead::Failed {
+            error: "not used here".to_owned(),
+        }
+    }
 }
 
 fn worker() -> (Worker, Sender<()>) {
@@ -53,6 +59,7 @@ fn worker() -> (Worker, Sender<()>) {
         linear: Arc::new(HeldLinear {
             release: Mutex::new(held),
         }),
+        linear_writer: Arc::new(support::fakes::FakeLinearWriter::default()),
         cache: Arc::new(FakeCache::default()),
         workspace: Arc::new(FakeWorkspace::default()),
         launcher: Arc::new(FakeLauncher::default()),

@@ -273,6 +273,8 @@ pub enum Overlay {
     /// terminals too narrow for the detail pane (`Enter` opens it, `Esc` closes).
     DetailSheet,
     /// The launch sheet (`c`): what launching a Job will do, then what it did.
+    /// The Mark for release sheet (#38) is drawn as one too, with no prompt
+    /// or command.
     LaunchSheet(Box<LaunchSheet>),
 }
 
@@ -295,6 +297,10 @@ pub struct LaunchSheet {
     pub reviewers: Option<PromptField>,
     /// The prompt, editable in place; `None` until there is a plan.
     pub prompt: Option<PromptField>,
+    /// The Linear writes `Enter` makes before anything else (#38), one line
+    /// each, drawn in teal above the command: what den itself changes, apart
+    /// from what the Job does. Empty on sheets that write nothing to Linear.
+    pub linear_writes: Vec<String>,
     /// The exact command; `None` until there is a plan.
     pub command: Option<String>,
     /// Refusal reasons, what a launch did, notices.
@@ -303,8 +309,12 @@ pub struct LaunchSheet {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaunchStatus {
+    /// A Linear Issue's sheet waits for its target Repo to be chosen (#38).
+    ChooseRepo,
     /// Looking at the workspace.
     Inspecting,
+    /// Re-reading and writing to Linear before launching (#38).
+    Writing,
     /// `Enter` launches.
     Ready,
     /// The base (a PR head, a Branch, the default branch) moved since the sheet opened; `Enter` launches on the new one.

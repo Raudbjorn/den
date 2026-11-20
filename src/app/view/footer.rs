@@ -5,6 +5,7 @@ use crate::{
     app::{
         Focus, OverlayState,
         launch::{Sheet, SheetState},
+        release::{ReleaseSheet, ReleaseState},
         view_model::{ENTER_KEY, Footer, KeyHint},
     },
     handoff::TargetChoice,
@@ -15,6 +16,11 @@ pub fn build(state: &State<'_>) -> Footer {
     if let Some(OverlayState::Launch(sheet)) = state.overlay {
         return Footer {
             hints: launch_hints(sheet),
+        };
+    }
+    if let Some(OverlayState::Release(sheet)) = state.overlay {
+        return Footer {
+            hints: release_hints(sheet),
         };
     }
     let mut hints = Vec::new();
@@ -70,13 +76,30 @@ fn launch_hints(sheet: &Sheet) -> Vec<KeyHint> {
         ];
     }
     let switch = sheet_upstream_hint(sheet).map(|label| hint("u", label));
+    // A Linear Issue's sheet (#38): `t` picks among several Repos, `m`
+    // toggles an offered move.
+    let repo = sheet
+        .linear
+        .as_ref()
+        .filter(|l| l.repos.len() > 1)
+        .map(|_| hint("t", "repo"));
+    let toggle = sheet
+        .linear
+        .as_ref()
+        .filter(|l| l.writes.move_to.is_some() && !l.writes.finished)
+        .map(|_| hint("m", "move"));
     match sheet.state {
         SheetState::Ready { .. } => [hint("⏎", "launch"), hint("e", "edit")]
             .into_iter()
             .chain(sheet.reviewers.as_ref().map(|_| hint("r", "reviewers")))
+            .chain(repo)
+            .chain(toggle)
             .chain(switch)
             .chain([hint("esc", "cancel")])
             .collect(),
+        SheetState::ChooseRepo => repo.into_iter().chain([hint("esc", "cancel")]).collect(),
+        SheetState::Writing { .. } => Vec::new(),
+        SheetState::Stopped { .. } => vec![hint("esc", "close")],
         SheetState::LiveJob { .. } if sheet.launch_refused.is_some() => {
             [hint("o", "open existing")]
                 .into_iter()
@@ -95,10 +118,29 @@ fn launch_hints(sheet: &Sheet) -> Vec<KeyHint> {
             .chain([hint("esc", "cancel")])
             .collect(),
         SheetState::ReopenReady { .. } => vec![hint("⏎", "open"), hint("esc", "cancel")],
-        SheetState::Inspecting => switch.into_iter().chain([hint("esc", "cancel")]).collect(),
+        SheetState::Inspecting => repo
+            .into_iter()
+            .chain(switch)
+            .chain([hint("esc", "cancel")])
+            .collect(),
         SheetState::Launching { .. } | SheetState::Reopening { .. } => Vec::new(),
-        SheetState::Refused(_) => switch.into_iter().chain([hint("esc", "close")]).collect(),
+        SheetState::Refused(_) => repo
+            .into_iter()
+            .chain(switch)
+            .chain([hint("esc", "close")])
+            .collect(),
         SheetState::Finished { .. } | SheetState::Reopened { .. } => vec![hint("esc", "close")],
+    }
+}
+
+/// The Mark for release sheet's keys (#38).
+fn release_hints(sheet: &ReleaseSheet) -> Vec<KeyHint> {
+    match sheet.state {
+        ReleaseState::Ready => vec![hint("⏎", "move"), hint("esc", "cancel")],
+        ReleaseState::Writing => Vec::new(),
+        ReleaseState::Moved | ReleaseState::Stopped | ReleaseState::Refused(_) => {
+            vec![hint("esc", "close")]
+        }
     }
 }
 

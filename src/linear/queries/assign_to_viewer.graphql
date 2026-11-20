@@ -1,0 +1,19 @@
+# One of den's two Linear writes (ADR-0004): assign a Linear Issue to the
+# Linear viewer, whose ID den reads with the same key just before. The input
+# carries the assignee and nothing else.
+mutation LinearAssignToViewer($id: String!, $assigneeId: String!) {
+  issueUpdate(id: $id, input: { assigneeId: $assigneeId }) {
+    success
+    issue {
+      assignee {
+        id
+        name
+      }
+      state {
+        id
+        name
+        type
+      }
+    }
+  }
+}

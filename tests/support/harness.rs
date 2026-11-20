@@ -4,8 +4,8 @@
 use super::{
     build::now,
     fakes::{
-        FakeCache, FakeGitHub, FakeJobs, FakeLauncher, FakeLinear, FakeUpstreams, FakeWorkspace,
-        FixedClock,
+        FakeCache, FakeGitHub, FakeJobs, FakeLauncher, FakeLinear, FakeLinearWriter, FakeUpstreams,
+        FakeWorkspace, FixedClock,
     },
 };
 use den::{
@@ -21,6 +21,8 @@ pub struct Harness {
     pub app: App,
     pub github: Arc<FakeGitHub>,
     pub linear: Arc<FakeLinear>,
+    /// The two Linear writes (#38): recorded, never sent anywhere.
+    pub linear_writer: Arc<FakeLinearWriter>,
     pub cache: Arc<FakeCache>,
     pub workspace: Arc<FakeWorkspace>,
     pub launcher: Arc<FakeLauncher>,
@@ -95,6 +97,7 @@ impl Harness {
     ) -> Self {
         let github = Arc::new(FakeGitHub::default());
         let linear = Arc::new(FakeLinear::default());
+        let linear_writer = Arc::new(FakeLinearWriter::default());
         let cache = Arc::new(cache);
         let workspace = Arc::new(FakeWorkspace::default());
         let launcher = Arc::new(FakeLauncher::default());
@@ -106,6 +109,7 @@ impl Harness {
             ports: Ports {
                 github: github.clone(),
                 linear: linear.clone(),
+                linear_writer: linear_writer.clone(),
                 cache: cache.clone(),
                 workspace: workspace.clone(),
                 launcher: launcher.clone(),
@@ -116,6 +120,7 @@ impl Harness {
             app,
             github,
             linear,
+            linear_writer,
             cache,
             workspace,
             launcher,

@@ -17,7 +17,7 @@ use super::{
 use crate::{
     config::Config,
     decide::Decision,
-    domain::{NextStep, Observation, WorkItemId, facts::Reviewer},
+    domain::{NextStep, Observation, RepoId, WorkItemId, facts::Reviewer},
 };
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -68,6 +68,9 @@ pub struct PlanInput<'a> {
     /// Request review (#39): the Owner's Slack channel from its Linear
     /// Workflow, opaque, only ever put into the prompt. Unused for other kinds.
     pub slack_channel: Option<&'a str>,
+    /// A Linear Issue's Start or Implement (#38): the Repo chosen on the sheet
+    /// from its Linear Workflow's Repos for new work. Unused for other kinds.
+    pub linear_repo: Option<&'a RepoId>,
 }
 
 /// The facts for a launch, or every reason it can't happen. PRs here; Issues,
@@ -76,9 +79,10 @@ fn facts(
     decision: &Decision,
     observation: &Observation,
     choice: TargetChoice,
+    linear_repo: Option<&RepoId>,
 ) -> Result<Facts, Refusal> {
     let WorkItemId::PullRequest { repo, number } = &decision.item.id else {
-        return kinds::facts(decision, observation, choice);
+        return kinds::facts(decision, observation, choice, linear_repo);
     };
     let mut reasons = Vec::new();
     let step = decision.next_step;
@@ -134,20 +138,24 @@ fn facts(
             base_commit: Some(pr.head_commit.clone()),
             branch: pr.head_ref.clone(),
             new_branch: false,
+            named_fresh: false,
+            identifier: None,
         }),
         _ => Err(Refusal { reasons }),
     }
 }
 
 /// What to inspect for launching `decision`'s Work Item, or why den won't even
-/// look (no Next Step, archived, …).
+/// look (no Next Step, archived, …). `linear_repo` is a Linear Issue's chosen
+/// Repo for new work (#38); `None` for any other kind.
 pub fn inspect_request(
     decision: &Decision,
     observation: &Observation,
     choice: TargetChoice,
     settings: &LaunchSettings,
+    linear_repo: Option<&RepoId>,
 ) -> Result<InspectRequest, Refusal> {
-    let facts = facts(decision, observation, choice)?;
+    let facts = facts(decision, observation, choice, linear_repo)?;
     let configured_clone = settings.configured_clone(&facts.target.repo.to_string());
     let search_root = match (&configured_clone, &settings.search_root) {
         (_, Some(root)) => root.clone(),
@@ -176,7 +184,12 @@ pub fn inspect_request(
 
 /// Plans the launch, or refuses with every reason found.
 pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
-    let facts = facts(input.decision, input.observation, input.choice)?;
+    let facts = facts(
+        input.decision,
+        input.observation,
+        input.choice,
+        input.linear_repo,
+    )?;
     let item = &input.decision.item.id;
     let view = input.view;
     let mut reasons = Vec::new();
@@ -325,37 +338,41 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         ),
         slack_channel: input.slack_channel.map(str::to_owned),
     });
-    let prompt = prompts.render(
-        facts.step,
-        &PromptFields {
-            repo: facts.target.repo.to_string(),
-            number: facts.number,
-            url: decision.item.url.clone(),
-            title: decision.item.title.clone(),
-            // The branch the Work Item is about (a PR's head, a Branch), or
-            // the new branch.
-            branch: if facts.new_branch {
-                branch_name.clone()
-            } else {
-                facts.branch.clone()
-            },
-            reviewers: review_request
-                .iter()
-                .flat_map(|r| &r.reviewers)
-                .map(reviewers::spell)
-                .collect(),
-            slack_channel: review_request
-                .as_ref()
-                .and_then(|r| r.slack_channel.clone()),
+    let fields = PromptFields {
+        repo: facts.target.repo.to_string(),
+        number: facts.number,
+        url: decision.item.url.clone(),
+        title: decision.item.title.clone(),
+        // The branch the Work Item is about (a PR's head, a Branch), or
+        // the new branch.
+        branch: if facts.new_branch || facts.named_fresh {
+            branch_name.clone()
+        } else {
+            facts.branch.clone()
         },
-    );
+        reviewers: review_request
+            .iter()
+            .flat_map(|r| &r.reviewers)
+            .map(reviewers::spell)
+            .collect(),
+        slack_channel: review_request
+            .as_ref()
+            .and_then(|r| r.slack_channel.clone()),
+        identifier: facts.identifier.clone().unwrap_or_default(),
+    };
+    // A Linear Issue's Start or Implement Job has its own template (#38).
+    let prompt = match item {
+        WorkItemId::LinearIssue { .. } => prompts.render_linear(&fields),
+        _ => prompts.render(facts.step, &fields),
+    };
     let prompt = with_push_line(prompt, &facts, &branch_name, &remote);
     // One suffix rule for the Job's names: the session carries the suffix the
     // worktree got, whether for a fresh start or a name another Job has.
-    let session = fresh(
-        names::session_name(item, facts.step),
-        names::MAX_SESSION_NAME_CHARS,
-    );
+    let session_name = match &facts.identifier {
+        Some(identifier) => names::linear_session_name(&facts.target.repo, identifier, facts.step),
+        None => names::session_name(item, facts.step),
+    };
+    let session = fresh(session_name, names::MAX_SESSION_NAME_CHARS);
     let session = match named.as_ref().and_then(|free| free.suffix) {
         Some(n) => names::suffixed(&session, n, names::MAX_SESSION_NAME_CHARS),
         None => session,
@@ -472,7 +489,7 @@ fn base_commit(
 /// head (a PR ref) tracking nothing.
 fn new_branch_start(facts: &Facts, remote: &Remote) -> BranchStart {
     match facts.base.branch() {
-        _ if facts.new_branch => BranchStart::Fresh,
+        _ if facts.new_branch || facts.named_fresh => BranchStart::Fresh,
         Some(branch) => BranchStart::New {
             tracking: format!("{}/{branch}", remote.name),
         },

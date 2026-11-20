@@ -203,7 +203,7 @@ fn run(
 
     // 6. Record the Job.
     let job = JobRecord {
-        subject: JobSubject::GitHub(plan.work_item.clone()),
+        subject: JobSubject::of(&plan.work_item),
         next_step: plan.next_step,
         target: plan.target.repo.clone(),
         main_clone: clone_path.clone(),

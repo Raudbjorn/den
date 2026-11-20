@@ -31,9 +31,18 @@ impl fmt::Display for Refusal {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RefusalReason {
     NoNextStep,
-    /// A Linear Issue: den launches Jobs for it only from the Start and
-    /// Implement sheets, which arrive with the Linear writes (#38).
+    /// A Linear Issue whose Next Step isn't Start or Implement: den launches
+    /// a Job for a Linear Issue only to start or implement it (Land's Job is
+    /// #40's).
     LinearIssueNotLaunchable,
+    /// A Linear Issue's Owner offers no Repos for new work, so its Job has
+    /// nowhere to go (#38).
+    NoNewWorkRepos {
+        owner: String,
+    },
+    /// The Linear Workflow offers several Repos for new work and none is
+    /// chosen yet: den never guesses where code goes (#38).
+    NewWorkRepoNotChosen,
     /// The Work Item is not in what den last observed.
     WorkItemGone,
     RepoUnknown {
@@ -215,7 +224,14 @@ impl fmt::Display for RefusalReason {
         match self {
             Self::NoNextStep => f.write_str("this Work Item has no Next Step to hand off"),
             Self::LinearIssueNotLaunchable => f.write_str(
-                "den can't launch a Job for a Linear Issue yet: it has no Repo until one is chosen for it, and the sheet that chooses one isn't built yet",
+                "den launches a Job for a Linear Issue only to start or implement it",
+            ),
+            Self::NoNewWorkRepos { owner } => write!(
+                f,
+                "{owner}'s Linear Workflow offers no Repos for new work (new_work_repos in the config), so this Linear Issue's Job has nowhere to go"
+            ),
+            Self::NewWorkRepoNotChosen => f.write_str(
+                "choose the target Repo with t: the Linear Workflow offers several, and den doesn't guess where code goes",
             ),
             Self::WorkItemGone => f.write_str("this Work Item is no longer in the survey"),
             Self::RepoUnknown { repo } => write!(f, "den has no facts about the Repo {repo}"),

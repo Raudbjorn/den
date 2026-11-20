@@ -42,6 +42,15 @@
 //! `<name>-<n>`): a worktree name another Work Item's Job has (#12), and a
 //! fresh start beside this Work Item's Live Job (#14).
 //!
+//! Linear Issues (#38): a Start or Implement Job goes to the Repo chosen on
+//! the sheet from the Linear Workflow's Repos for new work
+//! ([`PlanInput::linear_repo`]), on a new branch from its default branch
+//! (Linear's suggested name when it is safe), with the `implement_linear`
+//! prompt (identifier, URL, Repo). Its record's subject is
+//! [`JobSubject::LinearIssue`](crate::jobs::JobSubject::LinearIssue). The
+//! Linear writes before it are the App's (a re-read, then assign, then move
+//! state), never the executor's.
+//!
 //! Coordination Jobs (#39): a Request review (and, with #40, a Land) Job acts
 //! on GitHub rather than on code. It still gets a worktree on the PR head, as
 //! a PR Job does, but runs in the approval-required permission mode
@@ -180,9 +189,11 @@ impl TargetChoice {
     pub fn default_for(item: &WorkItemId, fork_setting: Self) -> Self {
         match item {
             WorkItemId::PullRequest { .. } | WorkItemId::Branch { .. } => Self::OwnRepo,
-            WorkItemId::Issue { .. } | WorkItemId::Run { .. } => fork_setting,
-            // Not launchable yet (#38); the sheet refuses before any target matters.
-            WorkItemId::LinearIssue { .. } => Self::OwnRepo,
+            // A Linear Issue's Job (#38) starts a new branch in the Repo
+            // chosen for it, so it follows that Repo's fork setting.
+            WorkItemId::Issue { .. } | WorkItemId::Run { .. } | WorkItemId::LinearIssue { .. } => {
+                fork_setting
+            }
         }
     }
 }

@@ -4,7 +4,9 @@
 //! When the sheet has more lines than rows, sections give way in this order:
 //! the fields' notes move onto their value's line, then go, then fields are cut,
 //! then the command, then the prompt, then a Request review's reviewers; the
-//! Work Item, its status and the messages (refusals, what a launch did) stay.
+//! Work Item, its status, the messages (refusals, what a launch did) and the
+//! Linear writes (#38: one teal line each, above the command, never wrapped)
+//! stay.
 
 use super::{
     Theme, UiError, glyphs, templates,
@@ -105,6 +107,15 @@ pub fn lines(sheet: &LaunchSheet, width: usize, rows: usize, glyphs: glyphs::Gly
         .as_ref()
         .map(|c| labelled("COMMAND", c, width, LineStyle::Muted))
         .unwrap_or_default();
+    let linear_writes: Vec<Line> = sheet
+        .linear_writes
+        .iter()
+        .enumerate()
+        .map(|(i, write)| {
+            let label = if i == 0 { "LINEAR" } else { "" };
+            (label.to_owned(), one_line(write, width), LineStyle::Step)
+        })
+        .collect();
     let full_fields = field_lines(&sheet.fields, width, glyphs, Notes::OwnLine);
     let inline_fields = field_lines(&sheet.fields, width, glyphs, Notes::Inline);
     let compact_fields = field_lines(&sheet.fields, width, glyphs, Notes::Hidden);
@@ -114,6 +125,7 @@ pub fn lines(sheet: &LaunchSheet, width: usize, rows: usize, glyphs: glyphs::Gly
     let mut left = rows;
     let head = take(&head, usize::MAX, &mut left);
     let messages = take(&messages, usize::MAX, &mut left);
+    let linear_writes = take(&linear_writes, usize::MAX, &mut left);
     let reviewers = take(&reviewers, REVIEWERS_MAX_ROWS, &mut left);
     let prompt = take(&prompt, PROMPT_MAX_ROWS, &mut left);
     let command = take(&command, COMMAND_MAX_ROWS, &mut left);
@@ -124,7 +136,15 @@ pub fn lines(sheet: &LaunchSheet, width: usize, rows: usize, glyphs: glyphs::Gly
     } else {
         take(&compact_fields, usize::MAX, &mut left)
     };
-    let sections = [head, fields, reviewers, prompt, command, messages];
+    let sections = [
+        head,
+        fields,
+        reviewers,
+        prompt,
+        linear_writes,
+        command,
+        messages,
+    ];
     let filled: usize = sections.iter().map(Vec::len).sum();
     let gaps = sections
         .iter()
@@ -140,6 +160,20 @@ pub fn lines(sheet: &LaunchSheet, width: usize, rows: usize, glyphs: glyphs::Gly
         out.extend(section);
     }
     out
+}
+
+/// `text` on one row of `width` cells, cut with an ellipsis when longer.
+fn one_line(text: &str, width: usize) -> String {
+    let rows = text::wrap(text, width);
+    if rows.len() <= 1 {
+        return rows.into_iter().next().unwrap_or_default();
+    }
+    // Room for the ellipsis's cell.
+    let first = text::wrap(text, width.saturating_sub(1))
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    format!("{}{ELLIPSIS}", first.trim_end())
 }
 
 /// Up to `cap` lines of `section`, out of the `left` rows still free.
@@ -281,8 +315,11 @@ fn status_tone(status: LaunchStatus) -> Tone {
         | LaunchStatus::Failed
         | LaunchStatus::HeadMoved
         | LaunchStatus::JobUnknown => Tone::Caution,
-        LaunchStatus::Ready | LaunchStatus::LiveJob | LaunchStatus::ReopenReady => Tone::Plain,
-        LaunchStatus::Inspecting | LaunchStatus::Launching => Tone::Muted,
+        LaunchStatus::Ready
+        | LaunchStatus::LiveJob
+        | LaunchStatus::ReopenReady
+        | LaunchStatus::ChooseRepo => Tone::Plain,
+        LaunchStatus::Inspecting | LaunchStatus::Launching | LaunchStatus::Writing => Tone::Muted,
     }
 }
 

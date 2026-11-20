@@ -826,6 +826,7 @@ fn the_default_prompts_call_the_skills_for_pr_kinds_and_never_carry_body_text() 
         branch: "feature-7".to_owned(),
         reviewers: Vec::new(),
         slack_channel: None,
+        identifier: String::new(),
     };
     use den::domain::NextStep::*;
     let rendered = |step| defaults.render(step, &fields);

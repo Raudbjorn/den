@@ -7,6 +7,12 @@
 //!   branch from the default branch;
 //! - a Branch: the Branch itself, fetched by name from the target.
 //!
+//! - a Linear Issue (#38, Start or Implement): in the Repo chosen from its
+//!   Linear Workflow's Repos for new work, a new branch from the target's
+//!   default branch, named as Linear suggests when that passes den's
+//!   safe-name rules ([`names::is_safe_branch_name`]), else
+//!   `implement_<identifier>-<title words>`.
+//!
 //! None of these carry a commit from GitHub, so `inspect` asks the remote
 //! where the base branch is, and the sheet shows (and the executor re-checks)
 //! that commit like a PR head.
@@ -14,7 +20,7 @@
 use super::{BaseRef, Refusal, RefusalReason, Target, TargetChoice, names};
 use crate::{
     decide::Decision,
-    domain::{NextStep, Observation, Repo, WorkItemId},
+    domain::{NextStep, Observation, Repo, RepoId, WorkItemId},
 };
 
 /// Used for a Run's slug when its workflow has no usable name.
@@ -35,6 +41,11 @@ pub(super) struct Facts {
     pub branch: String,
     /// A new `<type>_<slug>` branch: its name is the worktree name, suffix included.
     pub new_branch: bool,
+    /// A new branch from the base with a name of its own (Linear's
+    /// suggestion, #38): created like a `<type>_<slug>` branch, named as given.
+    pub named_fresh: bool,
+    /// A Linear Issue's identifier (`TEAM-123`), for its prompt and session.
+    pub identifier: Option<String>,
 }
 
 /// The target a choice names, and whether it is archived.
@@ -84,8 +95,12 @@ pub(super) fn facts(
     decision: &Decision,
     observation: &Observation,
     choice: TargetChoice,
+    linear_repo: Option<&RepoId>,
 ) -> Result<Facts, Refusal> {
     let item = &decision.item.id;
+    if let WorkItemId::LinearIssue { .. } = item {
+        return linear_facts(decision, observation, choice, linear_repo);
+    }
     let mut reasons = Vec::new();
     if decision.next_step.is_none() {
         reasons.push(RefusalReason::NoNextStep);
@@ -148,7 +163,7 @@ pub(super) fn facts(
             reasons.push(RefusalReason::WorkItemGone);
             return Err(Refusal { reasons });
         }
-        // Refused above: a Linear Issue has no Repo.
+        // Linear Issues have their own facts (`linear_facts`); never routed here.
         WorkItemId::LinearIssue { .. } => {
             reasons.push(RefusalReason::LinearIssueNotLaunchable);
             return Err(Refusal { reasons });
@@ -168,6 +183,89 @@ pub(super) fn facts(
         base_commit: None,
         branch,
         new_branch,
+        named_fresh: false,
+        identifier: None,
+    })
+}
+
+/// The facts for a Linear Issue's Start or Implement Job (#38) in
+/// `linear_repo`, the Repo chosen from its Linear Workflow's Repos for new
+/// work, or every reason it can't happen.
+fn linear_facts(
+    decision: &Decision,
+    observation: &Observation,
+    choice: TargetChoice,
+    linear_repo: Option<&RepoId>,
+) -> Result<Facts, Refusal> {
+    let item = &decision.item.id;
+    let mut reasons = Vec::new();
+    let Some(step) = decision.next_step else {
+        return Err(Refusal::one(RefusalReason::NoNextStep));
+    };
+    if !matches!(step, NextStep::Start | NextStep::Implement) {
+        return Err(Refusal::one(RefusalReason::LinearIssueNotLaunchable));
+    }
+    let Some(issue) = observation
+        .linear
+        .issues
+        .iter()
+        .find(|i| i.work_item_id().same(item))
+    else {
+        return Err(Refusal::one(RefusalReason::WorkItemGone));
+    };
+    let Some(repo) = linear_repo else {
+        return Err(Refusal::one(RefusalReason::NewWorkRepoNotChosen));
+    };
+    let Some(repo_facts) = observation.repo(repo) else {
+        return Err(Refusal::one(RefusalReason::RepoUnknown {
+            repo: repo.clone(),
+        }));
+    };
+    let target = chosen_target(repo_facts, choice).map_err(Refusal::one)?;
+    if target.archived {
+        reasons.push(RefusalReason::RepoArchived {
+            repo: target.target.repo.clone(),
+        });
+    }
+    let suggested = issue
+        .branch_name
+        .as_deref()
+        .filter(|name| names::is_safe_branch_name(name));
+    let start = match suggested {
+        Some(name) => target.target.default_branch.as_ref().map_or_else(
+            || {
+                reasons.push(RefusalReason::NoDefaultBranch {
+                    repo: target.target.repo.clone(),
+                });
+                None
+            },
+            |default| {
+                Some((
+                    BaseRef::DefaultBranch(default.clone()),
+                    name.to_owned(),
+                    false,
+                ))
+            },
+        ),
+        None => {
+            let slug = names::linear_issue_slug(&issue.identifier, &issue.title);
+            // Start launches an Implement Job: its branch is an `implement_` one.
+            new_branch(&target.target, NextStep::Implement, &slug, &mut reasons)
+        }
+    };
+    let (Some((base, branch, new_branch)), true) = (start, reasons.is_empty()) else {
+        return Err(Refusal { reasons });
+    };
+    Ok(Facts {
+        step,
+        target: target.target,
+        number: None,
+        base,
+        base_commit: None,
+        branch,
+        named_fresh: !new_branch,
+        new_branch,
+        identifier: Some(issue.identifier.clone()),
     })
 }
 

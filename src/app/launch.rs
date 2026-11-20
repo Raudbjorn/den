@@ -31,6 +31,15 @@
 //! the user never edited follows the Decision's suggestions when a survey
 //! changes them.
 //!
+//! Linear Issues (#38): `c` on a Start or an Implement Linear Issue opens the
+//! same sheet with the Linear writes on it ([`super::linear_writes`]): the
+//! claim (Start only: assign to the Linear viewer) and the state move, on by
+//! default (`m` turns it off; Implement offers it only when the issue hasn't
+//! started). The target Repo is one of the Linear Workflow's Repos for new
+//! work: the only one, or none until `t` picks one when there are several.
+//! `Enter` re-reads the issue, then writes, then launches; any failure stops
+//! there, and nothing is undone.
+//!
 //! `Enter` plans again from the current Decision. When a survey that landed
 //! while the sheet was open changed what decides the Job (its Next Step, and
 //! so its permission mode and prompt template; its reviewers; den's prompt),
@@ -41,6 +50,7 @@ use super::{
     App, Effect, Key, LogLevel, OverlayState,
     editor::{Edit, PromptEditor},
     event::LaunchId,
+    linear_writes::{self, Next, Shown, Watch, Writes},
 };
 use crate::{
     decide::Decision,
@@ -50,6 +60,7 @@ use crate::{
         PlanInput, Refusal, RefusalReason, ReopenPlan, TargetChoice, WorkspaceView, WorktreeState,
         check_prompt, live, names, reviewers, short_commit,
     },
+    ports::{LinearIssueRead, LinearIssueRequest, LinearWriteKind, LinearWriteOutcome},
 };
 
 /// One open launch sheet.
@@ -57,6 +68,9 @@ use crate::{
 pub(super) struct Sheet {
     pub id: LaunchId,
     pub item: WorkItemId,
+    /// What the sheet calls the Work Item: `owner/name#12`, or a Linear
+    /// Issue's identifier.
+    pub reference: String,
     pub title: String,
     /// The Next Step when the sheet opened; once there is a plan, the sheet
     /// shows the plan's instead.
@@ -93,6 +107,41 @@ pub(super) struct Sheet {
     pub launch_refused: Option<Refusal>,
     /// Request review (#39): the reviewers the Job will ask, editable with `r`.
     pub reviewers: Option<ReviewersField>,
+    /// A Linear Issue's Start or Implement (#38): its Linear writes and the
+    /// Repos offered for new work.
+    pub linear: Option<LinearLaunch>,
+}
+
+/// A Linear Issue's Start or Implement sheet (#38).
+#[derive(Debug, Clone)]
+pub(super) struct LinearLaunch {
+    pub writes: Writes,
+    /// What the survey last said of the issue, as the sheet synced it: a
+    /// survey that changes it while the sheet is open makes `Enter` ask again.
+    observed: Shown,
+    /// The Linear Workflow's Repos for new work.
+    pub repos: Vec<RepoId>,
+    /// The chosen one, by index; `None` until `t` picks one of several.
+    pub repo: Option<usize>,
+    /// Linear's suggested branch name, as the issue carries it.
+    pub suggested_branch: Option<String>,
+    /// The Linear Workflow's in-progress state, if it names one.
+    in_progress_state: Option<String>,
+}
+
+impl LinearLaunch {
+    pub fn repo(&self) -> Option<&RepoId> {
+        self.repos.get(self.repo?)
+    }
+
+    /// The claim and the move follow the Next Step: Start claims; Start
+    /// moves, and Implement moves only an issue that hasn't started.
+    fn follow(&mut self, step: Option<NextStep>) {
+        let start = step == Some(NextStep::Start);
+        self.writes.claim = start;
+        let offered = start || linear_writes::not_started(&self.writes.shown.state);
+        self.writes.move_to = self.in_progress_state.clone().filter(|_| offered);
+    }
 }
 
 /// A Request review sheet's reviewers (#39).
@@ -137,6 +186,8 @@ pub(super) struct ForkTargets {
 
 #[derive(Debug, Clone)]
 pub(super) enum SheetState {
+    /// A Linear Issue's sheet waits for `t` to pick one of several Repos (#38).
+    ChooseRepo,
     Inspecting,
     Ready {
         plan: Box<LaunchPlan>,
@@ -145,6 +196,17 @@ pub(super) enum SheetState {
         moved_from: Option<String>,
     },
     Refused(Refusal),
+    /// Confirmed: den is re-reading and writing to Linear before it
+    /// launches (#38).
+    Writing {
+        plan: Box<LaunchPlan>,
+        view: Box<WorkspaceView>,
+    },
+    /// The Linear writes stopped (a failure, an unknown outcome): nothing was
+    /// launched and nothing more will be done (#38).
+    Stopped {
+        plan: Box<LaunchPlan>,
+    },
     Launching {
         plan: Box<LaunchPlan>,
         view: Box<WorkspaceView>,
@@ -183,26 +245,29 @@ impl App {
         let Some(decision) = self.selected_index().and_then(|i| self.decisions.get(i)) else {
             return Vec::new();
         };
+        // Mark for release is a Linear write den makes itself, never a Job.
+        if decision.next_step == Some(NextStep::MarkForRelease) {
+            let decision = decision.clone();
+            return self.open_release_sheet(&decision);
+        }
         let id = LaunchId(self.next_launch);
         self.next_launch += 1;
-        let fork = self.shown.as_ref().and_then(|shown| {
-            let repo = shown.observation.repo(decision.item.id.repo()?)?;
-            repo.is_fork.then(|| ForkTargets {
-                fork: repo.id.clone(),
-                upstream: repo.upstream().map(|u| u.id.clone()),
-                set_to_upstream: self.upstreams.contains(&repo.id),
-            })
-        });
-        let fork_setting = match &fork {
-            Some(fork) if fork.set_to_upstream => TargetChoice::Upstream,
-            _ => TargetChoice::OwnRepo,
+        let linear = self.linear_launch(decision);
+        let repo = match &linear {
+            Some(linear) => linear.repo().cloned(),
+            None => decision.item.id.repo().cloned(),
         };
+        let fork = repo.and_then(|repo| self.fork_targets(&repo));
         // A PR's or Branch's Job starts on its own Repo whatever the fork's
-        // setting; Issues and Runs follow it.
-        let fork_choice = TargetChoice::default_for(&decision.item.id, fork_setting);
+        // setting; Issues, Runs and Linear Issues follow it.
+        let fork_choice = TargetChoice::default_for(&decision.item.id, fork_setting(fork.as_ref()));
         let mut sheet = Sheet {
             id,
             item: decision.item.id.clone(),
+            reference: match &decision.item.id {
+                WorkItemId::LinearIssue { .. } => decision.item.reference(),
+                other => other.to_string(),
+            },
             title: decision.item.title.clone(),
             next_step: decision.next_step,
             state: SheetState::Inspecting,
@@ -219,10 +284,91 @@ impl App {
             launch_refused: None,
             reviewers: (decision.next_step == Some(NextStep::RequestReview))
                 .then(|| ReviewersField::new(decision)),
+            linear,
         };
         let effects = self.inspect_for(&mut sheet, "opened");
         self.overlay = Some(OverlayState::Launch(Box::new(sheet)));
         effects
+    }
+
+    /// A Work Item's Repo's two targets, when it is a fork.
+    fn fork_targets(&self, repo: &RepoId) -> Option<ForkTargets> {
+        let repo = self.shown.as_ref()?.observation.repo(repo)?;
+        repo.is_fork.then(|| ForkTargets {
+            fork: repo.id.clone(),
+            upstream: repo.upstream().map(|u| u.id.clone()),
+            set_to_upstream: self.upstreams.contains(&repo.id),
+        })
+    }
+
+    /// The Linear part of a Start or Implement sheet on a Linear Issue (#38);
+    /// `None` for any other Work Item or Next Step.
+    fn linear_launch(&self, decision: &Decision) -> Option<LinearLaunch> {
+        if !matches!(
+            decision.next_step,
+            Some(NextStep::Start | NextStep::Implement)
+        ) {
+            return None;
+        }
+        let (writes, workflow) = self.linear_writes_for(decision, Watch::AssigneeAndState)?;
+        let issue = self.linear_issue(&decision.item.id)?;
+        let repos = workflow.new_work_repos.clone();
+        let mut linear = LinearLaunch {
+            observed: writes.shown.clone(),
+            writes,
+            repo: (repos.len() == 1).then_some(0),
+            repos,
+            suggested_branch: issue.branch_name.clone(),
+            in_progress_state: workflow.in_progress_state.clone(),
+        };
+        linear.follow(decision.next_step);
+        Some(linear)
+    }
+
+    /// The Linear Issue `item` is, as den last observed it.
+    pub(super) fn linear_issue(
+        &self,
+        item: &WorkItemId,
+    ) -> Option<&crate::domain::facts::LinearIssue> {
+        self.shown
+            .as_ref()?
+            .observation
+            .linear
+            .issues
+            .iter()
+            .find(|i| i.work_item_id().same(item))
+    }
+
+    /// The writes a sheet on `decision`'s Linear Issue can make, as the
+    /// survey showed the issue (nothing chosen yet), and its Linear Workflow.
+    pub(super) fn linear_writes_for(
+        &self,
+        decision: &Decision,
+        watch: Watch,
+    ) -> Option<(Writes, crate::config::LinearWorkflow)> {
+        let issue = self.linear_issue(&decision.item.id)?;
+        let workflow = self.config.as_ref().ok()?.linear_workflow(&issue.owner)?;
+        let viewer = self.shown.as_ref().and_then(|shown| {
+            shown
+                .observation
+                .linear
+                .viewers
+                .iter()
+                .find(|v| {
+                    v.owner.eq_ignore_ascii_case(&issue.owner) && v.workspace == issue.id.workspace
+                })
+                .cloned()
+        });
+        let request = LinearIssueRequest {
+            workflow: workflow.clone(),
+            issue: issue.id.clone(),
+            identifier: issue.identifier.clone(),
+        };
+        let shown = Shown {
+            assignee: issue.assignee.clone(),
+            state: issue.state.clone(),
+        };
+        Some((Writes::new(request, viewer, shown, watch), workflow.clone()))
     }
 
     /// Asks to inspect the workspace for the sheet's Work Item and target, or
@@ -242,11 +388,31 @@ impl App {
         let Some(decision) = self.decision_of(&sheet.item) else {
             return gone(sheet);
         };
+        if let Some(linear) = &sheet.linear {
+            if linear.repos.is_empty() {
+                let refusal = Refusal::one(RefusalReason::NoNewWorkRepos {
+                    owner: sheet.item.owner().to_owned(),
+                });
+                let log = refused_log(sheet.id, &sheet.item, &refusal);
+                sheet.state = SheetState::Refused(refusal);
+                return vec![log];
+            }
+            if linear.repo.is_none() {
+                sheet.state = SheetState::ChooseRepo;
+                return Vec::new();
+            }
+        }
         let settings =
             LaunchSettings::from_config(self.config.as_ref().ok(), self.default_clone_root.clone());
         sheet.launch_refused = None;
-        let request = match handoff::inspect_request(decision, observation, sheet.choice, &settings)
-        {
+        let linear_repo = sheet.linear.as_ref().and_then(LinearLaunch::repo);
+        let request = match handoff::inspect_request(
+            decision,
+            observation,
+            sheet.choice,
+            &settings,
+            linear_repo,
+        ) {
             Ok(request) => Ok((
                 format!(
                     "launch sheet {} {what} for {}, targeting {}",
@@ -291,13 +457,20 @@ impl App {
     /// Upstream; the fork's own setting stays as it is.
     fn switch_target(&mut self, sheet: &mut Sheet) -> Vec<Effect> {
         let Some(fork) = &sheet.fork else {
-            sheet.notice = Some(format!(
-                "u does nothing here: {} is not a fork, so it has no Upstream to target",
-                sheet
-                    .item
-                    .repo()
-                    .map_or_else(|| sheet.item.to_string(), ToString::to_string)
-            ));
+            let repo = match &sheet.linear {
+                Some(linear) => linear.repo().cloned(),
+                None => sheet.item.repo().cloned(),
+            };
+            sheet.notice = Some(match repo {
+                Some(repo) => {
+                    format!(
+                        "u does nothing here: {repo} is not a fork, so it has no Upstream to target"
+                    )
+                }
+                None => {
+                    "u does nothing here: no target Repo is chosen yet (t chooses one)".to_owned()
+                }
+            });
             return Vec::new();
         };
         if sheet.choice == TargetChoice::OwnRepo && fork.upstream.is_none() {
@@ -356,10 +529,27 @@ impl App {
             (Key::Esc, SheetState::Launching { .. } | SheetState::Reopening { .. }) => {
                 sheet.notice = Some("den is launching; wait for it to finish".to_owned());
             }
+            (Key::Esc | Key::Enter, SheetState::Writing { .. }) => {
+                sheet.notice = Some("den is writing to Linear; wait for it to finish".to_owned());
+            }
+            (Key::Enter, SheetState::ChooseRepo) => {
+                sheet.notice = Some(RefusalReason::NewWorkRepoNotChosen.to_string());
+            }
+            (
+                Key::Char('t'),
+                SheetState::ChooseRepo
+                | SheetState::Ready { .. }
+                | SheetState::Refused(_)
+                | SheetState::Inspecting,
+            ) => effects = self.next_repo(&mut sheet),
+            (Key::Char('m'), SheetState::Ready { .. }) => toggle_move(&mut sheet),
             (Key::Esc, _)
             | (
                 Key::Enter,
-                SheetState::Refused(_) | SheetState::Finished { .. } | SheetState::Reopened { .. },
+                SheetState::Refused(_)
+                | SheetState::Finished { .. }
+                | SheetState::Reopened { .. }
+                | SheetState::Stopped { .. },
             ) => {
                 // Closed: nothing was or will be done by this sheet any more.
                 return Vec::new();
@@ -450,9 +640,12 @@ impl App {
             sheet.notice = Some(format!("{problem}; edit the reviewers with r"));
             return Vec::new();
         }
+        let linear_change = self.sync_linear(sheet);
         match self.replan(sheet, &view) {
             Ok(plan) => {
-                if let Some(change) = what_changed(&shown, sheet.default_prompt.as_deref(), &plan) {
+                if let Some(change) =
+                    what_changed(&shown, sheet.default_prompt.as_deref(), &plan).or(linear_change)
+                {
                     return ask_again(sheet, plan, view, moved_from, &change);
                 }
                 let plan = match plan.with_prompt(&text) {
@@ -462,6 +655,17 @@ impl App {
                         return Vec::new();
                     }
                 };
+                // Linear writes first (#38): re-read, assign, move; the
+                // launch follows only once every write is done.
+                if let Some(linear) = sheet.linear.as_mut()
+                    && let Next::Wait(effects) = linear.writes.begin(sheet.id)
+                {
+                    sheet.state = SheetState::Writing {
+                        plan: Box::new(plan),
+                        view,
+                    };
+                    return effects;
+                }
                 let log = Effect::log(
                     LogLevel::Info,
                     format!(
@@ -512,7 +716,13 @@ impl App {
                     self.config.as_ref().ok(),
                     self.default_clone_root.clone(),
                 );
-                handoff::inspect_request(decision, observation, sheet.choice, &settings)
+                handoff::inspect_request(
+                    decision,
+                    observation,
+                    sheet.choice,
+                    &settings,
+                    sheet.linear.as_ref().and_then(LinearLaunch::repo),
+                )
             })
             .and_then(|request| {
                 live::fresh_suffix(view, &request.worktree_name, &request.branch)
@@ -609,8 +819,183 @@ impl App {
         }
     }
 
+    /// `t` on a Linear Issue's sheet: the next of the Linear Workflow's Repos
+    /// for new work becomes the target; the sheet looks at the workspace
+    /// again for it.
+    fn next_repo(&mut self, sheet: &mut Sheet) -> Vec<Effect> {
+        let Some(linear) = sheet.linear.as_mut() else {
+            sheet.notice = Some(
+                "t does nothing here: only a Linear Issue's sheet chooses its Repo".to_owned(),
+            );
+            return Vec::new();
+        };
+        if linear.repos.len() < 2 && linear.repo.is_some() {
+            sheet.notice = Some(
+                "t does nothing here: the Linear Workflow offers only this Repo for new work"
+                    .to_owned(),
+            );
+            return Vec::new();
+        }
+        if linear.repos.is_empty() {
+            return Vec::new();
+        }
+        linear.repo = Some(linear.repo.map_or(0, |i| (i + 1) % linear.repos.len()));
+        let repo = linear.repo().cloned();
+        if let SheetState::Ready { plan, .. } = &sheet.state {
+            // The prompt as it stands now wins, as for `u`.
+            let text = sheet.prompt.text();
+            let default = sheet.default_prompt.as_deref().unwrap_or(&plan.prompt);
+            sheet.edited_prompt = (text != default).then_some(text);
+        }
+        sheet.fork = repo.and_then(|repo| self.fork_targets(&repo));
+        sheet.fork_choice =
+            TargetChoice::default_for(&sheet.item, fork_setting(sheet.fork.as_ref()));
+        sheet.choice = sheet.fork_choice;
+        sheet.accepted_head = None;
+        sheet.fresh = None;
+        // A new id: an inspection still running for the old Repo is ignored.
+        sheet.id = LaunchId(self.next_launch);
+        self.next_launch += 1;
+        self.inspect_for(sheet, "chose a Repo")
+    }
+
+    /// Brings a Linear Issue sheet in step with the current survey: the claim
+    /// and the move follow the Next Step, and an issue the survey now shows
+    /// with another assignee or state is shown so, and `Enter` asks again.
+    fn sync_linear(&self, sheet: &mut Sheet) -> Option<String> {
+        let step = self.decision_of(&sheet.item).and_then(|d| d.next_step);
+        let issue = self.linear_issue(&sheet.item).cloned();
+        let linear = sheet.linear.as_mut()?;
+        if linear.writes.finished {
+            return None;
+        }
+        let mut change = None;
+        if let Some(issue) = issue {
+            let now = Shown {
+                assignee: issue.assignee,
+                state: issue.state,
+            };
+            if now != linear.observed {
+                change = Some(format!(
+                    "the survey now shows {} {}",
+                    linear.writes.request.identifier,
+                    linear_writes::describe(now.assignee.as_ref(), &now.state)
+                ));
+                linear.writes.shown = now.clone();
+                linear.observed = now;
+            }
+        }
+        let (claim, move_to) = (linear.writes.claim, linear.writes.move_to.clone());
+        linear.follow(step);
+        if change.is_none()
+            && (claim, move_to) != (linear.writes.claim, linear.writes.move_to.clone())
+        {
+            change = Some("the Linear writes changed with the Next Step".to_owned());
+        }
+        change
+    }
+
+    /// The Linear Issue was read again for sheet `id` (#38).
+    pub(super) fn linear_issue_read(&mut self, id: LaunchId, read: LinearIssueRead) -> Vec<Effect> {
+        self.linear_step(id, "re-read", |writes| writes.reread(id, read))
+    }
+
+    /// A Linear write for sheet `id` ended (#38).
+    pub(super) fn linear_write_finished(
+        &mut self,
+        id: LaunchId,
+        write: LinearWriteKind,
+        outcome: LinearWriteOutcome,
+    ) -> Vec<Effect> {
+        self.linear_step(id, "Linear write", |writes| {
+            writes.written(id, write, outcome)
+        })
+    }
+
+    /// A Linear re-read or write for sheet `id` couldn't be queued.
+    pub(super) fn linear_not_queued(
+        &mut self,
+        id: LaunchId,
+        effect: &Effect,
+        reason: &str,
+    ) -> Vec<Effect> {
+        self.linear_step(id, "Linear request", |writes| {
+            writes.not_queued(id, effect, reason)
+        })
+    }
+
+    /// Advances the Linear writes of sheet `id`, a Start or Implement sheet
+    /// or the Mark for release sheet, by `step`.
+    fn linear_step(
+        &mut self,
+        id: LaunchId,
+        what: &str,
+        step: impl FnOnce(&mut Writes) -> Next,
+    ) -> Vec<Effect> {
+        if self.release_sheet_is(id) {
+            return self.release_step(id, step);
+        }
+        let Some(mut sheet) = self.current_sheet(id) else {
+            return vec![stale(id, what)];
+        };
+        let (SheetState::Writing { plan, view }, Some(linear)) =
+            (sheet.state.clone(), sheet.linear.as_mut())
+        else {
+            self.overlay = Some(OverlayState::Launch(sheet));
+            return vec![stale(id, what)];
+        };
+        let effects = match step(&mut linear.writes) {
+            Next::Wait(effects) => effects,
+            Next::Done => {
+                let log = Effect::log(
+                    LogLevel::Info,
+                    format!(
+                        "launch {} Linear writes done for {}; launching into {}",
+                        id.0,
+                        sheet.item,
+                        plan.worktree.display()
+                    ),
+                );
+                sheet.state = SheetState::Launching {
+                    plan: plan.clone(),
+                    view,
+                };
+                vec![log, Effect::Launch { id, plan }]
+            }
+            Next::AskAgain(change) => {
+                sheet.notice = Some(format!(
+                    "Nothing written or launched: {change} since the sheet showed it. Check the sheet, then press Enter to write and launch"
+                ));
+                sheet.state = SheetState::Ready {
+                    plan,
+                    view,
+                    moved_from: None,
+                };
+                vec![Effect::log(
+                    LogLevel::Info,
+                    format!(
+                        "launch sheet {} for {}: {change}; asking again",
+                        id.0, sheet.item
+                    ),
+                )]
+            }
+            Next::Stopped => {
+                sheet.state = SheetState::Stopped { plan };
+                vec![Effect::log(
+                    LogLevel::Warn,
+                    format!(
+                        "launch sheet {} for {}: the Linear writes stopped; nothing launched",
+                        id.0, sheet.item
+                    ),
+                )]
+            }
+        };
+        self.overlay = Some(OverlayState::Launch(sheet));
+        effects
+    }
+
     /// The current Decision for `item`, if it is still surveyed.
-    fn decision_of(&self, item: &WorkItemId) -> Option<&Decision> {
+    pub(super) fn decision_of(&self, item: &WorkItemId) -> Option<&Decision> {
         self.ordered.iter().find(|d| &d.item.id == item)
     }
 
@@ -651,6 +1036,7 @@ impl App {
             fresh: sheet.fresh.as_ref().map(|(n, _)| *n),
             reviewers: chosen.as_deref(),
             slack_channel,
+            linear_repo: sheet.linear.as_ref().and_then(LinearLaunch::repo),
         })?;
         Ok(match &sheet.accepted_head {
             Some(commit) => plan.on_commit(commit),
@@ -788,6 +1174,41 @@ impl App {
                 self.overlay = other;
                 None
             }
+        }
+    }
+}
+
+/// The target the fork's own setting (the sidebar's `u`) names.
+fn fork_setting(fork: Option<&ForkTargets>) -> TargetChoice {
+    match fork {
+        Some(fork) if fork.set_to_upstream => TargetChoice::Upstream,
+        _ => TargetChoice::OwnRepo,
+    }
+}
+
+/// `m` on a Linear Issue's sheet: the state move on or off.
+fn toggle_move(sheet: &mut Sheet) {
+    let Some(linear) = sheet.linear.as_mut() else {
+        sheet.notice =
+            Some("m does nothing here: only a Linear Issue's sheet moves its state".to_owned());
+        return;
+    };
+    if linear.writes.finished {
+        sheet.notice = Some("m does nothing now: the Linear writes are done".to_owned());
+        return;
+    }
+    match &linear.writes.move_to {
+        Some(_) => linear.writes.move_on = !linear.writes.move_on,
+        None => {
+            sheet.notice = Some(
+                match &linear.in_progress_state {
+                    None => "m does nothing here: the Linear Workflow names no in_progress_state",
+                    Some(_) => {
+                        "m does nothing here: the issue has already started, so den doesn't move it"
+                    }
+                }
+                .to_owned(),
+            );
         }
     }
 }

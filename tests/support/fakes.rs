@@ -5,16 +5,17 @@
 
 use den::{
     cache::{CacheError, CachedObservation},
+    domain::facts::LinearState,
     domain::{Observation, Source, SourceKind, SourceState, UpstreamTargets},
     github::graphql::{GraphQl, GraphQlRequest, GraphQlResponse, TransportError},
     handoff::{PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode, Writability},
     jobs::{JobRecord, JobStoreError},
     linear::{HttpReply, LinearRequest, LinearTransport, TransportError as LinearTransportError},
     ports::{
-        Clock, GitHubSource, JobStore, LaunchError, Launcher, LinearSource, LinearSurvey,
-        LinearSurveyRequest, MemberStatesRead, MemberStatesRequest, ObservationCache, Ports,
-        SurveyFailure, SurveyRequest, UpstreamStore, Workspace, WorkspaceError, WorktreeAdd,
-        WorktreeStart,
+        Clock, GitHubSource, JobStore, LaunchError, Launcher, LinearIssueRead, LinearIssueRequest,
+        LinearSource, LinearSurvey, LinearSurveyRequest, LinearWriteOutcome, LinearWriter,
+        MemberStatesRead, MemberStatesRequest, ObservationCache, Ports, SurveyFailure,
+        SurveyRequest, UpstreamStore, Workspace, WorkspaceError, WorktreeAdd, WorktreeStart,
     },
     upstreams::UpstreamStoreError,
 };
@@ -105,11 +106,14 @@ impl GitHubSource for FakeGitHub {
 }
 
 /// Answers Linear surveys from a queue (an empty survey once it runs out),
-/// and records every request.
+/// and re-reads of one Linear Issue (#38) from another (a failure once it
+/// runs out), and records every request.
 #[derive(Default)]
 pub struct FakeLinear {
     answers: Mutex<VecDeque<LinearSurvey>>,
     requests: Mutex<Vec<LinearSurveyRequest>>,
+    rereads: Mutex<VecDeque<LinearIssueRead>>,
+    reread_requests: Mutex<Vec<LinearIssueRequest>>,
 }
 
 impl FakeLinear {
@@ -119,6 +123,16 @@ impl FakeLinear {
 
     pub fn requests(&self) -> Vec<LinearSurveyRequest> {
         self.requests.lock().expect("lock").clone()
+    }
+
+    /// Queues the next re-read's answer.
+    pub fn push_reread(&self, read: LinearIssueRead) {
+        self.rereads.lock().expect("lock").push_back(read);
+    }
+
+    /// Every re-read asked for, in order.
+    pub fn reread_requests(&self) -> Vec<LinearIssueRequest> {
+        self.reread_requests.lock().expect("lock").clone()
     }
 }
 
@@ -130,6 +144,73 @@ impl LinearSource for FakeLinear {
             .expect("lock")
             .pop_front()
             .unwrap_or_default()
+    }
+
+    fn read_issue(&self, request: &LinearIssueRequest) -> LinearIssueRead {
+        self.reread_requests
+            .lock()
+            .expect("lock")
+            .push(request.clone());
+        self.rereads
+            .lock()
+            .expect("lock")
+            .pop_front()
+            .unwrap_or_else(|| LinearIssueRead::Failed {
+                error: "no re-read scripted".to_owned(),
+            })
+    }
+}
+
+/// One write the fake Linear writer was asked to make (#38).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinearWriteCall {
+    AssignToViewer { issue: String },
+    MoveState { issue: String, state: LinearState },
+}
+
+/// Answers the two Linear writes from a queue (failed once it runs out) and
+/// records every one asked for. Never touches Linear.
+#[derive(Default)]
+pub struct FakeLinearWriter {
+    outcomes: Mutex<VecDeque<LinearWriteOutcome>>,
+    calls: Mutex<Vec<LinearWriteCall>>,
+}
+
+impl FakeLinearWriter {
+    /// Queues the next write's outcome, whichever write it is.
+    pub fn push_outcome(&self, outcome: LinearWriteOutcome) {
+        self.outcomes.lock().expect("lock").push_back(outcome);
+    }
+
+    /// Every write asked for, in order.
+    pub fn calls(&self) -> Vec<LinearWriteCall> {
+        self.calls.lock().expect("lock").clone()
+    }
+
+    fn answer(&self, call: LinearWriteCall) -> LinearWriteOutcome {
+        self.calls.lock().expect("lock").push(call);
+        self.outcomes
+            .lock()
+            .expect("lock")
+            .pop_front()
+            .unwrap_or_else(|| LinearWriteOutcome::Failed {
+                error: "no outcome scripted".to_owned(),
+            })
+    }
+}
+
+impl LinearWriter for FakeLinearWriter {
+    fn assign_to_viewer(&self, request: &LinearIssueRequest) -> LinearWriteOutcome {
+        self.answer(LinearWriteCall::AssignToViewer {
+            issue: request.issue.id.clone(),
+        })
+    }
+
+    fn move_state(&self, request: &LinearIssueRequest, state: &LinearState) -> LinearWriteOutcome {
+        self.answer(LinearWriteCall::MoveState {
+            issue: request.issue.id.clone(),
+            state: state.clone(),
+        })
     }
 }
 
@@ -857,6 +938,7 @@ pub fn ports_with_cache(github: Arc<FakeGitHub>, cache: Arc<FakeCache>, now: Tim
     Ports {
         github,
         linear: Arc::new(FakeLinear::default()),
+        linear_writer: Arc::new(FakeLinearWriter::default()),
         cache,
         workspace: Arc::new(FakeWorkspace::default()),
         launcher: Arc::new(FakeLauncher::default()),

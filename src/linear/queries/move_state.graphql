@@ -1,0 +1,19 @@
+# One of den's two Linear writes (ADR-0004): move a Linear Issue to one of
+# its team's workflow states, by ID. The input carries the state and nothing
+# else.
+mutation LinearMoveState($id: String!, $stateId: String!) {
+  issueUpdate(id: $id, input: { stateId: $stateId }) {
+    success
+    issue {
+      assignee {
+        id
+        name
+      }
+      state {
+        id
+        name
+        type
+      }
+    }
+  }
+}

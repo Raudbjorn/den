@@ -8,8 +8,9 @@
 //! Work Item. A format-1 file (milestone 1) still loads: each of its records
 //! becomes a [`JobSubject::GitHub`] record. Format 3 (#39) adds a record's
 //! optional `permission_mode`; a format-2 file loads as is, its records
-//! without one. The next append writes the whole file in the current format,
-//! keeping every earlier record.
+//! without one. Format 4 (#38) adds [`JobSubject::LinearIssue`]; formats 2 and
+//! 3 load as they are. The next append writes the whole file in the current
+//! format, keeping every earlier record.
 //!
 //! A file from a newer den (a format above [`JOBS_FORMAT`]) is refused as such,
 //! never half-read and never overwritten: an older den can't tell what it would
@@ -17,7 +18,7 @@
 //! older den would drop, bumps [`JOBS_FORMAT`].
 
 use crate::{
-    domain::{NextStep, RepoId, WorkItemId},
+    domain::{LinearIssueId, NextStep, RepoId, WorkItemId},
     files::{self, BoundedReadError},
     handoff::{PermissionMode, coordination_mode},
     ports::JobStore,
@@ -45,12 +46,18 @@ pub const JOBS_FILE: &str = "jobs.json";
 /// 3: a record may carry its `permission_mode` (#39). A den of format 2 would
 ///    read the file, ignore the mode and drop it on its next append; at 3 it
 ///    refuses the file instead.
-pub const JOBS_FORMAT: u32 = 3;
+/// 4: a record's subject may be a Linear Issue ([`JobSubject::LinearIssue`],
+///    #38). A den of format 3 refuses the file as a newer den's instead of
+///    failing on the unknown variant.
+pub const JOBS_FORMAT: u32 = 4;
 /// Milestone 1's format, still read and converted on load.
 const JOBS_FORMAT_GITHUB_ONLY: u32 = 1;
 /// Format 2: the current record without `permission_mode`, which decodes as
 /// absent, so it is read as the current format is.
 const JOBS_FORMAT_NO_PERMISSION_MODE: u32 = 2;
+/// Format 3: the current record, with no Linear Issue subjects (none could be
+/// written yet), so it is read as the current format is.
+const JOBS_FORMAT_GITHUB_SUBJECTS: u32 = 3;
 /// The largest Job records file den will read or write, in bytes.
 pub const MAX_JOBS_BYTES: u64 = 8 * 1024 * 1024;
 /// The lock file held while a record is appended, beside the records file.
@@ -60,9 +67,8 @@ pub const JOBS_LOCK_WAIT_SECS: u64 = 10;
 
 /// What a Job was launched for: a Work Item identity (spec 0002, "Handoff").
 ///
-/// Variants to come: a Linear Issue, keyed by workspace and permanent ID (#38),
-/// and a Landing Group, the Linear Issue plus the fixed list of member PRs and
-/// their head commits a Land Job covers (#40). Code that asks whether a Job is
+/// A variant to come: a Landing Group, the Linear Issue plus the fixed list of
+/// member PRs and their head commits a Land Job covers (#40). Code that asks whether a Job is
 /// a Work Item's asks [`JobSubject::covers`], so a Landing Group's members are
 /// recognised wherever its Linear Issue is.
 ///
@@ -77,6 +83,11 @@ pub enum JobSubject {
     /// stored the variant's own name, `"GitHub"`, which still reads.
     #[serde(rename = "github", alias = "GitHub")]
     GitHub(WorkItemId),
+    /// A Linear Issue's Start or Implement Job (#38), keyed by workspace and
+    /// Linear's permanent ID, under the Owner whose Linear Workflow offered it.
+    /// Format 4.
+    #[serde(rename = "linear_issue")]
+    LinearIssue { owner: String, issue: LinearIssueId },
 }
 
 impl JobSubject {
@@ -85,6 +96,19 @@ impl JobSubject {
     pub fn covers(&self, item: &WorkItemId) -> bool {
         match self {
             Self::GitHub(own) => own.same(item),
+            Self::LinearIssue { owner, issue } => own_linear_issue(owner, issue).same(item),
+        }
+    }
+
+    /// The subject of a Job launched for `item`: a Linear Issue's own
+    /// variant, else the GitHub Work Item.
+    pub fn of(item: &WorkItemId) -> Self {
+        match item {
+            WorkItemId::LinearIssue { owner, issue } => Self::LinearIssue {
+                owner: owner.clone(),
+                issue: issue.clone(),
+            },
+            other => Self::GitHub(other.clone()),
         }
     }
 
@@ -94,7 +118,18 @@ impl JobSubject {
     pub fn folded(&self) -> Self {
         match self {
             Self::GitHub(item) => Self::GitHub(item.folded()),
+            Self::LinearIssue { owner, issue } => {
+                Self::of(&own_linear_issue(owner, issue).folded())
+            }
         }
+    }
+}
+
+/// A Linear Issue subject as the Work Item it is.
+fn own_linear_issue(owner: &str, issue: &LinearIssueId) -> WorkItemId {
+    WorkItemId::LinearIssue {
+        owner: owner.to_owned(),
+        issue: issue.clone(),
     }
 }
 
@@ -102,6 +137,7 @@ impl fmt::Display for JobSubject {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::GitHub(item) => item.fmt(f),
+            Self::LinearIssue { owner, issue } => own_linear_issue(owner, issue).fmt(f),
         }
     }
 }
@@ -262,7 +298,7 @@ impl JobStore for FileJobStore {
             .map_err(|e| self.read_error(e))?
             .format;
         match format {
-            JOBS_FORMAT | JOBS_FORMAT_NO_PERMISSION_MODE => {
+            JOBS_FORMAT | JOBS_FORMAT_GITHUB_SUBJECTS | JOBS_FORMAT_NO_PERMISSION_MODE => {
                 serde_json::from_slice::<Envelope>(&bytes)
                     .map(|e| e.jobs)
                     .map_err(|e| self.read_error(e))
