@@ -16,6 +16,7 @@
 //!   its header) and the scripted-transport seam.
 //! - [`session`]: replies to source states, paging, the rate-limit stop.
 
+mod pages;
 pub mod session;
 mod start;
 pub mod transport;
@@ -30,8 +31,7 @@ pub use transport::{
 use crate::{
     config::LinearWorkflow,
     domain::{
-        Coverage, Incompleteness, LinearIssueId, LinearSourceKind, LinearViewer, Source,
-        SourceKind, SourceState,
+        Coverage, LinearIssueId, LinearSourceKind, LinearViewer, Source, SourceKind, SourceState,
         facts::{
             LinearCycle, LinearIssue, LinearPriority, LinearState, LinearStateKind, LinearTeam,
             LinearUser,
@@ -274,52 +274,24 @@ fn assigned_issues(
     let mut issues: Vec<LinearIssue> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut unreadable: Vec<String> = Vec::new();
-    loop {
-        let variables = json!({ "first": LINEAR_PAGE_SIZE, "after": pager.cursor });
-        let page = match session.run::<AssignedData>(
-            "LinearAssignedIssues",
-            ASSIGNED_ISSUES_QUERY,
-            variables,
-        ) {
-            Answer::Lost(state) => {
-                pager.page_lost(state);
-                break;
-            }
-            Answer::Data { data, state } => {
-                pager.page_read(state);
-                data.viewer.assigned_issues
-            }
-        };
-        for node in page.nodes {
-            match serde_json::from_value::<RawIssue>(node) {
-                Ok(raw) if seen.insert(raw.id.clone()) => issues.push(raw.into_issue(workflow)),
-                Ok(_) => {}
-                Err(e) => unreadable.push(e.to_string()),
-            }
+    let list = pages::List {
+        operation: "LinearAssignedIssues",
+        query: ASSIGNED_ISSUES_QUERY,
+        variables: |after: Option<&str>| json!({ "first": LINEAR_PAGE_SIZE, "after": after }),
+        connection: |data: AssignedData| data.viewer.assigned_issues,
+    };
+    let end = pages::read_list(session, &mut pager, MAX_LINEAR_PAGES, &list, |node| {
+        match serde_json::from_value::<RawIssue>(node) {
+            Ok(raw) if seen.insert(raw.id.clone()) => issues.push(raw.into_issue(workflow)),
+            Ok(_) => {}
+            Err(e) => unreadable.push(e.to_string()),
         }
-        if !page.page_info.has_next_page {
-            break;
-        }
-        let Some(cursor) = page.page_info.end_cursor else {
-            pager.note(SourceState::Partial(Incompleteness::PaginationStopped {
-                pages_read: pager.pages_read(),
-                reason: "Linear said there were more pages but gave no cursor".to_owned(),
-            }));
-            break;
-        };
-        pager.cursor = Some(cursor);
-        if !pager.may_continue() {
-            break;
-        }
+    });
+    if end == pages::End::Cut {
+        let bound = pages::page_bound(&pager, None);
+        pager.note(bound);
     }
-    if let Some(first) = unreadable.first() {
-        pager.note(SourceState::Partial(Incompleteness::FollowUpTruncated {
-            what: format!(
-                "{} Linear Issue(s) den could not read, first: {first}",
-                unreadable.len()
-            ),
-        }));
-    }
+    pages::note_unreadable(&mut pager, &unreadable, "Linear Issue(s)");
     (issues, pager.finish())
 }
 
