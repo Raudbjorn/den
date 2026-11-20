@@ -1,0 +1,42 @@
+# Every field den reads of a Linear Issue, whichever query lists it: spread
+# `...LinearIssueFields` in the query's nodes and declare
+# `$attachmentsPerIssue: Int!` (linear/mod.rs appends this fragment and sets
+# the variable). Attachments make Landing Groups (#35): only their URLs are
+# read, since their metadata's keys depend on the integration.
+fragment LinearIssueFields on Issue {
+  id
+  identifier
+  title
+  url
+  priority
+  createdAt
+  updatedAt
+  branchName
+  team {
+    id
+    key
+  }
+  state {
+    id
+    name
+    type
+  }
+  assignee {
+    id
+    name
+  }
+  cycle {
+    id
+    number
+    name
+    isActive
+  }
+  attachments(first: $attachmentsPerIssue) {
+    nodes {
+      url
+    }
+    pageInfo {
+      hasNextPage
+    }
+  }
+}

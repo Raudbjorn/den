@@ -11,7 +11,8 @@ pub mod run;
 pub use branch::{Branch, ComparisonBranch};
 pub use issue::{Issue, IssueLink, LinkKind, LinkedPrState};
 pub use linear_issue::{
-    LinearCycle, LinearIssue, LinearPriority, LinearState, LinearStateKind, LinearTeam, LinearUser,
+    Attachment, Attachments, AttachmentsRead, LinearCycle, LinearIssue, LinearPriority,
+    LinearState, LinearStateKind, LinearTeam, LinearUser, PullRequestRef,
 };
 pub use pull_request::{
     Check, CheckOutcome, Listed, MergeState, Mergeability, PrDetails, PullRequest, Review,
