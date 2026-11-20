@@ -216,6 +216,42 @@ fn a_plain_comment_on_an_older_head_needs_re_review_only_when_the_comment_policy
 }
 
 #[test]
+fn an_older_approval_does_not_suppress_the_comment_re_review_policy() {
+    for exact_head in [false, true] {
+        for comments in [false, true] {
+            let decision = decided(
+                ready(21)
+                    .review_at_head("alice", ReviewVerdict::Approved)
+                    .review_on("bob", ReviewVerdict::Approved, OLDER_HEAD)
+                    .review_on("bob", ReviewVerdict::Commented, OLDER_HEAD),
+                &acme(Switches {
+                    exact_head,
+                    comments,
+                }),
+            );
+            // Accepting older approvals must not bypass the independent comment policy.
+            let (step, reviewers) = if comments {
+                assert_says(
+                    &decision,
+                    &[
+                        "awaiting re-review: bob commented on an older head",
+                        "workflow policy: comment reviews need re-review",
+                    ],
+                );
+                (
+                    NextStep::RequestReview,
+                    vec![Reviewer::User("bob".to_owned())],
+                )
+            } else {
+                (NextStep::Merge, Vec::new())
+            };
+            assert_eq!(decision.next_step, Some(step), "{decision:#?}");
+            assert_eq!(decision.suggested_reviewers, Some(reviewers));
+        }
+    }
+}
+
+#[test]
 fn a_comment_at_the_current_head_needs_no_re_review() {
     let decision = decided(
         ready(6)
