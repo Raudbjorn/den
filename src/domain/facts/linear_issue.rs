@@ -270,7 +270,7 @@ impl Attachment {
 
 /// A fully qualified Pull Request identity (Owner, Repo, number), as an
 /// attachment names it. Two Owners' `api#42` are different Pull Requests.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PullRequestRef {
     pub repo: RepoId,
     pub number: u64,
