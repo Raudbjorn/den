@@ -1,14 +1,14 @@
 //! The launch sheet's ViewModel: what launching will do, then what it did.
 
-use super::super::launch::{Sheet, SheetState};
+use super::super::launch::{ReviewersField, Sheet, SheetState};
 use crate::handoff::{Target, TargetChoice};
 use crate::{
     app::view_model::{LaunchSheet, LaunchStatus, PromptField, SheetField, SheetMessage, Tone},
     domain::{WorkItemId, WorkItemKind},
     handoff::{
         BaseRef, BranchStart, CloneSource, JobCheck, LaunchOutcome, LaunchPlan, LaunchReport,
-        PathState, Refusal, ReopenPlan, WindowMode, WorktreeState, Writability, command,
-        short_commit,
+        PathState, PermissionMode, Refusal, ReopenPlan, ReviewRequest, WindowMode, WorktreeState,
+        Writability, command, reviewers, short_commit,
     },
 };
 
@@ -26,6 +26,7 @@ pub fn build(sheet: &Sheet) -> LaunchSheet {
         status: LaunchStatus::Inspecting,
         headline: String::new(),
         fields: Vec::new(),
+        reviewers: None,
         prompt: None,
         command: None,
         messages: Vec::new(),
@@ -159,6 +160,96 @@ fn fill_plan(view: &mut LaunchSheet, sheet: &Sheet, plan: &LaunchPlan, moved_fro
         cursor: sheet.prompt.cursor(),
         editing: sheet.editing,
     });
+    view.reviewers = plan
+        .review_request
+        .as_ref()
+        .and(sheet.reviewers.as_ref())
+        .map(reviewers_field);
+    // The detail pane's caveat on the suggestions (#47), where they are used.
+    if let Some(unread) = plan
+        .review_request
+        .as_ref()
+        .and(sheet.reviewers.as_ref())
+        .and_then(|r| r.suggested_unread.as_deref())
+    {
+        view.messages.push(message(
+            &format!(
+                "The suggested reviewers may include someone already asked or approved: {unread}"
+            ),
+            Tone::Caution,
+        ));
+    }
+}
+
+fn reviewers_field(field: &ReviewersField) -> PromptField {
+    PromptField {
+        text: field.editor.text(),
+        cursor: field.editor.cursor(),
+        editing: field.editing,
+    }
+}
+
+/// A Request review's suggested reviewers and its Slack channel (#39).
+fn review_request_fields(
+    request: &ReviewRequest,
+    suggested: &[crate::domain::facts::Reviewer],
+) -> [SheetField; 2] {
+    let suggested = field(
+        "SUGGESTED",
+        if suggested.is_empty() {
+            "none".to_owned()
+        } else {
+            reviewers::spell_list(suggested)
+        },
+        Some(
+            "configured reviewers and anyone awaiting re-review, minus fresh approvers, pending requests and the author; r edits whom the Job asks".to_owned(),
+        ),
+        Tone::Plain,
+    );
+    let announce = match &request.slack_channel {
+        Some(channel) if !request.announces => field(
+            "ANNOUNCE",
+            "nowhere".to_owned(),
+            Some(format!(
+                "the request_review template in prompts.toml has no {{announcement}}: the prompt neither announces in {channel} nor asks for the request's outcome"
+            )),
+            Tone::Caution,
+        ),
+        Some(channel) => field(
+            "ANNOUNCE",
+            channel.clone(),
+            Some(
+                "the Job posts it after requesting, best-effort; den itself never touches Slack"
+                    .to_owned(),
+            ),
+            Tone::Plain,
+        ),
+        None => field(
+            "ANNOUNCE",
+            "nowhere".to_owned(),
+            Some(
+                "no Slack channel in this Owner's Linear Workflow: the prompt has no announcement step"
+                    .to_owned(),
+            ),
+            Tone::Muted,
+        ),
+    };
+    [suggested, announce]
+}
+
+/// The PERMISSIONS field of a coordination Job (#39), or none for a coding
+/// Job, whose command is milestone 1's.
+fn permissions_field(mode: Option<PermissionMode>) -> Option<SheetField> {
+    let mode = mode?;
+    Some(field(
+        "PERMISSIONS",
+        format!("{}: Claude asks before acting", mode.label()),
+        Some(format!(
+            "{} (Claude Code's Manual mode); your allow rules and hooks still apply",
+            mode.args().join(" ")
+        )),
+        Tone::Good,
+    ))
 }
 
 /// The "upstream →" label: an Upstream target reads as one in monochrome too.
@@ -317,6 +408,14 @@ fn fields(sheet: &Sheet, plan: &LaunchPlan, moved_from: Option<&str>) -> Vec<She
         ),
     });
     fields.push(field("SESSION", plan.session.clone(), None, Tone::Plain));
+    if let Some(request) = &plan.review_request {
+        let suggested = sheet
+            .reviewers
+            .as_ref()
+            .map_or(&[][..], |r| r.suggested.as_slice());
+        fields.extend(review_request_fields(request, suggested));
+    }
+    fields.extend(permissions_field(plan.permission_mode));
     fields.push(opens_field(&plan.window));
     fields
 }
@@ -376,8 +475,9 @@ fn fill_reopen(view: &mut LaunchSheet, plan: &ReopenPlan) {
             )),
             Tone::Plain,
         ),
-        opens_field(&plan.window),
     ];
+    view.fields.extend(permissions_field(job.reopen_mode()));
+    view.fields.push(opens_field(&plan.window));
     view.command = Some(plan.command.clone());
     view.messages.push(message(
         "If the Job's original window is still open, both windows will write to the same conversation.",

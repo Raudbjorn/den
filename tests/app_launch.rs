@@ -190,6 +190,7 @@ fn c_then_enter_on_a_pr_produces_exactly_one_launch_plan_fetching_from_the_remot
             session: "app-pr7-address-review".to_owned(),
             prompt: "/gh-resolve https://github.com/octo/app/pull/7".to_owned(),
             start: SessionStart::New,
+            permission_mode: None,
         }]
     );
     let job = harness.jobs.records();
@@ -823,6 +824,8 @@ fn the_default_prompts_call_the_skills_for_pr_kinds_and_never_carry_body_text() 
         url: "https://github.com/octo/app/pull/7".to_owned(),
         title: "TITLE-TEXT".to_owned(),
         branch: "feature-7".to_owned(),
+        reviewers: Vec::new(),
+        slack_channel: None,
     };
     use den::domain::NextStep::*;
     let rendered = |step| defaults.render(step, &fields);
