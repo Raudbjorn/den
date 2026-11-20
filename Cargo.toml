@@ -20,7 +20,15 @@ ratatui = "=0.30.2"
 crossterm = "=0.29.0"
 # Catches SIGTERM/SIGHUP so the terminal is restored; already in the graph through crossterm.
 signal-hook = "=0.3.18"
+# Display width in terminal cells, for wrapping; same version the vendored engine pins.
+unicode-width = "=0.2.0"
 thiserror = "2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+toml = "1.2.1"
+jiff = { version = "1.0.1", features = ["serde"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "json", "std"] }
 
 [build-dependencies]
 # build.rs generates the Oxide palette from assets/tokens/oxide.tokens.json.
@@ -28,6 +36,7 @@ serde_json = "1"
 
 [dev-dependencies]
 serde_json = "1"
+tempfile = "3.27.0"
 
 [lints.clippy]
 unwrap_used = "deny"

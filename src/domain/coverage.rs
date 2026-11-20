@@ -1,0 +1,246 @@
+//! Coverage: how complete an Observation is, per source it tried (spec, "GitHub
+//! source"). den never estimates how many items it could not see; it says which
+//! source was incomplete and why.
+
+use super::ids::{RepoId, WorkItemId, WorkItemKind};
+use jiff::Timestamp;
+use serde::{Deserialize, Serialize};
+
+/// What a source fetched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum SourceKind {
+    /// The Owner's list of Repos (with fork / archived / default branch).
+    Repos,
+    PullRequests,
+    Issues,
+    Branches,
+    Runs,
+}
+
+impl SourceKind {
+    pub fn for_work_item(kind: WorkItemKind) -> Self {
+        match kind {
+            WorkItemKind::Issue => Self::Issues,
+            WorkItemKind::PullRequest => Self::PullRequests,
+            WorkItemKind::Branch => Self::Branches,
+            WorkItemKind::Run => Self::Runs,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Repos => "Repos",
+            Self::PullRequests => "Pull Requests",
+            Self::Issues => "Issues",
+            Self::Branches => "Branches",
+            Self::Runs => "Runs",
+        }
+    }
+}
+
+/// One thing den tried to read.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum Source {
+    /// Who the viewer is and which teams they belong to.
+    Viewer,
+    /// One kind of fact across all of an Owner's Repos.
+    Owner { owner: String, kind: SourceKind },
+    /// One kind of fact for a single Repo (recorded when that Repo needed its own
+    /// follow-up queries, for example more than one page of Pull Requests).
+    Repo { repo: RepoId, kind: SourceKind },
+}
+
+impl Source {
+    pub fn label(&self) -> String {
+        match self {
+            Self::Viewer => "viewer and teams".to_owned(),
+            Self::Owner { owner, kind } => format!("{} of {owner}", kind.label()),
+            Self::Repo { repo, kind } => format!("{} of {repo}", kind.label()),
+        }
+    }
+}
+
+/// Why a source's data is incomplete even though some of it arrived.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Incompleteness {
+    /// GitHub's GraphQL response carried errors next to data.
+    ErrorsAlongsideData { errors: Vec<String> },
+    /// GitHub's rate limit was hit; `resets_at` when GitHub said.
+    RateLimited { resets_at: Option<Timestamp> },
+    /// Pagination stopped before the last page (den's page bound, or a failed page).
+    PaginationStopped { pages_read: u32, reason: String },
+}
+
+impl Incompleteness {
+    /// Ranks reasons so that combining two keeps the more telling one: a rate
+    /// limit (which also stops pagination, and says when it resets) over a
+    /// stopped pagination (whole pages missing) over errors alongside data.
+    fn rank(&self) -> u8 {
+        match self {
+            Self::ErrorsAlongsideData { .. } => 0,
+            Self::PaginationStopped { .. } => 1,
+            Self::RateLimited { .. } => 2,
+        }
+    }
+
+    /// Combines two reasons for one source. Errors alongside data from several
+    /// responses are all kept; of two rate limits the later known reset is kept;
+    /// otherwise the higher-ranked reason wins (the first one wins a tie).
+    fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (
+                Self::ErrorsAlongsideData { mut errors },
+                Self::ErrorsAlongsideData { errors: more },
+            ) => {
+                errors.extend(more);
+                Self::ErrorsAlongsideData { errors }
+            }
+            (Self::RateLimited { resets_at: first }, Self::RateLimited { resets_at: second }) => {
+                Self::RateLimited {
+                    resets_at: first.max(second),
+                }
+            }
+            (first, second) => {
+                if second.rank() > first.rank() {
+                    second
+                } else {
+                    first
+                }
+            }
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        match self {
+            Self::ErrorsAlongsideData { errors } => match errors.as_slice() {
+                [] => "GitHub returned errors alongside data".to_owned(),
+                [only] => format!("GitHub returned an error alongside data: {only}"),
+                [first, rest @ ..] => format!(
+                    "GitHub returned {} errors alongside data, first: {first}",
+                    rest.len() + 1
+                ),
+            },
+            Self::RateLimited {
+                resets_at: Some(at),
+            } => {
+                format!("rate limited by GitHub until {at}")
+            }
+            Self::RateLimited { resets_at: None } => "rate limited by GitHub".to_owned(),
+            Self::PaginationStopped { pages_read, reason } => {
+                format!("stopped after {pages_read} page(s): {reason}")
+            }
+        }
+    }
+}
+
+/// How completely one source was read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SourceState {
+    Complete,
+    Partial(Incompleteness),
+    Failed { error: String },
+    NotYetFetched,
+}
+
+impl SourceState {
+    pub fn is_complete(&self) -> bool {
+        matches!(self, Self::Complete)
+    }
+
+    /// Ranks states so that combining two keeps the worse one.
+    fn severity(&self) -> u8 {
+        match self {
+            Self::Complete => 0,
+            Self::Partial(_) => 1,
+            Self::NotYetFetched => 2,
+            Self::Failed { .. } => 3,
+        }
+    }
+
+    /// The worse of two states (the first one wins a tie). Two partial states
+    /// combine their reasons (see [`Incompleteness`]), so a later rate limit is
+    /// not lost behind an earlier page's errors.
+    pub fn worst(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Partial(first), Self::Partial(second)) => Self::Partial(first.combine(second)),
+            (first, second) => {
+                if second.severity() > first.severity() {
+                    second
+                } else {
+                    first
+                }
+            }
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Complete => "complete".to_owned(),
+            Self::Partial(why) => format!("partial: {}", why.describe()),
+            Self::Failed { error } => format!("failed: {error}"),
+            Self::NotYetFetched => "not fetched yet".to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoverageEntry {
+    pub source: Source,
+    pub state: SourceState,
+}
+
+/// Coverage for every source an Observation tried.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Coverage {
+    entries: Vec<CoverageEntry>,
+}
+
+impl Coverage {
+    /// Records a source's state. Recording the same source again keeps the worse state.
+    pub fn record(&mut self, source: Source, state: SourceState) {
+        match self.entries.iter_mut().find(|e| e.source == source) {
+            Some(existing) => {
+                let previous = std::mem::replace(&mut existing.state, SourceState::Complete);
+                existing.state = previous.worst(state);
+            }
+            None => self.entries.push(CoverageEntry { source, state }),
+        }
+    }
+
+    pub fn entries(&self) -> &[CoverageEntry] {
+        &self.entries
+    }
+
+    pub fn get(&self, source: &Source) -> Option<&SourceState> {
+        self.entries
+            .iter()
+            .find(|e| &e.source == source)
+            .map(|e| &e.state)
+    }
+
+    /// True when every source den tried was read completely.
+    pub fn is_complete(&self) -> bool {
+        self.entries.iter().all(|e| e.state.is_complete())
+    }
+
+    /// The entries that are not complete.
+    pub fn incomplete(&self) -> impl Iterator<Item = &CoverageEntry> {
+        self.entries.iter().filter(|e| !e.state.is_complete())
+    }
+
+    /// The sources whose completeness bears on one Work Item: the viewer (for
+    /// Waiting On), its kind across its Owner, and its kind for its own Repo.
+    pub fn applicable_to(&self, item: &WorkItemId) -> Vec<CoverageEntry> {
+        let repo = item.repo();
+        let kind = SourceKind::for_work_item(item.kind());
+        self.entries
+            .iter()
+            .filter(|e| match &e.source {
+                Source::Viewer => true,
+                Source::Owner { owner, kind: k } => *k == kind && owner == &repo.owner,
+                Source::Repo { repo: r, kind: k } => *k == kind && r == repo,
+            })
+            .cloned()
+            .collect()
+    }
+}

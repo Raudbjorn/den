@@ -1,0 +1,13 @@
+//! Facts per Work Item kind: what the GitHub source observed, nothing decided.
+//! One file per kind, owned by the ticket that adds that kind's rules
+//! (see `docs/architecture.md`).
+
+pub mod branch;
+pub mod issue;
+pub mod pull_request;
+pub mod run;
+
+pub use branch::Branch;
+pub use issue::{Issue, IssueLink, LinkKind};
+pub use pull_request::PullRequest;
+pub use run::{Run, RunConclusion, RunStatus};

@@ -1,0 +1,14 @@
+# The facts den keeps per open PR. Appended to both PR queries.
+fragment PullRequestFacts on PullRequest {
+  number
+  title
+  url
+  isDraft
+  createdAt
+  updatedAt
+  author { login }
+  baseRefName
+  headRefName
+  headRefOid
+  headRepository { name owner { login } }
+}
