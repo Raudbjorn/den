@@ -10,7 +10,7 @@ mod support;
 use den::{
     app::{
         App, Event, Key, ViewModel,
-        view_model::{ELLIPSIS, EmptyState, SEPARATOR},
+        view_model::{ELLIPSIS, ENTER_KEY, EmptyState, SEPARATOR},
     },
     palette::OXIDE_TRUECOLOR,
     ui::{Theme, frame},
@@ -648,4 +648,54 @@ fn a_title_of_wide_characters_wraps_by_cell_width_without_losing_text() {
         .filter(|c| !detail_text.contains(*c))
         .collect();
     assert!(missing.is_empty(), "clipped: {missing}\n{detail_text}");
+}
+
+/// At the minimum size every key hint is drawn whole, in either focus and
+/// either glyph profile: each hint takes its own width, and the Enter key has an
+/// ASCII form. (Fixed-width hints overflowed 80 columns once the narrow
+/// layout's Enter hint, or the sidebar's three, joined the rest.)
+#[test]
+fn every_key_hint_fits_the_footer_at_80_by_24() {
+    let mut harness = surveyed_harness(MINIMUM_SIZE);
+    let (cols, rows) = MINIMUM_SIZE;
+    for focus in ["list", "sidebar"] {
+        if focus == "sidebar" {
+            harness.key(Key::Tab);
+        }
+        assert!(
+            harness.view.footer.hints.len() >= 6,
+            "{focus}: {:?}",
+            harness.view.footer
+        );
+        for (glyphs, enter) in [(GlyphProfile::Unicode, "⏎"), (GlyphProfile::Ascii, "RET")] {
+            let theme =
+                Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
+            let buffer = frame::render(&theme, &harness.view, cols, rows).expect("renders");
+            let footer = frame::buffer_text(&buffer)
+                .lines()
+                .last()
+                .unwrap_or_default()
+                .to_owned();
+            for hint in &harness.view.footer.hints {
+                let key = if hint.key == ENTER_KEY.to_string() {
+                    enter.to_owned()
+                } else if glyphs == GlyphProfile::Ascii {
+                    // The engine's own ASCII forms for arrows.
+                    hint.key
+                        .replace('↑', "^")
+                        .replace('↓', "v")
+                        .replace('←', "<")
+                        .replace('→', ">")
+                } else {
+                    hint.key.clone()
+                };
+                let drawn = format!("{key} {}", hint.label);
+                assert!(
+                    footer.contains(&drawn),
+                    "{focus}/{glyphs:?}: {drawn:?} in {footer:?}"
+                );
+            }
+            assert!(!footer.contains('?'), "{focus}/{glyphs:?}: {footer:?}");
+        }
+    }
 }

@@ -15,6 +15,9 @@ pub const SEPARATOR: char = '·';
 /// Ends a ViewModel sentence about work under way ("Surveying…"). The renderer
 /// draws it in the glyph profile's form (ASCII: `...`).
 pub const ELLIPSIS: char = '…';
+/// The Enter key in a key hint. The renderer draws it in the glyph profile's
+/// form (ASCII: `RET`).
+pub const ENTER_KEY: char = '⏎';
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewModel {

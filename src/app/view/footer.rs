@@ -3,14 +3,14 @@
 use super::State;
 use crate::app::{
     Focus,
-    view_model::{Footer, KeyHint, Overlay},
+    view_model::{ENTER_KEY, Footer, KeyHint, Overlay},
 };
 
 pub fn build(state: &State<'_>) -> Footer {
     let mut hints = Vec::new();
     if state.scope.focus == Focus::Sidebar {
         hints.push(hint("↑↓", "move"));
-        hints.push(hint("↵", "scope to"));
+        hints.push(hint(&ENTER_KEY.to_string(), "scope to"));
         hints.push(hint("esc", "back"));
     } else if !state.decisions.is_empty() {
         hints.push(hint("↑↓", "select"));
@@ -21,7 +21,7 @@ pub fn build(state: &State<'_>) -> Footer {
             && !state.layout.has_detail_pane()
             && state.selected.is_some() =>
         {
-            hints.push(hint("⏎", "detail"));
+            hints.push(hint(&ENTER_KEY.to_string(), "detail"));
         }
         _ => {}
     }

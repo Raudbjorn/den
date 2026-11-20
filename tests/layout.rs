@@ -8,7 +8,10 @@
 mod support;
 
 use den::{
-    app::{Event, Key, view_model::Overlay},
+    app::{
+        Event, Key,
+        view_model::{ENTER_KEY, Overlay},
+    },
     layout::{DESIGN_COLS, MIN_COLS, MIN_ROWS, RAIL_MAX_COLS, RAIL_MIN_COLS, WIDE_LAYOUT_MIN_COLS},
 };
 use support::{
@@ -173,16 +176,16 @@ fn a_terminal_smaller_than_80_by_24_is_flagged_and_80_by_24_is_not() {
 #[test]
 fn the_footer_offers_enter_when_narrow_and_esc_while_the_sheet_is_open() {
     let mut harness = surveyed_at(MIN_COLS, MIN_ROWS);
-    assert!(hint_keys(&harness).contains(&"⏎".to_owned()));
+    assert!(hint_keys(&harness).contains(&ENTER_KEY.to_string()));
 
     harness.key(Key::Enter);
     let keys = hint_keys(&harness);
     assert!(keys.contains(&"esc".to_owned()), "{keys:?}");
-    assert!(!keys.contains(&"⏎".to_owned()), "{keys:?}");
+    assert!(!keys.contains(&ENTER_KEY.to_string()), "{keys:?}");
 
     resize(&mut harness, DESIGN_COLS, MIN_ROWS);
     let keys = hint_keys(&harness);
-    assert!(!keys.contains(&"⏎".to_owned()), "{keys:?}");
+    assert!(!keys.contains(&ENTER_KEY.to_string()), "{keys:?}");
     assert!(!keys.contains(&"esc".to_owned()), "{keys:?}");
 }
 
@@ -217,10 +220,20 @@ fn in_the_sidebar_enter_scopes_and_never_opens_the_detail_sheet() {
     let mut harness = surveyed_at(MIN_COLS, MIN_ROWS);
     harness.key(Key::Tab);
     assert!(harness.view.sidebar.focused);
+    // Enter is offered, but to scope to the sidebar row, never for the detail.
+    // (The sidebar's Enter hint once had a glyph of its own; both use ENTER_KEY
+    // now, so the label tells them apart.)
+    let hints: Vec<(String, String)> = harness
+        .view
+        .footer
+        .hints
+        .iter()
+        .map(|h| (h.key.clone(), h.label.clone()))
+        .collect();
     assert!(
-        !hint_keys(&harness).contains(&"⏎".to_owned()),
-        "no detail hint while the sidebar has focus: {:?}",
-        hint_keys(&harness)
+        hints.contains(&(ENTER_KEY.to_string(), "scope to".to_owned()))
+            && !hints.iter().any(|(_, label)| label == "detail"),
+        "no detail hint while the sidebar has focus: {hints:?}"
     );
     // The cursor starts on the current Scope (All Owners); one down is octo.
     harness.key(Key::Down);
