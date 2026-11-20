@@ -43,7 +43,7 @@ pub fn describe(state: &State<'_>) -> (String, Vec<ScopeSegment>) {
         state
             .owners
             .iter()
-            .map(|owner| segment(owner, current == &Scope::Owner(owner.clone()))),
+            .map(|owner| segment(owner, current.same(&Scope::Owner(owner.clone())))),
     );
     if let Scope::Repo(id) = current {
         segments.push(segment(&id.name, true));
@@ -74,7 +74,14 @@ pub fn empty_in_scope(state: &State<'_>) -> Option<EmptyState> {
         format!("No Work Items found in {current}, but the picture is incomplete.")
     };
     let detail = match elsewhere {
-        0 => "Nothing in any other Scope either; ← → or Tab to switch Scope.".to_owned(),
+        // Zero known Work Items elsewhere rules nothing out when a source was
+        // not read completely.
+        0 if observation.coverage.is_complete() => {
+            "Nothing in any other Scope either; ← → or Tab to switch Scope.".to_owned()
+        }
+        0 => "No Work Items found in other Scopes either, but the picture is incomplete; \
+              ← → or Tab to switch Scope."
+            .to_owned(),
         1 => "1 Work Item is in another Scope; ← → or Tab to switch Scope.".to_owned(),
         n => format!("{n} Work Items are in other Scopes; ← → or Tab to switch Scope."),
     };

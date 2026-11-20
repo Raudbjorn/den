@@ -361,32 +361,126 @@ fn many_repos((cols, rows): (u16, u16)) -> Harness {
     harness
 }
 
+/// The text inside `area` of a rendered buffer, one line per row, trimmed at
+/// both ends, so a check on one plate cannot match text drawn in another.
+fn region_lines(buffer: &Buffer, area: Rect) -> Vec<String> {
+    (area.top()..area.bottom())
+        .map(|y| {
+            (area.left()..area.right())
+                .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
+                .collect::<String>()
+                .trim()
+                .to_owned()
+        })
+        .collect()
+}
+
+/// The sidebar row whose first word (after any mark) ends with `label`, split
+/// into words: label, then any fork/archived glyph, any incomplete mark, then
+/// the count.
+fn sidebar_row(lines: &[String], label: &str) -> Vec<String> {
+    lines
+        .iter()
+        .map(|line| {
+            line.split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .find(|words| words.first().is_some_and(|w| w.ends_with(label)))
+        .unwrap_or_else(|| panic!("no sidebar row {label:?} in {lines:#?}"))
+}
+
 #[test]
 fn the_sidebar_shows_repos_with_counts_and_glyphs_and_the_header_its_segments() {
     let harness = many_repos(DESIGN_SIZE);
-    for (glyphs, fork, archived, scope_mark) in [
-        (GlyphProfile::Unicode, "⑂", "▣", "●"),
-        (GlyphProfile::Ascii, "Y", "#", "*"),
+    // Every row is marked incomplete: the builder leaves Branches and Runs
+    // unfetched, so no Scope here was read completely.
+    for (glyphs, fork, archived, scope_mark, incomplete) in [
+        (GlyphProfile::Unicode, "⑂", "▣", "●", "⚠"),
+        (GlyphProfile::Ascii, "Y", "#", "*", "!"),
     ] {
         let theme = Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
         let (cols, rows) = DESIGN_SIZE;
-        let text =
-            frame::buffer_text(&frame::render(&theme, &harness.view, cols, rows).expect("renders"));
-        for expected in [
-            "R E P O S",
-            &format!("{scope_mark}All Owners"),
-            "  a-fork",
-            fork,
-            archived,
-            "beta",
+        let buffer = frame::render(&theme, &harness.view, cols, rows).expect("renders");
+        let regions = frame::regions(buffer.area, &harness.view.layout);
+        let sidebar = region_lines(&buffer, regions.sidebar);
+        let text = frame::buffer_text(&buffer);
+        assert!(
+            sidebar.iter().any(|l| l.starts_with("R E P O S")),
+            "{glyphs:?}: the sidebar label\n{text}"
+        );
+        // Each row carries its own glyphs and count: a glyph or count drawn on
+        // the wrong row, or not at all, fails here.
+        for (label, words) in [
+            (
+                "All Owners",
+                vec![
+                    format!("{scope_mark}All"),
+                    "Owners".to_owned(),
+                    incomplete.to_owned(),
+                    "3".to_owned(),
+                ],
+            ),
+            (
+                "octo",
+                vec!["octo".to_owned(), incomplete.to_owned(), "2".to_owned()],
+            ),
+            (
+                "a-fork",
+                vec![
+                    "a-fork".to_owned(),
+                    fork.to_owned(),
+                    incomplete.to_owned(),
+                    "1".to_owned(),
+                ],
+            ),
+            (
+                "b-old",
+                vec![
+                    "b-old".to_owned(),
+                    archived.to_owned(),
+                    incomplete.to_owned(),
+                    "1".to_owned(),
+                ],
+            ),
         ] {
-            assert!(
-                text.contains(expected),
-                "{glyphs:?}: missing {expected:?}\n{text}"
+            let first = label.split_whitespace().next().unwrap_or(label);
+            assert_eq!(
+                sidebar_row(&sidebar, first),
+                words,
+                "{glyphs:?}: the {label} row\n{text}"
             );
         }
-        assert!(text.contains("octo, beta"), "the Scope sentence\n{text}");
-        assert!(text.contains(" octo "), "segments drawn\n{text}");
+
+        // The header names the whole Scope, then draws one segment per Scope
+        // step after it (beta's sidebar row is scrolled out of view here, so
+        // "beta" can only come from the header).
+        let header = region_lines(&buffer, regions.header).join("\n");
+        // The ASCII profile draws the sentence's "·" as "?" today (reported
+        // separately), so only the Unicode run checks the separator; both
+        // check the Owners' part and that the segments follow it.
+        if glyphs == GlyphProfile::Unicode {
+            assert!(
+                header.contains("All Owners · octo, beta"),
+                "{glyphs:?}: the Scope sentence\n{text}"
+            );
+        }
+        let (before, after) = header
+            .split_once("octo, beta")
+            .unwrap_or_else(|| panic!("{glyphs:?}: the Scope sentence\n{text}"));
+        assert!(
+            before.contains("All Owners"),
+            "{glyphs:?}: the Scope sentence\n{text}"
+        );
+        let segments: Vec<&str> = after
+            .split_whitespace()
+            .filter(|w| ["All", "Owners", "octo", "beta"].contains(w))
+            .collect();
+        assert_eq!(
+            segments,
+            ["All", "Owners", "octo", "beta"],
+            "{glyphs:?}: segments drawn after the sentence\n{text}"
+        );
     }
 }
 
@@ -427,9 +521,10 @@ fn the_sidebar_stays_beside_the_list_at_the_minimum_size() {
     assert!(regions.detail.is_empty());
     let text = frame::buffer_text(&buffer);
     assert!(text.contains("R E P O S"), "the sidebar is drawn\n{text}");
+    let header = region_lines(&buffer, regions.header).join("\n");
     assert!(
-        text.contains("Owners"),
-        "the header still names the Scope\n{text}"
+        header.contains("All Owners · octo, beta"),
+        "the header still names the whole Scope\n{text}"
     );
 }
 
