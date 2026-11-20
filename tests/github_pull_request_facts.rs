@@ -2,7 +2,8 @@
 //! mergeability, review decision and merge queue from the PR list; checks
 //! (required / advisory, passing / failing / pending), review threads, review
 //! requests (users and teams) and latest reviews from the batched details
-//! query; and what coverage says when that follow-up query is lost.
+//! query; and what coverage says when that follow-up query is lost or not
+//! read in full.
 //!
 //! Thin adapter checks; the real `gh` is checked by hand (spec, Testing Decisions).
 
@@ -303,6 +304,40 @@ fn more_pages_or_unreadable_entries_mark_a_list_incomplete() {
     assert!(!details.review_requests.complete);
     assert!(details.review_requests.items.is_empty());
     assert!(details.latest_reviews.complete);
+    // The response itself was clean, but the header and sidebar read coverage,
+    // not these per-PR flags, so the Repo is partial too.
+    assert_eq!(
+        app_prs_state(&observation),
+        Some(SourceState::Partial(Incompleteness::FollowUpTruncated {
+            what: "#1 (checks, review threads, review requests)".to_owned()
+        }))
+    );
+}
+
+#[test]
+fn a_null_check_rollup_alongside_errors_is_checks_not_read() {
+    let gql = octo(
+        vec![pr_node(1, "MERGEABLE", json!("APPROVED"), false)],
+        Box::new(|_| {
+            Ok(GraphQlResponse {
+                data: Some(json!({ "pr0": no_details() })),
+                errors: vec![GraphQlError {
+                    message: "Something went wrong while executing your query".to_owned(),
+                    kind: None,
+                }],
+            })
+        }),
+    );
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    let checks = &the_pr(&observation, 1)
+        .details
+        .as_ref()
+        .expect("details")
+        .checks;
+    // Without the error, a null rollup means no checks (see the list test);
+    // with it, the rollup may have been nulled, so the checks are unread.
+    assert!(checks.items.is_empty());
+    assert!(!checks.complete);
 }
 
 #[test]

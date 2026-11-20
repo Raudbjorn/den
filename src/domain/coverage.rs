@@ -72,6 +72,10 @@ pub enum Incompleteness {
     /// The list was read, but a follow-up query for some of its items' facts
     /// was lost (for example a PR's checks and reviews).
     FollowUpLost { what: String, reason: String },
+    /// A follow-up query was read, but some of its lists were not read in
+    /// full: GitHub had more than den reads in one query, or some entries
+    /// came back unreadable (for example a PR's checks or review threads).
+    FollowUpTruncated { what: String },
 }
 
 impl Incompleteness {
@@ -95,6 +99,7 @@ impl Incompleteness {
                 format!("stopped after {pages_read} page(s): {reason}")
             }
             Self::FollowUpLost { what, reason } => format!("{what} could not be read: {reason}"),
+            Self::FollowUpTruncated { what } => format!("not every entry was read: {what}"),
         }
     }
 }
