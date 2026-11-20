@@ -1,7 +1,8 @@
 //! Job records: what den launched, so it can recognise a Job later (Live Jobs,
 //! #14). One JSON file in den's state directory, `jobs.json`: versioned,
 //! size-bounded, written atomically, readable only by the user. den only ever
-//! appends a record; it never deletes one.
+//! appends a record; it never deletes one. Appending holds `jobs.json.lock`, so
+//! two dens launching at once can't drop each other's record.
 
 use crate::{
     domain::{NextStep, RepoId, WorkItemId},
@@ -10,7 +11,10 @@ use crate::{
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 pub const JOBS_FILE: &str = "jobs.json";
 /// The Job records file format. Bump it when a change to [`JobRecord`] would
@@ -18,6 +22,10 @@ pub const JOBS_FILE: &str = "jobs.json";
 pub const JOBS_FORMAT: u32 = 1;
 /// The largest Job records file den will read, in bytes.
 pub const MAX_JOBS_BYTES: u64 = 8 * 1024 * 1024;
+/// The lock file held while a record is appended, beside the records file.
+pub const JOBS_LOCK_FILE_SUFFIX: &str = ".lock";
+/// The most an append waits for another den's append to finish, in seconds.
+pub const JOBS_LOCK_WAIT_SECS: u64 = 10;
 
 /// One launched Job.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +89,13 @@ impl FileJobStore {
         &self.path
     }
 
+    /// `jobs.json.lock` beside `jobs.json`.
+    fn lock_path(&self) -> PathBuf {
+        let mut path = self.path.clone().into_os_string();
+        path.push(JOBS_LOCK_FILE_SUFFIX);
+        PathBuf::from(path)
+    }
+
     fn read_error(&self, detail: impl ToString) -> JobStoreError {
         JobStoreError::Read {
             path: self.path.clone(),
@@ -121,7 +136,15 @@ impl JobStore for FileJobStore {
 
     /// Appends `job`. Refuses (rather than overwrite) when the existing file
     /// can't be read, so a record is never lost to a bad read.
+    /// The load and the replace happen under one lock, so a concurrent append
+    /// by another den is never overwritten.
     fn record(&self, job: &JobRecord) -> Result<(), JobStoreError> {
+        if let Some(dir) = self.path.parent() {
+            files::ensure_private_dir(dir).map_err(|e| self.write_error(e))?;
+        }
+        let _lock =
+            files::lock_exclusive(&self.lock_path(), Duration::from_secs(JOBS_LOCK_WAIT_SECS))
+                .map_err(|e| self.write_error(e))?;
         let mut jobs = self.load()?;
         jobs.push(job.clone());
         let body = serde_json::to_vec_pretty(&Envelope {
@@ -129,9 +152,6 @@ impl JobStore for FileJobStore {
             jobs,
         })
         .map_err(|e| self.write_error(e))?;
-        if let Some(dir) = self.path.parent() {
-            files::ensure_private_dir(dir).map_err(|e| self.write_error(e))?;
-        }
         files::write_atomically(&self.path, &body).map_err(|e| self.write_error(e))
     }
 }

@@ -3,7 +3,7 @@
 
 use super::{State, coverage};
 use crate::{
-    app::view_model::{EmptyState, ScopeSegment},
+    app::view_model::{EmptyState, SEPARATOR, ScopeSegment},
     ordering::{Scope, same_repo},
 };
 
@@ -18,21 +18,23 @@ pub fn describe(state: &State<'_>) -> (String, Vec<ScopeSegment>) {
     }
     let current = &state.scope.scope;
     let sentence = match current {
-        Scope::AllOwners => format!("{ALL_OWNERS} · {}", state.owners.join(", ")),
-        Scope::Owner(owner) => format!("Owner · {owner}"),
+        Scope::AllOwners => format!("{ALL_OWNERS} {SEPARATOR} {}", state.owners.join(", ")),
+        Scope::Owner(owner) => format!("Owner {SEPARATOR} {owner}"),
         Scope::Repo(id) => {
-            let mut sentence = format!("Repo · {id}");
+            let mut sentence = format!("Repo {SEPARATOR} {id}");
             let repo = state
                 .observation
                 .and_then(|o| o.repos.iter().find(|r| same_repo(&r.id, id)));
             if let Some(repo) = repo {
                 match (&repo.parent, repo.is_fork) {
-                    (Some(parent), true) => sentence.push_str(&format!(" · fork of {parent}")),
-                    (None, true) => sentence.push_str(" · fork"),
+                    (Some(parent), true) => {
+                        sentence.push_str(&format!(" {SEPARATOR} fork of {parent}"));
+                    }
+                    (None, true) => sentence.push_str(&format!(" {SEPARATOR} fork")),
                     _ => {}
                 }
                 if repo.is_archived {
-                    sentence.push_str(" · archived");
+                    sentence.push_str(&format!(" {SEPARATOR} archived"));
                 }
             }
             sentence
@@ -43,7 +45,7 @@ pub fn describe(state: &State<'_>) -> (String, Vec<ScopeSegment>) {
         state
             .owners
             .iter()
-            .map(|owner| segment(owner, current == &Scope::Owner(owner.clone()))),
+            .map(|owner| segment(owner, current.same(&Scope::Owner(owner.clone())))),
     );
     if let Scope::Repo(id) = current {
         segments.push(segment(&id.name, true));
@@ -74,7 +76,14 @@ pub fn empty_in_scope(state: &State<'_>) -> Option<EmptyState> {
         format!("No Work Items found in {current}, but the picture is incomplete.")
     };
     let detail = match elsewhere {
-        0 => "Nothing in any other Scope either; ← → or Tab to switch Scope.".to_owned(),
+        // Zero known Work Items elsewhere rules nothing out when a source was
+        // not read completely.
+        0 if observation.coverage.is_complete() => {
+            "Nothing in any other Scope either; ← → or Tab to switch Scope.".to_owned()
+        }
+        0 => "No Work Items found in other Scopes either, but the picture is incomplete; \
+              ← → or Tab to switch Scope."
+            .to_owned(),
         1 => "1 Work Item is in another Scope; ← → or Tab to switch Scope.".to_owned(),
         n => format!("{n} Work Items are in other Scopes; ← → or Tab to switch Scope."),
     };

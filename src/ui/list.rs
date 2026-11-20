@@ -2,7 +2,9 @@
 //! the empty state.
 
 use super::{
-    Theme, UiError, glyphs, templates,
+    Theme, UiError,
+    glyphs::{self, Glyphs},
+    templates,
     text::{self, LineStyle},
 };
 use crate::app::view_model::{JobMarker, List, Row};
@@ -19,12 +21,13 @@ const EMPTY_PADDING_COLS: u16 = 4;
 pub fn draw(frame: &mut Frame, theme: &Theme, list: &List, area: Rect) -> Result<(), UiError> {
     match &list.empty {
         Some(empty) if list.rows.is_empty() => {
-            let lines = empty_detail_lines(&empty.detail, area)
+            let glyphs = glyphs::for_profile(theme.profile().glyphs);
+            let lines = empty_detail_lines(&empty.detail, area, &glyphs)
                 .into_iter()
                 .map(|line| text::line_context(&line, LineStyle::Muted));
             let mut ctx = TemplateContext::default();
             ctx.set("list_label", list.label.as_str())
-                .set("empty_title", empty.title.as_str())
+                .set("empty_title", glyphs.text(&empty.title).as_ref())
                 .set("lines", text::lines_value(lines));
             theme.draw(frame, templates::LIST_EMPTY, &ctx, area)
         }
@@ -32,11 +35,12 @@ pub fn draw(frame: &mut Frame, theme: &Theme, list: &List, area: Rect) -> Result
     }
 }
 
-/// The empty state's detail, wrapped to the plate and cut to what fits.
-fn empty_detail_lines(detail: &str, area: Rect) -> Vec<String> {
+/// The empty state's detail in the profile's glyphs, wrapped to the plate and
+/// cut to what fits.
+fn empty_detail_lines(detail: &str, area: Rect, glyphs: &Glyphs) -> Vec<String> {
     let width = usize::from(area.width.saturating_sub(2 * EMPTY_PADDING_COLS));
     let max_lines = usize::from(area.height.saturating_sub(CHROME_LINES + 1));
-    text::wrap(detail, width)
+    text::wrap(&glyphs.text(detail), width)
         .into_iter()
         .take(max_lines)
         .collect()
@@ -45,9 +49,9 @@ fn empty_detail_lines(detail: &str, area: Rect) -> Vec<String> {
 /// Where the empty-state text block (title and detail lines) starts, when the
 /// empty state is shown: the `Empty` template centres it below the label. The
 /// frame puts the large bear in the space above it (#10).
-pub(super) fn empty_text_top(list: &List, area: Rect) -> Option<u16> {
+pub(super) fn empty_text_top(list: &List, area: Rect, glyphs: &Glyphs) -> Option<u16> {
     let empty = list.empty.as_ref().filter(|_| list.rows.is_empty())?;
-    let block = u16::try_from(empty_detail_lines(&empty.detail, area).len())
+    let block = u16::try_from(empty_detail_lines(&empty.detail, area, glyphs).len())
         .unwrap_or(u16::MAX)
         .saturating_add(1);
     let label_rows = CHROME_LINES - 1;

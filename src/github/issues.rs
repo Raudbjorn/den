@@ -7,7 +7,9 @@
 //! linked PRs under every Repo would cost for Repos that have none.
 //!
 //! Coverage: the count is recorded for the Owner, each Repo's Issues for that
-//! Repo.
+//! Repo. When GitHub is unreachable for several Repos in a row, the rest are not
+//! asked about and are recorded as not read, so an outage costs a bounded number
+//! of `gh` timeouts rather than one per Repo.
 
 use super::{
     repos::no_such_owner,
@@ -15,7 +17,7 @@ use super::{
 };
 use crate::{
     domain::{
-        CoverageEntry, Repo, RepoId, Source, SourceKind, SourceState,
+        CoverageEntry, Incompleteness, Repo, RepoId, Source, SourceKind, SourceState,
         facts::{Issue, IssueLink, LinkKind, LinkedPrState},
     },
     ports::SurveyFailure,
@@ -23,6 +25,15 @@ use crate::{
 use jiff::Timestamp;
 use serde::Deserialize;
 use serde_json::json;
+
+/// Repos in a row whose Issues could not be reached at all before den takes
+/// GitHub to be unreachable and stops asking. Each try can cost a whole
+/// `gh` timeout, so without a stop an outage costs one per Repo with Issues.
+const UNREACHABLE_REPOS_BEFORE_STOPPING: u32 = 2;
+
+/// Pages of linked PRs den reads per Issue and link kind (`issue_facts.graphql`
+/// asks for one page and never follows its cursor).
+const LINK_PAGES_READ: u32 = 1;
 
 const FACTS: &str = include_str!("queries/issue_facts.graphql");
 const COUNTS_QUERY: &str = include_str!("queries/issue_counts_owner.graphql");
@@ -69,10 +80,17 @@ struct Nodes<T> {
     nodes: Vec<Option<T>>,
 }
 
-impl<T> Nodes<T> {
-    fn into_items(self) -> impl Iterator<Item = T> {
-        self.nodes.into_iter().flatten()
-    }
+/// A list's items, and whether every one was read: false when GitHub left the
+/// list out or some entries were null (both come next to an error).
+fn read_list<T, U>(list: Option<Nodes<T>>, item: impl Fn(T) -> U) -> (Vec<U>, bool) {
+    let Some(list) = list else {
+        return (Vec::new(), false);
+    };
+    let complete = list.nodes.iter().all(Option::is_some);
+    (
+        list.nodes.into_iter().flatten().map(item).collect(),
+        complete,
+    )
 }
 
 #[derive(Deserialize)]
@@ -115,9 +133,12 @@ struct LinkedRepo {
 }
 
 impl IssueNode {
-    fn into_fact(self, repo: &RepoId) -> Issue {
+    /// The Issue fact, and whether GitHub had more linked PRs than den asked for
+    /// (den stopped reading them; no error says so).
+    fn into_fact(self, repo: &RepoId) -> (Issue, bool) {
         let mut linked_prs = Vec::new();
         let mut linked_prs_complete = true;
+        let mut links_cut_short = false;
         for (kind, links) in [
             (LinkKind::ClosingReference, self.closing_references),
             (LinkKind::ManualLink, self.manual_links),
@@ -127,6 +148,9 @@ impl IssueNode {
                 linked_prs_complete = false;
                 continue;
             };
+            if links.page_info.has_next_page {
+                links_cut_short = true;
+            }
             if links.page_info.has_next_page || links.nodes.iter().any(Option::is_none) {
                 linked_prs_complete = false;
             }
@@ -141,23 +165,22 @@ impl IssueNode {
                 },
             }));
         }
-        Issue {
+        let (labels, labels_complete) = read_list(self.labels, |n| n.name);
+        let (assignees, assignees_complete) = read_list(self.assignees, |n| n.login);
+        let issue = Issue {
             repo: repo.clone(),
             number: self.number,
             title: self.title,
             url: self.url,
-            labels: self
-                .labels
-                .map(|l| l.into_items().map(|n| n.name).collect())
-                .unwrap_or_default(),
-            assignees: self
-                .assignees
-                .map(|a| a.into_items().map(|n| n.login).collect())
-                .unwrap_or_default(),
+            labels,
+            labels_complete,
+            assignees,
+            assignees_complete,
             updated_at: self.updated_at,
             linked_prs,
             linked_prs_complete,
-        }
+        };
+        (issue, links_cut_short)
     }
 }
 
@@ -169,10 +192,49 @@ pub fn fetch(
     let mut out = KindFetch::default();
     let (with_issues, counts_coverage) = repos_with_open_issues(session, owner)?;
     out.coverage.push(counts_coverage);
-    for repo in with_issues {
-        fetch_repo(session, &repo, &mut out)?;
+    let mut unreachable_in_a_row = 0;
+    let mut repos = with_issues.into_iter();
+    while let Some(repo) = repos.next() {
+        match fetch_repo(session, &repo, &mut out)? {
+            RepoRead::Reached => unreachable_in_a_row = 0,
+            RepoRead::Unreachable(why) => {
+                unreachable_in_a_row += 1;
+                if unreachable_in_a_row >= UNREACHABLE_REPOS_BEFORE_STOPPING {
+                    let skipped = skipped_state(&why);
+                    out.coverage.extend(repos.map(|repo| CoverageEntry {
+                        source: Source::Repo {
+                            repo,
+                            kind: SourceKind::Issues,
+                        },
+                        state: skipped.clone(),
+                    }));
+                    break;
+                }
+            }
+        }
     }
     Ok(out)
+}
+
+/// Whether GitHub answered for a Repo at all.
+enum RepoRead {
+    Reached,
+    /// The first page was lost; the state says why.
+    Unreachable(SourceState),
+}
+
+/// The coverage of a Repo den did not ask about because GitHub was unreachable:
+/// rate-limited stays rate-limited (with its reset time), anything else fails.
+fn skipped_state(why: &SourceState) -> SourceState {
+    match why {
+        SourceState::Partial(Incompleteness::RateLimited { .. }) => why.clone(),
+        other => SourceState::Failed {
+            error: format!(
+                "not read: GitHub was unreachable for {UNREACHABLE_REPOS_BEFORE_STOPPING} Repos in a row ({})",
+                other.describe()
+            ),
+        },
+    }
 }
 
 /// The Owner's Repos that have open Issues, and how completely that was read.
@@ -224,9 +286,12 @@ fn fetch_repo(
     session: &Session<'_>,
     repo: &RepoId,
     out: &mut KindFetch<Issue>,
-) -> Result<(), SurveyFailure> {
+) -> Result<RepoRead, SurveyFailure> {
     let query = format!("{REPO_QUERY}\n{FACTS}");
     let mut pager = Pager::new(None);
+    let mut read = RepoRead::Reached;
+    let mut first_page = true;
+    let mut links_cut_short = Vec::new();
     while pager.may_continue() {
         let variables = json!({ "owner": repo.owner, "name": repo.name, "after": pager.cursor });
         let page = match session.run::<RepoData>(&query, variables)? {
@@ -235,10 +300,14 @@ fn fetch_repo(
                 data
             }
             Fetched::Lost(state) => {
+                if first_page {
+                    read = RepoRead::Unreachable(state.clone());
+                }
                 pager.page_lost(state);
                 break;
             }
         };
+        first_page = false;
         let Some(found) = page.repository else {
             pager.note(SourceState::Failed {
                 error: format!("{repo} could no longer be read"),
@@ -246,20 +315,35 @@ fn fetch_repo(
             break;
         };
         let issues = found.issues;
-        out.items.extend(
-            issues
-                .nodes
-                .into_iter()
-                .flatten()
-                .map(|issue| issue.into_fact(repo)),
-        );
+        for (issue, cut_short) in issues
+            .nodes
+            .into_iter()
+            .flatten()
+            .map(|n| n.into_fact(repo))
+        {
+            if cut_short {
+                links_cut_short.push(format!("#{}", issue.number));
+            }
+            out.items.push(issue);
+        }
         if !pager.advance(issues.page_info.has_next_page, issues.page_info.end_cursor) {
             break;
         }
+    }
+    if !links_cut_short.is_empty() {
+        // Linked PRs are read one page per Issue and never paginated further,
+        // so a cut-short list is a stopped pagination of that nested list.
+        pager.note(SourceState::Partial(Incompleteness::PaginationStopped {
+            pages_read: LINK_PAGES_READ,
+            reason: format!(
+                "more linked PRs than den reads on {}",
+                links_cut_short.join(", ")
+            ),
+        }));
     }
     out.coverage.push(pager.finish(Source::Repo {
         repo: repo.clone(),
         kind: SourceKind::Issues,
     }));
-    Ok(())
+    Ok(read)
 }

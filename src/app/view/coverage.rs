@@ -54,10 +54,27 @@ fn carried_since(state: &State<'_>, source: &Source) -> Option<Timestamp> {
     })
 }
 
-/// "Pull Requests of alpha: failed: timeout; showing data from 10:00 UTC, 2 h ago".
-pub fn entry_line(state: &State<'_>, entry: &CoverageEntry) -> String {
+/// The carried note for `source` as it bears on one Repo: data kept for the Repo
+/// itself can be older than its Owner's (an earlier survey read the Owner but not
+/// that Repo's later pages), and then the Repo's own age is the true one.
+fn carried_note_in(state: &State<'_>, source: &Source, repo: &RepoId) -> Option<String> {
+    match source {
+        Source::Owner { owner, kind } if owner.eq_ignore_ascii_case(&repo.owner) => carried_note(
+            state,
+            &Source::Repo {
+                repo: repo.clone(),
+                kind: *kind,
+            },
+        ),
+        _ => carried_note(state, source),
+    }
+}
+
+/// "Pull Requests of alpha: failed: timeout; showing data from 10:00 UTC, 2 h ago",
+/// for an item of `repo`.
+pub fn entry_line(state: &State<'_>, entry: &CoverageEntry, repo: &RepoId) -> String {
     let line = format!("{}: {}", entry.source.label(), entry.state.describe());
-    match carried_note(state, &entry.source) {
+    match carried_note_in(state, &entry.source, repo) {
         Some(note) => format!("{line}; {note}"),
         None => line,
     }
@@ -136,7 +153,7 @@ pub fn for_repo(state: &State<'_>, observation: &Observation, repo: &RepoId) -> 
         .iter()
         .map(|e| {
             let line = format!("{}: {}", kind_label(&e.source), e.state.describe());
-            match carried_note(state, &e.source) {
+            match carried_note_in(state, &e.source, repo) {
                 Some(note) => format!("{line}; {note}"),
                 None => line,
             }

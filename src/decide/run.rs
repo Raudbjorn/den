@@ -17,6 +17,8 @@ use std::collections::BTreeMap;
 
 /// How many characters of a commit SHA the Explanation shows.
 const SHORT_SHA_CHARS: usize = 7;
+/// GitHub numbers a Run's attempts from 1; later attempts are retries.
+const FIRST_ATTEMPT: u32 = 1;
 
 pub fn decide_all(ctx: &Context<'_>) -> Vec<Decision> {
     latest_per_workflow(&ctx.observation.runs)
@@ -62,13 +64,24 @@ fn decide_one(ctx: &Context<'_>, run: &Run) -> Option<Decision> {
     }
     let (login, role) = match (&run.triggering_actor, &run.actor) {
         (Some(login), _) => (Some(login.as_str()), "the Run's triggering actor"),
-        (None, Some(login)) => (Some(login.as_str()), "the actor who started the Run"),
-        (None, None) => (None, "the Run's triggering actor"),
+        // On a first attempt whoever started the Run triggered it. A retry may
+        // have been started by someone else, so the first attempt's actor says
+        // nothing about who owes the retry: that stays unattributed.
+        (None, Some(login)) if run.attempt == FIRST_ATTEMPT => {
+            (Some(login.as_str()), "the actor who started the Run")
+        }
+        _ => (None, "the Run's triggering actor"),
     };
     let attribution = Attribution::person(ctx.viewer, login, role);
     let mut unknowns = Vec::new();
     if login.is_none() {
-        unknowns.push("who triggered the Run (GitHub reported no actor)".to_owned());
+        unknowns.push(match &run.actor {
+            Some(started_by) => format!(
+                "who triggered attempt {} (GitHub reported only who started the first attempt: {started_by})",
+                run.attempt
+            ),
+            None => "who triggered the Run (GitHub reported no actor)".to_owned(),
+        });
     }
     let explanation = Explanation {
         winning_rule: Some(format!(
