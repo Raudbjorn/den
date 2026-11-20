@@ -22,12 +22,12 @@
 //!
 //! Every Repo named must be the Owner's own: `api` or `acme/api`, never
 //! another Owner's. Team and state names are checked against Linear on a
-//! survey (#33), not here. No organization's values are defaults: only the
+//! survey (#33, the team-states source), not here. No organization's values are defaults: only the
 //! two policy switches have defaults, and those are the config's (on), not
 //! the policy type's (whose empty default changes nothing).
 
 use super::{Location, is_valid_login, location_of};
-use crate::domain::{RepoId, TeamRef};
+use crate::domain::{LinearSourceKind, LinearWorkflowPolicy, RepoId, StartPolicy, TeamRef};
 use serde::Deserialize;
 use std::{collections::BTreeMap, ops::Range};
 use toml::Spanned;
@@ -77,6 +77,46 @@ pub struct LinearWorkflow {
     pub exact_head_approval: bool,
     /// A COMMENTED review needs a fresh look after the head moves (#36). Default on.
     pub comment_reviews_need_rereview: bool,
+}
+
+impl LinearWorkflow {
+    /// The decision engine's policy for this workflow's Owner. Fields arrive
+    /// with the tickets that use them (Start: #33).
+    pub fn policy(&self) -> LinearWorkflowPolicy {
+        LinearWorkflowPolicy {
+            start: StartPolicy {
+                teams: self.start_teams.clone(),
+                include_backlog: self.include_backlog,
+                active_cycle_only: self.active_cycle_only,
+            },
+        }
+    }
+
+    /// The Linear sources this workflow reads, in survey order: always the
+    /// viewer and its assigned issues; the team states when the workflow names
+    /// a start team or a state to check against Linear; the start teams'
+    /// issues when it names a start team.
+    pub fn linear_sources(&self) -> Vec<LinearSourceKind> {
+        let mut sources = vec![LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues];
+        if !self.start_teams.is_empty() || self.state_names().next().is_some() {
+            sources.push(LinearSourceKind::TeamStates);
+        }
+        if !self.start_teams.is_empty() {
+            sources.push(LinearSourceKind::StartTeamIssues);
+        }
+        sources
+    }
+
+    /// The state names the config gives (setting, name), to check against
+    /// Linear's team states.
+    pub fn state_names(&self) -> impl Iterator<Item = (&'static str, &str)> {
+        [
+            ("in_progress_state", self.in_progress_state.as_deref()),
+            ("release_state", self.release_state.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(setting, name)| name.map(|n| (setting, n)))
+    }
 }
 
 /// A configured reviewer: a GitHub login or a team.

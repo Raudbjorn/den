@@ -2,24 +2,77 @@
 //! 0002, "Product boundaries": the generic rules never branch on an Owner's
 //! name; they take the policy).
 //!
-//! Milestone-2 groundwork (#31): the policy has no rules yet, and every Owner
-//! has the empty one. An empty policy changes nothing: an Owner without a
-//! Linear Workflow is decided exactly as in milestone 1
-//! (`tests/decide_policies.rs`).
+//! Milestone-2 groundwork (#31) gave every Owner the empty policy. An empty
+//! policy changes nothing: an Owner without a Linear Workflow is decided
+//! exactly as in milestone 1 (`tests/decide_policies.rs`). #33 adds which
+//! unassigned Linear Issues are offered to Start ([`StartPolicy`]).
 
-use super::ids::same_login;
+use super::{
+    facts::{LinearIssue, LinearStateKind},
+    ids::same_login,
+};
 
 /// One Owner's Linear Workflow policy. Its [`Default`] is the **empty** policy,
 /// the one every Owner without a Linear Workflow gets, and it must stay a
 /// policy that changes no Decision.
 ///
-/// Fields arrive with the tickets that use them: the Held Repos (#36), the
+/// Fields arrive with the tickets that use them: Start (#33), the Held Repos (#36), the
 /// two switches, exact-head approval and comment reviews need re-review (#36),
 /// the configured reviewers (#36) and the landing order (#40). A switch the
 /// config turns on by default is still off in the empty policy: the config's
 /// defaults are the config's (#32), not this type's.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LinearWorkflowPolicy {}
+pub struct LinearWorkflowPolicy {
+    /// Which unassigned Linear Issues are offered to Start (#33).
+    pub start: StartPolicy,
+}
+
+/// Which unassigned Linear Issues an Owner's Linear Workflow offers to
+/// **Start** (spec 0002, "Next Step rules: Linear Issues", rule 3). Its
+/// [`Default`] names no start team, so it offers none.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StartPolicy {
+    /// The start teams' keys (`TEAM` of `TEAM-123`), compared
+    /// case-insensitively.
+    pub teams: Vec<String>,
+    /// Backlog-state issues are offered too, not only unstarted ones.
+    pub include_backlog: bool,
+    /// Only issues in their team's active cycle are offered.
+    pub active_cycle_only: bool,
+}
+
+impl StartPolicy {
+    /// The policy that offers nothing.
+    pub const NONE: Self = Self {
+        teams: Vec::new(),
+        include_backlog: false,
+        active_cycle_only: false,
+    };
+
+    /// Whether `team_key` is one of the start teams.
+    pub fn is_start_team(&self, team_key: &str) -> bool {
+        self.teams.iter().any(|t| t.eq_ignore_ascii_case(team_key))
+    }
+
+    /// Whether a state of `kind` counts as not yet started: unstarted, or
+    /// backlog when the workflow includes it.
+    pub fn offers_state(&self, kind: &LinearStateKind) -> bool {
+        match kind {
+            LinearStateKind::Unstarted => true,
+            LinearStateKind::Backlog => self.include_backlog,
+            _ => false,
+        }
+    }
+
+    /// Whether `issue` may be offered to Start: unassigned, in a start team,
+    /// not yet started, and in the active cycle when the workflow asks.
+    pub fn offers(&self, issue: &LinearIssue) -> bool {
+        issue.assignee.is_none()
+            && self.is_start_team(&issue.team.key)
+            && self.offers_state(&issue.state.kind)
+            && (!self.active_cycle_only || issue.cycle.as_ref().is_some_and(|c| c.active))
+    }
+}
 
 /// The Linear Workflow policy of each Owner that has one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -29,7 +82,9 @@ pub struct Policies {
 }
 
 /// The policy of every Owner without a Linear Workflow.
-static EMPTY_POLICY: LinearWorkflowPolicy = LinearWorkflowPolicy {};
+static EMPTY_POLICY: LinearWorkflowPolicy = LinearWorkflowPolicy {
+    start: StartPolicy::NONE,
+};
 
 impl Policies {
     /// `owner`'s policy is `policy`. Owners compare case-insensitively, as
