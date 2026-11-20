@@ -41,7 +41,13 @@ pub const CACHE_SUBDIR: &str = "cache";
 /// attachments and whether they were all read (#35) and the Linear source
 /// that listed it (#34); the Linear part holds each Linear team's workflow
 /// states (#33) and its own survey time (#34).
-pub const CACHE_FORMAT: u32 = 8;
+/// 9: feat/37-land-decisions' Landing Group member states (#37); a cache it
+/// wrote is refused here.
+/// 10: the shape after the second review round: a PR's details carry the
+/// head they were read at (#36, `PrDetails::head_commit`), and Linear's
+/// errors alongside data keep the first few messages and count the rest
+/// (#32, `LinearErrorsAlongsideData::more`).
+pub const CACHE_FORMAT: u32 = 10;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// Names the viewer whose cache startup shows.

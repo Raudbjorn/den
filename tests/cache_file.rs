@@ -9,7 +9,7 @@ mod support;
 use den::{
     cache::{CACHE_FORMAT, CacheError, CachedObservation, Carried, FileCache},
     domain::{
-        LinearSourceKind, LinearTeamStates, Source, SourceKind, SourceState,
+        Incompleteness, LinearSourceKind, LinearTeamStates, Source, SourceKind, SourceState,
         facts::{
             ActorKind, Attachment, AttachmentsRead, LinearState, LinearStateKind, LinearTeam,
             MergeState, PullRequestRef, ReviewDecision, ReviewVerdict,
@@ -149,7 +149,7 @@ fn the_linear_part_and_its_ages_load_back_unchanged() {
 /// kind (a user's review on an older head, a bot's comment at the head).
 #[test]
 fn milestone_2_s_merged_shape_loads_back_unchanged() {
-    assert_eq!(CACHE_FORMAT, 8, "the merged milestone-2 shape");
+    assert_eq!(CACHE_FORMAT, 10, "the merged milestone-2 shape");
     let team_states = LinearTeamStates {
         owner: "acme".to_owned(),
         workspace: "acme".to_owned(),
@@ -188,6 +188,17 @@ fn milestone_2_s_merged_shape_loads_back_unchanged() {
         .build();
     observation.linear.team_states = vec![team_states.clone()];
     observation.linear.observed_at = Some(ts("2026-11-19T11:00:00Z"));
+    let assigned = Source::Owner {
+        owner: "acme".to_owned(),
+        kind: SourceKind::Linear(LinearSourceKind::AssignedIssues),
+    };
+    let linear_errors = SourceState::Partial(Incompleteness::LinearErrorsAlongsideData {
+        errors: vec!["Entity not found: Attachment".to_owned()],
+        more: 3,
+    });
+    observation
+        .coverage
+        .record(assigned.clone(), linear_errors.clone());
     let stored = CachedObservation::fresh(observation);
     let dir = tempfile::tempdir().unwrap();
     let cache = FileCache::in_state_dir(dir.path());
@@ -223,6 +234,14 @@ fn milestone_2_s_merged_shape_loads_back_unchanged() {
         .details
         .as_ref()
         .expect("details");
+    assert_eq!(
+        details.head_commit.as_deref(),
+        Some("b".repeat(40).as_str())
+    );
+    assert_eq!(
+        loaded.observation.coverage.get(&assigned),
+        Some(&linear_errors)
+    );
     let alice = &details.latest_reviews.items[0];
     assert_eq!(alice.commit.as_deref(), Some("a".repeat(40).as_str()));
     assert_eq!(alice.author_kind, ActorKind::User);
