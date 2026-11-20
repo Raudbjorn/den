@@ -22,7 +22,7 @@
 //! keeps its group.
 
 use crate::domain::{
-    CoverageEntry, LinearIssueId, Observation, RepoId, Source, SourceKind, WorkItemId,
+    LinearIssueId, Observation, RepoId, SourceKind, WorkItemId,
     facts::{LinearIssue, PullRequest, PullRequestRef},
     ids::same_login,
 };
@@ -330,37 +330,16 @@ fn status(observation: &Observation, owner: &str, pr: &PullRequestRef) -> Member
     if !observation.repos.iter().any(|r| r.id.same(&pr.repo)) {
         return MemberStatus::NotSurveyed(NotSurveyed::RepoNotSurveyed);
     }
-    if open_pull_requests_read_completely(observation.coverage.entries(), &pr.repo) {
+    // The cache merge's rule: a member missing from a Repo read completely
+    // is gone from its open Pull Requests.
+    if observation
+        .coverage
+        .read_completely(&pr.repo, SourceKind::PullRequests)
+    {
         MemberStatus::NotOpen
     } else {
         MemberStatus::NotSurveyed(NotSurveyed::PullRequestsIncomplete)
     }
-}
-
-/// Whether den read every open Pull Request of `repo`: its Owner's Pull
-/// Request list was recorded complete, and so was the Repo's own, if it had
-/// one.
-fn open_pull_requests_read_completely(entries: &[CoverageEntry], repo: &RepoId) -> bool {
-    let mut owner_complete = false;
-    for entry in entries {
-        match &entry.source {
-            Source::Owner {
-                owner,
-                kind: SourceKind::PullRequests,
-            } if same_login(owner, &repo.owner) => {
-                if !entry.state.is_complete() {
-                    return false;
-                }
-                owner_complete = true;
-            }
-            Source::Repo {
-                repo: r,
-                kind: SourceKind::PullRequests,
-            } if r.same(repo) && !entry.state.is_complete() => return false,
-            _ => {}
-        }
-    }
-    owner_complete
 }
 
 /// Whether `branch` contains `identifier` on word boundaries, ignoring case:

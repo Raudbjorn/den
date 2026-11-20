@@ -18,8 +18,8 @@ use den::{
         decide,
     },
     domain::{
-        NextStep, Observation, Policies, RepoId, SourceKind, SourceState, Viewers, WaitingOn,
-        WorkItemId, facts::PullRequestRef,
+        Incompleteness, NextStep, Observation, Policies, RepoId, SourceKind, SourceState, Viewers,
+        WaitingOn, WorkItemId, facts::PullRequestRef,
     },
     ordering::{Scope, in_scope, same_work_item},
 };
@@ -352,6 +352,38 @@ fn a_member_missing_from_a_fully_read_repo_is_merged_or_closed() {
             .as_deref()
             .is_some_and(|r| r.contains("merged or closed")),
         "{issue:?}"
+    );
+}
+
+/// A Repo with its own Pull Request source is judged by that source alone,
+/// as the cache merge judges it (`cache/merge.rs`, `Reading`): read
+/// completely, a member missing from it is merged or closed even when a
+/// later page of its Owner's Repo list was lost. A Repo without a source of
+/// its own was read as part of its Owner's list, so the Owner's partial
+/// list leaves its members not surveyed.
+#[test]
+fn a_repo_read_completely_on_its_own_decides_its_members_whatever_its_owner() {
+    let observation = two_owners()
+        .owner_coverage(
+            "acme",
+            SourceKind::PullRequests,
+            SourceState::Partial(Incompleteness::PaginationStopped {
+                pages_read: 2,
+                reason: "rate limited".to_owned(),
+            }),
+        )
+        .repo_coverage("acme/api", SourceKind::PullRequests, SourceState::Complete)
+        .linear_issue(linear_issue("acme", "id-1", "TEAM-1").attached("acme/api", 4))
+        .linear_issue(linear_issue("acme", "id-2", "TEAM-2").attached("acme/app", 5))
+        .build();
+    let decisions = decide_all(&observation);
+    assert_eq!(
+        linear(&decisions, "TEAM-1").landing.members[0].status,
+        MemberStatus::NotOpen
+    );
+    assert_eq!(
+        linear(&decisions, "TEAM-2").landing.members[0].status,
+        MemberStatus::NotSurveyed(NotSurveyed::PullRequestsIncomplete)
     );
 }
 

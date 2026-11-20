@@ -13,7 +13,7 @@
 
 use super::{CachedObservation, Carried};
 use crate::domain::{
-    Observation, RepoId, Source, SourceKind, SourceState, WorkItemId, ids::same_login,
+    Coverage, Observation, RepoId, Source, SourceKind, SourceState, WorkItemId, ids::same_login,
 };
 use jiff::Timestamp;
 use std::{collections::HashSet, hash::Hash};
@@ -98,24 +98,16 @@ pub fn merge(previous: Option<CachedObservation>, fresh: Observation) -> CachedO
 /// What the refresh read completely.
 struct Reading {
     owners: Vec<String>,
-    /// Sources the refresh read completely (folded).
-    complete: HashSet<Source>,
-    /// Sources the refresh recorded, in any state (folded).
-    recorded: HashSet<Source>,
+    /// The refresh's coverage.
+    coverage: Coverage,
     viewer_read: bool,
 }
 
 impl Reading {
     fn of(fresh: &Observation) -> Self {
-        let entries = fresh.coverage.entries();
         Self {
             owners: fresh.owners.clone(),
-            complete: entries
-                .iter()
-                .filter(|e| e.state.is_complete())
-                .map(|e| fold_source(&e.source))
-                .collect(),
-            recorded: entries.iter().map(|e| fold_source(&e.source)).collect(),
+            coverage: fresh.coverage.clone(),
             viewer_read: fresh.coverage.get(&Source::Viewer) == Some(&SourceState::Complete),
         }
     }
@@ -124,10 +116,9 @@ impl Reading {
     /// kept? Yes unless the refresh read its source completely, or no longer
     /// watches its Owner.
     ///
-    /// A Repo the refresh recorded a source for is judged by that source alone:
-    /// read completely, its facts are all there even if a later page of its
-    /// Owner's list was lost. A Repo with no source of its own was read (or not)
-    /// as part of its Owner's list, so only a complete Owner says it is all there.
+    /// "Read completely" is [`Coverage::read_completely`]: a Repo the refresh
+    /// recorded a source for is judged by that source alone, any other by its
+    /// Owner's. The Landing Groups' "merged or closed" uses the same rule.
     /// The refresh's spelling of `owner`, when it still watches that Owner.
     fn owner_as_watched(&self, owner: &str) -> Option<&str> {
         self.owners
@@ -140,18 +131,7 @@ impl Reading {
         if !self.owners.iter().any(|o| same_login(o, &repo.owner)) {
             return false;
         }
-        let repo = fold_repo(repo);
-        let owner_source = Source::Owner {
-            owner: repo.owner.clone(),
-            kind,
-        };
-        let repo_source = Source::Repo { repo, kind };
-        let read_completely = if self.recorded.contains(&repo_source) {
-            self.complete.contains(&repo_source)
-        } else {
-            self.complete.contains(&owner_source)
-        };
-        !read_completely
+        !self.coverage.read_completely(repo, kind)
     }
 }
 
