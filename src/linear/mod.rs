@@ -124,7 +124,11 @@ impl LinearApi {
             }
         };
         let transport = (self.connect)(key);
-        let session = Session::new(transport.as_ref(), &workflow.api_key_env, self.clock.now());
+        let session = Session::new(
+            transport.as_ref(),
+            &workflow.api_key_env,
+            self.clock.as_ref(),
+        );
         match viewer(&session, workflow) {
             Ok((linear_viewer, state)) => {
                 record(&mut survey.coverage, owner, LinearSourceKind::Viewer, state);
@@ -295,17 +299,9 @@ fn assigned_issues(
                 Err(e) => unreadable.push(e.to_string()),
             }
         }
-        if !page.page_info.has_next_page {
+        if !pager.advance(page.page_info.has_next_page, page.page_info.end_cursor) {
             break;
         }
-        let Some(cursor) = page.page_info.end_cursor else {
-            pager.note(SourceState::Partial(Incompleteness::PaginationStopped {
-                pages_read: pager.pages_read(),
-                reason: "Linear said there were more pages but gave no cursor".to_owned(),
-            }));
-            break;
-        };
-        pager.cursor = Some(cursor);
         if !pager.may_continue() {
             break;
         }

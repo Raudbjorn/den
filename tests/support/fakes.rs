@@ -696,6 +696,22 @@ impl Clock for FixedClock {
     }
 }
 
+/// A clock the test moves forward, as time passes during a call.
+pub struct MovingClock(pub Mutex<Timestamp>);
+
+impl MovingClock {
+    pub fn advance(&self, by: jiff::SignedDuration) {
+        let mut now = self.0.lock().expect("lock");
+        *now = now.checked_add(by).expect("in range");
+    }
+}
+
+impl Clock for MovingClock {
+    fn now(&self) -> Timestamp {
+        *self.0.lock().expect("lock")
+    }
+}
+
 /// An in-memory cache: `load` answers with what was last stored (or a scripted
 /// answer), `store` records every write.
 #[derive(Default)]

@@ -538,6 +538,18 @@ fn a_changed_linear_viewer_drops_cached_linear_data() {
         coverage.contains("assigned Linear Issues of acme failed") && !coverage.contains("showing"),
         "no age for data den no longer holds: {coverage}"
     );
+    // Changed with #45's save-once rule: the same survey's GitHub answer is
+    // still to come, so Linear's answer is saved with it, not on its own.
+    assert!(
+        harness.cache.stored().is_empty(),
+        "saved before GitHub answered"
+    );
+    let github = effects
+        .iter()
+        .find(|e| matches!(e, Effect::Survey { .. }))
+        .unwrap();
+    perform_all(&mut harness, github);
+    assert_eq!(harness.cache.stored().len(), 1, "one save for the survey");
     let stored = last_stored(&harness);
     assert!(linear_carried(&stored).is_empty(), "{:?}", stored.carried);
     let viewers: Vec<&str> = stored
