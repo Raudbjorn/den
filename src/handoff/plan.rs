@@ -115,7 +115,7 @@ fn facts(
     }
     // A head branch in another Repo (or a deleted one) is fetched as the PR
     // ref from the target's remote (#13).
-    let base = if pr.head_repo.as_ref() == Some(repo) {
+    let base = if pr.head_repo.as_ref().is_some_and(|head| head.same(repo)) {
         BaseRef::HeadBranch(pr.head_ref.clone())
     } else {
         BaseRef::PullHead { number: *number }

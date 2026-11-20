@@ -1181,3 +1181,33 @@ fn rejected_upstream_saves_are_visible_and_rejected_surveys_can_be_retried() {
     let retry = harness.send(Event::Key(Key::Char('r')));
     assert!(retry.iter().any(|e| matches!(e, Effect::Survey { .. })));
 }
+
+#[test]
+fn differently_cased_head_repository_still_tracks_the_same_repository_branch() {
+    let store = Arc::new(FakeUpstreams::default());
+    let observed = ObservationBuilder::new()
+        .owner("octo")
+        .repo(FORK)
+        .pull_request(
+            pr(FORK, 7)
+                .author(ME)
+                .changes_requested()
+                .head_from("OCTO/App"),
+        )
+        .build();
+    let mut harness = started_with(&store, observed);
+    fork_clone(&harness);
+    open_sheet(&mut harness, PR_7);
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(
+        plans[0].base.reference,
+        BaseRef::HeadBranch("feature-7".into())
+    );
+    assert_eq!(
+        plans[0].branch.start,
+        BranchStart::New {
+            tracking: "origin/feature-7".into()
+        }
+    );
+}
