@@ -13,7 +13,7 @@
 mod support;
 
 use den::{
-    decide::{Decision, Explanation, WorkItem},
+    decide::{Decision, Explanation, Landing, WorkItem},
     domain::{NextStep, WaitingOn, WorkItemId, WorkflowId},
     ordering::{self, Scope},
 };
@@ -60,6 +60,7 @@ fn decision(
         explanation: Explanation::default(),
         coverage: Vec::new(),
         observed_at: ts(support::build::NOW),
+        landing: Landing::default(),
         start_order: None,
         held_back: None,
         suggested_reviewers: None,

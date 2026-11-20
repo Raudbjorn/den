@@ -33,11 +33,10 @@ pub const CACHE_SUBDIR: &str = "cache";
 /// (milestone 2). A milestone-1 cache (4) is refused and surveyed afresh.
 /// 6: the Linear part holds Linear viewers and Linear Issues, and coverage
 /// has Linear incompleteness reasons (#32).
-/// 7: the Linear part holds each Linear team's workflow states (#33).
-/// 8: a PR's reviews carry their commit and their author's kind of account,
-/// a PR has its latest reviews of any kind, comments included, and its
-/// details carry the head they were read at (#36).
-pub const CACHE_FORMAT: u32 = 8;
+/// 7: separate branches added Linear attachments (#35) or team states (#33).
+/// 8: separate branches combined those fields or added exact-head PR review facts (#36).
+/// 9: attachments, team workflow states and exact-head PR review facts together.
+pub const CACHE_FORMAT: u32 = 9;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// Names the viewer whose cache startup shows.

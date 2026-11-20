@@ -8,15 +8,20 @@
 //! Observation; Scope filtering comes after (`crate::ordering`). Each Work Item kind has its own
 //! module with its own rules; this module only dispatches and defines what a
 //! Decision is. Adding a kind's rules means editing that kind's module only.
+//! Before any rule runs, `correlation` builds the Observation's Landing
+//! Groups once (#35); the Linear Issue rules read them, and each Pull
+//! Request's and Linear Issue's Decision carries its part (`Decision.landing`).
 
 mod attribution;
 mod branch;
+pub mod correlation;
 mod issue;
-mod linear_issue;
+pub mod linear_issue;
 mod pull_request;
 mod run;
 
 pub use attribution::Attribution;
+pub use correlation::{Correlation, Landing, correlate};
 
 use crate::domain::{
     CoverageEntry, LinearWorkflowPolicy, NextStep, Observation, Policies, UpstreamTargets, Viewers,
@@ -77,6 +82,12 @@ pub struct Decision {
     pub coverage: Vec<CoverageEntry>,
     /// When the facts behind this Decision were observed.
     pub observed_at: Timestamp,
+    /// Where the Work Item stands in Landing Groups (#35): a Linear Issue's
+    /// members and hints, a Pull Request's groups and "possibly for". Empty
+    /// for everything else, and left out of the stored form then, so
+    /// milestone 1's Decisions read and compare unchanged.
+    #[serde(default, skip_serializing_if = "Landing::is_empty")]
+    pub landing: Landing,
     /// Where a Start falls among Starts (#33); `None` for every other Next
     /// Step, which order by update time alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -165,6 +176,7 @@ impl Decision {
             explanation,
             coverage,
             observed_at: ctx.observation.observed_at,
+            landing: Landing::default(),
             start_order: None,
             held_back: None,
             suggested_reviewers: None,
@@ -183,6 +195,8 @@ pub struct Context<'a> {
     /// The forks whose target is their Upstream (#13): their Branches must have
     /// been compared against the Upstream's default branch.
     pub upstreams: &'a UpstreamTargets,
+    /// The Observation's Landing Groups (#35), built once before any rule.
+    pub correlation: &'a Correlation,
 }
 
 impl Context<'_> {
@@ -222,14 +236,23 @@ pub fn decide_with(
     upstreams: &UpstreamTargets,
     now: Timestamp,
 ) -> Vec<Decision> {
+    let correlation = correlate(observation);
     let ctx = Context {
         observation,
         viewers,
         policies,
         now,
         upstreams,
+        correlation: &correlation,
     };
     let mut decisions = pull_request::decide_all(&ctx);
+    // A Pull Request's own Next Step doesn't depend on its groups (until
+    // Land, #37); its Decision carries them for the list and the detail.
+    for decision in &mut decisions {
+        if let WorkItemId::PullRequest { repo, number } = &decision.item.id {
+            decision.landing = correlation.for_pull_request(repo, *number);
+        }
+    }
     decisions.extend(issue::decide_all(&ctx));
     decisions.extend(branch::decide_all(&ctx));
     decisions.extend(run::decide_all(&ctx));

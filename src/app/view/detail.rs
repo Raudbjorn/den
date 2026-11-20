@@ -1,6 +1,6 @@
 //! The detail pane: the selected item's Next Step, Waiting On and Explanation.
 
-use super::{State, coverage, format, jobs};
+use super::{State, coverage, format, jobs, landing};
 use crate::{
     app::view_model::{Detail, DetailContent, DetailFacts},
     decide::Decision,
@@ -56,6 +56,7 @@ pub fn build(state: &State<'_>) -> Detail {
                 facts: linear_issue(state, &decision.item.id)
                     .map(linear_facts)
                     .or_else(|| workflow_facts(decision)),
+                landing: landing::detail(state, decision),
             }
         });
     Detail {
@@ -90,7 +91,7 @@ fn reference(decision: &Decision) -> String {
     }
 }
 
-fn linear_issue<'s>(state: &State<'s>, id: &WorkItemId) -> Option<&'s LinearIssue> {
+pub(super) fn linear_issue<'s>(state: &State<'s>, id: &WorkItemId) -> Option<&'s LinearIssue> {
     let issue = id.linear_issue()?;
     state
         .observation?

@@ -3,6 +3,8 @@
 //! data (partial), a rate limit on HTTP 200 or 429 (partial with its reset),
 //! a refused key or no network (failed), and the key read only from its
 //! variable. (That the key never reaches the log is `linear_key_logging.rs`.)
+//! Attachments (#35): each URL reduced to a Pull Request identity or kept as
+//! a link, and any attachment list den didn't read whole marked incomplete.
 
 // Test code: helpers outside #[test] fns may fail loudly too (clippy.toml covers only #[test]).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -12,11 +14,17 @@ mod support;
 use den::{
     config::LinearWorkflow,
     domain::{
-        Incompleteness, LinearIssueId, LinearSourceKind, Source, SourceKind, SourceState,
+        Incompleteness, LinearIssueId, LinearSourceKind, RepoId, Source, SourceKind, SourceState,
         coverage::MAX_KEPT_LINEAR_ERRORS,
-        facts::{LinearPriority, LinearStateKind},
+        facts::{
+            Attachment, AttachmentsRead, LinearIssue, LinearPriority, LinearStateKind,
+            PullRequestRef,
+        },
     },
-    linear::{ApiKey, HttpReply, LinearApi, LinearRequest, MAX_LINEAR_PAGES, TransportError},
+    linear::{
+        ATTACHMENTS_PER_ISSUE, ApiKey, HttpReply, LinearApi, LinearRequest, MAX_LINEAR_PAGES,
+        TransportError,
+    },
     ports::{LinearSource, LinearSurvey, LinearSurveyRequest},
 };
 use jiff::SignedDuration;
@@ -31,8 +39,8 @@ use support::{
     fakes::{FixedClock, MovingClock, ScriptedLinear, SharedLinear},
     harness::linear_workflow,
     linear_replies::{
-        KEY, KEY_ENV, is_viewer, issue_node, issues_page, ok, reply, source, source_with_clock,
-        viewer_body,
+        KEY, KEY_ENV, attachments, is_viewer, issue_node, issues_page, ok, reply, source,
+        source_with_clock, viewer_body,
     },
 };
 
@@ -512,4 +520,155 @@ fn reset_time_is_never_invented() {
         state(&survey, LinearSourceKind::AssignedIssues),
         SourceState::Partial(Incompleteness::LinearRateLimited { resets_at: None })
     );
+}
+
+/// One page with one issue whose attachments are `connection`.
+fn survey_issue_with(connection: serde_json::Value) -> (LinearIssue, Arc<ScriptedLinear>) {
+    let (survey, transport) = survey_with(move |request| {
+        if is_viewer(request) {
+            return Ok(ok(viewer_body("acme")));
+        }
+        let mut node = issue_node("id-1", "TEAM-1");
+        node["attachments"] = connection.clone();
+        Ok(ok(issues_page(vec![node], None)))
+    });
+    assert_eq!(
+        state(&survey, LinearSourceKind::AssignedIssues),
+        SourceState::Complete
+    );
+    (survey.part.issues.into_iter().next().unwrap(), transport)
+}
+
+fn pull(owner: &str, repo: &str, number: u64) -> Attachment {
+    Attachment::PullRequest(PullRequestRef::new(RepoId::new(owner, repo), number))
+}
+
+fn link(url: &str) -> Attachment {
+    Attachment::Link {
+        url: url.to_owned(),
+    }
+}
+
+/// Spec 0002, "Facts: Linear Issue": a URL that parses as a GitHub Pull
+/// Request becomes its Owner, Repo and number; anything else, including
+/// near misses, stays a link, so den never guesses a member. The issue
+/// query reads the attachments with the shared issue fields.
+#[test]
+fn attachments_become_pull_request_identities_or_links() {
+    let urls = [
+        "https://github.com/acme/api/pull/42",
+        "https://GitHub.com/Acme/web.site/pull/7/files?w=1#diff",
+        "http://www.github.com/acme/api_2/pull/9",
+        "https://github.com/acme/api/pull/42",
+        "https://github.com/acme/api/issues/3",
+        "https://github.com/acme/api/pulls",
+        "https://github.com/acme/api/pull/0",
+        "https://github.com/acme/api/pull/12abc",
+        "https://github.com/-acme/api/pull/5",
+        "https://github.com.example.com/acme/api/pull/5",
+        "https://example.com/github.com/acme/api/pull/5",
+        "ftp://github.com/acme/api/pull/5",
+        "https://www.figma.com/file/abc",
+    ];
+    let (issue, transport) = survey_issue_with(attachments(&urls, false));
+    assert_eq!(issue.attachments.read, AttachmentsRead::Complete);
+    let mut expected = vec![
+        pull("acme", "api", 42),
+        pull("Acme", "web.site", 7),
+        pull("acme", "api_2", 9),
+    ];
+    expected.extend(urls[4..].iter().map(|u| link(u)));
+    assert_eq!(issue.attachments.links, expected, "the repeat is dropped");
+
+    let request = transport
+        .requests()
+        .into_iter()
+        .find(|r| r.operation == "LinearAssignedIssues")
+        .unwrap();
+    assert!(
+        request
+            .query
+            .contains("fragment LinearIssueFields on Issue")
+    );
+    assert!(request.query.contains("...LinearIssueFields"));
+    assert_eq!(
+        request.variables["attachmentsPerIssue"],
+        json!(ATTACHMENTS_PER_ISSUE)
+    );
+}
+
+/// GitHub names are case-insensitive, so two URLs that differ only in the
+/// casing of the Owner or Repo name the same Pull Request: `links` keeps it
+/// once (the first spelling), as it says ("without repeats"). Links that
+/// aren't Pull Requests compare exactly.
+#[test]
+fn a_pull_request_attached_twice_in_different_casings_is_one_link() {
+    let urls = [
+        "https://github.com/Acme/API/pull/4",
+        "https://github.com/acme/api/pull/4/files",
+        "https://www.figma.com/file/abc",
+        "https://www.figma.com/file/ABC",
+    ];
+    let (issue, _) = survey_issue_with(attachments(&urls, false));
+    assert_eq!(
+        issue.attachments.links,
+        [
+            pull("Acme", "API", 4),
+            link("https://www.figma.com/file/abc"),
+            link("https://www.figma.com/file/ABC"),
+        ]
+    );
+}
+
+/// An issue with more attachments than den reads in one query is marked
+/// incomplete, saying so; the ones read are kept.
+#[test]
+fn more_attachments_than_den_reads_are_incomplete() {
+    let (issue, _) = survey_issue_with(attachments(&["https://github.com/acme/api/pull/1"], true));
+    assert_eq!(issue.attachments.links, [pull("acme", "api", 1)]);
+    let AttachmentsRead::Incomplete { why } = &issue.attachments.read else {
+        panic!("incomplete: {issue:?}");
+    };
+    assert!(why.contains(&ATTACHMENTS_PER_ISSUE.to_string()), "{why}");
+}
+
+/// Attachments Linear didn't return (null, or an entry without a URL) are
+/// incomplete, never "none attached".
+#[test]
+fn attachments_linear_did_not_return_are_incomplete() {
+    for connection in [
+        json!(null),
+        json!({ "nodes": [{ "url": null }], "pageInfo": { "hasNextPage": false } }),
+    ] {
+        let (issue, _) = survey_issue_with(connection.clone());
+        assert!(
+            matches!(issue.attachments.read, AttachmentsRead::Incomplete { .. }),
+            "{connection}: {issue:?}"
+        );
+    }
+}
+
+/// Errors next to a page of issues could have taken any issue's
+/// attachments, so every issue on that page has them incomplete.
+#[test]
+fn errors_next_to_data_leave_that_pages_attachments_incomplete() {
+    let (survey, _) = survey_with(|request| {
+        if is_viewer(request) {
+            return Ok(ok(viewer_body("acme")));
+        }
+        let mut body = issues_page(
+            vec![issue_node("id-1", "TEAM-1"), issue_node("id-2", "TEAM-2")],
+            None,
+        );
+        body["errors"] = json!([{ "message": "attachment could not be resolved",
+                                  "path": ["viewer", "assignedIssues", "nodes", 0, "attachments"] }]);
+        Ok(ok(body))
+    });
+    assert_eq!(survey.part.issues.len(), 2);
+    for issue in &survey.part.issues {
+        assert!(
+            matches!(issue.attachments.read, AttachmentsRead::Incomplete { .. }),
+            "{issue:?}"
+        );
+    }
 }

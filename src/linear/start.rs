@@ -19,7 +19,7 @@
 //!   Start order (spec 0002, "Ordering"), never its head.
 
 use super::{
-    Connection, LINEAR_PAGE_SIZE, MAX_LINEAR_PAGES, RawIssue, RawState,
+    Connection, LINEAR_PAGE_SIZE, MAX_LINEAR_PAGES, RawIssue, RawState, issue_page_variables,
     pages::{self, End, List},
     session::{Pager, Session},
 };
@@ -35,7 +35,7 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 
 const TEAM_STATES_QUERY: &str = include_str!("queries/team_states.graphql");
-const START_TEAM_ISSUES_QUERY: &str = include_str!("queries/start_team_issues.graphql");
+const START_TEAM_ISSUES_QUERY: &str = with_issue_fields!("queries/start_team_issues.graphql");
 
 /// Workflow states read per team. A team with more is read partially, and
 /// its state names aren't checked.
@@ -189,19 +189,25 @@ fn read_teams(session: &Session<'_>, workflow: &LinearWorkflow, filter: &Value) 
         },
         connection: |data: TeamsData| data.teams,
     };
-    let end = pages::read_list(session, &mut pager, MAX_LINEAR_PAGES, &list, |node| {
-        let raw: RawTeamStates = match serde_json::from_value(node) {
-            Ok(raw) => raw,
-            Err(e) => return unreadable.push(e.to_string()),
-        };
-        if !seen.insert(raw.id.clone()) {
-            return;
-        }
-        if raw.states.page_info.has_next_page {
-            truncated.insert(raw.id.clone());
-        }
-        teams.push(raw.into_team_states(workflow));
-    });
+    let end = pages::read_list(
+        session,
+        &mut pager,
+        MAX_LINEAR_PAGES,
+        &list,
+        |node, _page_complete| {
+            let raw: RawTeamStates = match serde_json::from_value(node) {
+                Ok(raw) => raw,
+                Err(e) => return unreadable.push(e.to_string()),
+            };
+            if !seen.insert(raw.id.clone()) {
+                return;
+            }
+            if raw.states.page_info.has_next_page {
+                truncated.insert(raw.id.clone());
+            }
+            teams.push(raw.into_team_states(workflow));
+        },
+    );
     if end == End::Cut {
         let bound = pages::page_bound(&pager, None);
         pager.note(bound);
@@ -298,9 +304,15 @@ pub(super) fn start_team_issues(
     let mut pager = Pager::default();
 
     let mut all = Collected::default();
-    let end = pages::read_list(session, &mut pager, 1, &issues_list(&filter), |node| {
-        all.take(node, workflow, &known);
-    });
+    let end = pages::read_list(
+        session,
+        &mut pager,
+        1,
+        &issues_list(&filter),
+        |node, page_complete| {
+            all.take(node, workflow, &known, page_complete);
+        },
+    );
     if end != End::Cut {
         return all.finish(pager);
     }
@@ -323,9 +335,15 @@ pub(super) fn start_team_issues(
             let mut filter = filter.clone();
             filter["priority"] = priority;
             let list = issues_list(&filter);
-            match pages::read_list(session, &mut pager, MAX_LINEAR_PAGES, &list, |node| {
-                by_priority.take(node, workflow, &known);
-            }) {
+            match pages::read_list(
+                session,
+                &mut pager,
+                MAX_LINEAR_PAGES,
+                &list,
+                |node, page_complete| {
+                    by_priority.take(node, workflow, &known, page_complete);
+                },
+            ) {
                 End::Done => continue,
                 // The pager says why; the later priorities are left unread.
                 // The head of the order is then unknown anyway, so the first
@@ -384,7 +402,11 @@ fn issues_list(
     List {
         operation: "LinearStartTeamIssues",
         query: START_TEAM_ISSUES_QUERY,
-        variables: move |after: Option<&str>| json!({ "first": LINEAR_PAGE_SIZE, "after": after, "filter": filter }),
+        variables: move |after: Option<&str>| {
+            let mut variables = issue_page_variables(after);
+            variables["filter"] = filter.clone();
+            variables
+        },
         connection: |data: IssuesData| data.issues,
     }
 }
@@ -398,11 +420,17 @@ struct Collected {
 }
 
 impl Collected {
-    fn take(&mut self, node: Value, workflow: &LinearWorkflow, known: &HashSet<&str>) {
+    fn take(
+        &mut self,
+        node: Value,
+        workflow: &LinearWorkflow,
+        known: &HashSet<&str>,
+        page_complete: bool,
+    ) {
         match serde_json::from_value::<RawIssue>(node) {
             Ok(raw) if known.contains(raw.id.as_str()) => {}
             Ok(raw) if self.seen.insert(raw.id.clone()) => {
-                self.issues.push(raw.into_issue(workflow));
+                self.issues.push(raw.into_issue(workflow, page_complete));
             }
             Ok(_) => {}
             Err(e) => self.unreadable.push(e.to_string()),

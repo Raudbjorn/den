@@ -55,7 +55,16 @@ pub fn issue_node(id: &str, identifier: &str) -> Value {
         "team": { "id": "team-1", "key": "TEAM" },
         "state": { "id": "state-1", "name": "In Progress", "type": "started" },
         "assignee": { "id": "user-me", "name": "Me Myself" },
-        "cycle": { "id": "cycle-3", "number": 3.0, "name": null, "isActive": true }
+        "cycle": { "id": "cycle-3", "number": 3.0, "name": null, "isActive": true },
+        "attachments": attachments(&[], false)
+    })
+}
+
+/// An issue's attachments connection: `urls`, and whether Linear has more.
+pub fn attachments(urls: &[&str], more: bool) -> Value {
+    json!({
+        "nodes": urls.iter().map(|url| json!({ "url": url })).collect::<Vec<_>>(),
+        "pageInfo": { "hasNextPage": more }
     })
 }
 

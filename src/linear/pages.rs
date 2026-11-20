@@ -40,13 +40,14 @@ pub(super) struct List<'q, V, C> {
 
 /// Reads the pages of `list` from its first, handing each node to `each`,
 /// until the last page, a lost page, or `pager` having read `max_pages` in
-/// all. Each page's state goes into `pager`.
+/// all. Each page's state goes into `pager`; `each` also gets whether that
+/// page was complete, so issue attachments retain page-level errors.
 pub(super) fn read_list<T, V, C>(
     session: &Session<'_>,
     pager: &mut Pager,
     max_pages: u32,
     list: &List<'_, V, C>,
-    mut each: impl FnMut(Value),
+    mut each: impl FnMut(Value, bool),
 ) -> End
 where
     T: DeserializeOwned,
@@ -56,17 +57,20 @@ where
     pager.cursor = None;
     loop {
         let variables = (list.variables)(pager.cursor.as_deref());
-        let page = match session.run::<T>(list.operation, list.query, variables) {
+        let (page, page_complete) = match session.run::<T>(list.operation, list.query, variables) {
             Answer::Lost(state) => {
                 pager.page_lost(state);
                 return End::Stopped;
             }
             Answer::Data { data, state } => {
+                let complete = state.is_complete();
                 pager.page_read(state);
-                (list.connection)(data)
+                ((list.connection)(data), complete)
             }
         };
-        page.nodes.into_iter().for_each(&mut each);
+        for node in page.nodes {
+            each(node, page_complete);
+        }
         let more = page.page_info.has_next_page;
         // The shared pager moves to the next page; more pages without a
         // cursor it notes as partial.

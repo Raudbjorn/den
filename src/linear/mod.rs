@@ -7,7 +7,8 @@
 //! against the configured workspace), then the viewer's active assigned
 //! Linear Issues, paged up to [`MAX_LINEAR_PAGES`], then, when the workflow
 //! names start teams or states, the team states and the start teams'
-//! unassigned issues ([`start`], #33). Each is recorded as
+//! unassigned issues ([`start`], #33). Both issue queries read attachments
+//! up to [`ATTACHMENTS_PER_ISSUE`], with completeness per issue. Each source is recorded as
 //! `Source::Owner { owner, kind: SourceKind::Linear(..) }`. Owners without a
 //! Linear Workflow are never in the request, so they make no Linear request
 //! and need no key.
@@ -18,7 +19,6 @@
 
 mod pages;
 pub mod session;
-mod start;
 pub mod transport;
 
 pub use session::{LINEAR_PAGE_SIZE, MAX_LINEAR_PAGES};
@@ -33,8 +33,8 @@ use crate::{
     domain::{
         Coverage, LinearIssueId, LinearSourceKind, LinearViewer, Source, SourceKind, SourceState,
         facts::{
-            LinearCycle, LinearIssue, LinearPriority, LinearState, LinearStateKind, LinearTeam,
-            LinearUser,
+            Attachment, Attachments, LinearCycle, LinearIssue, LinearPriority, LinearState,
+            LinearStateKind, LinearTeam, LinearUser,
         },
     },
     ports::{Clock, LinearSource, LinearSurvey, LinearSurveyRequest},
@@ -46,7 +46,35 @@ use session::{Answer, Pager, Session};
 use std::{collections::HashSet, ffi::OsString, sync::Arc};
 
 const VIEWER_QUERY: &str = include_str!("queries/viewer.graphql");
-const ASSIGNED_ISSUES_QUERY: &str = include_str!("queries/assigned_issues.graphql");
+/// Every query that lists Linear Issues spreads this fragment, so each one
+/// reads the same fields, attachments included (#35), and decodes them with
+/// [`RawIssue`]. Its variables come from [`issue_page_variables`].
+macro_rules! with_issue_fields {
+    ($query:literal) => {
+        concat!(
+            include_str!($query),
+            "\n",
+            include_str!("queries/issue_fields.graphql")
+        )
+    };
+}
+mod start;
+
+const ASSIGNED_ISSUES_QUERY: &str = with_issue_fields!("queries/assigned_issues.graphql");
+
+/// Attachments read per Linear Issue, in the query that lists it. An issue
+/// with more has its attachments marked incomplete, which withholds Start
+/// and Implement for it.
+pub const ATTACHMENTS_PER_ISSUE: u32 = 50;
+
+/// The variables of one page of a query that spreads `LinearIssueFields`.
+fn issue_page_variables(after: Option<&str>) -> Value {
+    json!({
+        "first": LINEAR_PAGE_SIZE,
+        "after": after,
+        "attachmentsPerIssue": ATTACHMENTS_PER_ISSUE,
+    })
+}
 
 /// Reads an environment variable (the real one is `std::env::var_os`).
 pub type Env = dyn Fn(&str) -> Option<OsString> + Send + Sync;
@@ -281,16 +309,22 @@ fn assigned_issues(
     let list = pages::List {
         operation: "LinearAssignedIssues",
         query: ASSIGNED_ISSUES_QUERY,
-        variables: |after: Option<&str>| json!({ "first": LINEAR_PAGE_SIZE, "after": after }),
+        variables: issue_page_variables,
         connection: |data: AssignedData| data.viewer.assigned_issues,
     };
-    let end = pages::read_list(session, &mut pager, MAX_LINEAR_PAGES, &list, |node| {
-        match serde_json::from_value::<RawIssue>(node) {
-            Ok(raw) if seen.insert(raw.id.clone()) => issues.push(raw.into_issue(workflow)),
+    let end = pages::read_list(
+        session,
+        &mut pager,
+        MAX_LINEAR_PAGES,
+        &list,
+        |node, page_complete| match serde_json::from_value::<RawIssue>(node) {
+            Ok(raw) if seen.insert(raw.id.clone()) => {
+                issues.push(raw.into_issue(workflow, page_complete))
+            }
             Ok(_) => {}
             Err(e) => unreadable.push(e.to_string()),
-        }
-    });
+        },
+    );
     if end == pages::End::Cut {
         let bound = pages::page_bound(&pager, None);
         pager.note(bound);
@@ -314,6 +348,23 @@ struct RawIssue {
     state: RawState,
     assignee: Option<RawUser>,
     cycle: Option<RawCycle>,
+    /// Absent or null when Linear couldn't give them (an error next to data).
+    #[serde(default)]
+    attachments: Option<RawAttachments>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawAttachments {
+    /// Kept as values, so one unreadable attachment doesn't lose its issue.
+    nodes: Vec<Value>,
+    page_info: RawAttachmentsPage,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawAttachmentsPage {
+    has_next_page: bool,
 }
 
 #[derive(Deserialize)]
@@ -350,7 +401,9 @@ impl RawState {
 }
 
 impl RawIssue {
-    fn into_issue(self, workflow: &LinearWorkflow) -> LinearIssue {
+    /// `page_complete`: the page that listed it came without errors; when it
+    /// didn't, den can't tell whether an error took some of its attachments.
+    fn into_issue(self, workflow: &LinearWorkflow, page_complete: bool) -> LinearIssue {
         LinearIssue {
             owner: workflow.owner.clone(),
             id: LinearIssueId::new(workflow.workspace.clone(), self.id),
@@ -376,7 +429,46 @@ impl RawIssue {
             created_at: self.created_at,
             updated_at: self.updated_at,
             branch_name: self.branch_name.filter(|b| !b.is_empty()),
+            attachments: attachments(self.attachments, page_complete),
         }
+    }
+}
+
+/// An issue's attachments, and whether den read them all. Anything short of
+/// all of them is incomplete, with why: den never treats a partial list as
+/// "no Pull Request".
+fn attachments(raw: Option<RawAttachments>, page_complete: bool) -> Attachments {
+    let Some(raw) = raw else {
+        return Attachments::incomplete(Vec::new(), "Linear didn't return them");
+    };
+    let mut links: Vec<Attachment> = Vec::new();
+    let mut unreadable = 0_usize;
+    for node in &raw.nodes {
+        match node.get("url").and_then(Value::as_str) {
+            // The constructors below drop repeats.
+            Some(url) => links.push(Attachment::from_url(url)),
+            None => unreadable += 1,
+        }
+    }
+    if !page_complete {
+        Attachments::incomplete(
+            links,
+            "Linear returned errors alongside the page that listed the issue",
+        )
+    } else if raw.page_info.has_next_page {
+        Attachments::incomplete(
+            links,
+            format!(
+                "it has more than {ATTACHMENTS_PER_ISSUE} attachments and den read the first {ATTACHMENTS_PER_ISSUE}"
+            ),
+        )
+    } else if unreadable > 0 {
+        Attachments::incomplete(
+            links,
+            format!("{unreadable} attachment(s) came without a URL den could read"),
+        )
+    } else {
+        Attachments::complete(links)
     }
 }
 

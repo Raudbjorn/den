@@ -19,7 +19,10 @@ pub mod linear;
 
 pub use linear::{LinearWorkflow, Reviewer};
 
-use crate::domain::Policies;
+use crate::domain::{
+    Policies,
+    ids::{MAX_LOGIN_CHARS, is_valid_login},
+};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -30,8 +33,6 @@ use std::{
 };
 use toml::Spanned;
 
-/// GitHub's longest login, in characters.
-const MAX_LOGIN_CHARS: usize = 39;
 /// den's bound on a team slug, in characters.
 const MAX_TEAM_SLUG_CHARS: usize = 100;
 
@@ -241,14 +242,6 @@ pub(crate) fn is_valid_team_slug(slug: &str) -> bool {
         && slug
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-}
-
-pub(crate) fn is_valid_login(login: &str) -> bool {
-    let len = login.chars().count();
-    (1..=MAX_LOGIN_CHARS).contains(&len)
-        && login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-        && !login.starts_with('-')
-        && !login.ends_with('-')
 }
 
 pub(crate) fn location_of(text: &str, offset: usize) -> Location {

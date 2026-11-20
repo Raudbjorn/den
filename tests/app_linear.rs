@@ -236,12 +236,12 @@ fn the_sidebar_and_header_mark_an_owner_with_a_linear_workflow() {
 /// Story 88 for the tracer: a Linear source that failed is incomplete
 /// coverage like a GitHub one, named in the header, and blocks "Nothing
 /// needs you".
-/// Until Landing Groups (#35) put Linear Issues into Repo Scopes, a Repo
-/// Scope holds none, so the Owner's Linear sources don't bear on it: a
-/// failed Linear source leaves the Owner (and All Owners) incomplete, never
-/// its Repos.
+/// Repo Scopes hold the Linear Issues with a member PR in them (Landing
+/// Groups, #35), so a Linear source den couldn't read may hide work in any
+/// Repo of its Owner: a failed Linear source leaves the Owner, All Owners and
+/// every Repo of the Owner incomplete.
 #[test]
-fn a_failed_linear_source_leaves_the_owners_repos_complete() {
+fn a_failed_linear_source_leaves_the_owners_repos_incomplete() {
     let mut harness = workflow_harness();
     harness.answer(Ok(ObservationBuilder::new()
         .fully_read_owner("acme")
@@ -268,14 +268,19 @@ fn a_failed_linear_source_leaves_the_owners_repos_complete() {
     };
     assert!(row(Scope::Owner("acme".to_owned())).incomplete);
     let api = Scope::Repo(den::domain::RepoId::new("acme", "api"));
-    assert!(!row(api).incomplete, "no Linear Issue can be in acme/api");
+    // Inverted with #35: before Landing Groups no Linear Issue could be in a
+    // Repo Scope, so this asserted complete.
+    assert!(
+        row(api).incomplete,
+        "a Linear Issue with a member PR in acme/api may be unread"
+    );
     let api_coverage = view
         .header
         .repos
         .iter()
         .find(|r| r.repo == "acme/api")
         .expect("acme/api coverage");
-    assert!(api_coverage.complete, "{api_coverage:?}");
+    assert!(!api_coverage.complete, "{api_coverage:?}");
 }
 
 #[test]

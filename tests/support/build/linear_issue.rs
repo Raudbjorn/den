@@ -1,13 +1,14 @@
 //! Linear Issue builder: an issue in workspace `acme`'s team `TEAM`, in a
 //! started state, assigned to the Linear viewer [`LINEAR_ME_ID`], unless told
-//! otherwise; and the Linear viewer itself.
+//! otherwise, with every attachment read and none attached; and the Linear
+//! viewer itself.
 
-use super::ts;
+use super::{repo_id, ts};
 use den::domain::{
     LinearIssueId, LinearViewer,
     facts::{
-        LinearCycle, LinearIssue, LinearPriority, LinearState, LinearStateKind, LinearTeam,
-        LinearUser,
+        Attachment, Attachments, AttachmentsRead, LinearCycle, LinearIssue, LinearPriority,
+        LinearState, LinearStateKind, LinearTeam, LinearUser, PullRequestRef,
     },
 };
 
@@ -60,6 +61,7 @@ pub fn linear_issue(owner: &str, id: &str, identifier: &str) -> LinearIssueBuild
             created_at: ts("2026-11-01T12:00:00Z"),
             updated_at: ts(DEFAULT_UPDATED),
             branch_name: None,
+            attachments: Attachments::complete(Vec::new()),
         },
     }
 }
@@ -126,6 +128,34 @@ impl LinearIssueBuilder {
 
     pub fn updated(mut self, at: &str) -> Self {
         self.issue.updated_at = ts(at);
+        self
+    }
+
+    /// Attaches the Pull Request `repo` (`owner/name`) `#number`, as Linear's
+    /// GitHub integration records it (once, as den reads attachments).
+    pub fn attached(mut self, repo: &str, number: u64) -> Self {
+        self.issue
+            .attachments
+            .push(Attachment::PullRequest(PullRequestRef::new(
+                repo_id(repo),
+                number,
+            )));
+        self
+    }
+
+    /// Attaches a link that isn't a Pull Request.
+    pub fn link(mut self, url: &str) -> Self {
+        self.issue.attachments.push(Attachment::Link {
+            url: url.to_owned(),
+        });
+        self
+    }
+
+    /// den couldn't read all of its attachments, for `why`.
+    pub fn attachments_incomplete(mut self, why: &str) -> Self {
+        self.issue.attachments.read = AttachmentsRead::Incomplete {
+            why: why.to_owned(),
+        };
         self
     }
 

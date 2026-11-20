@@ -28,7 +28,10 @@
 
 use super::{Location, location_of};
 use crate::{
-    domain::{LinearSourceKind, LinearWorkflowPolicy, RepoId, ReviewPolicy, StartPolicy},
+    domain::{
+        LinearSourceKind, LinearWorkflowPolicy, RepoId, ReviewPolicy, StartPolicy,
+        ids::is_valid_repo_name,
+    },
     handoff::reviewers,
 };
 use serde::Deserialize;
@@ -41,8 +44,6 @@ const MAX_WORKSPACE_CHARS: usize = 64;
 const MAX_ENV_NAME_CHARS: usize = 128;
 /// den's bound on a Linear team key, in characters.
 const MAX_TEAM_KEY_CHARS: usize = 32;
-/// GitHub's longest Repo name, in characters.
-const MAX_REPO_NAME_CHARS: usize = 100;
 /// den's bound on a state name or Slack channel, in characters.
 const MAX_SETTING_CHARS: usize = 100;
 
@@ -360,13 +361,7 @@ fn repo(owner: &str, field: &str, value: Spanned<String>) -> Result<RepoId, Inva
             ),
         ));
     }
-    let ok = (1..=MAX_REPO_NAME_CHARS).contains(&name.chars().count())
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-        && name != "."
-        && name != "..";
-    if !ok {
+    if !is_valid_repo_name(name) {
         return Err((
             span,
             format!("{value:?} in `{field}` is not a Repo name (`name` or `{owner}/name`)"),

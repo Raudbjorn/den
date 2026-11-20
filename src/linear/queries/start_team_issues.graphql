@@ -1,33 +1,7 @@
-query LinearStartTeamIssues($first: Int!, $after: String, $filter: IssueFilter!) {
+query LinearStartTeamIssues($first: Int!, $after: String, $filter: IssueFilter!, $attachmentsPerIssue: Int!) {
   issues(first: $first, after: $after, sort: [{ createdAt: { order: Ascending } }], filter: $filter) {
     nodes {
-      id
-      identifier
-      title
-      url
-      priority
-      createdAt
-      updatedAt
-      branchName
-      team {
-        id
-        key
-      }
-      state {
-        id
-        name
-        type
-      }
-      assignee {
-        id
-        name
-      }
-      cycle {
-        id
-        number
-        name
-        isActive
-      }
+      ...LinearIssueFields
     }
     pageInfo {
       hasNextPage

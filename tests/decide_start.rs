@@ -77,15 +77,58 @@ fn an_unassigned_unstarted_issue_in_a_start_team_is_start_waiting_on_nobody() {
         rule.contains("unassigned") && rule.contains("start team TEAM") && rule.contains("Todo"),
         "{rule}"
     );
-    assert!(
-        start
-            .explanation
-            .unknowns
-            .iter()
-            .any(|u| u.contains("attachments")),
-        "until #35, a PR may exist: {start:?}"
-    );
+    // #35 reads the complete empty attachment list; the old #33 placeholder is gone.
+    assert!(start.explanation.unknowns.is_empty(), "{start:?}");
     assert!(start.start_order.is_some());
+}
+
+#[test]
+fn attachments_gate_start_but_a_branch_hint_does_not() {
+    let observation = ObservationBuilder::new()
+        .fully_read_owner("acme")
+        .repo("acme/api")
+        .linear_viewer("acme", "acme")
+        .pull_request(pr("acme/api", 4).head_ref("me/team-5-fix"))
+        .linear_issue(
+            linear_issue("acme", "id-1", "TEAM-1")
+                .up_for_grabs()
+                .attached("acme/api", 4),
+        )
+        .linear_issue(
+            linear_issue("acme", "id-2", "TEAM-2")
+                .up_for_grabs()
+                .attachments_incomplete("page errors"),
+        )
+        .linear_issue(
+            linear_issue("acme", "id-3", "TEAM-3")
+                .up_for_grabs()
+                .attached("acme/unsurveyed", 4),
+        )
+        .linear_issue(
+            linear_issue("acme", "id-4", "TEAM-4")
+                .up_for_grabs()
+                .link("github.example.com/acme/api/pull/4"),
+        )
+        .linear_issue(linear_issue("acme", "id-5", "TEAM-5").up_for_grabs())
+        .linear_issue(
+            linear_issue("acme", "id-6", "TEAM-6")
+                .up_for_grabs()
+                .attached("acme/api", 99),
+        )
+        .build();
+    let decisions = decide_under(&observation, &start_policy(false, false));
+    for identifier in ["TEAM-1", "TEAM-2", "TEAM-3", "TEAM-4", "TEAM-6"] {
+        let decision = find(&decisions, identifier).expect("blocked issue remains visible");
+        assert_eq!(decision.next_step, None, "{identifier}: {decision:?}");
+        assert_eq!(
+            decision.start_order, None,
+            "only offered Starts have a rank"
+        );
+    }
+    let hinted = find(&decisions, "TEAM-5").unwrap();
+    assert_eq!(hinted.next_step, Some(NextStep::Start));
+    assert_eq!(hinted.landing.hints.len(), 1);
+    assert!(hinted.start_order.is_some());
 }
 
 #[test]
