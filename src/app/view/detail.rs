@@ -38,7 +38,7 @@ pub fn build(state: &State<'_>) -> Detail {
                     .coverage
                     .iter()
                     .filter(|c| !c.state.is_complete())
-                    .map(|c| coverage::entry_line(state, c))
+                    .map(|c| coverage::entry_line(state, c, decision.item.id.repo()))
                     .collect(),
             }
         });
