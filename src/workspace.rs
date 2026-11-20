@@ -325,18 +325,20 @@ impl Workspace for GitWorkspace {
                 });
             }
         }
-        let Some(parent) = into.parent() else {
+        let (Some(parent), Some(folder)) = (into.parent(), into.file_name()) else {
             return Err(WorkspaceError {
                 operation: operation(),
                 detail: "it has no parent folder".to_owned(),
             });
         };
-        // `--origin` names the remote, overriding the user's
+        // git resolves the destination after `-C <parent>`, so it gets only the
+        // folder's name: a relative `into` (`dev/app`) would otherwise land at
+        // `dev/dev/app`. `--origin` names the remote, overriding the user's
         // `clone.defaultRemoteName`.
         let invocation = self
             .git(parent)
             .args(["clone", "--origin", remote, "--", url])
-            .arg(into);
+            .arg(folder);
         self.run_ok(&invocation, operation, GIT_CLONE_TIMEOUT_SECS)
             .map(|_| ())
     }

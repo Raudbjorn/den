@@ -17,7 +17,7 @@ use den::{
 };
 use std::{
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     sync::Mutex,
 };
 
@@ -162,6 +162,38 @@ fn the_git_adapter_names_the_clones_remote_as_asked() {
             .is_err()
     );
     assert!(!root.join("x").exists());
+}
+
+/// Set (to the hosted Repo's URL) when this test binary runs the relative
+/// clone as a child, in a working directory of the parent's choosing.
+const RELATIVE_CLONE_URL_ENV: &str = "DEN_TEST_RELATIVE_CLONE_URL";
+const RELATIVE_CLONE_TEST: &str = "the_git_adapter_clones_a_relative_destination_where_it_points";
+
+#[test]
+fn the_git_adapter_clones_a_relative_destination_where_it_points() {
+    // A relative `main_clone_root` ("dev") gives a relative destination
+    // ("dev/app"), relative to den's working directory. The child runs the
+    // clone from the temp folder, so the test never changes its own process's
+    // working directory.
+    if let Ok(url) = std::env::var(RELATIVE_CLONE_URL_ENV) {
+        GitWorkspace::new()
+            .clone_repo(&url, "origin", Path::new("dev/app"))
+            .expect("cloned");
+        return;
+    }
+    let (temp, root, url, tip) = hosted_repo();
+    let status = Command::new(std::env::current_exe().expect("test binary"))
+        .args(["--exact", RELATIVE_CLONE_TEST, "--test-threads=1"])
+        .env(RELATIVE_CLONE_URL_ENV, &url)
+        .current_dir(temp.path())
+        .stdout(Stdio::null())
+        .status()
+        .expect("child test runs");
+    assert!(status.success(), "the relative clone failed");
+    // Where the plan said, not `dev/dev/app`: git got the folder's name, not
+    // the relative path a second time from inside `dev`.
+    assert_eq!(git(&root.join("app"), &["rev-parse", "HEAD"]), tip);
+    assert!(!root.join("dev").exists());
 }
 
 /// A launcher that records the window instead of opening one.
