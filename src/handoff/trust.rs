@@ -6,7 +6,7 @@
 //! hook in a PR runs as the user the moment the Job starts. den therefore
 //! passes `--setting-sources user` ([`SettingSources::UserOnly`]) when:
 //!
-//! - the Job is a coordination Job ([`coordination_mode`]), or a Review of a
+//! - the Job is a coordination Job ([`job_permission_mode`]), or a Review of a
 //!   PR whose Owner has a Linear Workflow: it acts on GitHub, never needs the
 //!   repo's settings, and works on a head someone else may have written;
 //! - the Job checks out a PR head the GitHub viewer didn't write: a fork's, a
@@ -19,9 +19,9 @@
 //! Nothing here is stored: reopening a Job decides again from the survey it
 //! sees then ([`for_reopen`]), and fails closed when the PR is gone from it.
 
-use super::{command::SettingSources, coordination_mode};
+use super::{command::SettingSources, job_permission_mode};
 use crate::{
-    domain::{NextStep, Observation, Viewer, WorkItemId},
+    domain::{LinearWorkflowPolicy, NextStep, Observation, Viewer, WorkItemId},
     jobs::{JobRecord, JobSubject},
 };
 use serde::{Deserialize, Serialize};
@@ -109,21 +109,14 @@ impl ProjectSettings {
     }
 }
 
-/// Whether a Job's step makes it a coordination Job for trust: Request
-/// review and Land ([`coordination_mode`]), and a Review where the PR's
-/// Owner has a Linear Workflow.
-fn is_coordination(step: NextStep, linear_workflow: bool) -> bool {
-    coordination_mode(step).is_some() || (step == NextStep::Review && linear_workflow)
-}
-
 /// The decision: off for a coordination Job and for a PR head the viewer
 /// didn't write; loaded otherwise.
 pub fn project_settings(
     step: NextStep,
-    linear_workflow: bool,
+    policy: &LinearWorkflowPolicy,
     checkout: Checkout<'_>,
 ) -> ProjectSettings {
-    if is_coordination(step, linear_workflow) {
+    if job_permission_mode(step, policy).is_some() {
         return ProjectSettings::Off(OffReason::Coordination { step });
     }
     match checkout {
@@ -173,10 +166,10 @@ pub fn checkout<'a>(item: &WorkItemId, observation: Option<&'a Observation>) -> 
 pub fn for_reopen(
     job: &JobRecord,
     observation: Option<&Observation>,
-    linear_workflow: bool,
+    policy: &LinearWorkflowPolicy,
 ) -> ProjectSettings {
     let JobSubject::GitHub(item) = &job.subject;
-    project_settings(job.next_step, linear_workflow, checkout(item, observation))
+    project_settings(job.next_step, policy, checkout(item, observation))
 }
 
 #[cfg(test)]
@@ -191,6 +184,13 @@ mod tests {
         }
     }
 
+    fn workflow_policy() -> LinearWorkflowPolicy {
+        LinearWorkflowPolicy {
+            review: Some(Default::default()),
+            ..Default::default()
+        }
+    }
+
     fn pr_head(author: PrAuthor<'_>) -> Checkout<'_> {
         Checkout::PullRequestHead { number: 7, author }
     }
@@ -201,7 +201,11 @@ mod tests {
         // Case-insensitive, as GitHub logins are.
         let author = PrAuthor::of(Some("me"), Some(&v));
         assert_eq!(author, PrAuthor::Viewer);
-        let settings = project_settings(NextStep::FixCi, false, pr_head(author));
+        let settings = project_settings(
+            NextStep::FixCi,
+            &LinearWorkflowPolicy::default(),
+            pr_head(author),
+        );
         assert_eq!(settings, ProjectSettings::Loaded);
         assert_eq!(settings.sources(), SettingSources::All);
         assert_eq!(settings.sheet_text(), None);
@@ -211,7 +215,11 @@ mod tests {
     fn another_authors_pr_job_is_user_settings_only() {
         let v = viewer();
         let author = PrAuthor::of(Some("dependabot[bot]"), Some(&v));
-        let settings = project_settings(NextStep::AddressReview, false, pr_head(author));
+        let settings = project_settings(
+            NextStep::AddressReview,
+            &LinearWorkflowPolicy::default(),
+            pr_head(author),
+        );
         assert_eq!(settings.sources(), SettingSources::UserOnly);
         assert_eq!(
             settings.sheet_text().as_deref(),
@@ -228,7 +236,11 @@ mod tests {
             PrAuthor::of(None, None),
         ] {
             assert_eq!(author, PrAuthor::Unknown);
-            let settings = project_settings(NextStep::FixCi, false, pr_head(author));
+            let settings = project_settings(
+                NextStep::FixCi,
+                &LinearWorkflowPolicy::default(),
+                pr_head(author),
+            );
             assert_eq!(
                 settings,
                 ProjectSettings::Off(OffReason::UnknownAuthor { number: 7 })
@@ -240,8 +252,8 @@ mod tests {
     #[test]
     fn a_coordination_job_is_off_even_on_the_viewers_own_pr() {
         for step in [NextStep::RequestReview, NextStep::Land] {
-            for workflow in [false, true] {
-                let settings = project_settings(step, workflow, pr_head(PrAuthor::Viewer));
+            for policy in [LinearWorkflowPolicy::default(), workflow_policy()] {
+                let settings = project_settings(step, &policy, pr_head(PrAuthor::Viewer));
                 assert_eq!(
                     settings,
                     ProjectSettings::Off(OffReason::Coordination { step })
@@ -255,13 +267,21 @@ mod tests {
         }
         // A Review is one only where the Owner has a Linear Workflow.
         assert_eq!(
-            project_settings(NextStep::Review, true, pr_head(PrAuthor::Viewer)),
+            project_settings(
+                NextStep::Review,
+                &workflow_policy(),
+                pr_head(PrAuthor::Viewer)
+            ),
             ProjectSettings::Off(OffReason::Coordination {
                 step: NextStep::Review
             })
         );
         assert_eq!(
-            project_settings(NextStep::Review, false, pr_head(PrAuthor::Viewer)),
+            project_settings(
+                NextStep::Review,
+                &LinearWorkflowPolicy::default(),
+                pr_head(PrAuthor::Viewer)
+            ),
             ProjectSettings::Loaded
         );
     }
@@ -276,7 +296,7 @@ mod tests {
             NextStep::FixCi,
         ] {
             assert_eq!(
-                project_settings(step, true, Checkout::RepoBranch),
+                project_settings(step, &workflow_policy(), Checkout::RepoBranch),
                 ProjectSettings::Loaded,
                 "{step:?}"
             );

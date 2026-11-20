@@ -8,7 +8,7 @@ use crate::{
     handoff::{
         BaseRef, BranchStart, CloneSource, JobCheck, LaunchOutcome, LaunchPlan, LaunchReport,
         PathState, PermissionMode, ProjectSettings, Refusal, ReopenPlan, ReviewRequest, WindowMode,
-        WorktreeState, Writability, command, reviewers, short_commit,
+        WorktreeState, Writability, command, reviewers, short_commit, workflows,
     },
 };
 
@@ -237,8 +237,31 @@ fn review_request_fields(
     [suggested, announce]
 }
 
-/// The PERMISSIONS field of a coordination Job (#39), or none for a coding
-/// Job, whose command is milestone 1's.
+/// The label of a slash command's availability (#41).
+pub const WORKFLOW_LABEL: &str = "WORKFLOW";
+
+/// One slash command the prompt invokes: where den found it, or "not found"
+/// (amber, with the caution glyph) and where den looked (#41).
+fn workflow_field(check: &workflows::WorkflowCheck) -> SheetField {
+    if check.is_found() {
+        field(
+            WORKFLOW_LABEL,
+            format!("{} found", check.command),
+            Some(check.explanation()),
+            Tone::Good,
+        )
+    } else {
+        field(
+            WORKFLOW_LABEL,
+            format!("{} not found", check.command),
+            Some(check.explanation()),
+            Tone::Caution,
+        )
+    }
+}
+
+/// The PERMISSIONS field of a coordination Job (#39) or a verdict-only
+/// Review Job (#41), or none for any other Job, whose command is milestone 1's.
 fn permissions_field(mode: Option<PermissionMode>) -> Option<SheetField> {
     let mode = mode?;
     Some(field(
@@ -432,6 +455,14 @@ fn fields(sheet: &Sheet, plan: &LaunchPlan, moved_from: Option<&str>) -> Vec<She
     }
     fields.extend(permissions_field(plan.permission_mode));
     fields.extend(project_settings_field(&plan.project_settings));
+    // The prompt as shown, edited or not, against what the inspection read.
+    if let Some(dirs) = &sheet.workflows {
+        fields.extend(
+            workflows::check(&sheet.prompt.text(), dirs)
+                .iter()
+                .map(workflow_field),
+        );
+    }
     fields.push(opens_field(&plan.window));
     fields
 }
@@ -492,7 +523,7 @@ fn fill_reopen(view: &mut LaunchSheet, plan: &ReopenPlan) {
             Tone::Plain,
         ),
     ];
-    view.fields.extend(permissions_field(job.reopen_mode()));
+    view.fields.extend(permissions_field(plan.permission_mode));
     view.fields
         .extend(project_settings_field(&plan.project_settings));
     view.fields.push(opens_field(&plan.window));

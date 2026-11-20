@@ -372,7 +372,7 @@ fn owners_without_a_linear_workflow_never_read_member_states() {
 }
 
 /// Integration (#37 + #39): Land is a coordination step (#39's
-/// `coordination_mode` gives it the approval-required mode), but a Land
+/// `job_permission_mode` gives it the approval-required mode), but a Land
 /// Decision is a Linear Issue's, and `c` on a Linear Issue still refuses
 /// before reading the workspace (until #40's Land Job), naming the Linear
 /// Issue.
