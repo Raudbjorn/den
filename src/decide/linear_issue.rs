@@ -4,9 +4,9 @@
 //!
 //! First, an unassigned Linear Issue the Owner's Linear Workflow doesn't offer
 //! to Start is not den's to show, so it gets no Decision at all, unless its
-//! Landing Group decides: it has open members (whose Merge "lands with" it,
-//! so only it can coordinate them) or its group gives Land or Mark for
-//! release. Start eligibility never withholds a group decision. The Linear
+//! Landing Group has attached members. Keeping their group visible lets den
+//! read their states and retain the evidence for Land or Mark for release.
+//! Start eligibility never withholds a group decision. The Linear
 //! source asks only for Start offers; this keeps the list right for facts
 //! kept from an earlier survey or read under another config (#33).
 //!
@@ -96,10 +96,10 @@ pub fn decide_all(ctx: &Context<'_>, pull_requests: &[Decision]) -> Vec<Decision
 fn decide(ctx: &Context<'_>, issue: &LinearIssue, pull_requests: &[Decision]) -> Option<Decision> {
     let offered = issue.assignee.is_some() || ctx.policy(&issue.owner).start.offers(issue);
     let landing = ctx.correlation.for_issue(&issue.id);
-    let group = group_rules(ctx, issue, &landing, pull_requests);
-    if !offered && !decides_for_its_group(&group, &landing) {
+    if !offered && landing.members.is_empty() {
         return None;
     }
+    let group = group_rules(ctx, issue, &landing, pull_requests);
     let item = WorkItem {
         id: issue.work_item_id(),
         identifier: Some(issue.identifier.clone()),
@@ -178,14 +178,6 @@ fn decide(ctx: &Context<'_>, issue: &LinearIssue, pull_requests: &[Decision]) ->
     }
     decision.landing = landing;
     Some(decision)
-}
-
-/// Whether an issue the workflow doesn't offer to Start is still shown: when
-/// its group gives Land or Mark for release, or it has open members, whose
-/// own Merge "lands with" it and so is decided only here. Start eligibility
-/// never withholds a group decision.
-fn decides_for_its_group(group: &Group, landing: &Landing) -> bool {
-    matches!(group, Group::Step { .. }) || landing.members.iter().any(|m| m.status.is_open())
 }
 
 /// What the Landing Group decides for its Linear Issue.

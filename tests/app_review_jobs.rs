@@ -257,9 +257,10 @@ fn a_review_in_a_linear_workflow_carries_the_linear_context_the_verdict_only_ins
         permissions.value,
         "approval-required: Claude asks before acting"
     );
+    // Project settings stay disabled on these PR heads, including workflow Reviews.
     let command = ready.command.as_deref().unwrap();
     assert!(
-        command.contains("claude --permission-mode manual -n "),
+        command.contains("claude --permission-mode manual --setting-sources user -n "),
         "{command}"
     );
 
@@ -285,7 +286,7 @@ fn a_review_in_a_linear_workflow_outside_a_landing_group_is_verdict_only_without
 }
 
 /// An Owner without a Linear Workflow keeps milestone 1's Review plan: the
-/// `review` template, no permission mode, milestone 1's command.
+/// `review` template and no permission mode; the other author still requires user-only settings.
 #[test]
 fn a_review_outside_a_linear_workflow_is_milestone_1s() {
     let mut harness = started();
@@ -296,9 +297,11 @@ fn a_review_outside_a_linear_workflow_is_milestone_1s() {
         "{:#?}",
         ready.fields
     );
+    // Project settings stay disabled on these PR heads, including workflow Reviews.
     let command = ready.command.as_deref().unwrap();
     assert!(
-        command.contains(" claude -n ") && !command.contains("--permission-mode"),
+        command.contains(" claude --setting-sources user -n ")
+            && !command.contains("--permission-mode"),
         "{command}"
     );
     let plan = launch(&mut harness);
@@ -359,9 +362,12 @@ fn reopening_a_review_job_recorded_without_a_mode_in_a_linear_workflow_asks_firs
         "{:#?}",
         reopen.fields
     );
+    // Resumed coordination Jobs must also suppress project hooks.
     let command = reopen.command.as_deref().unwrap();
     assert!(
-        command.contains("claude --permission-mode manual --resume api-pr5-review"),
+        command.contains(
+            "claude --permission-mode manual --setting-sources user --resume api-pr5-review"
+        ),
         "{command}"
     );
     press(&mut harness, Key::Enter);

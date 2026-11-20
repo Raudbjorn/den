@@ -16,7 +16,7 @@ use den::{
     config::Config,
     domain::{NextStep, Observation, Repo},
     handoff::{
-        BaseRef, BranchStart, LaunchPlan,
+        BaseRef, BranchStart, LaunchPlan, SettingSources,
         prompts::{self, PromptFields, Prompts},
     },
     ports::{WorktreeAdd, WorktreeStart},
@@ -224,6 +224,13 @@ fn an_issue_launch_plans_a_type_slug_branch_from_the_targets_default_branch() {
             },
         ]
     );
+    // An Issue Job starts from the default branch, not a PR head: every
+    // setting source, as in milestone 1.
+    assert!(!ready.fields.iter().any(|f| f.label == "PROJECT SETTINGS"));
+    assert_eq!(
+        harness.launcher.windows()[0].setting_sources,
+        SettingSources::All
+    );
     let jobs = harness.jobs.records();
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0].branch, ISSUE_BRANCH);
@@ -292,6 +299,12 @@ fn a_branch_launch_works_on_the_existing_branch() {
                 },
             },
         ]
+    );
+    // A Branch Job is on the Repo's own branch: every setting source.
+    assert!(!ready.fields.iter().any(|f| f.label == "PROJECT SETTINGS"));
+    assert_eq!(
+        harness.launcher.windows()[0].setting_sources,
+        SettingSources::All
     );
 }
 

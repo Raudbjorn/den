@@ -17,7 +17,8 @@
 //! and nothing is ever deleted.
 
 use super::{
-    PathState, Refusal, RefusalReason, RegisteredWorktree, WORKTREES_DIR, WindowMode,
+    PathState, ProjectSettings, Refusal, RefusalReason, RegisteredWorktree, WORKTREES_DIR,
+    WindowMode,
     command::{self, PermissionMode, SessionStart, WindowCommand},
     execute::{LaunchOutcome, LaunchReport, LaunchStep},
     inspect::WorkspaceView,
@@ -230,6 +231,9 @@ pub fn fresh_suffix(view: &WorkspaceView, worktree_name: &str, branch: &str) -> 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReopenPlan {
     pub job: JobRecord,
+    /// Decided again on reopening, from the survey den shows then
+    /// ([`super::trust::for_reopen`]): a resumed session runs hooks too.
+    pub project_settings: ProjectSettings,
     /// The mode the session is resumed in ([`JobRecord::reopen_mode`] for the
     /// Job's Owner's Linear Workflow policy).
     pub permission_mode: Option<PermissionMode>,
@@ -251,6 +255,7 @@ impl ReopenPlan {
             prompt: String::new(),
             start: SessionStart::Resume,
             permission_mode: self.permission_mode,
+            setting_sources: self.project_settings.sources(),
         }
     }
 }
@@ -270,10 +275,12 @@ fn session_usable(session: &str) -> bool {
 /// `policy` is the Job's Owner's Linear Workflow policy (the empty one
 /// without a workflow): a record without a mode reopens in the mode its
 /// Next Step launches in for that Owner.
+/// `project_settings` is [`super::trust::for_reopen`]'s for the Job.
 pub fn plan_reopen(
     check: &JobCheck,
     view: &WorkspaceView,
     policy: &LinearWorkflowPolicy,
+    project_settings: ProjectSettings,
 ) -> Result<ReopenPlan, Refusal> {
     let job = &check.job;
     let mut reasons = Vec::new();
@@ -307,6 +314,7 @@ pub fn plan_reopen(
     }
     let mut plan = ReopenPlan {
         job: job.clone(),
+        project_settings,
         permission_mode: job.reopen_mode(policy),
         window: view.window.clone(),
         command: String::new(),

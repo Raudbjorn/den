@@ -372,6 +372,7 @@ fn open_existing_resumes_the_recorded_session_in_the_existing_worktree_with_a_wa
             prompt: String::new(),
             start: SessionStart::Resume,
             permission_mode: None,
+            setting_sources: den::handoff::SettingSources::All,
         }]
     );
     // Nothing fetched, no worktree added, no new Job recorded, nothing deleted.
@@ -680,6 +681,7 @@ fn a_live_job_stays_reopenable_while_its_pr_has_no_next_step() {
             prompt: String::new(),
             start: SessionStart::Resume,
             permission_mode: None,
+            setting_sources: den::handoff::SettingSources::All,
         }]
     );
     assert_eq!(sheet(&harness).status, LaunchStatus::Reopened);

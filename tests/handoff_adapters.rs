@@ -37,6 +37,7 @@ fn window() -> WindowCommand {
         prompt: "/gh-resolve https://github.com/octo/app/pull/7 — it's fine".to_owned(),
         start: SessionStart::New,
         permission_mode: None,
+        setting_sources: den::handoff::SettingSources::All,
     }
 }
 
@@ -389,6 +390,7 @@ fn plan_for(clone: &Path, url: &str, head: &str) -> LaunchPlan {
         session: "app-pr7-address-review".to_owned(),
         prompt: "/gh-resolve https://github.com/octo/app/pull/7".to_owned(),
         permission_mode: None,
+        project_settings: den::handoff::ProjectSettings::Loaded,
         review_request: None,
         landing: None,
         window: WindowMode::Kitty,

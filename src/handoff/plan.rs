@@ -13,7 +13,7 @@ use super::{
     kinds::{self, Facts},
     landing, names,
     prompts::{PromptFields, PromptKind, Prompts, PromptsError},
-    reviewers, worktree_path,
+    reviewers, trust, worktree_path,
 };
 use crate::{
     config::Config,
@@ -451,6 +451,11 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         session,
         prompt,
         permission_mode,
+        project_settings: trust::project_settings(
+            facts.step,
+            input.policy,
+            trust::checkout(item, Some(input.observation)),
+        ),
         review_request,
         landing: facts.landing,
         window: view.window.clone(),

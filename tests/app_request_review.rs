@@ -295,12 +295,21 @@ fn c_then_enter_on_request_review_launches_a_coordination_job_on_the_pr_head_in_
         ready.command.as_deref(),
         Some(
             format!(
-                "kitty --detach --hold --directory {WORKTREE_2} claude --permission-mode manual -n {SESSION_2} '{}'",
+                "kitty --detach --hold --directory {WORKTREE_2} claude --permission-mode manual --setting-sources user -n {SESSION_2} '{}'",
                 prompt_without_slack("alice, acme/backend")
             )
             .as_str()
         ),
-        "the mode is in the exact command den shows"
+        // `--setting-sources user` since the untrusted-PR-heads fix: a
+        // coordination Job never loads the PR head's project settings, so a
+        // hook committed in the PR can't run as the user.
+        "the mode and the setting sources are in the exact command den shows"
+    );
+    assert_eq!(
+        field(&ready, "PROJECT SETTINGS").map(|f| f.0),
+        Some(
+            "off: a Request review Job doesn't need the repo's settings (hooks in the PR could run as you)"
+        )
     );
 
     press(&mut harness, Key::Enter);
@@ -706,9 +715,17 @@ fn reopening_a_request_review_job_passes_the_approval_required_mode_again() {
         ready.command.as_deref(),
         Some(
             format!(
-                "kitty --detach --hold --directory {WORKTREE_2} claude --permission-mode manual --resume {SESSION_2}"
+                "kitty --detach --hold --directory {WORKTREE_2} claude --permission-mode manual --setting-sources user --resume {SESSION_2}"
             )
             .as_str()
+        ),
+        // A resumed session runs SessionStart hooks too, so reopening a
+        // coordination Job keeps the PR head's project settings off.
+    );
+    assert_eq!(
+        field(&ready, "PROJECT SETTINGS").map(|f| f.0),
+        Some(
+            "off: a Request review Job doesn't need the repo's settings (hooks in the PR could run as you)"
         )
     );
     press(&mut harness, Key::Enter);
@@ -889,6 +906,61 @@ fn an_unedited_reviewer_list_follows_new_suggestions_and_is_shown_again_before_l
             .map(|r| r.reviewers.clone()),
         Some(vec![team("acme", "backend"), user("carol")])
     );
+}
+
+#[test]
+fn a_target_round_trip_discards_saved_prompt_edits_only_when_suggested_reviewers_change() {
+    let as_fork = |mut observation: Observation| {
+        let repo = observation
+            .repos
+            .iter_mut()
+            .find(|repo| repo.id == RepoId::new("acme", "api"))
+            .expect("acme/api");
+        repo.is_fork = true;
+        repo.parent = Some(Box::new(support::build::upstream_repo("octo/api")));
+        observation
+    };
+    for changed in [false, true] {
+        let before = as_fork(surveyed(pr_2(), pr_4()));
+        let after = if changed {
+            as_fork(alice_approved_carol_awaiting())
+        } else {
+            before.clone()
+        };
+        let mut harness = started_with(config(None), before);
+        let survey = refresh_pending(&mut harness, "#2", after);
+        for key in [Key::Char('e'), Key::End, Key::Char('!'), Key::Esc] {
+            press(&mut harness, key);
+        }
+        let edited = prompt(sheet(&harness)).to_owned();
+        press(&mut harness, Key::Char('u'));
+        land(&mut harness, &survey);
+        press(&mut harness, Key::Char('u'));
+
+        let ready = sheet(&harness);
+        assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(ready));
+        let reviewers = if changed {
+            "acme/backend, carol"
+        } else {
+            "alice, acme/backend"
+        };
+        assert_eq!(ready.reviewers.as_ref().unwrap().text, reviewers);
+        // Saved edits must not reintroduce reviewers the displayed plan removed.
+        let expected = if changed {
+            prompt_without_slack(reviewers)
+        } else {
+            edited
+        };
+        assert_eq!(prompt(ready), expected);
+        assert_eq!(
+            messages(ready).contains("your edits to the prompt were replaced"),
+            changed
+        );
+        press(&mut harness, Key::Enter);
+        let plans = launch_plans(&harness);
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].prompt, expected);
+    }
 }
 
 #[test]

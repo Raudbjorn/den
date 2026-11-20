@@ -318,11 +318,11 @@ fn c_then_enter_on_land_launches_one_coordination_job_with_the_approved_members_
     let prompt = &ready.prompt.as_ref().expect("a prompt").text;
     assert_eq!(prompt, &land_prompt(HEAD_1));
     assert!(!prompt.contains("TITLE-TEXT"), "{prompt}");
+    // Land must exclude project hooks as well as request approval for commands.
     assert!(
-        ready
-            .command
-            .as_deref()
-            .is_some_and(|c| c.contains("--permission-mode manual")),
+        ready.command.as_deref().is_some_and(|c| {
+            c.contains("--permission-mode manual") && c.contains("--setting-sources user")
+        }),
         "{:?}",
         ready.command
     );
@@ -458,6 +458,11 @@ fn the_job_record_covers_every_member_and_c_on_a_member_names_the_land_job() {
     assert_eq!(
         reopened.permission_mode,
         Some(PermissionMode::ApprovalRequired)
+    );
+    // Reopening a Land Job must preserve the integrated project-settings isolation.
+    assert_eq!(
+        reopened.setting_sources,
+        den::handoff::SettingSources::UserOnly
     );
 }
 
