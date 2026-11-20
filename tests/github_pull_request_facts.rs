@@ -72,6 +72,7 @@ fn pr_node(number: u64, mergeable: &str, decision: Value, queued: bool) -> Value
 /// Details with nothing in them.
 fn no_details() -> Value {
     json!({
+        "headRefOid": "abc123",
         "reviewThreads": empty_connection(),
         "reviewRequests": empty_connection(),
         "latestOpinionatedReviews": empty_connection(),
@@ -83,6 +84,7 @@ fn no_details() -> Value {
 /// Details with one of everything.
 fn rich_details() -> Value {
     json!({
+        "headRefOid": "head1",
         "reviewThreads": { "pageInfo": page_info(false), "nodes": [
             { "isResolved": false }, { "isResolved": true }, { "isResolved": false }
         ]},
@@ -345,6 +347,9 @@ fn details_map_checks_threads_requests_and_reviews() {
         ]
     );
     assert!(details.latest_reviews_with_comments.complete);
+    // The head as the details query read it, which the reviews' commits are
+    // compared against (#36): here a push landed after the PR list (abc123).
+    assert_eq!(details.head_commit.as_deref(), Some("head1"));
 }
 
 #[test]

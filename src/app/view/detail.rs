@@ -124,7 +124,8 @@ fn linear_facts(issue: &LinearIssue) -> DetailFacts {
 
 /// A PR of an Owner with a Linear Workflow (#36): the hold, if any, and the
 /// suggested reviewers (configured plus awaiting re-review, minus fresh
-/// approvers, pending requests and the author).
+/// approvers, pending requests and the author), with what den did not read
+/// to filter them, if anything.
 fn workflow_facts(decision: &Decision) -> Option<DetailFacts> {
     let suggested = decision.suggested_reviewers.as_ref()?;
     let mut lines = Vec::new();
@@ -143,6 +144,11 @@ fn workflow_facts(decision: &Decision) -> Option<DetailFacts> {
             .collect();
         format!("suggested reviewers: {}", names.join(", "))
     });
+    if let Some(unread) = &decision.suggested_reviewers_unread {
+        lines.push(format!(
+            "(may include someone already asked or approved: {unread})"
+        ));
+    }
     Some(DetailFacts {
         label: "LINEAR WORKFLOW".to_owned(),
         lines,

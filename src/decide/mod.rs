@@ -103,6 +103,12 @@ pub struct Decision {
     /// Step, which order by update time alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_order: Option<StartOrder>,
+    /// Set when [`Self::suggested_reviewers`] could not be filtered in full,
+    /// saying what den did not read ("not every review request was read"):
+    /// someone listed may already have approved or been asked. `None` when
+    /// the set is exact, and for every Work Item without suggested reviewers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_reviewers_unread: Option<String>,
 }
 
 /// Why a PR that would Merge has no Next Step (spec 0002: "would Merge" is
@@ -174,6 +180,7 @@ impl Decision {
             suggested_reviewers: None,
             landing: Landing::default(),
             start_order: None,
+            suggested_reviewers_unread: None,
         }
     }
 }

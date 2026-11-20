@@ -14,9 +14,11 @@ const DEFAULT_UPDATED: &str = "2026-11-18T12:00:00Z";
 
 /// A ready, non-draft PR in `repo` ("owner/name"), authored by "someone":
 /// mergeable (and GitHub's merge state clean), review required by GitHub but
-/// none given, no checks, no review requests, not queued, details read. No rule holds for it (it is not approved).
+/// none given, no checks, no review requests, not queued, details read (at
+/// the same head). No rule holds for it (it is not approved).
 pub fn pr(repo: &str, number: u64) -> PrBuilder {
     let repo = repo_id(repo);
+    let head_commit = format!("{number:040x}");
     PrBuilder {
         pr: PullRequest {
             url: format!("https://github.com/{repo}/pull/{number}"),
@@ -28,14 +30,17 @@ pub fn pr(repo: &str, number: u64) -> PrBuilder {
             is_draft: false,
             base_ref: "main".to_owned(),
             head_ref: format!("feature-{number}"),
-            head_commit: format!("{number:040x}"),
+            details: Some(PrDetails {
+                head_commit: Some(head_commit.clone()),
+                ..PrDetails::default()
+            }),
+            head_commit,
             created_at: ts(DEFAULT_UPDATED),
             updated_at: ts(DEFAULT_UPDATED),
             mergeability: Mergeability::Mergeable,
             merge_state: MergeState::Clean,
             review_decision: ReviewDecision::ReviewRequired,
             in_merge_queue: false,
-            details: Some(PrDetails::default()),
         },
     }
 }
@@ -206,9 +211,20 @@ impl PrBuilder {
         self.latest_review(login, ActorKind::User, verdict, &commit)
     }
 
-    /// The head commit (default: the PR number as 40 hex digits).
+    /// The head commit (default: the PR number as 40 hex digits), as both
+    /// the PR list and the details query read it.
     pub fn head(mut self, commit: &str) -> Self {
         commit.clone_into(&mut self.pr.head_commit);
+        if let Some(details) = &mut self.pr.details {
+            details.head_commit = Some(commit.to_owned());
+        }
+        self
+    }
+
+    /// Someone pushed `commit` between the PR list and the details query:
+    /// the details (reviews included) were read at `commit`.
+    pub fn details_read_at(mut self, commit: &str) -> Self {
+        self.details().head_commit = Some(commit.to_owned());
         self
     }
 
@@ -272,7 +288,11 @@ impl PrBuilder {
     }
 
     fn details(&mut self) -> &mut PrDetails {
-        self.pr.details.get_or_insert_with(PrDetails::default)
+        let head = self.pr.head_commit.clone();
+        self.pr.details.get_or_insert_with(|| PrDetails {
+            head_commit: Some(head),
+            ..PrDetails::default()
+        })
     }
 
     pub fn build(self) -> PullRequest {
