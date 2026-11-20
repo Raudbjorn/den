@@ -81,6 +81,7 @@ impl App {
             }
             Event::Tick { now } => {
                 self.now = Some(now);
+                self.redecide(now);
                 Vec::new()
             }
             Event::Key(key) => self.key(key),
@@ -294,9 +295,16 @@ impl App {
 
     /// Shows `shown`, deciding its Work Items as of `now`, keeping the selection.
     fn show(&mut self, shown: CachedObservation, now: Timestamp) {
+        self.shown = Some(shown);
+        self.redecide(now);
+    }
+
+    fn redecide(&mut self, now: Timestamp) {
+        let Some(shown) = &self.shown else {
+            return;
+        };
         let observation = &shown.observation;
         self.ordered = ordering::order(decide::decide(observation, &observation.viewer, now));
-        self.shown = Some(shown);
         self.apply_scope();
     }
 
