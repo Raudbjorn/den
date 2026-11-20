@@ -15,7 +15,7 @@ use den::{
 };
 use std::path::PathBuf;
 use support::{
-    build::{ME, ObservationBuilder, now, pr, ts},
+    build::{ME, ObservationBuilder, now, pr, run, ts},
     fakes::FakeCache,
     harness::{Harness, config},
 };
@@ -301,7 +301,8 @@ fn a_repo_kept_from_an_older_survey_keeps_its_age_when_its_owner_later_fails() {
     };
     assert_eq!(
         cached.carried_since(&den::domain::Source::Repo {
-            repo: support::build::repo_id("alpha/app"),
+            // A caller's casing must not replace the Repo's older age with its Owner's age.
+            repo: support::build::repo_id("ALPHA/APP"),
             kind: SourceKind::PullRequests,
         }),
         Some(ts(EARLIER)),
@@ -618,4 +619,129 @@ fn a_cache_write_failure_is_logged_and_nothing_else_changes() {
         [Effect::Log(r)] if r.level == LogLevel::Warn && r.message.contains("No space left")
     ));
     assert_eq!(harness.view, before);
+}
+
+#[test]
+fn data_kept_for_an_owner_whose_casing_changed_still_shows_its_failure_and_age() {
+    let mut harness = after_earlier_survey();
+    // The config now says "Alpha", and Alpha's PR query fails: alpha/app#1 (as
+    // the earlier survey spelled it) is kept, under coverage spelled "Alpha".
+    harness.answer(Ok(ObservationBuilder::new()
+        .observed_at("2026-11-19T11:00:00Z")
+        .fully_read_owner("Alpha")
+        .fully_read_owner("beta")
+        .owner_coverage("Alpha", SourceKind::PullRequests, failed("gh timed out"))
+        .repo("Alpha/app")
+        .repo("beta/lib")
+        .pull_request(pr("beta/lib", 2).title("Old beta PR"))
+        .build()));
+    refresh(&mut harness);
+    let kept = harness
+        .view
+        .list
+        .rows
+        .iter()
+        .find(|r| r.reference == "#1")
+        .unwrap_or_else(|| panic!("#1 not kept: {:?}", references(&harness.view)));
+    assert!(kept.incomplete, "the kept row is marked incomplete");
+
+    let rows = harness.view.list.rows.len();
+    for _ in 0..rows {
+        let selected = harness.view.detail.content.clone().expect("selected");
+        if selected.reference.ends_with("/app#1") {
+            assert!(
+                selected
+                    .coverage
+                    .iter()
+                    .any(|c| c.contains("gh timed out") && c.contains("10:00 UTC")),
+                "the failure and the kept data's age: {:?}",
+                selected.coverage
+            );
+            return;
+        }
+        harness.key(Key::Down);
+    }
+    panic!("alpha/app#1 was never selected");
+}
+
+#[test]
+fn a_repo_read_completely_drops_its_closed_prs_even_when_its_owner_was_read_in_part() {
+    let mut harness = Harness::with_owners(&["alpha"]);
+    harness.answer(Ok(ObservationBuilder::new()
+        .observed_at(EARLIER)
+        .fully_read_owner("alpha")
+        .repo("alpha/app")
+        .repo("alpha/web")
+        .pull_request(pr("alpha/app", 1).title("Closed since"))
+        .pull_request(pr("alpha/web", 3).title("Maybe still open"))
+        .build()));
+    harness.start();
+    // alpha's PR list stopped after its first page, but alpha/app's own PRs were
+    // read to the end (its later pages, Repo by Repo): alpha/app#1 is gone for
+    // sure. alpha/web has no source of its own, so whether the lost page held
+    // it is unknown and its PR is kept.
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("alpha")
+        .owner_coverage(
+            "alpha",
+            SourceKind::PullRequests,
+            SourceState::Partial(Incompleteness::PaginationStopped {
+                pages_read: 1,
+                reason: "page 2 lost".to_owned(),
+            }),
+        )
+        .repo_coverage("alpha/app", SourceKind::PullRequests, SourceState::Complete)
+        .repo("alpha/app")
+        .repo("alpha/web")
+        .build()));
+    refresh(&mut harness);
+    assert_eq!(references(&harness.view), ["alpha/web#3"]);
+}
+
+#[test]
+fn r_refreshes_with_the_sidebar_focused_too() {
+    let mut harness = after_earlier_survey();
+    harness.key(Key::Tab);
+    assert!(harness.view.sidebar.focused);
+    assert!(harness.view.footer.hints.iter().any(|h| h.key == "r"));
+
+    let effects = harness.key(Key::Char('r'));
+
+    assert!(
+        effects.iter().any(|e| matches!(e, Effect::Survey { .. })),
+        "the advertised refresh runs: {effects:?}"
+    );
+}
+
+#[test]
+fn a_kept_run_under_an_owner_s_old_casing_is_superseded_by_a_newer_run() {
+    let mut harness = Harness::with_owners(&["alpha"]);
+    harness.answer(Ok(ObservationBuilder::new()
+        .observed_at(EARLIER)
+        .fully_read_owner("alpha")
+        .repo("alpha/app")
+        .run(run("alpha/app", "ci.yml", 1).failed().by(ME))
+        .build()));
+    harness.start();
+    assert_eq!(
+        references(&harness.view).len(),
+        1,
+        "the failed Run is shown"
+    );
+
+    // The config now says "Alpha"; its Runs were read only in part, so the
+    // earlier failed Run is kept beside the newer, successful one.
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("Alpha")
+        .owner_coverage("Alpha", SourceKind::Runs, rate_limited(None))
+        .repo("Alpha/app")
+        .run(run("Alpha/app", "ci.yml", 2).by(ME))
+        .build()));
+    refresh(&mut harness);
+
+    assert!(
+        references(&harness.view).is_empty(),
+        "the newer success supersedes the kept failure: {:?}",
+        references(&harness.view)
+    );
 }

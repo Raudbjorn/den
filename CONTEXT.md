@@ -30,15 +30,31 @@ _Avoid_: Parent, origin
 The local clone of a Repo that Jobs branch their worktrees from.
 _Avoid_: Checkout, local repo
 
+**Linear Workflow**:
+An Owner's opt-in binding to a Linear workspace. With it, that Owner's Linear Issues become Work Items and its Pull Requests can belong to Landing Groups; Owners without one are surveyed on GitHub alone.
+_Avoid_: Plugin, integration, org mode
+
+**Held Repo**:
+A Repo in a Linear Workflow whose Pull Requests are held for release instead of landing with their Landing Group.
+_Avoid_: Exempt repo, app repo
+
 ### What needs doing
 
 **Work Item**:
-Something on GitHub that can need work: an Issue, a Pull Request, an unmerged Branch, or a Run.
+Something that can need work: an Issue, a Pull Request, an unmerged Branch, a Run, or, for an Owner with a Linear Workflow, a Linear Issue.
 _Avoid_: Task, ticket, thing
 
 **Run**:
 A GitHub Actions workflow run. Only ever means this.
 _Avoid_: Pending run (for anything that is not a workflow run), job (for workflow runs)
+
+**Linear Issue**:
+An issue in the Linear workspace of an Owner's Linear Workflow. "Issue" alone always means a GitHub Issue.
+_Avoid_: Ticket, task, Issue (unqualified)
+
+**Landing Group**:
+A Linear Issue together with the Pull Requests, in any of its Owner's Repos, that implement it and land together. Each Pull Request keeps its own Next Step; the group decides when they may land.
+_Avoid_: Issue group, PR group, release
 
 **Next Step**:
 The single action a Work Item needs next to move forward, regardless of who has to take it.

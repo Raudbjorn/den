@@ -124,6 +124,7 @@ impl App {
             }
             Event::Tick { now } => {
                 self.now = Some(now);
+                self.decide_shown(now);
                 Vec::new()
             }
             Event::Key(key) => self.key(key),

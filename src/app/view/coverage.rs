@@ -40,7 +40,7 @@ fn carried_since(state: &State<'_>, source: &Source) -> Option<Timestamp> {
     let own = state
         .carried
         .iter()
-        .find(|c| &c.source == source)
+        .find(|c| c.source.same(source))
         .map(|c| c.observed_at);
     own.or_else(|| match source {
         Source::Repo { repo, kind } => carried_since(

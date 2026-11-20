@@ -235,7 +235,9 @@ fn list_facts_map_mergeability_review_decision_and_merge_queue() {
         assert!(details.checks.items.is_empty() && details.checks.complete);
     }
     assert_eq!(owner_prs_state(&observation), Some(SourceState::Complete));
-    assert_eq!(app_prs_state(&observation), None);
+    // A complete first page now records Repo coverage so later Owner failures
+    // do not prevent the cache from dropping this Repo's closed PRs.
+    assert_eq!(app_prs_state(&observation), Some(SourceState::Complete));
 }
 
 #[test]

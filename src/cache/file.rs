@@ -15,6 +15,7 @@ use std::{
     fs, io,
     io::Read,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 /// The cache directory, under den's state directory (`$XDG_STATE_HOME/den/`).
@@ -33,6 +34,9 @@ pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// Names the viewer whose cache startup shows.
 const LAST_VIEWER_FILE: &str = "last-viewer";
 const CACHE_EXTENSION: &str = "json";
+/// Beside each viewer's cache file: held while checking and replacing it.
+const LOCK_EXTENSION: &str = "lock";
+const STORE_LOCK_WAIT_MS: u64 = 2_000;
 /// GitHub's longest login, in characters.
 const MAX_LOGIN_CHARS: usize = 39;
 
@@ -76,6 +80,7 @@ struct StoredObservation {
 pub struct FileCache {
     dir: PathBuf,
     max_bytes: u64,
+    lock_wait: Duration,
 }
 
 impl FileCache {
@@ -88,7 +93,14 @@ impl FileCache {
         Self {
             dir,
             max_bytes: MAX_CACHE_BYTES,
+            lock_wait: Duration::from_millis(STORE_LOCK_WAIT_MS),
         }
+    }
+
+    /// A shorter wait for another den's lock (tests).
+    pub fn with_lock_wait(mut self, wait: Duration) -> Self {
+        self.lock_wait = wait;
+        self
     }
 
     /// A smaller size bound (tests).
@@ -116,6 +128,11 @@ impl FileCache {
         Ok(self
             .dir
             .join(format!("{}.{CACHE_EXTENSION}", login.to_ascii_lowercase())))
+    }
+
+    /// The lock file held while checking and replacing this viewer's cache.
+    pub fn lock_for(&self, login: &str) -> Result<PathBuf, CacheError> {
+        Ok(self.file_for(login)?.with_extension(LOCK_EXTENSION))
     }
 
     /// Reads a cache file of at most `max_bytes`. Only a regular file is read
@@ -235,7 +252,11 @@ impl ObservationCache for FileCache {
         // A file den would refuse to read back is not worth writing.
         self.check_size(&path, u64::try_from(body.len()).unwrap_or(u64::MAX))?;
         // Another den sharing this state directory may have stored a newer survey
-        // while this one ran: never replace it with an older one.
+        // while this one ran: the age check and both replacements share a lock.
+        self.ensure_dir()?;
+        let lock_path = self.lock_for(login)?;
+        let _lock = files::lock_exclusive(&lock_path, self.lock_wait)
+            .map_err(|e| write_error(&lock_path, &e))?;
         let offered = cached.observation.observed_at;
         if let Some(stored) = self.stored_observed_at(&path)
             && stored > offered
@@ -246,7 +267,6 @@ impl ObservationCache for FileCache {
                 offered,
             });
         }
-        self.ensure_dir()?;
         write_atomically(&path, &body)?;
         write_atomically(&self.dir.join(LAST_VIEWER_FILE), login.as_bytes())
     }
