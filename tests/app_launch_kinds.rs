@@ -825,9 +825,7 @@ fn every_next_step_kind_has_a_default_prompt_that_carries_no_title_or_body() {
         url: "https://github.com/octo/app/issues/9".to_owned(),
         title: "TITLE-TEXT".to_owned(),
         branch: ISSUE_BRANCH.to_owned(),
-        reviewers: Vec::new(),
-        slack_channel: None,
-        linear_issues: Vec::new(),
+        ..PromptFields::default()
     };
     let skills = [
         (NextStep::AddressReview, "/gh-resolve "),

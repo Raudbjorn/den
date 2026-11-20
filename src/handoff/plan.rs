@@ -11,7 +11,7 @@ use super::{
     inspect::CloneSearch,
     job_permission_mode,
     kinds::{self, Facts},
-    names,
+    landing, names,
     prompts::{PromptFields, PromptKind, Prompts, PromptsError},
     reviewers, trust, worktree_path,
 };
@@ -80,16 +80,24 @@ pub struct PlanInput<'a> {
     /// an Owner without one. It decides the permission mode and the prompt
     /// template of a Review Job (#41, [`job_permission_mode`],
     /// [`PromptKind::for_job`]).
+    /// Land also reads its landing order and Held Repos.
     pub policy: &'a LinearWorkflowPolicy,
 }
 
-/// The facts for a launch, or every reason it can't happen. PRs here; Issues,
-/// Branches and Runs in [`kinds`].
+/// The facts for a launch, or every reason it can't happen. PRs here; a Land
+/// Linear Issue's Landing Group in [`landing`]; Issues, Branches and Runs in
+/// [`kinds`].
 fn facts(
     decision: &Decision,
     observation: &Observation,
     choice: TargetChoice,
+    policy: &LinearWorkflowPolicy,
 ) -> Result<Facts, Refusal> {
+    if let (WorkItemId::LinearIssue { .. }, Some(NextStep::Land)) =
+        (&decision.item.id, decision.next_step)
+    {
+        return landing::facts(decision, observation, policy);
+    }
     let WorkItemId::PullRequest { repo, number } = &decision.item.id else {
         return kinds::facts(decision, observation, choice);
     };
@@ -147,6 +155,7 @@ fn facts(
             base_commit: Some(pr.head_commit.clone()),
             branch: pr.head_ref.clone(),
             new_branch: false,
+            landing: None,
         }),
         _ => Err(Refusal { reasons }),
     }
@@ -159,8 +168,9 @@ pub fn inspect_request(
     observation: &Observation,
     choice: TargetChoice,
     settings: &LaunchSettings,
+    policy: &LinearWorkflowPolicy,
 ) -> Result<InspectRequest, Refusal> {
-    let facts = facts(decision, observation, choice)?;
+    let facts = facts(decision, observation, choice, policy)?;
     let configured_clone = settings.configured_clone(&facts.target.repo.to_string());
     let search_root = match (&configured_clone, &settings.search_root) {
         (_, Some(root)) => root.clone(),
@@ -190,7 +200,12 @@ pub fn inspect_request(
 
 /// Plans the launch, or refuses with every reason found.
 pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
-    let facts = facts(input.decision, input.observation, input.choice)?;
+    let facts = facts(
+        input.decision,
+        input.observation,
+        input.choice,
+        input.policy,
+    )?;
     let item = &input.decision.item.id;
     let view = input.view;
     let mut reasons = Vec::new();
@@ -374,6 +389,18 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             slack_channel: review_request
                 .as_ref()
                 .and_then(|r| r.slack_channel.clone()),
+            landing_members: facts
+                .landing
+                .iter()
+                .flat_map(|group| &group.members)
+                .map(|m| (m.url.clone(), m.head_commit.clone()))
+                .collect(),
+            held_members: facts
+                .landing
+                .iter()
+                .flat_map(|group| &group.held)
+                .map(|m| m.url.clone())
+                .collect(),
             linear_issues: if kind == PromptKind::ReviewLinear {
                 linear_issues(decision, input.observation)
             } else {
@@ -385,10 +412,13 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     let prompt = with_push_line(prompt, &facts, &branch_name, &remote, permission_mode);
     // One suffix rule for the Job's names: the session carries the suffix the
     // worktree got, whether for a fresh start or a name another Job has.
-    let session = fresh(
-        names::session_name(item, facts.step),
-        names::MAX_SESSION_NAME_CHARS,
-    );
+    // A Land Job's session is named for its Linear Issue's identifier, which
+    // a reader recognises (its permanent ID is opaque).
+    let session = match &facts.landing {
+        Some(group) => names::landing_session_name(item.owner(), &group.identifier),
+        None => names::session_name(item, facts.step),
+    };
+    let session = fresh(session, names::MAX_SESSION_NAME_CHARS);
     let session = match named.as_ref().and_then(|free| free.suffix) {
         Some(n) => names::suffixed(&session, n, names::MAX_SESSION_NAME_CHARS),
         None => session,
@@ -427,6 +457,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             trust::checkout(item, Some(input.observation)),
         ),
         review_request,
+        landing: facts.landing,
         window: view.window.clone(),
         command: String::new(),
     };
@@ -458,6 +489,10 @@ fn linear_issues(decision: &Decision, observation: &Observation) -> Vec<(String,
 /// For a cross-Repo PR head (decision d): the local branch den uses when the
 /// head's own name clashes in the Main Clone, before any fresh-start suffix.
 fn clash_branch(facts: &Facts) -> Option<String> {
+    // A new branch (a Land Job's included) is den's own name, never the head's.
+    if facts.new_branch {
+        return None;
+    }
     match (&facts.base, facts.number) {
         (BaseRef::PullHead { .. }, Some(number)) => {
             Some(names::pr_head_branch(number, &facts.branch))

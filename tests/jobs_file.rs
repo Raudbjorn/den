@@ -5,16 +5,18 @@
 //! coordination Job's permission mode (#39) reads back; a coding Job's record
 //! has no such key. Format 3 adds that key, so a den reading only format 2
 //! refuses the file instead of dropping the mode when it rewrites it; a
-//! format-2 file still loads.
+//! format-2 file still loads. Format 4 (#40) adds the Landing Group subject
+//! of a Land Job, stored under a pinned name; a format-3 file still loads.
 
 // Test code: helpers outside #[test] fns may fail loudly too (clippy.toml covers only #[test]).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use den::{
-    domain::{NextStep, RepoId, WorkItemId},
+    domain::{LinearIssueId, NextStep, RepoId, WorkItemId, facts::PullRequestRef},
     handoff::PermissionMode,
     jobs::{
-        FileJobStore, JOBS_FILE, JOBS_FORMAT, JobRecord, JobStoreError, JobSubject, MAX_JOBS_BYTES,
+        FileJobStore, JOBS_FILE, JOBS_FORMAT, JobRecord, JobStoreError, JobSubject, LandedMember,
+        LandingGroupSubject, MAX_JOBS_BYTES,
     },
     ports::JobStore,
 };
@@ -396,6 +398,109 @@ fn a_milestone_1_file_near_the_bound_still_takes_an_append() {
     expected.push(store_record());
     assert_eq!(store.load().unwrap(), expected);
     assert_eq!(format_of(&store), u64::from(JOBS_FORMAT));
+}
+
+/// Format 3 is the format before the Landing Group subject (#40).
+const FORMAT_WITHOUT_LANDING_GROUP: u64 = 3;
+
+fn team_1() -> WorkItemId {
+    WorkItemId::LinearIssue {
+        owner: "acme".to_owned(),
+        issue: LinearIssueId::new("acme", "id-1"),
+    }
+}
+
+/// A Land Job's record: TEAM-1, landing acme/app#2 then acme/api#1.
+fn land_record() -> JobRecord {
+    JobRecord {
+        subject: JobSubject::LandingGroup(LandingGroupSubject {
+            issue: team_1(),
+            identifier: "TEAM-1".to_owned(),
+            members: vec![
+                LandedMember {
+                    pr: PullRequestRef::new(RepoId::new("acme", "app"), 2),
+                    head: "2".repeat(40),
+                },
+                LandedMember {
+                    pr: PullRequestRef::new(RepoId::new("acme", "api"), 1),
+                    head: "1".repeat(40),
+                },
+            ],
+        }),
+        next_step: NextStep::Land,
+        target: RepoId::new("acme", "app"),
+        main_clone: "/home/me/dev/app".into(),
+        worktree: "/home/me/dev/app/.claude/worktrees/land_team-1".into(),
+        branch: "land_team-1".to_owned(),
+        session: "acme-team-1-land".to_owned(),
+        launched_at: jiff::Timestamp::UNIX_EPOCH,
+        permission_mode: Some(PermissionMode::ApprovalRequired),
+    }
+}
+
+/// A Land Job's Landing Group reads back whole, stored under its pinned
+/// name with each member's approved head, in a format a den of format 3
+/// refuses (it couldn't decode the subject).
+#[test]
+fn a_landing_group_subject_is_stored_under_its_pinned_name_and_reads_back() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = FileJobStore::in_state_dir(temp.path());
+    store.record(&land_record()).unwrap();
+    assert_eq!(store.load().unwrap(), [land_record()]);
+    let body: serde_json::Value = serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+    let group = &body["jobs"][0]["subject"]["landing_group"];
+    assert_eq!(group["identifier"], "TEAM-1", "{body}");
+    assert_eq!(group["members"][0]["pr"]["number"], 2, "{body}");
+    assert_eq!(group["members"][0]["head"], "2".repeat(40), "{body}");
+    assert_eq!(group["members"][1]["pr"]["repo"]["name"], "api", "{body}");
+    assert!(
+        format_of(&store) > FORMAT_WITHOUT_LANDING_GROUP,
+        "format {}",
+        format_of(&store)
+    );
+}
+
+/// A file as #39's den wrote it (format 3) loads, and the next append keeps
+/// its records and writes the current format.
+#[test]
+fn a_format_3_file_loads_and_the_next_append_writes_the_current_format() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = FileJobStore::in_state_dir(temp.path());
+    let earlier = JobRecord {
+        next_step: NextStep::RequestReview,
+        permission_mode: Some(PermissionMode::ApprovalRequired),
+        ..store_record()
+    };
+    let body = serde_json::json!({
+        "format": FORMAT_WITHOUT_LANDING_GROUP,
+        "jobs": [serde_json::to_value(&earlier).unwrap()],
+    });
+    fs::write(store.path(), serde_json::to_vec(&body).unwrap()).unwrap();
+    assert_eq!(store.load().unwrap(), std::slice::from_ref(&earlier));
+    store.record(&land_record()).unwrap();
+    assert_eq!(format_of(&store), u64::from(JOBS_FORMAT));
+    assert_eq!(store.load().unwrap(), [earlier, land_record()]);
+}
+
+/// A Landing Group covers its Linear Issue and every member it lands, Repos
+/// in any casing; never another Pull Request or a same-numbered one elsewhere.
+#[test]
+fn a_landing_group_covers_its_linear_issue_and_every_landed_member() {
+    let subject = land_record().subject;
+    let pr = |owner: &str, name: &str, number| WorkItemId::PullRequest {
+        repo: RepoId::new(owner, name),
+        number,
+    };
+    assert!(subject.covers(&team_1()));
+    assert!(subject.covers(&pr("acme", "app", 2)));
+    assert!(subject.covers(&pr("ACME", "Api", 1)));
+    assert!(!subject.covers(&pr("acme", "web", 3)));
+    assert!(!subject.covers(&pr("octo", "api", 1)));
+    assert!(!subject.covers(&pr("acme", "api", 2)));
+    assert!(!subject.covers(&WorkItemId::LinearIssue {
+        owner: "acme".to_owned(),
+        issue: LinearIssueId::new("acme", "id-2"),
+    }));
 }
 
 fn store_record() -> JobRecord {
