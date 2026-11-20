@@ -135,10 +135,24 @@ fn main() -> ExitCode {
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("den: {error}");
+            eprintln!("den: {}", escape_controls(&error.to_string()));
             exit_code(&error)
         }
     }
+}
+
+/// Escapes control characters other than newline, so an error that quotes
+/// untrusted text (an environment value, a path) cannot drive the terminal.
+fn escape_controls(message: &str) -> String {
+    let mut escaped = String::with_capacity(message.len());
+    for c in message.chars() {
+        if c.is_control() && c != '\n' {
+            escaped.extend(c.escape_debug());
+        } else {
+            escaped.push(c);
+        }
+    }
+    escaped
 }
 
 fn exit_code(error: &DenError) -> ExitCode {
