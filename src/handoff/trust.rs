@@ -168,7 +168,10 @@ pub fn for_reopen(
     observation: Option<&Observation>,
     policy: &LinearWorkflowPolicy,
 ) -> ProjectSettings {
-    let JobSubject::GitHub(item) = &job.subject;
+    let item = match &job.subject {
+        JobSubject::GitHub(item) => item,
+        JobSubject::LandingGroup(group) => &group.issue,
+    };
     project_settings(job.next_step, policy, checkout(item, observation))
 }
 

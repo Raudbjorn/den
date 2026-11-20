@@ -280,8 +280,8 @@ fn owners_without_a_linear_workflow_get_the_empty_policy() {
 
 /// #36: a Linear Workflow's review settings and Held Repos reach the decision
 /// engine as the Owner's policy, the switches as configured; so do its start
-/// teams and their two switches (#33), and its release state (#37).
-/// `Config::policies` maps every field.
+/// teams and their two switches (#33), its release state (#37) and its
+/// landing order (#40). `Config::policies` maps every field.
 #[test]
 fn a_linear_workflows_review_settings_become_its_owners_policy() {
     use den::domain::{
@@ -309,6 +309,7 @@ fn a_linear_workflows_review_settings_become_its_owners_policy() {
             }),
             held_repos: vec![RepoId::new("acme", "app")],
             release_state: Some("Ready for Release".to_owned()),
+            landing_order: vec![RepoId::new("acme", "api"), RepoId::new("acme", "web")],
         }
     );
     // The config's defaults: both switches on.

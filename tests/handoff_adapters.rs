@@ -8,10 +8,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use den::{
-    domain::{NextStep, RepoId, WorkItemId},
+    domain::{LinearIssueId, NextStep, RepoId, WorkItemId, facts::PullRequestRef},
     handoff::{
-        self, Base, BaseRef, BranchStart, CloneSource, JobBranch, LaunchOutcome, LaunchPlan,
-        MainClone, PathState, Remote, SessionStart, Target, WindowCommand, WindowMode, Writability,
+        self, Base, BaseRef, BranchStart, CloneSource, JobBranch, LandingGroupPlan, LandingMember,
+        LaunchOutcome, LaunchPlan, MainClone, PathState, PermissionMode, Remote, SessionStart,
+        Target, WindowCommand, WindowMode, Writability,
         clone::{RepoUrl, has_numeric_suffix, same_repo},
         command, names,
     },
@@ -391,6 +392,7 @@ fn plan_for(clone: &Path, url: &str, head: &str) -> LaunchPlan {
         permission_mode: None,
         project_settings: den::handoff::ProjectSettings::Loaded,
         review_request: None,
+        landing: None,
         window: WindowMode::Kitty,
         command: String::new(),
     };
@@ -447,6 +449,72 @@ fn executing_a_plan_with_real_git_puts_the_worktree_on_the_pr_head_tracking_the_
         "{again:#?}"
     );
     assert!(worktree.join("README").exists());
+}
+
+#[test]
+fn a_land_branch_can_be_reused_without_tracking_after_its_worktree_is_removed() {
+    let (temp, _, clone, url, head) = temp_repos();
+    git(Path::new(&url), &["update-ref", "refs/pull/7/head", &head]);
+    let mut plan = plan_for(&clone, &url, &head);
+    plan.work_item = WorkItemId::LinearIssue {
+        owner: "octo".into(),
+        issue: LinearIssueId::new("octo", "id-1"),
+    };
+    plan.next_step = NextStep::Land;
+    plan.permission_mode = Some(PermissionMode::ApprovalRequired);
+    plan.branch.name = "land_team-1".into();
+    plan.worktree = handoff::worktree_path(&clone, "land_team-1");
+    plan.landing = Some(LandingGroupPlan {
+        issue: plan.work_item.clone(),
+        identifier: "TEAM-1".into(),
+        members: vec![LandingMember {
+            pr: PullRequestRef::new(plan.target.repo.clone(), 7),
+            url: plan.url.clone(),
+            repo_url: url,
+            head_commit: head.clone(),
+            checks: "passing (1)".into(),
+            configured: None,
+        }],
+        held: Vec::new(),
+    });
+    let workspace = GitWorkspace::new();
+    let launcher = RecordingLauncher::default();
+    let jobs = FileJobStore::new(temp.path().join("state/jobs.json"));
+    for start in [BranchStart::Fresh, BranchStart::Existing] {
+        plan.branch.start = start;
+        let report = handoff::execute(
+            &plan,
+            &workspace,
+            &launcher,
+            &jobs,
+            "2026-11-20T10:00:00Z".parse().unwrap(),
+        );
+        assert!(
+            matches!(report.outcome, LaunchOutcome::Launched { .. }),
+            "{report:#?}"
+        );
+        assert_eq!(git(&plan.worktree, &["rev-parse", "HEAD"]), head);
+        assert_eq!(
+            git(
+                &clone,
+                &[
+                    "config",
+                    "--default",
+                    "",
+                    "--get",
+                    "branch.land_team-1.remote"
+                ]
+            ),
+            ""
+        );
+        git(
+            &clone,
+            &["worktree", "remove", plan.worktree.to_str().unwrap()],
+        );
+        assert_eq!(git(&clone, &["rev-parse", "refs/heads/land_team-1"]), head);
+    }
+    assert_eq!(launcher.windows.lock().unwrap().len(), 2);
+    assert_eq!(jobs.load().unwrap().len(), 2);
 }
 
 #[test]

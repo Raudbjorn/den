@@ -6,9 +6,10 @@ use crate::{
     app::view_model::{LaunchSheet, LaunchStatus, PromptField, SheetField, SheetMessage, Tone},
     domain::{WorkItemId, WorkItemKind},
     handoff::{
-        BaseRef, BranchStart, CloneSource, JobCheck, LaunchOutcome, LaunchPlan, LaunchReport,
-        PathState, PermissionMode, ProjectSettings, Refusal, ReopenPlan, ReviewRequest, WindowMode,
-        WorktreeState, Writability, command, reviewers, short_commit, workflows,
+        BaseRef, BranchStart, CloneSource, JobCheck, LandingGroupPlan, LaunchOutcome, LaunchPlan,
+        LaunchReport, PathState, PermissionMode, ProjectSettings, Refusal, ReopenPlan,
+        ReviewRequest, WindowMode, WorktreeState, Writability, command, landing, reviewers,
+        short_commit, workflows,
     },
 };
 
@@ -86,11 +87,17 @@ pub fn build(sheet: &Sheet) -> LaunchSheet {
         }
         SheetState::LiveJob { check, .. } => {
             view.status = LaunchStatus::LiveJob;
+            // A member's sheet names the Land Job that covers it (#40).
+            let which = match check.job.subject.landing_group() {
+                Some(group) if !group.issue.same(&sheet.item) => {
+                    format!("is covered by the Live Land Job of {}", group.identifier)
+                }
+                _ => "has a Live Job".to_owned(),
+            };
             view.headline = match &sheet.launch_refused {
-                None => "This Work Item has a Live Job: open existing or start fresh?",
-                Some(_) => "This Work Item has a Live Job: open existing?",
-            }
-            .to_owned();
+                None => format!("This Work Item {which}: open existing or start fresh?"),
+                Some(_) => format!("This Work Item {which}: open existing?"),
+            };
             view.fields = job_fields(check);
             view.messages.push(message(
                 &format!(
@@ -235,6 +242,40 @@ fn review_request_fields(
         ),
     };
     [suggested, announce]
+}
+
+/// A Land sheet's members (#40): `LAND 1`, `LAND 2`, … in landing order,
+/// each with its Repo, PR, head commit and checks; then each held member as
+/// "not landed: held".
+fn landing_fields(group: &LandingGroupPlan) -> Vec<SheetField> {
+    let landed = group.members.iter().enumerate().map(|(i, member)| {
+        let order = match member.configured {
+            Some(rank) => format!("; landing_order position {}", rank + 1),
+            None => String::new(),
+        };
+        field(
+            &format!("LAND {}", i + 1),
+            format!(
+                "{} @ {}",
+                landing::reference(&member.pr),
+                short_commit(&member.head_commit)
+            ),
+            Some(format!("{}{order}", member.checks)),
+            Tone::Plain,
+        )
+    });
+    let held = group.held.iter().map(|member| {
+        field(
+            "HELD",
+            landing::reference(&member.pr),
+            Some(format!(
+                "not landed: held (Held Repo {}); the Job is told never to merge it",
+                member.pr.repo
+            )),
+            Tone::Muted,
+        )
+    });
+    landed.chain(held).collect()
 }
 
 /// The label of a slash command's availability (#41).
@@ -453,6 +494,9 @@ fn fields(sheet: &Sheet, plan: &LaunchPlan, moved_from: Option<&str>) -> Vec<She
             .map_or(&[][..], |r| r.suggested.as_slice());
         fields.extend(review_request_fields(request, suggested));
     }
+    if let Some(group) = &plan.landing {
+        fields.extend(landing_fields(group));
+    }
     fields.extend(permissions_field(plan.permission_mode));
     fields.extend(project_settings_field(&plan.project_settings));
     // The prompt as shown, edited or not, against what the inspection read.
@@ -486,19 +530,33 @@ fn job_fields(check: &JobCheck) -> Vec<SheetField> {
         WorktreeState::Missing => ("missing: its folder is gone".to_owned(), Tone::Muted),
         WorktreeState::Unknown(why) => (format!("unknown: {why}"), Tone::Caution),
     };
-    vec![
-        field("JOB", job.worktree.display().to_string(), Some(note), tone),
-        field("BRANCH", job.branch.clone(), None, Tone::Plain),
+    let land_job = job.subject.landing_group().map(|group| {
         field(
-            "SESSION",
-            job.session.clone(),
+            "LAND JOB",
+            format!("the Landing Group of {}", group.identifier),
             Some(format!(
-                "launched {}",
-                job.launched_at.strftime("%Y-%m-%d %H:%M UTC")
+                "it lands {}, pinned to their approved heads",
+                group.members_text()
             )),
             Tone::Plain,
-        ),
-    ]
+        )
+    });
+    land_job
+        .into_iter()
+        .chain([
+            field("JOB", job.worktree.display().to_string(), Some(note), tone),
+            field("BRANCH", job.branch.clone(), None, Tone::Plain),
+            field(
+                "SESSION",
+                job.session.clone(),
+                Some(format!(
+                    "launched {}",
+                    job.launched_at.strftime("%Y-%m-%d %H:%M UTC")
+                )),
+                Tone::Plain,
+            ),
+        ])
+        .collect()
 }
 
 /// Open existing: the worktree, the resumed session, the window, the command,
@@ -554,6 +612,16 @@ fn opens_field(window: &WindowMode) -> SheetField {
 /// What the base is, in words: "PR head feature-7", "branch feature-7",
 /// "default branch main".
 fn base_words(plan: &LaunchPlan) -> String {
+    if let Some(first) = plan.landing.as_ref().and_then(|g| g.members.first()) {
+        let head = match &plan.base.reference {
+            BaseRef::PullHead { number } => format!("refs/pull/{number}/head"),
+            BaseRef::HeadBranch(head) | BaseRef::DefaultBranch(head) => head.clone(),
+        };
+        return format!(
+            "PR head {head} of {}, the first to land",
+            landing::reference(&first.pr)
+        );
+    }
     match &plan.base.reference {
         BaseRef::HeadBranch(head) if plan.work_item.kind() == WorkItemKind::PullRequest => {
             format!("PR head {head}")

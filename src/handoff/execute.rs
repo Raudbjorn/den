@@ -5,12 +5,12 @@
 //! earlier step by deleting anything.
 
 use super::{
-    BaseRef, BranchStart, CloneSource, LaunchPlan, PathState, Refusal, RefusalReason, WindowMode,
-    check_prompt, clone, command, short_commit,
+    BaseRef, BranchStart, CloneSource, LandingGroupPlan, LaunchPlan, PathState, Refusal,
+    RefusalReason, WindowMode, check_prompt, clone, command, short_commit,
 };
 use crate::{
-    domain::WorkItemKind,
-    jobs::{JobRecord, JobSubject},
+    domain::{NextStep, WorkItemKind},
+    jobs::JobRecord,
     ports::{JobStore, Launcher, Workspace, WorktreeAdd, WorktreeStart},
 };
 use jiff::Timestamp;
@@ -90,7 +90,27 @@ fn run(
     let failed = |step: LaunchStep, error: String| LaunchOutcome::Failed { step, error };
     let clone_path = &plan.main_clone.path;
 
-    // 1. Re-verify, changing nothing.
+    // 1. Re-verify, changing nothing. A Land Job's members first: each head
+    // as GitHub has it now must be the one approved on the sheet.
+    if let Some(group) = &plan.landing {
+        if let Err(outcome) = verify_members(group, workspace) {
+            return *outcome;
+        }
+        done.push(format!(
+            "re-read from GitHub: {} at the approved heads",
+            group
+                .members
+                .iter()
+                .map(|m| format!(
+                    "{}#{} {}",
+                    m.pr.repo,
+                    m.pr.number,
+                    short_commit(&m.head_commit)
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     match verify(plan, workspace) {
         Ok(()) if plan.clones() => done.push(format!(
             "re-verified: {} is free; {} has {} at {}",
@@ -106,7 +126,16 @@ fn run(
             short_commit(&plan.base.commit)
         )),
         Err(Verification::Refused(reason)) => return LaunchOutcome::Refused(Refusal::one(*reason)),
+        // A Land Job's base is its first member's approved head: a move is
+        // that member's, and the Job must not land a head nobody approved.
         Err(Verification::Moved(to)) => {
+            if let Some(first) = plan.landing.as_ref().and_then(|g| g.members.first()) {
+                return LaunchOutcome::Refused(Refusal::one(RefusalReason::LandingMemberMoved {
+                    pr: first.pr.clone(),
+                    approved: first.head_commit.clone(),
+                    now: to,
+                }));
+            }
             return LaunchOutcome::HeadMoved {
                 from: plan.base.commit.clone(),
                 to,
@@ -203,7 +232,7 @@ fn run(
 
     // 6. Record the Job.
     let job = JobRecord {
-        subject: JobSubject::GitHub(plan.work_item.clone()),
+        subject: plan.subject(),
         next_step: plan.next_step,
         target: plan.target.repo.clone(),
         main_clone: clone_path.clone(),
@@ -218,6 +247,41 @@ fn run(
     }
     done.push("recorded the Job".to_owned());
     LaunchOutcome::Launched { job }
+}
+
+/// Every member's head, as GitHub has it now (`refs/pull/<n>/head` of its
+/// Repo, asked without a clone), is the head approved on the sheet. Reads
+/// only; the first difference is the outcome.
+fn verify_members(
+    group: &LandingGroupPlan,
+    workspace: &dyn Workspace,
+) -> Result<(), Box<LaunchOutcome>> {
+    for member in &group.members {
+        let now = workspace
+            .url_pull_head(&member.repo_url, member.pr.number)
+            .map_err(|e| {
+                Box::new(LaunchOutcome::Failed {
+                    step: LaunchStep::Verify,
+                    error: format!(
+                        "couldn't re-read the head of {}#{} from GitHub: {e}",
+                        member.pr.repo, member.pr.number
+                    ),
+                })
+            })?;
+        let reason = match now {
+            Some(commit) if commit == member.head_commit => continue,
+            Some(commit) => RefusalReason::LandingMemberMoved {
+                pr: member.pr.clone(),
+                approved: member.head_commit.clone(),
+                now: commit,
+            },
+            None => RefusalReason::LandingMemberHeadGone {
+                pr: member.pr.clone(),
+            },
+        };
+        return Err(Box::new(LaunchOutcome::Refused(Refusal::one(reason))));
+    }
+    Ok(())
 }
 
 enum Verification {
@@ -279,7 +343,9 @@ fn verify(plan: &LaunchPlan, workspace: &dyn Workspace) -> Result<(), Verificati
             branch: plan.branch.name.clone(),
         }));
     }
+    // Land creates its own untracked coordination branch, even on a PR head.
     if matches!(plan.branch.start, BranchStart::Existing)
+        && plan.next_step != NextStep::Land
         && let BaseRef::HeadBranch(branch) = &plan.base.reference
     {
         workspace
