@@ -51,6 +51,7 @@ fn linear_answer(issues: Vec<den::domain::facts::LinearIssue>) -> LinearSurvey {
         part: LinearPart {
             viewers: vec![linear_viewer("acme", "acme")],
             issues,
+            ..LinearPart::default()
         },
         coverage: linear_coverage(SourceState::Complete),
     }
@@ -246,6 +247,7 @@ fn a_failed_linear_source_shows_in_coverage_and_blocks_nothing_needs_you() {
         part: LinearPart {
             viewers: vec![linear_viewer("acme", "acme")],
             issues: Vec::new(),
+            ..LinearPart::default()
         },
         coverage: linear_coverage(SourceState::Failed {
             error: "Linear did not answer within 20s".to_owned(),

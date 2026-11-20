@@ -81,6 +81,7 @@ impl CachedObservation {
         observation.runs.retain(|i| watched(&i.repo.owner));
         observation.linear.issues.retain(|i| watched(&i.owner));
         observation.linear.viewers.retain(|v| watched(&v.owner));
+        observation.linear.team_states.retain(|t| watched(&t.owner));
         let mut coverage = crate::domain::Coverage::default();
         for entry in observation.coverage.entries() {
             if source_owner(&entry.source).is_none_or(watched) {

@@ -19,7 +19,7 @@ pub mod linear;
 
 pub use linear::{LinearWorkflow, Reviewer};
 
-use crate::domain::{LinearWorkflowPolicy, Policies};
+use crate::domain::Policies;
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -60,7 +60,7 @@ impl Config {
     /// workflow here.
     pub fn policies(&self) -> Policies {
         self.linear.iter().fold(Policies::default(), |policies, w| {
-            policies.with(w.owner.clone(), LinearWorkflowPolicy::default())
+            policies.with(w.owner.clone(), w.policy())
         })
     }
 

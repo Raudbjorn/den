@@ -60,6 +60,7 @@ fn decision(
         explanation: Explanation::default(),
         coverage: Vec::new(),
         observed_at: ts(support::build::NOW),
+        start_order: None,
     }
 }
 

@@ -5,7 +5,9 @@
 //! For each Linear Workflow, in config order: the API key is read from the
 //! environment variable the workflow names, then the Linear viewer (checked
 //! against the configured workspace), then the viewer's active assigned
-//! Linear Issues, paged up to [`MAX_LINEAR_PAGES`]. Each is recorded as
+//! Linear Issues, paged up to [`MAX_LINEAR_PAGES`], then, when the workflow
+//! names start teams or states, the team states and the start teams'
+//! unassigned issues ([`start`], #33). Each is recorded as
 //! `Source::Owner { owner, kind: SourceKind::Linear(..) }`. Owners without a
 //! Linear Workflow are never in the request, so they make no Linear request
 //! and need no key.
@@ -15,9 +17,11 @@
 //! - [`session`]: replies to source states, paging, the rate-limit stop.
 
 pub mod session;
+mod start;
 pub mod transport;
 
 pub use session::{LINEAR_PAGE_SIZE, MAX_LINEAR_PAGES};
+pub use start::MAX_TEAM_STATES;
 pub use transport::{
     ApiKey, HttpReply, HttpsTransport, LINEAR_TIMEOUT_SECS, LinearRequest, LinearTransport,
     TransportError,
@@ -99,22 +103,18 @@ fn record(coverage: &mut Coverage, owner: &str, kind: LinearSourceKind, state: S
 impl LinearApi {
     fn survey_workflow(&self, workflow: &LinearWorkflow, survey: &mut LinearSurvey) {
         let owner = &workflow.owner;
+        let sources = workflow.linear_sources();
+        // One trouble that stops every source (no key, no viewer) is
+        // recorded for each, so none reads as complete.
+        let record_all = |coverage: &mut Coverage, state: SourceState| {
+            for kind in &sources {
+                record(coverage, owner, *kind, state.clone());
+            }
+        };
         let key = match self.key(workflow) {
             Ok(key) => key,
             Err(error) => {
-                let failed = SourceState::Failed { error };
-                record(
-                    &mut survey.coverage,
-                    owner,
-                    LinearSourceKind::Viewer,
-                    failed.clone(),
-                );
-                record(
-                    &mut survey.coverage,
-                    owner,
-                    LinearSourceKind::AssignedIssues,
-                    failed,
-                );
+                record_all(&mut survey.coverage, SourceState::Failed { error });
                 return;
             }
         };
@@ -128,18 +128,7 @@ impl LinearApi {
             Err(state) => {
                 // Without the viewer den doesn't ask for its issues: the
                 // same trouble (a refused key, no network) would stop them.
-                record(
-                    &mut survey.coverage,
-                    owner,
-                    LinearSourceKind::Viewer,
-                    state.clone(),
-                );
-                record(
-                    &mut survey.coverage,
-                    owner,
-                    LinearSourceKind::AssignedIssues,
-                    state,
-                );
+                record_all(&mut survey.coverage, state);
                 return;
             }
         }
@@ -151,6 +140,26 @@ impl LinearApi {
             state,
         );
         survey.part.issues.extend(issues);
+        if sources.contains(&LinearSourceKind::TeamStates) {
+            let (teams, state) = start::team_states(&session, workflow);
+            record(
+                &mut survey.coverage,
+                owner,
+                LinearSourceKind::TeamStates,
+                state,
+            );
+            survey.part.team_states.extend(teams);
+        }
+        if sources.contains(&LinearSourceKind::StartTeamIssues) {
+            let (issues, state) = start::start_team_issues(&session, workflow, &survey.part.issues);
+            record(
+                &mut survey.coverage,
+                owner,
+                LinearSourceKind::StartTeamIssues,
+                state,
+            );
+            survey.part.issues.extend(issues);
+        }
     }
 
     /// The workflow's key, or why there is none (naming the variable, never
@@ -354,6 +363,16 @@ struct RawCycle {
     is_active: bool,
 }
 
+impl RawState {
+    fn into_state(self) -> LinearState {
+        LinearState {
+            id: self.id,
+            name: self.name,
+            kind: LinearStateKind::from_linear(&self.kind),
+        }
+    }
+}
+
 impl RawIssue {
     fn into_issue(self, workflow: &LinearWorkflow) -> LinearIssue {
         LinearIssue {
@@ -366,11 +385,7 @@ impl RawIssue {
                 id: self.team.id,
                 key: self.team.key,
             },
-            state: LinearState {
-                id: self.state.id,
-                name: self.state.name,
-                kind: LinearStateKind::from_linear(&self.state.kind),
-            },
+            state: self.state.into_state(),
             assignee: self.assignee.map(|a| LinearUser {
                 id: a.id,
                 name: a.name,
