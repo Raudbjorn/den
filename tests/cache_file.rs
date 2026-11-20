@@ -14,7 +14,7 @@ use den::{
     },
     ports::ObservationCache,
 };
-use std::fs;
+use std::{fs, time::Duration};
 use support::build::{ObservationBuilder, issue, pr, ts};
 
 fn cached(viewer: &str, number: u64) -> CachedObservation {
@@ -210,6 +210,75 @@ fn an_older_survey_never_replaces_a_newer_one() {
     let newest = at("2026-11-19T12:00:00Z", 3);
     cache.store(&newest).unwrap();
     assert_eq!(cache.load(), Ok(Some(newest)));
+}
+
+/// The age check and the replacement are one step for every den sharing the
+/// directory: while another den holds the viewer's lock, a store waits, and
+/// past its bound gives up as an error value, leaving the stored survey as is.
+#[test]
+fn a_store_waits_for_another_dens_lock_and_gives_up_as_an_error_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCache::in_state_dir(dir.path()).with_lock_wait(Duration::from_millis(50));
+    let at = |time: &str, number: u64| {
+        let mut c = cached("me", number);
+        c.observation.observed_at = ts(time);
+        c
+    };
+    let newer = at("2026-11-19T11:00:00Z", 2);
+    cache.store(&newer).unwrap();
+
+    let held = fs::OpenOptions::new()
+        .write(true)
+        .open(cache.lock_for("me").unwrap())
+        .expect("the lock file exists once den has stored");
+    held.lock().unwrap();
+    let newest = at("2026-11-19T12:00:00Z", 3);
+    assert!(matches!(
+        cache.store(&newest),
+        Err(CacheError::Write { detail, .. }) if detail.contains("locked")
+    ));
+    assert_eq!(cache.load(), Ok(Some(newer)));
+
+    drop(held);
+    cache.store(&newest).unwrap();
+    assert_eq!(cache.load(), Ok(Some(newest)));
+}
+
+/// Dens storing at once, each with its own handle as separate processes would
+/// have: whatever the interleaving, the newest survey is the one left.
+#[test]
+fn dens_storing_at_once_leave_the_newest_survey() {
+    const WRITERS: u32 = 6;
+    const STORES_EACH: u32 = 15;
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().to_owned();
+    std::thread::scope(|scope| {
+        for writer in 0..WRITERS {
+            let cache = FileCache::in_state_dir(&state);
+            scope.spawn(move || {
+                for i in 0..STORES_EACH {
+                    // Interleaved minutes, so every writer offers older and newer ones.
+                    let minute = i * WRITERS + writer;
+                    let mut c = cached("me", u64::from(minute));
+                    c.observation.observed_at =
+                        ts("2026-11-19T10:00:00Z") + jiff::SignedDuration::from_mins(minute.into());
+                    match cache.store(&c) {
+                        Ok(()) | Err(CacheError::Superseded { .. }) => {}
+                        Err(other) => panic!("writer {writer}: {other}"),
+                    }
+                }
+            });
+        }
+    });
+    let newest_minute = WRITERS * STORES_EACH - 1;
+    let loaded = FileCache::in_state_dir(&state)
+        .load()
+        .unwrap()
+        .expect("stored");
+    assert_eq!(
+        loaded.observation.observed_at,
+        ts("2026-11-19T10:00:00Z") + jiff::SignedDuration::from_mins(newest_minute.into())
+    );
 }
 
 #[cfg(unix)]
