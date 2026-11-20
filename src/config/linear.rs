@@ -27,7 +27,7 @@
 //! the policy type's (whose empty default changes nothing).
 
 use super::{Location, is_valid_login, location_of};
-use crate::domain::{RepoId, TeamRef};
+use crate::domain::{LinearSourceKind, RepoId, TeamRef};
 use serde::Deserialize;
 use std::{collections::BTreeMap, ops::Range};
 use toml::Spanned;
@@ -77,6 +77,17 @@ pub struct LinearWorkflow {
     pub exact_head_approval: bool,
     /// A COMMENTED review needs a fresh look after the head moves (#36). Default on.
     pub comment_reviews_need_rereview: bool,
+}
+
+impl LinearWorkflow {
+    /// The Linear sources this workflow reads: its Linear viewer and the
+    /// Linear Issues assigned to it (#33 adds the start teams' sources). Every
+    /// Linear source den records for the workflow comes from here, so one it
+    /// no longer reads is dropped from the cache
+    /// (`CachedObservation::restricted_to_linear`, `cache::merge_linear`).
+    pub fn linear_sources(&self) -> Vec<LinearSourceKind> {
+        vec![LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues]
+    }
 }
 
 /// A configured reviewer: a GitHub login or a team.

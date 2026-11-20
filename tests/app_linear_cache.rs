@@ -10,7 +10,7 @@ mod support;
 
 use den::{
     app::{Effect, Event, Key, ViewModel},
-    cache::{CachedObservation, Carried},
+    cache::{CachedObservation, Carried, LinearReads, merge_linear},
     domain::{
         Coverage, Incompleteness, LinearPart, LinearSourceKind, LinearViewer, Observation, Source,
         SourceKind, SourceState, WorkItemKind, facts::LinearIssue,
@@ -970,5 +970,191 @@ fn a_linear_answer_logs_only_the_linear_data_it_kept() {
         kept.iter()
             .all(|m| m.contains("Linear") && !m.contains("Pull Requests")),
         "{kept:?}"
+    );
+}
+
+/// GitHub recovering after the Linear-only stand-in keeps the Linear data
+/// shown, data kept by a failed Linear refresh and its age included. The
+/// stand-in has no GitHub viewer, so the GitHub answer starts afresh, but a
+/// GitHub answer never touches the Linear part.
+#[test]
+fn linear_data_kept_on_the_linear_only_stand_in_survives_github_s_recovery() {
+    let mut harness = Harness::new(Ok(workflow_config()));
+    harness.linear.push_answer(
+        Answer::complete(vec![linear_issue("acme", "id-7", "TEAM-7").build()])
+            .at(EARLIER)
+            .survey(),
+    );
+    harness.answer(Err(SurveyFailure::GhNotInstalled));
+    harness.linear.push_answer(Answer::unreachable().survey());
+    harness.answer(Ok(github(support::build::NOW, &[1])));
+    harness.start();
+    assert_eq!(linear_rows(&harness.view), ["TEAM-7"], "the stand-in");
+    assert!(
+        harness.cache.stored().is_empty(),
+        "the stand-in is never saved"
+    );
+
+    harness.settle(Event::Key(Key::Char('r')));
+
+    assert_eq!(
+        linear_rows(&harness.view),
+        ["TEAM-7"],
+        "kept by the failed Linear refresh, and still kept when GitHub answers"
+    );
+    assert_eq!(pr_rows(&harness.view), ["acme/api#1"]);
+    let stored = last_stored(&harness);
+    let saved: Vec<&str> = stored
+        .observation
+        .linear
+        .issues
+        .iter()
+        .map(|i| i.identifier.as_str())
+        .collect();
+    assert_eq!(saved, ["TEAM-7"]);
+    let mut kept: Vec<(Source, jiff::Timestamp)> = linear_carried(&stored)
+        .iter()
+        .map(|c| (c.source.clone(), c.observed_at))
+        .collect();
+    kept.sort();
+    assert_eq!(
+        kept,
+        [
+            (acme_linear(LinearSourceKind::Viewer), ts(EARLIER)),
+            (acme_linear(LinearSourceKind::AssignedIssues), ts(EARLIER)),
+        ],
+        "with the age of the Linear survey that read it"
+    );
+}
+
+/// A Linear answer that arrives before the cache loads logs the cached
+/// Linear data it kept, as one arriving later does.
+#[test]
+fn linear_data_kept_from_the_cache_is_logged_when_linear_answered_first() {
+    let cache = cached_with_linear(
+        linear_viewer("acme", "acme"),
+        vec![linear_issue("acme", "id-7", "TEAM-7").build()],
+    );
+    let mut harness = Harness::with_cache(Ok(workflow_config()), cache);
+    harness.linear.push_answer(Answer::unreachable().survey());
+    let effects = harness.send(Event::Started { now: now() });
+    let linear = effects
+        .iter()
+        .find(|e| matches!(e, Effect::SurveyLinear { .. }))
+        .unwrap();
+    perform_all(&mut harness, linear);
+    harness.perform(&Effect::LoadCache);
+
+    assert_eq!(linear_rows(&harness.view), ["TEAM-7"]);
+    assert!(
+        logged(
+            &harness,
+            "kept earlier data for: Linear viewer of acme from 2026-11-19T10:00:00Z; \
+             assigned Linear Issues of acme from 2026-11-19T10:00:00Z"
+        ),
+        "{:?}",
+        harness.effects
+    );
+}
+
+/// A Linear survey den couldn't queue before it knew the time has no date.
+/// Merged into the cache, it leaves the Linear part's date as it was, so the
+/// cached Linear Issue is still dated by the Linear survey that read it, not
+/// by the GitHub survey.
+#[test]
+fn an_undated_linear_answer_leaves_the_cached_linear_date() {
+    let mut observation = github("2026-11-19T11:00:00Z", &[]);
+    observation.linear = LinearPart {
+        viewers: vec![linear_viewer("acme", "acme")],
+        issues: vec![linear_issue("acme", "id-7", "TEAM-7").build()],
+        observed_at: Some(ts(EARLIER)),
+    };
+    for kind in [LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues] {
+        observation
+            .coverage
+            .record(acme_linear(kind), SourceState::Complete);
+    }
+    let cache = FakeCache::holding(CachedObservation::fresh(observation));
+    let mut harness = Harness::with_cache(Ok(workflow_config()), cache);
+    harness.answer(Ok(github(support::build::NOW, &[])));
+    // `r` before any event that carries the time.
+    let effects = harness.send(Event::Key(Key::Char('r')));
+    let linear = effects
+        .iter()
+        .find(|e| matches!(e, Effect::SurveyLinear { .. }))
+        .cloned()
+        .unwrap();
+    harness.send(Event::EffectRejected {
+        effect: Box::new(linear),
+        reason: "the Linear queue is full".to_owned(),
+    });
+    harness.perform(&Effect::LoadCache);
+
+    let detail = select(&mut harness, "TEAM-7")
+        .detail
+        .content
+        .expect("a detail");
+    assert!(detail.observed.contains("10:00 UTC"), "{}", detail.observed);
+
+    let github = effects
+        .iter()
+        .find(|e| matches!(e, Effect::Survey { .. }))
+        .unwrap();
+    perform_all(&mut harness, github);
+    assert_eq!(
+        last_stored(&harness).observation.linear.observed_at,
+        Some(ts(EARLIER)),
+        "the Linear data den holds was read at 10:00"
+    );
+}
+
+/// `merge_linear` takes "no longer read" from the config, never from a
+/// survey's silence: a Linear source the config reads that the survey has no
+/// word on is not yet fetched, and its earlier data is kept with its age,
+/// whoever built the survey.
+#[test]
+fn a_linear_source_the_config_reads_is_kept_when_a_survey_says_nothing_of_it() {
+    let mut observation = github(EARLIER, &[]);
+    observation.linear = LinearPart {
+        viewers: vec![linear_viewer("acme", "acme")],
+        issues: vec![linear_issue("acme", "id-7", "TEAM-7").build()],
+        observed_at: Some(ts(EARLIER)),
+    };
+    for kind in [LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues] {
+        observation
+            .coverage
+            .record(acme_linear(kind), SourceState::Complete);
+    }
+    let assigned = acme_linear(LinearSourceKind::AssignedIssues);
+    let mut survey = Answer::complete(Vec::new())
+        .at(support::build::NOW)
+        .survey();
+    survey.coverage.retain(|e| e.source != assigned);
+    let reads = [LinearReads {
+        owner: "acme",
+        workspace: "acme",
+        sources: vec![LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues],
+    }];
+
+    let merged = merge_linear(CachedObservation::fresh(observation), survey, &reads).cached;
+
+    let issues: Vec<&str> = merged
+        .observation
+        .linear
+        .issues
+        .iter()
+        .map(|i| i.identifier.as_str())
+        .collect();
+    assert_eq!(issues, ["TEAM-7"]);
+    assert_eq!(
+        merged.observation.coverage.get(&assigned),
+        Some(&SourceState::NotYetFetched)
+    );
+    assert_eq!(
+        merged.carried,
+        [Carried {
+            source: assigned,
+            observed_at: ts(EARLIER),
+        }]
     );
 }

@@ -34,6 +34,26 @@ pub struct LinearPart {
     pub observed_at: Option<Timestamp>,
 }
 
+impl LinearPart {
+    /// Each Owner this part holds Linear data for, with the workspace a fact
+    /// of it was read in: its Linear viewers' and its Linear Issues'. Linear
+    /// data is kept only for the workspace it was read in, so both the cache
+    /// load (`CachedObservation::restricted_to_linear`) and a Linear refresh
+    /// (`cache::merge_linear`) judge "read elsewhere" from this one list; a
+    /// new Linear fact list joins it here.
+    pub fn workspaces(&self) -> impl Iterator<Item = (&str, &str)> {
+        let viewers = self
+            .viewers
+            .iter()
+            .map(|v| (v.owner.as_str(), v.workspace.as_str()));
+        let issues = self
+            .issues
+            .iter()
+            .map(|i| (i.owner.as_str(), i.id.workspace.as_str()));
+        viewers.chain(issues)
+    }
+}
+
 /// Who the Linear API key belongs to, in one workspace: "me" for Linear
 /// Issues of that workspace. Never matched to a GitHub login.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
