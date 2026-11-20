@@ -33,7 +33,9 @@ pub const CACHE_SUBDIR: &str = "cache";
 /// (milestone 2). A milestone-1 cache (4) is refused and surveyed afresh.
 /// 6: the Linear part holds Linear viewers and Linear Issues, and coverage
 /// has Linear incompleteness reasons (#32).
-pub const CACHE_FORMAT: u32 = 6;
+/// 7: a PR's reviews carry their commit and their author's kind of account,
+/// and a PR has its latest reviews of any kind, comments included (#36).
+pub const CACHE_FORMAT: u32 = 7;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// Names the viewer whose cache startup shows.

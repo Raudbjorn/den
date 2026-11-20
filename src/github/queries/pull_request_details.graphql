@@ -19,7 +19,11 @@ reviewRequests(first: 50) {
 }
 latestOpinionatedReviews(first: 50) {
   pageInfo { hasNextPage endCursor }
-  nodes { state author { login } }
+  nodes { state author { __typename login } commit { oid } }
+}
+latestReviews(first: 50) {
+  pageInfo { hasNextPage endCursor }
+  nodes { state author { __typename login } commit { oid } }
 }
 commits(last: 1) {
   nodes {
