@@ -19,8 +19,7 @@ use den::{
     },
     config::{self, Config},
     domain::{
-        NextStep, Observation, RepoId, TeamRef, WorkItemId, facts::ReviewVerdict,
-        facts::Reviewer,
+        NextStep, Observation, RepoId, TeamRef, WorkItemId, facts::ReviewVerdict, facts::Reviewer,
     },
     handoff::{
         LaunchPlan, PermissionMode, ReviewRequest, SessionStart, coordination_mode,
@@ -763,7 +762,10 @@ fn an_unedited_reviewer_list_follows_new_suggestions_and_is_shown_again_before_l
     let plans = launch_plans(&harness);
     assert_eq!(plans.len(), 1, "{plans:?}");
     assert_eq!(
-        plans[0].review_request.as_ref().map(|r| r.reviewers.clone()),
+        plans[0]
+            .review_request
+            .as_ref()
+            .map(|r| r.reviewers.clone()),
         Some(vec![team("acme", "backend"), user("carol")])
     );
 }
@@ -779,7 +781,10 @@ fn an_edited_reviewer_list_is_kept_when_the_suggestions_change() {
     let plans = launch_plans(&harness);
     assert_eq!(plans.len(), 1, "the user's own list launches as chosen");
     assert_eq!(
-        plans[0].review_request.as_ref().map(|r| r.reviewers.clone()),
+        plans[0]
+            .review_request
+            .as_ref()
+            .map(|r| r.reviewers.clone()),
         Some(vec![user("alice"), user("dave")])
     );
     assert_eq!(plans[0].prompt, prompt_without_slack("alice, dave"));
@@ -868,7 +873,11 @@ fn a_fresh_start_request_review_prompt_has_no_push_line() {
     let plans = launch_plans(&harness);
     assert_eq!(plans.len(), 1, "{plans:?}");
     assert_ne!(plans[0].branch.name, "feature-2", "a fresh start");
-    assert!(!plans[0].prompt.contains("Push with"), "{}", plans[0].prompt);
+    assert!(
+        !plans[0].prompt.contains("Push with"),
+        "{}",
+        plans[0].prompt
+    );
 }
 
 // ---- the prompts file ----
@@ -896,7 +905,9 @@ fn reviewers_and_announcement_are_request_review_placeholders_only() {
     let without = prompts::parse(path, "request_review = \"Ask for reviews of {url}.\"\n")
         .expect_err("a request_review template must name the reviewers chosen on the sheet");
     assert!(
-        without.to_string().contains("`request_review` must use {reviewers}"),
+        without
+            .to_string()
+            .contains("`request_review` must use {reviewers}"),
         "{without}"
     );
 
