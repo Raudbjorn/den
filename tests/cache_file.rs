@@ -155,13 +155,16 @@ fn another_format_version_is_refused() {
     cache.store(&cached("me", 1)).unwrap();
     let file = cache.file_for("me").unwrap();
     let mut body: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
-    body["format"] = serde_json::json!(CACHE_FORMAT + 1);
-    fs::write(&file, serde_json::to_vec(&body).unwrap()).unwrap();
-    assert!(matches!(
-        cache.load(),
-        Err(CacheError::Format { found, expected, .. })
-            if found == CACHE_FORMAT + 1 && expected == CACHE_FORMAT
-    ));
+    // The preceding format has a different schema too, even after stacked PRs merge.
+    for format in [CACHE_FORMAT - 1, CACHE_FORMAT + 1] {
+        body["format"] = serde_json::json!(format);
+        fs::write(&file, serde_json::to_vec(&body).unwrap()).unwrap();
+        assert!(matches!(
+            cache.load(),
+            Err(CacheError::Format { found, expected, .. })
+                if found == format && expected == CACHE_FORMAT
+        ));
+    }
 }
 
 /// A temp state directory holding the cache milestone 1 wrote (format 4).
@@ -193,19 +196,22 @@ fn a_cache_milestone_1_wrote_is_refused_by_its_format_version() {
     assert_eq!(cache.load(), Ok(Some(fresh)));
 }
 
-/// Both stacked branches used format 7 for different shapes; the combined reader refuses it.
+/// Stacked branches used formats 7 and 8 for different shapes; neither is the combined shape.
 #[test]
-fn a_format_seven_cache_is_refused_before_decoding() {
+fn earlier_stacked_cache_formats_are_refused_before_decoding() {
     let dir = tempfile::tempdir().unwrap();
     let cache = FileCache::in_state_dir(dir.path());
     cache.store(&cached("me", 1)).unwrap();
     let file = cache.file_for("me").unwrap();
     let mut body: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
-    body["format"] = serde_json::json!(7);
-    fs::write(&file, serde_json::to_vec(&body).unwrap()).unwrap();
-    assert!(
-        matches!(cache.load(), Err(CacheError::Format { found: 7, expected, .. }) if expected == CACHE_FORMAT)
-    );
+    // Format 8 now also precedes the combined attachment and review facts.
+    for format in [7, 8] {
+        body["format"] = serde_json::json!(format);
+        fs::write(&file, serde_json::to_vec(&body).unwrap()).unwrap();
+        assert!(
+            matches!(cache.load(), Err(CacheError::Format { found, expected, .. }) if found == format && expected == CACHE_FORMAT)
+        );
+    }
 }
 
 #[test]

@@ -62,6 +62,9 @@ fn decision(
         observed_at: ts(support::build::NOW),
         landing: Landing::default(),
         start_order: None,
+        held_back: None,
+        suggested_reviewers: None,
+        suggested_reviewers_unread: None,
     }
 }
 

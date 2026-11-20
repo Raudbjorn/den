@@ -2,29 +2,61 @@
 //! 0002, "Product boundaries": the generic rules never branch on an Owner's
 //! name; they take the policy).
 //!
-//! Milestone-2 groundwork (#31) gave every Owner the empty policy. An empty
-//! policy changes nothing: an Owner without a Linear Workflow is decided
-//! exactly as in milestone 1 (`tests/decide_policies.rs`). #33 adds which
-//! unassigned Linear Issues are offered to Start ([`StartPolicy`]).
+//! An Owner without a Linear Workflow gets the empty policy, which changes
+//! nothing: it is decided exactly as in milestone 1
+//! (`tests/decide_policies.rs`).
 
 use super::{
-    facts::{LinearIssue, LinearStateKind},
+    RepoId,
+    facts::{LinearIssue, LinearStateKind, Reviewer},
     ids::same_login,
 };
 
 /// One Owner's Linear Workflow policy. Its [`Default`] is the **empty** policy,
 /// the one every Owner without a Linear Workflow gets, and it must stay a
-/// policy that changes no Decision.
+/// policy that changes no Decision: no Start teams, review rules or Held Repos.
 ///
-/// Fields arrive with the tickets that use them: Start (#33), the Held Repos (#36), the
-/// two switches, exact-head approval and comment reviews need re-review (#36),
-/// the configured reviewers (#36) and the landing order (#40). A switch the
-/// config turns on by default is still off in the empty policy: the config's
-/// defaults are the config's (#32), not this type's.
+/// Fields arrive with the tickets that use them; the landing order comes with
+/// #40.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LinearWorkflowPolicy {
     /// Which unassigned Linear Issues are offered to Start (#33).
     pub start: StartPolicy,
+    /// The workflow's review rules for the Owner's Pull Requests (#36).
+    /// `None` (the empty policy): milestone 1's PR rules, unchanged.
+    pub review: Option<ReviewPolicy>,
+    /// Held Repos: a PR here that would Merge has no Next Step and is held
+    /// for release instead (#36). Empty in the empty policy.
+    pub held_repos: Vec<RepoId>,
+}
+
+impl LinearWorkflowPolicy {
+    /// Whether `repo` is a Held Repo (compared as GitHub compares names).
+    pub fn holds(&self, repo: &RepoId) -> bool {
+        self.held_repos.iter().any(|held| held.same(repo))
+    }
+}
+
+/// The review rules of a Linear Workflow (spec 0002, "Next Step rules: PRs of
+/// an Owner with a Linear Workflow"). Having one at all adds the Request
+/// review step and judges changes requested by the commit they were given on;
+/// the two switches tighten approval and comments further.
+///
+/// The config turns both switches on by default (#32); that default is the
+/// config's. A `ReviewPolicy` built here has whatever it is given.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReviewPolicy {
+    /// **Exact-head approval**: only a user's (never a bot's) approval given on
+    /// the PR's current head commit counts, and GitHub's own review decision
+    /// must still not ask for more (it tightens GitHub's decision, never
+    /// replaces it). Off: GitHub's review decision, as in milestone 1.
+    pub exact_head_approval: bool,
+    /// **Comment reviews need re-review**: a user whose latest review only
+    /// commented, on an older head, is awaiting re-review.
+    pub comment_reviews_need_rereview: bool,
+    /// The configured reviewers (GitHub logins or teams), suggested on every
+    /// Request review.
+    pub reviewers: Vec<Reviewer>,
 }
 
 /// Which unassigned Linear Issues an Owner's Linear Workflow offers to
@@ -84,6 +116,8 @@ pub struct Policies {
 /// The policy of every Owner without a Linear Workflow.
 static EMPTY_POLICY: LinearWorkflowPolicy = LinearWorkflowPolicy {
     start: StartPolicy::NONE,
+    review: None,
+    held_repos: Vec::new(),
 };
 
 impl Policies {

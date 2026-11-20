@@ -18,7 +18,8 @@ use den::{
     config::Config,
     domain::{
         Coverage, LinearPart, LinearSourceKind, NextStep, RepoId, Source, SourceKind, SourceState,
-        WorkItemId, WorkItemKind, facts::LinearIssue,
+        WorkItemId, WorkItemKind,
+        facts::{LinearIssue, ReviewVerdict},
     },
     jobs::{JobRecord, JobSubject},
     ordering::Scope,
@@ -88,7 +89,13 @@ fn harness_with(extra: Vec<LinearIssue>) -> Harness {
         .fully_read_owner("octo")
         .repo("octo/app")
         .repo("octo/api")
-        .pull_request(pr("octo/app", 7).author(ME).changes_requested())
+        .pull_request(
+            pr("octo/app", 7)
+                .author(ME)
+                .changes_requested()
+                // Workflow review rules require a current-head review for Address review.
+                .review_at_head("alice", ReviewVerdict::ChangesRequested),
+        )
         .pull_request(pr("octo/api", 8).author(ME).draft())
         .pull_request(pr("octo/api", 9).author(ME).head_ref("team-3-cache"))
         .build()));
@@ -152,6 +159,27 @@ fn detail_of(harness: &mut Harness, reference: &str) -> DetailContent {
         harness.key(key);
     }
     harness.view.detail.content.clone().expect("selected")
+}
+
+#[test]
+fn a_pr_detail_keeps_review_policy_facts_and_its_landing_group() {
+    let mut harness = harness_with(vec![
+        linear_issue("octo", "id-4", "TEAM-4")
+            .attached("octo/api", 9)
+            .build(),
+    ]);
+    let detail = detail_of(&mut harness, "#9");
+    assert_eq!(
+        detail.facts.expect("workflow facts").label,
+        "LINEAR WORKFLOW"
+    );
+    let landing = detail.landing.expect("Landing Group detail");
+    assert!(
+        landing
+            .lines
+            .iter()
+            .any(|line| line.text.contains("member of TEAM-4"))
+    );
 }
 
 /// Story 20: each PR row says which Linear Issue it belongs to; a branch

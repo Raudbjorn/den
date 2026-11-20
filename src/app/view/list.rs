@@ -29,10 +29,12 @@ fn row(state: &State<'_>, decision: &Decision) -> Row {
         id: id.clone(),
         kind: id.kind(),
         next_step: decision.next_step,
-        step_label: decision
-            .next_step
-            .map_or(NO_STEP, |step| step.label())
-            .to_owned(),
+        step_label: match (decision.next_step, &decision.held_back) {
+            (Some(step), _) => step.label().to_owned(),
+            // "held for release": text, so it reads in monochrome.
+            (None, Some(held)) => held.label(),
+            (None, None) => NO_STEP.to_owned(),
+        },
         repo: id
             .repo()
             .map_or_else(|| id.owner().to_owned(), ToString::to_string),

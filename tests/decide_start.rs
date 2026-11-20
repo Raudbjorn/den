@@ -29,6 +29,7 @@ fn start_policy(include_backlog: bool, active_cycle_only: bool) -> Policies {
                 include_backlog,
                 active_cycle_only,
             },
+            ..LinearWorkflowPolicy::default()
         },
     )
 }
@@ -140,6 +141,7 @@ fn a_start_team_matches_its_key_whatever_the_case() {
                 teams: vec!["team".to_owned()],
                 ..StartPolicy::default()
             },
+            ..LinearWorkflowPolicy::default()
         },
     );
     let decisions = decide_under(&observation, &policies);

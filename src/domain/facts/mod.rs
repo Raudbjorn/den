@@ -15,7 +15,7 @@ pub use linear_issue::{
     LinearState, LinearStateKind, LinearTeam, LinearUser, PullRequestRef,
 };
 pub use pull_request::{
-    Check, CheckOutcome, Listed, MergeState, Mergeability, PrDetails, PullRequest, Review,
-    ReviewDecision, ReviewVerdict, Reviewer,
+    ActorKind, Check, CheckOutcome, Listed, MergeState, Mergeability, PrDetails, PullRequest,
+    Review, ReviewDecision, ReviewVerdict, Reviewer,
 };
 pub use run::{Run, RunConclusion, RunStatus};

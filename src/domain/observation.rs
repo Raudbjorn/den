@@ -16,6 +16,14 @@ pub struct TeamRef {
     pub slug: String,
 }
 
+impl TeamRef {
+    /// The same team on GitHub, whose organization logins and team slugs are
+    /// case-insensitive.
+    pub fn same(&self, other: &TeamRef) -> bool {
+        same_login(&self.org, &other.org) && self.slug.eq_ignore_ascii_case(&other.slug)
+    }
+}
+
 /// Who is looking: Waiting On "me" means this login, or a team it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Viewer {
@@ -29,9 +37,7 @@ impl Viewer {
     }
 
     pub fn belongs_to(&self, team: &TeamRef) -> bool {
-        self.teams
-            .iter()
-            .any(|t| same_login(&t.org, &team.org) && t.slug.eq_ignore_ascii_case(&team.slug))
+        self.teams.iter().any(|t| t.same(team))
     }
 }
 

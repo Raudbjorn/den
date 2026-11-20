@@ -28,7 +28,7 @@
 
 use super::{Location, location_of};
 use crate::domain::{
-    LinearSourceKind, LinearWorkflowPolicy, RepoId, StartPolicy, TeamRef,
+    LinearSourceKind, LinearWorkflowPolicy, RepoId, ReviewPolicy, StartPolicy, TeamRef, facts,
     ids::{is_valid_login, is_valid_repo_name},
 };
 use serde::Deserialize;
@@ -82,7 +82,7 @@ pub struct LinearWorkflow {
 
 impl LinearWorkflow {
     /// The decision engine's policy for this workflow's Owner. Fields arrive
-    /// with the tickets that use them (Start: #33).
+    /// with the tickets that use them (Start: #33, review rules and Held Repos: #36).
     pub fn policy(&self) -> LinearWorkflowPolicy {
         LinearWorkflowPolicy {
             start: StartPolicy {
@@ -90,6 +90,19 @@ impl LinearWorkflow {
                 include_backlog: self.include_backlog,
                 active_cycle_only: self.active_cycle_only,
             },
+            review: Some(ReviewPolicy {
+                exact_head_approval: self.exact_head_approval,
+                comment_reviews_need_rereview: self.comment_reviews_need_rereview,
+                reviewers: self
+                    .reviewers
+                    .iter()
+                    .map(|reviewer| match reviewer {
+                        Reviewer::User(login) => facts::Reviewer::User(login.clone()),
+                        Reviewer::Team(team) => facts::Reviewer::Team(team.clone()),
+                    })
+                    .collect(),
+            }),
+            held_repos: self.held_repos.clone(),
         }
     }
 

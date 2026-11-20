@@ -1,4 +1,6 @@
-//! Each open PR's checks, review threads, review requests and latest reviews,
+//! Each open PR's checks, review threads, review requests and latest reviews
+//! (the standing verdicts, and the latest review of any kind with its commit
+//! and its author's kind of account), and its head as read in the same query,
 //! read in batches of [`PRS_PER_QUERY`] PRs per query (one aliased `node(id:)`
 //! per PR, since `isRequired` needs each PR's own ID).
 //!
@@ -15,7 +17,8 @@ use crate::{
     domain::{
         CoverageEntry, Incompleteness, RepoId, Source, SourceKind, SourceState, TeamRef,
         facts::{
-            Check, CheckOutcome, Listed, PrDetails, PullRequest, Review, ReviewVerdict, Reviewer,
+            ActorKind, Check, CheckOutcome, Listed, PrDetails, PullRequest, Review, ReviewVerdict,
+            Reviewer,
         },
     },
     github::session::{Actor, Connection, Fetched, Session},
@@ -25,8 +28,9 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
-/// PRs per details query. Each PR asks for at most 300 nodes (100 checks,
-/// 100 threads, 50 review requests, 50 reviews), so a batch stays far inside
+/// PRs per details query. Each PR asks for at most 350 nodes (100 checks,
+/// 100 threads, 50 review requests, 50 standing reviews, 50 latest reviews of
+/// any kind), so a batch stays far inside
 /// GitHub's 500,000-node limit while keeping the number of `gh` calls low.
 pub const PRS_PER_QUERY: usize = 25;
 
@@ -145,7 +149,13 @@ fn record_truncated<'a>(
     }
 }
 
-/// The names of a PR's lists that were not read in full.
+/// The names of a PR's lists that were not read in full, as Repo coverage.
+///
+/// `latest_reviews_with_comments` (GitHub's `latestReviews`) is left out on
+/// purpose: only the Linear Workflow's review rules read it, and this source
+/// doesn't know which Owners have one. Its truncation stays a per-PR fact
+/// (`Listed::complete`) that the workflow rules turn into an unknown in the
+/// Explanation, so an Owner without a workflow keeps milestone 1's coverage.
 fn truncated_lists(details: &PrDetails) -> Vec<&'static str> {
     [
         (!details.checks.complete, "checks"),
@@ -220,9 +230,11 @@ fn numbered(numbers: &[u64]) -> String {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DetailsNode {
+    head_ref_oid: String,
     review_threads: Connection<ThreadNode>,
     review_requests: Connection<RequestNode>,
     latest_opinionated_reviews: Connection<ReviewNode>,
+    latest_reviews: Connection<ReviewNode>,
     commits: CommitList,
 }
 
@@ -261,7 +273,20 @@ enum ReviewerNode {
 #[derive(Deserialize)]
 struct ReviewNode {
     state: String,
-    author: Option<Actor>,
+    author: Option<ReviewAuthor>,
+    commit: Option<CommitOid>,
+}
+
+#[derive(Deserialize)]
+struct ReviewAuthor {
+    #[serde(rename = "__typename")]
+    typename: String,
+    login: String,
+}
+
+#[derive(Deserialize)]
+struct CommitOid {
+    oid: String,
 }
 
 #[derive(Deserialize)]
@@ -332,6 +357,7 @@ impl DetailsNode {
             !threads.page_info.has_next_page && threads.nodes.iter().all(Option::is_some);
         let unresolved = threads.nodes.iter().flatten().filter(|t| !t.is_resolved);
         PrDetails {
+            head_commit: Some(self.head_ref_oid),
             checks: checks(self.commits, response_complete),
             unresolved_threads: u32::try_from(unresolved.count()).unwrap_or(u32::MAX),
             threads_complete,
@@ -339,12 +365,8 @@ impl DetailsNode {
                 node.requested_reviewer
                     .and_then(ReviewerNode::into_reviewer)
             }),
-            latest_reviews: listed(self.latest_opinionated_reviews, |node| {
-                Some(Review {
-                    author: node.author.map(|a| a.login),
-                    verdict: verdict(&node.state),
-                })
-            }),
+            latest_reviews: listed(self.latest_opinionated_reviews, ReviewNode::into_review),
+            latest_reviews_with_comments: listed(self.latest_reviews, ReviewNode::into_review),
         }
     }
 }
@@ -394,6 +416,30 @@ impl ReviewerNode {
             })),
             Self::Other => None,
         }
+    }
+}
+
+impl ReviewNode {
+    fn into_review(self) -> Option<Review> {
+        let author_kind = self
+            .author
+            .as_ref()
+            .map_or(ActorKind::Other, |a| actor_kind(&a.typename));
+        Some(Review {
+            author: self.author.map(|a| a.login),
+            author_kind,
+            verdict: verdict(&self.state),
+            commit: self.commit.map(|c| c.oid),
+        })
+    }
+}
+
+/// `Actor.__typename`.
+fn actor_kind(typename: &str) -> ActorKind {
+    match typename {
+        "User" => ActorKind::User,
+        "Bot" => ActorKind::Bot,
+        _ => ActorKind::Other,
     }
 }
 
@@ -469,6 +515,7 @@ fn verdict(state: &str) -> ReviewVerdict {
     match state {
         "APPROVED" => ReviewVerdict::Approved,
         "CHANGES_REQUESTED" => ReviewVerdict::ChangesRequested,
+        "COMMENTED" => ReviewVerdict::Commented,
         _ => ReviewVerdict::Other,
     }
 }

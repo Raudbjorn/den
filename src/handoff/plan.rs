@@ -17,7 +17,7 @@ use super::{
 use crate::{
     config::Config,
     decide::Decision,
-    domain::{Observation, WorkItemId},
+    domain::{NextStep, Observation, WorkItemId},
 };
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -78,6 +78,9 @@ fn facts(
     let step = decision.next_step;
     if step.is_none() {
         reasons.push(RefusalReason::NoNextStep);
+    }
+    if step == Some(NextStep::RequestReview) {
+        reasons.push(RefusalReason::RequestReviewNotLaunchable);
     }
     let Some(pr) = observation
         .pull_requests
