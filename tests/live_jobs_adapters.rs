@@ -130,3 +130,73 @@ fn real_git_worktrees_are_present_missing_or_unknown() {
     );
     assert_eq!(check.not_checked, 0);
 }
+
+/// A Main Clone configured through a symlink (review on #27): den records the
+/// Job under the alias, git lists the worktree under the real path. Both name
+/// the same folder, so the Job is a Live Job, not unknown.
+#[cfg(unix)]
+#[test]
+fn a_main_clone_reached_through_a_symlink_still_has_live_jobs() {
+    let temp = tempfile::tempdir().unwrap();
+    let real: PathBuf = fs::canonicalize(temp.path()).unwrap().join("real");
+    fs::create_dir(&real).unwrap();
+    git(&real, &["init", "-q"]);
+    git(&real, &["commit", "-q", "--allow-empty", "-m", "start"]);
+    let alias = temp.path().join("alias");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+
+    let feature = job(&alias, 7, "feature");
+    git(
+        &alias,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature",
+            feature.worktree.to_str().unwrap(),
+        ],
+    );
+    // git itself names it by the real path.
+    let listed = git(&alias, &["worktree", "list", "--porcelain"]);
+    assert!(
+        listed.contains(&format!(
+            "worktree {}",
+            real.join(".claude/worktrees/feature").display()
+        )),
+        "{listed}"
+    );
+    // A Job whose folder is gone is still told apart from a present one.
+    let gone = job(&alias, 8, "gone");
+
+    let check = live::check_jobs(
+        &[feature.clone(), gone.clone()],
+        &GitWorkspace::new(),
+        Duration::from_secs(60),
+    );
+    let state_of = |job: &JobRecord| {
+        check
+            .checks
+            .iter()
+            .find(|c| c.job == *job)
+            .map(|c| c.state.clone())
+            .expect("checked")
+    };
+    assert_eq!(state_of(&feature), WorktreeState::Present);
+    assert_eq!(state_of(&gone), WorktreeState::Missing);
+
+    // The port answers in den's names: the clone's own checkout and the Job's
+    // worktree both under the alias, exactly (no trailing separator).
+    let registered = den::ports::Workspace::worktrees(&GitWorkspace::new(), &alias).unwrap();
+    let paths: Vec<String> = registered
+        .iter()
+        .map(|w| w.path.display().to_string())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            alias.display().to_string(),
+            feature.worktree.display().to_string()
+        ]
+    );
+}
