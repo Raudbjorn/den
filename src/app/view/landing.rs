@@ -7,12 +7,12 @@ use crate::{
     app::view_model::{JobMarker, LandingDetail, LandingLine, RowLanding, SEPARATOR},
     decide::{
         Decision,
-        correlation::{Member, MemberStatus},
+        correlation::{Member, MemberStatus, PullRequestKey},
     },
     domain::{WorkItemId, facts::AttachmentsRead},
     handoff::live,
-    ordering::same_work_item,
 };
+use std::collections::HashMap;
 
 const LABEL: &str = "LANDING GROUP";
 
@@ -47,10 +47,11 @@ pub fn detail(state: &State<'_>, decision: &Decision) -> Option<LandingDetail> {
 
 fn issue_group(state: &State<'_>, decision: &Decision) -> LandingDetail {
     let landing = &decision.landing;
+    let decisions = pull_request_decisions(state.all_decisions, &landing.members);
     let mut lines: Vec<LandingLine> = landing
         .members
         .iter()
-        .map(|member| member_line(state, member))
+        .map(|member| member_line(state, &decisions, member))
         .collect();
     // den never reads a partial attachment list as "no Pull Request", so
     // the section agrees with the Explanation's "couldn't establish whether
@@ -90,12 +91,37 @@ fn unread_attachments(state: &State<'_>, decision: &Decision) -> Option<String> 
     }
 }
 
+/// The members' own Decisions, by Pull Request: one pass over the
+/// Decisions per frame, however many members there are. The first one wins.
+fn pull_request_decisions<'d>(
+    all: &'d [Decision],
+    members: &[Member],
+) -> HashMap<PullRequestKey, &'d Decision> {
+    let mut decisions = HashMap::new();
+    if members.is_empty() {
+        return decisions;
+    }
+    for decision in all {
+        if let WorkItemId::PullRequest { repo, number } = &decision.item.id {
+            decisions
+                .entry(PullRequestKey::of(repo, *number))
+                .or_insert(decision);
+        }
+    }
+    decisions
+}
+
 /// `acme/api #4 · open · Merge · Live Job`.
-fn member_line(state: &State<'_>, member: &Member) -> LandingLine {
+fn member_line(
+    state: &State<'_>,
+    decisions: &HashMap<PullRequestKey, &Decision>,
+    member: &Member,
+) -> LandingLine {
     let id = member.pr.id();
     let mut parts = vec![member.reference(), member.status.describe()];
     if let MemberStatus::Open { .. } = member.status {
-        parts.push(own_next_step(state, &id));
+        let own = decisions.get(&PullRequestKey::of(&member.pr.repo, member.pr.number));
+        parts.push(own_next_step(own.copied()));
     }
     let job = live::most_telling(state.job_checks, &id).map(|c| jobs::marker(&c.state));
     if let Some(marker) = job {
@@ -110,18 +136,14 @@ fn member_line(state: &State<'_>, member: &Member) -> LandingLine {
 }
 
 /// The member's own Next Step, from its own Decision.
-fn own_next_step(state: &State<'_>, id: &WorkItemId) -> String {
-    state
-        .all_decisions
-        .iter()
-        .find(|d| same_work_item(&d.item.id, id))
-        .map_or_else(
-            || "its Decision isn't shown".to_owned(),
-            |d| match d.next_step {
-                Some(step) => format!("Next Step {}", step.label()),
-                None => "no Next Step".to_owned(),
-            },
-        )
+fn own_next_step(own: Option<&Decision>) -> String {
+    own.map_or_else(
+        || "its Decision isn't shown".to_owned(),
+        |d| match d.next_step {
+            Some(step) => format!("Next Step {}", step.label()),
+            None => "no Next Step".to_owned(),
+        },
+    )
 }
 
 fn job_words(marker: JobMarker) -> &'static str {
