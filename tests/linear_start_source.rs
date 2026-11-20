@@ -1,0 +1,959 @@
+//! Adapter checks for what Start reads from Linear (#33), through a scripted
+//! transport: each team's workflow states and the start teams' unassigned
+//! issues, each with its own coverage; the filter den sends; and a team or
+//! state name the config gives that Linear doesn't have, which fails the
+//! team-states source naming it.
+
+// Test code: helpers outside #[test] fns may fail loudly too (clippy.toml covers only #[test]).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+mod support;
+
+use den::{
+    config::LinearWorkflow,
+    domain::{
+        Incompleteness, LinearIssueId, LinearSourceKind, Source, SourceKind, SourceState,
+        facts::{AttachmentsRead, LinearStateKind},
+    },
+    linear::{ATTACHMENTS_PER_ISSUE, HttpReply, LinearRequest, MAX_LINEAR_PAGES, TransportError},
+    ports::{LinearSource, LinearSurvey, LinearSurveyRequest},
+};
+use serde_json::{Value, json};
+use std::sync::Arc;
+use support::{
+    fakes::ScriptedLinear,
+    harness::linear_workflow,
+    linear_replies::{attachments, issue_node, issues_page, ok, source, viewer_body},
+};
+
+/// `acme`'s workflow with start team `TEAM` and the two state names.
+fn start_workflow() -> LinearWorkflow {
+    LinearWorkflow {
+        start_teams: vec!["TEAM".to_owned()],
+        in_progress_state: Some("In Progress".to_owned()),
+        release_state: Some("Ready for Release".to_owned()),
+        ..linear_workflow("acme", "acme")
+    }
+}
+
+fn state_node(id: &str, name: &str, kind: &str) -> Value {
+    json!({ "id": id, "name": name, "type": kind })
+}
+
+/// Team `key`'s node with the usual states.
+fn team_node(key: &str) -> Value {
+    team_node_with(
+        key,
+        vec![
+            state_node(&format!("{key}-backlog"), "Backlog", "backlog"),
+            state_node(&format!("{key}-todo"), "Todo", "unstarted"),
+            state_node(&format!("{key}-doing"), "In Progress", "started"),
+            state_node(&format!("{key}-release"), "Ready for Release", "started"),
+            state_node(&format!("{key}-done"), "Done", "completed"),
+        ],
+    )
+}
+
+fn team_node_with(key: &str, states: Vec<Value>) -> Value {
+    json!({
+        "id": format!("team-{}", key.to_lowercase()),
+        "key": key,
+        "name": format!("Team {key}"),
+        "states": { "nodes": states, "pageInfo": { "hasNextPage": false } }
+    })
+}
+
+fn teams_page(nodes: Vec<Value>, next: Option<&str>) -> Value {
+    json!({ "data": { "teams": {
+        "nodes": nodes,
+        "pageInfo": { "hasNextPage": next.is_some(), "endCursor": next }
+    }}})
+}
+
+/// An unassigned, unstarted issue of team `TEAM`.
+fn start_node(id: &str, identifier: &str) -> Value {
+    let mut node = issue_node(id, identifier);
+    node["assignee"] = Value::Null;
+    node["state"] = state_node("TEAM-todo", "Todo", "unstarted");
+    node
+}
+
+fn start_page(nodes: Vec<Value>, next: Option<&str>) -> Value {
+    json!({ "data": { "issues": {
+        "nodes": nodes,
+        "pageInfo": { "hasNextPage": next.is_some(), "endCursor": next }
+    }}})
+}
+
+type Script = dyn Fn(&LinearRequest) -> Result<HttpReply, TransportError> + Send + Sync;
+
+/// Answers each operation by name; `teams` and `start` answer their own.
+fn script(
+    teams: impl Fn(&LinearRequest) -> HttpReply + Send + Sync + 'static,
+    start: impl Fn(&LinearRequest) -> HttpReply + Send + Sync + 'static,
+) -> Box<Script> {
+    Box::new(move |request| {
+        Ok(match request.operation.as_str() {
+            "LinearViewer" => ok(viewer_body("acme")),
+            "LinearAssignedIssues" => ok(issues_page(vec![issue_node("id-1", "TEAM-1")], None)),
+            "LinearTeamStates" => teams(request),
+            "LinearStartTeamIssues" => start(request),
+            other => panic!("unexpected operation {other}"),
+        })
+    })
+}
+
+fn run_survey(
+    workflow: LinearWorkflow,
+    script: Box<Script>,
+) -> (LinearSurvey, Arc<ScriptedLinear>) {
+    let transport = Arc::new(ScriptedLinear::new(script));
+    let survey = source(transport.clone(), Arc::default()).survey(&LinearSurveyRequest {
+        workflows: vec![workflow],
+    });
+    (survey, transport)
+}
+
+fn state(survey: &LinearSurvey, kind: LinearSourceKind) -> Option<SourceState> {
+    survey
+        .coverage
+        .get(&Source::Owner {
+            owner: "acme".to_owned(),
+            kind: SourceKind::Linear(kind),
+        })
+        .cloned()
+}
+
+fn failure(survey: &LinearSurvey, kind: LinearSourceKind) -> String {
+    match state(survey, kind) {
+        Some(SourceState::Failed { error }) => error,
+        other => panic!("{kind:?} failed, not {other:?}"),
+    }
+}
+
+fn operations(transport: &ScriptedLinear) -> Vec<String> {
+    transport
+        .requests()
+        .into_iter()
+        .map(|r| r.operation)
+        .collect()
+}
+
+fn all_teams(_: &LinearRequest) -> HttpReply {
+    ok(teams_page(vec![team_node("TEAM"), team_node("OPS")], None))
+}
+
+fn two_starts(_: &LinearRequest) -> HttpReply {
+    ok(start_page(
+        vec![start_node("id-8", "TEAM-8"), start_node("id-9", "TEAM-9")],
+        None,
+    ))
+}
+
+#[test]
+fn reads_team_states_and_the_start_teams_unassigned_issues() {
+    let (survey, transport) = run_survey(start_workflow(), script(all_teams, two_starts));
+
+    assert_eq!(
+        operations(&transport),
+        [
+            "LinearViewer",
+            "LinearAssignedIssues",
+            "LinearTeamStates",
+            "LinearStartTeamIssues"
+        ]
+    );
+    assert!(
+        transport
+            .requests()
+            .iter()
+            .all(|r| r.query.trim_start().starts_with("query")),
+        "read-only: queries only"
+    );
+    for kind in [
+        LinearSourceKind::Viewer,
+        LinearSourceKind::AssignedIssues,
+        LinearSourceKind::TeamStates,
+        LinearSourceKind::StartTeamIssues,
+    ] {
+        assert_eq!(
+            state(&survey, kind),
+            Some(SourceState::Complete),
+            "{kind:?}"
+        );
+    }
+
+    let team = survey
+        .part
+        .team_states
+        .iter()
+        .find(|t| t.team.key == "TEAM")
+        .expect("TEAM's states");
+    assert_eq!(
+        (team.owner.as_str(), team.workspace.as_str()),
+        ("acme", "acme")
+    );
+    assert_eq!(team.team.id, "team-team");
+    assert_eq!(team.states.len(), 5);
+    assert_eq!(team.states[1].kind, LinearStateKind::Unstarted);
+    assert_eq!(survey.part.team_states.len(), 2);
+
+    let identifiers: Vec<&str> = survey
+        .part
+        .issues
+        .iter()
+        .map(|i| i.identifier.as_str())
+        .collect();
+    assert_eq!(identifiers, ["TEAM-1", "TEAM-8", "TEAM-9"]);
+    let start = &survey.part.issues[1];
+    assert_eq!(start.id, LinearIssueId::new("acme", "id-8"));
+    assert_eq!(start.assignee, None);
+    assert_eq!(start.state.kind, LinearStateKind::Unstarted);
+}
+
+#[test]
+fn start_attachments_keep_page_completeness_in_both_paging_paths() {
+    for priority_paging in [false, true] {
+        for partial in [false, true] {
+            let (survey, transport) = run_survey(
+                start_workflow(),
+                script(all_teams, move |request| {
+                    let priority = priority_of(request);
+                    if priority_paging && priority.is_null() {
+                        return ok(start_page(Vec::new(), Some("more")));
+                    }
+                    if priority_paging && priority != json!({"eq": 1}) {
+                        return ok(start_page(Vec::new(), None));
+                    }
+                    let mut node = start_node("id-8", "TEAM-8");
+                    node["attachments"] =
+                        attachments(&["https://github.com/acme/api/pull/4"], false);
+                    let mut body = start_page(vec![node], None);
+                    if partial {
+                        body["errors"] = json!([{"message": "attachment read failed"}]);
+                    }
+                    ok(body)
+                }),
+            );
+            let issue = survey
+                .part
+                .issues
+                .iter()
+                .find(|i| i.identifier == "TEAM-8")
+                .unwrap();
+            let members: Vec<_> = issue.attachments.pull_requests().collect();
+            assert_eq!(members.len(), 1);
+            assert_eq!(members[0].number, 4);
+            assert_eq!(
+                issue.attachments.read == AttachmentsRead::Complete,
+                !partial
+            );
+            for request in transport
+                .requests()
+                .iter()
+                .filter(|r| r.operation == "LinearStartTeamIssues")
+            {
+                assert!(request.query.contains("...LinearIssueFields"));
+                assert!(
+                    request
+                        .query
+                        .contains("fragment LinearIssueFields on Issue")
+                );
+                assert_eq!(
+                    request.variables["attachmentsPerIssue"],
+                    json!(ATTACHMENTS_PER_ISSUE)
+                );
+            }
+        }
+    }
+}
+
+/// What den asks Linear for: unassigned, the start teams by key (any case),
+/// unstarted, plus backlog and the active cycle only when the workflow says.
+#[test]
+fn the_start_filter_follows_the_workflow() {
+    let filter = |workflow: LinearWorkflow| {
+        let (_, transport) = run_survey(workflow, script(all_teams, two_starts));
+        transport
+            .requests()
+            .into_iter()
+            .find(|r| r.operation == "LinearStartTeamIssues")
+            .expect("asked")
+            .variables["filter"]
+            .clone()
+    };
+
+    let plain = filter(LinearWorkflow {
+        start_teams: vec!["TEAM".to_owned(), "web".to_owned()],
+        ..start_workflow()
+    });
+    assert_eq!(
+        plain,
+        json!({
+            "team": { "or": [
+                { "key": { "eqIgnoreCase": "TEAM" } },
+                { "key": { "eqIgnoreCase": "web" } }
+            ] },
+            "assignee": { "null": true },
+            "state": { "type": { "in": ["unstarted"] } }
+        })
+    );
+
+    let wider = filter(LinearWorkflow {
+        include_backlog: true,
+        active_cycle_only: true,
+        ..start_workflow()
+    });
+    assert_eq!(
+        wider["state"],
+        json!({ "type": { "in": ["unstarted", "backlog"] } })
+    );
+    assert_eq!(wider["cycle"], json!({ "isActive": { "eq": true } }));
+}
+
+#[test]
+fn a_start_team_linear_lacks_fails_team_states_naming_it() {
+    let (survey, _) = run_survey(
+        LinearWorkflow {
+            start_teams: vec!["TEAM".to_owned(), "NOPE".to_owned()],
+            ..start_workflow()
+        },
+        script(all_teams, two_starts),
+    );
+    let error = failure(&survey, LinearSourceKind::TeamStates);
+    assert!(
+        error.contains("\"NOPE\"") && error.contains("start_teams") && error.contains("acme"),
+        "{error}"
+    );
+    assert!(!error.contains("\"TEAM\""), "TEAM exists: {error}");
+    // The rule isn't silently off: TEAM's issues are still offered, and the
+    // failure is the team-states source's alone.
+    assert_eq!(
+        state(&survey, LinearSourceKind::StartTeamIssues),
+        Some(SourceState::Complete)
+    );
+    assert_eq!(survey.part.issues.len(), 3);
+    assert!(
+        !survey.part.team_states.is_empty(),
+        "what Linear has is kept"
+    );
+}
+
+#[test]
+fn a_state_name_a_start_team_lacks_fails_team_states_naming_it() {
+    let (survey, _) = run_survey(
+        LinearWorkflow {
+            in_progress_state: Some("In progress".to_owned()),
+            release_state: Some("Shipped".to_owned()),
+            ..start_workflow()
+        },
+        script(all_teams, two_starts),
+    );
+    let error = failure(&survey, LinearSourceKind::TeamStates);
+    for expected in [
+        "in_progress_state \"In progress\" is not a state of start team TEAM",
+        "Linear spells it \"In Progress\"",
+        "release_state \"Shipped\" is not a state of start team TEAM",
+    ] {
+        assert!(error.contains(expected), "{expected:?} in {error}");
+    }
+    assert!(!error.contains("OPS"), "OPS is no start team: {error}");
+}
+
+/// Without start teams, a state name is checked against every team: it must
+/// be some team's. Start-team issues aren't asked for or recorded.
+#[test]
+fn without_start_teams_a_state_name_must_be_some_teams() {
+    let only_ops = |_: &LinearRequest| {
+        ok(teams_page(
+            vec![team_node_with(
+                "OPS",
+                vec![state_node("s", "Ready for Release", "started")],
+            )],
+            None,
+        ))
+    };
+    let workflow = LinearWorkflow {
+        start_teams: Vec::new(),
+        in_progress_state: None,
+        ..start_workflow()
+    };
+    let (survey, transport) = run_survey(workflow.clone(), script(only_ops, two_starts));
+    assert_eq!(
+        state(&survey, LinearSourceKind::TeamStates),
+        Some(SourceState::Complete)
+    );
+    assert_eq!(state(&survey, LinearSourceKind::StartTeamIssues), None);
+    assert!(
+        !operations(&transport).contains(&"LinearStartTeamIssues".to_owned()),
+        "no start team, no start-team request"
+    );
+
+    let (survey, _) = run_survey(
+        LinearWorkflow {
+            release_state: Some("Released".to_owned()),
+            ..workflow
+        },
+        script(only_ops, two_starts),
+    );
+    let error = failure(&survey, LinearSourceKind::TeamStates);
+    assert!(
+        error.contains("release_state \"Released\" is not a state of any team"),
+        "{error}"
+    );
+}
+
+/// A workflow naming no start team and no state asks Linear only what #32
+/// did, and records no team-states or start-team source.
+#[test]
+fn nothing_to_check_asks_nothing_more() {
+    let (survey, transport) = run_survey(
+        linear_workflow("acme", "acme"),
+        script(all_teams, two_starts),
+    );
+    assert_eq!(
+        operations(&transport),
+        ["LinearViewer", "LinearAssignedIssues"]
+    );
+    assert_eq!(state(&survey, LinearSourceKind::TeamStates), None);
+    assert_eq!(state(&survey, LinearSourceKind::StartTeamIssues), None);
+}
+
+/// A name den couldn't check is never called missing: a team list cut off at
+/// the page limit, or a team whose states run past one page, is partial.
+#[test]
+fn an_unread_team_or_state_is_partial_not_missing() {
+    let endless = |request: &LinearRequest| {
+        let page = request.variables["after"]
+            .as_str()
+            .map_or(0, |c| c.parse::<u32>().unwrap());
+        ok(teams_page(
+            vec![team_node(&format!("T{page}"))],
+            Some(&(page + 1).to_string()),
+        ))
+    };
+    let (survey, _) = run_survey(start_workflow(), script(endless, two_starts));
+    match state(&survey, LinearSourceKind::TeamStates) {
+        Some(SourceState::Partial(Incompleteness::PaginationStopped { pages_read, .. })) => {
+            assert_eq!(pages_read, MAX_LINEAR_PAGES);
+        }
+        other => panic!("partial at the page limit, not {other:?}"),
+    }
+
+    let long_states = |_: &LinearRequest| {
+        let mut team = team_node_with("TEAM", vec![state_node("s", "Todo", "unstarted")]);
+        team["states"]["pageInfo"]["hasNextPage"] = json!(true);
+        ok(teams_page(vec![team], None))
+    };
+    let (survey, _) = run_survey(start_workflow(), script(long_states, two_starts));
+    match state(&survey, LinearSourceKind::TeamStates) {
+        Some(SourceState::Partial(Incompleteness::FollowUpTruncated { what })) => {
+            assert!(what.contains("TEAM"), "{what}");
+        }
+        other => panic!("partial for TEAM's unread states, not {other:?}"),
+    }
+}
+
+/// Start-team issues and team states each have their own coverage: trouble
+/// in one leaves the other as it was read.
+#[test]
+fn start_team_issues_and_team_states_have_their_own_coverage() {
+    let errors_with_data = |_: &LinearRequest| {
+        let mut body = start_page(vec![start_node("id-8", "TEAM-8")], None);
+        body["errors"] = json!([{ "message": "one issue hidden" }]);
+        ok(body)
+    };
+    let (survey, _) = run_survey(start_workflow(), script(all_teams, errors_with_data));
+    assert_eq!(
+        state(&survey, LinearSourceKind::TeamStates),
+        Some(SourceState::Complete)
+    );
+    assert!(
+        matches!(
+            state(&survey, LinearSourceKind::StartTeamIssues),
+            Some(SourceState::Partial(
+                Incompleteness::LinearErrorsAlongsideData { .. }
+            ))
+        ),
+        "{:?}",
+        survey.coverage
+    );
+
+    let broken_teams =
+        |_: &LinearRequest| ok(json!({ "data": null, "errors": [{ "message": "boom" }] }));
+    let (survey, _) = run_survey(start_workflow(), script(broken_teams, two_starts));
+    assert!(matches!(
+        state(&survey, LinearSourceKind::TeamStates),
+        Some(SourceState::Failed { .. })
+    ));
+    assert_eq!(
+        state(&survey, LinearSourceKind::StartTeamIssues),
+        Some(SourceState::Complete)
+    );
+}
+
+/// No key, or no viewer: every source the workflow reads is failed, so none
+/// of the four reads as complete or as never asked.
+#[test]
+fn a_missing_key_or_refused_viewer_fails_all_four_sources() {
+    let transport = Arc::new(ScriptedLinear::new(|_| panic!("nothing is sent")));
+    let survey = den::linear::LinearApi::with(
+        Box::new(|_| None),
+        Box::new(move |_| Box::new(support::fakes::SharedLinear(transport.clone()))),
+        Arc::new(support::fakes::FixedClock(support::build::now())),
+    )
+    .survey(&LinearSurveyRequest {
+        workflows: vec![start_workflow()],
+    });
+    for kind in [
+        LinearSourceKind::Viewer,
+        LinearSourceKind::AssignedIssues,
+        LinearSourceKind::TeamStates,
+        LinearSourceKind::StartTeamIssues,
+    ] {
+        assert!(
+            failure(&survey, kind).contains("DEN_TEST_LINEAR_KEY"),
+            "{kind:?}"
+        );
+    }
+
+    let refused = Box::new(|request: &LinearRequest| {
+        assert_eq!(
+            request.operation, "LinearViewer",
+            "nothing after the viewer"
+        );
+        Ok(support::linear_replies::reply(
+            401,
+            json!({ "errors": [{ "message": "Authentication required" }] }),
+            &[],
+        ))
+    });
+    let (survey, _) = run_survey(start_workflow(), refused);
+    for kind in [
+        LinearSourceKind::TeamStates,
+        LinearSourceKind::StartTeamIssues,
+    ] {
+        assert!(
+            failure(&survey, kind).contains("DEN_TEST_LINEAR_KEY"),
+            "{kind:?}"
+        );
+    }
+}
+
+/// An issue Linear returns twice (or that is also assigned to me) is kept once.
+#[test]
+fn an_issue_is_kept_once() {
+    let repeated = |_: &LinearRequest| {
+        ok(start_page(
+            vec![
+                start_node("id-1", "TEAM-1"),
+                start_node("id-8", "TEAM-8"),
+                start_node("id-8", "TEAM-8"),
+            ],
+            None,
+        ))
+    };
+    let (survey, _) = run_survey(start_workflow(), script(all_teams, repeated));
+    let identifiers: Vec<&str> = survey
+        .part
+        .issues
+        .iter()
+        .map(|i| i.identifier.as_str())
+        .collect();
+    assert_eq!(identifiers, ["TEAM-1", "TEAM-8"]);
+}
+
+/// The teams `request` asks for: those its key filter names (any case), or
+/// all of `nodes` without a filter, as Linear answers `teams(filter:)`.
+fn teams_matching(request: &LinearRequest, nodes: Vec<Value>) -> HttpReply {
+    let filter = &request.variables["filter"];
+    let nodes = if filter.is_null() {
+        nodes
+    } else {
+        let keys: Vec<String> = filter["or"]
+            .as_array()
+            .expect("a key filter")
+            .iter()
+            .map(|k| k["key"]["eqIgnoreCase"].as_str().unwrap().to_lowercase())
+            .collect();
+        nodes
+            .into_iter()
+            .filter(|n| keys.contains(&n["key"].as_str().unwrap().to_lowercase()))
+            .collect()
+    };
+    ok(teams_page(nodes, None))
+}
+
+fn team_requests(transport: &ScriptedLinear) -> Vec<LinearRequest> {
+    transport
+        .requests()
+        .into_iter()
+        .filter(|r| r.operation == "LinearTeamStates")
+        .collect()
+}
+
+/// With start teams named, only they are asked for, by key in any case, in
+/// one request; the whole team list only when the workflow names none.
+#[test]
+fn team_states_asks_only_for_the_start_teams() {
+    let (survey, transport) = run_survey(
+        LinearWorkflow {
+            start_teams: vec!["team".to_owned()],
+            ..start_workflow()
+        },
+        script(
+            |r| teams_matching(r, vec![team_node("TEAM"), team_node("OPS")]),
+            two_starts,
+        ),
+    );
+    let requests = team_requests(&transport);
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].variables["filter"],
+        json!({ "or": [{ "key": { "eqIgnoreCase": "team" } }] })
+    );
+    assert_eq!(
+        state(&survey, LinearSourceKind::TeamStates),
+        Some(SourceState::Complete)
+    );
+    let keys: Vec<&str> = survey
+        .part
+        .team_states
+        .iter()
+        .map(|t| t.team.key.as_str())
+        .collect();
+    assert_eq!(keys, ["TEAM"]);
+
+    let (_, transport) = run_survey(
+        LinearWorkflow {
+            start_teams: Vec::new(),
+            ..start_workflow()
+        },
+        script(all_teams, two_starts),
+    );
+    let requests = team_requests(&transport);
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].variables["filter"].is_null(), "every team");
+}
+
+/// No configured start team exists: the state names are still checked,
+/// against every team, so a typo in them shows in the same survey.
+#[test]
+fn with_no_start_team_found_state_names_are_checked_against_every_team() {
+    let (survey, transport) = run_survey(
+        LinearWorkflow {
+            start_teams: vec!["NOPE".to_owned()],
+            in_progress_state: Some("In progress".to_owned()),
+            ..start_workflow()
+        },
+        script(
+            |r| teams_matching(r, vec![team_node("TEAM"), team_node("OPS")]),
+            two_starts,
+        ),
+    );
+    let error = failure(&survey, LinearSourceKind::TeamStates);
+    for expected in [
+        "start_teams names \"NOPE\"",
+        "in_progress_state \"In progress\" is not a state of any team in the Linear workspace acme",
+        "(Linear spells it \"In Progress\")",
+    ] {
+        assert!(error.contains(expected), "{expected:?} in {error}");
+    }
+    assert!(!error.contains("Ready for Release"), "it exists: {error}");
+    let filters: Vec<Value> = team_requests(&transport)
+        .into_iter()
+        .map(|r| r.variables["filter"].clone())
+        .collect();
+    assert_eq!(filters.len(), 2, "the start teams, then every team");
+    assert!(filters[1].is_null());
+    assert!(
+        survey.part.team_states.is_empty(),
+        "no start team's states to keep"
+    );
+}
+
+/// A config mismatch doesn't hide what den couldn't read on the way: the
+/// failure says the check was incomplete, with the rate limit's reset.
+#[test]
+fn a_mismatch_keeps_what_den_could_not_read() {
+    let teams = |request: &LinearRequest| {
+        if request.variables["after"].is_null() {
+            ok(teams_page(
+                vec![team_node_with(
+                    "TEAM",
+                    vec![state_node("s", "Todo", "unstarted")],
+                )],
+                Some("2"),
+            ))
+        } else {
+            support::linear_replies::reply(
+                429,
+                json!({ "errors": [{ "message": "slow down", "extensions": { "code": "RATELIMITED" } }] }),
+                &[("x-ratelimit-requests-reset", "1795000000000")],
+            )
+        }
+    };
+    let (survey, _) = run_survey(
+        LinearWorkflow {
+            start_teams: vec!["TEAM".to_owned(), "OPS".to_owned()],
+            release_state: None,
+            ..start_workflow()
+        },
+        script(teams, two_starts),
+    );
+    let error = failure(&survey, LinearSourceKind::TeamStates);
+    for expected in [
+        "in_progress_state \"In Progress\" is not a state of start team TEAM",
+        "den's check was incomplete",
+        "rate limited by Linear until 2026-",
+    ] {
+        assert!(error.contains(expected), "{expected:?} in {error}");
+    }
+    assert!(
+        !error.contains("\"OPS\""),
+        "OPS may be on the unread page: {error}"
+    );
+}
+
+/// A team Linear lists twice is kept once.
+#[test]
+fn a_team_is_kept_once() {
+    let twice =
+        |_: &LinearRequest| ok(teams_page(vec![team_node("TEAM"), team_node("TEAM")], None));
+    let (survey, _) = run_survey(start_workflow(), script(twice, two_starts));
+    assert_eq!(survey.part.team_states.len(), 1);
+}
+
+/// A start-team issue of priority `priority`.
+fn start_node_at(id: &str, priority: f64) -> Value {
+    let mut node = start_node(id, &format!("TEAM-{id}"));
+    node["priority"] = json!(priority);
+    node
+}
+
+/// The priority comparator of a start-team request (null for none).
+fn priority_of(request: &LinearRequest) -> Value {
+    request.variables["filter"]["priority"].clone()
+}
+
+/// Start-team issues are asked for oldest first.
+#[test]
+fn start_team_issues_are_read_oldest_first() {
+    let (_, transport) = run_survey(start_workflow(), script(all_teams, two_starts));
+    let request = transport
+        .requests()
+        .into_iter()
+        .find(|r| r.operation == "LinearStartTeamIssues")
+        .expect("asked");
+    assert!(
+        request
+            .query
+            .contains("sort: [{ createdAt: { order: Ascending } }]"),
+        "{}",
+        request.query
+    );
+    assert!(
+        !request.query.contains("orderBy"),
+        "Linear's default order is newest first, and orderBy can't be combined with sort"
+    );
+}
+
+/// Past one page, den reads the start teams' issues again by priority,
+/// urgent first, so that its page bound cuts the end of the Start order:
+/// each priority is asked for in turn, and the first page's issues (oldest
+/// of any priority) are not kept.
+#[test]
+fn past_one_page_start_team_issues_are_read_most_urgent_first() {
+    let bands = |request: &LinearRequest| {
+        let priority = priority_of(request);
+        if priority.is_null() {
+            return ok(start_page(
+                vec![start_node_at("old-low", 4.0)],
+                Some("more"),
+            ));
+        }
+        let id = format!("p{}", priority);
+        ok(start_page(vec![start_node_at(&id, 1.0)], None))
+    };
+    let (survey, transport) = run_survey(start_workflow(), script(all_teams, bands));
+    let asked: Vec<Value> = transport
+        .requests()
+        .iter()
+        .filter(|r| r.operation == "LinearStartTeamIssues")
+        .map(priority_of)
+        .collect();
+    assert_eq!(
+        asked,
+        [
+            Value::Null,
+            json!({ "eq": 1 }),
+            json!({ "eq": 2 }),
+            json!({ "eq": 3 }),
+            json!({ "eq": 4 }),
+            json!({ "nin": [1, 2, 3, 4] }),
+        ]
+    );
+    assert_eq!(
+        state(&survey, LinearSourceKind::StartTeamIssues),
+        Some(SourceState::Complete)
+    );
+    assert!(
+        !survey
+            .part
+            .issues
+            .iter()
+            .any(|i| i.identifier == "TEAM-old-low"),
+        "the first page's issues are read again in order, not kept"
+    );
+    assert_eq!(
+        survey.part.issues.len(),
+        1 + 5,
+        "TEAM-1 and one per priority"
+    );
+}
+
+/// When the page bound is reached, the partial reason says which end was
+/// cut: the priorities read in full, the one read only in part, and those
+/// not read; the most urgent issues are the ones kept.
+#[test]
+fn the_page_bound_cuts_the_least_urgent_and_says_so() {
+    // Urgent runs `urgent_pages` pages; high never ends.
+    let script_for = |urgent_pages: u32| {
+        script(all_teams, move |request: &LinearRequest| {
+            let page = request.variables["after"]
+                .as_str()
+                .map_or(0, |c| c.parse::<u32>().unwrap_or(0));
+            let next = (page + 1).to_string();
+            match priority_of(request).get("eq").and_then(Value::as_u64) {
+                None => ok(start_page(vec![start_node_at("first", 3.0)], Some("1"))),
+                Some(1) => ok(start_page(
+                    vec![start_node_at(&format!("u{page}"), 1.0)],
+                    (page + 1 < urgent_pages).then_some(next.as_str()),
+                )),
+                Some(_) => ok(start_page(
+                    vec![start_node_at(&format!("h{page}"), 2.0)],
+                    Some(&next),
+                )),
+            }
+        })
+    };
+    let reason = |survey: &LinearSurvey| match state(survey, LinearSourceKind::StartTeamIssues) {
+        Some(SourceState::Partial(Incompleteness::PaginationStopped { pages_read, reason })) => {
+            assert_eq!(pages_read, MAX_LINEAR_PAGES, "one bound for the whole list");
+            reason
+        }
+        other => panic!("partial at the page limit, not {other:?}"),
+    };
+
+    // Urgent fits in 2 pages; high is cut.
+    let (survey, transport) = run_survey(start_workflow(), script_for(2));
+    let reason_text = reason(&survey);
+    assert!(
+        reason_text.contains(
+            "urgent in full, high only its oldest (the newer ones not read), medium, low and no priority not read"
+        ),
+        "{reason_text}"
+    );
+    let pages = transport
+        .requests()
+        .iter()
+        .filter(|r| r.operation == "LinearStartTeamIssues")
+        .count();
+    assert_eq!(pages, usize::try_from(MAX_LINEAR_PAGES).unwrap());
+    let urgent = survey
+        .part
+        .issues
+        .iter()
+        .filter(|i| i.identifier.starts_with("TEAM-u"))
+        .count();
+    assert_eq!(urgent, 2, "every urgent issue is kept");
+
+    // Urgent itself runs past the bound.
+    let (survey, _) = run_survey(start_workflow(), script_for(u32::MAX));
+    let reason_text = reason(&survey);
+    assert!(
+        reason_text.contains(
+            "urgent only its oldest (the newer ones not read), high, medium, low and no priority not read"
+        ),
+        "{reason_text}"
+    );
+
+    // Urgent ends exactly at the bound: nothing of high was read.
+    let (survey, _) = run_survey(start_workflow(), script_for(MAX_LINEAR_PAGES - 1));
+    let reason_text = reason(&survey);
+    assert!(
+        reason_text.contains("urgent in full, high, medium, low and no priority not read"),
+        "{reason_text}"
+    );
+}
+
+/// A priority page den loses (here rate limited) doesn't cost the issues
+/// it already has: the first page's (oldest of any priority) are kept next
+/// to the priorities read before the loss, each once, and the source is
+/// partial with the rate limit's reset.
+#[test]
+fn a_lost_priority_page_keeps_the_first_page() {
+    // Urgent is read; high is rate limited. "both" is on the first page and
+    // in urgent.
+    let lost_at_high = |request: &LinearRequest| match priority_of(request)
+        .get("eq")
+        .and_then(Value::as_u64)
+    {
+        None => ok(start_page(
+            vec![start_node_at("old-low", 4.0), start_node_at("both", 1.0)],
+            Some("more"),
+        )),
+        Some(1) => ok(start_page(
+            vec![start_node_at("both", 1.0), start_node_at("u0", 1.0)],
+            None,
+        )),
+        Some(_) => support::linear_replies::reply(
+            429,
+            json!({ "errors": [{ "message": "slow down", "extensions": { "code": "RATELIMITED" } }] }),
+            &[("x-ratelimit-requests-reset", "1795000000000")],
+        ),
+    };
+    let (survey, _) = run_survey(start_workflow(), script(all_teams, lost_at_high));
+    let mut start: Vec<&str> = survey
+        .part
+        .issues
+        .iter()
+        .filter(|i| i.identifier != "TEAM-1")
+        .map(|i| i.identifier.as_str())
+        .collect();
+    start.sort_unstable();
+    assert_eq!(start, ["TEAM-both", "TEAM-old-low", "TEAM-u0"]);
+    match state(&survey, LinearSourceKind::StartTeamIssues) {
+        Some(SourceState::Partial(why)) => {
+            assert!(why.rate_limit_reset().is_some(), "{why:?}");
+        }
+        other => panic!("partial, not {other:?}"),
+    }
+
+    // The very first priority request is lost: the first page is all den
+    // has, and it is kept.
+    let lost_at_once = |request: &LinearRequest| {
+        if priority_of(request).is_null() {
+            ok(start_page(
+                vec![start_node_at("old-low", 4.0)],
+                Some("more"),
+            ))
+        } else {
+            support::linear_replies::reply(500, json!({ "message": "down" }), &[])
+        }
+    };
+    let (survey, _) = run_survey(start_workflow(), script(all_teams, lost_at_once));
+    assert!(
+        survey
+            .part
+            .issues
+            .iter()
+            .any(|i| i.identifier == "TEAM-old-low"),
+        "{:?}",
+        survey.part.issues
+    );
+    assert!(matches!(
+        state(&survey, LinearSourceKind::StartTeamIssues),
+        Some(SourceState::Partial(_))
+    ));
+}

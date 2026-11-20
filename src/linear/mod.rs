@@ -5,9 +5,10 @@
 //! For each Linear Workflow, in config order: the API key is read from the
 //! environment variable the workflow names, then the Linear viewer (checked
 //! against the configured workspace), then the viewer's active assigned
-//! Linear Issues, paged up to [`MAX_LINEAR_PAGES`], each with its attachments
-//! (#35; up to [`ATTACHMENTS_PER_ISSUE`], read in the same query, reduced to
-//! Pull Request identities or kept as links). Each source is recorded as
+//! Linear Issues, paged up to [`MAX_LINEAR_PAGES`], then, when the workflow
+//! names start teams or states, the team states and the start teams'
+//! unassigned issues ([`start`], #33). Both issue queries read attachments
+//! up to [`ATTACHMENTS_PER_ISSUE`], with completeness per issue. Each source is recorded as
 //! `Source::Owner { owner, kind: SourceKind::Linear(..) }`. Owners without a
 //! Linear Workflow are never in the request, so they make no Linear request
 //! and need no key.
@@ -16,10 +17,12 @@
 //!   its header) and the scripted-transport seam.
 //! - [`session`]: replies to source states, paging, the rate-limit stop.
 
+mod pages;
 pub mod session;
 pub mod transport;
 
 pub use session::{LINEAR_PAGE_SIZE, MAX_LINEAR_PAGES};
+pub use start::MAX_TEAM_STATES;
 pub use transport::{
     ApiKey, HttpReply, HttpsTransport, LINEAR_TIMEOUT_SECS, LinearRequest, LinearTransport,
     TransportError,
@@ -28,8 +31,7 @@ pub use transport::{
 use crate::{
     config::LinearWorkflow,
     domain::{
-        Coverage, Incompleteness, LinearIssueId, LinearSourceKind, LinearViewer, Source,
-        SourceKind, SourceState,
+        Coverage, LinearIssueId, LinearSourceKind, LinearViewer, Source, SourceKind, SourceState,
         facts::{
             Attachment, Attachments, LinearCycle, LinearIssue, LinearPriority, LinearState,
             LinearStateKind, LinearTeam, LinearUser,
@@ -56,6 +58,8 @@ macro_rules! with_issue_fields {
         )
     };
 }
+mod start;
+
 const ASSIGNED_ISSUES_QUERY: &str = with_issue_fields!("queries/assigned_issues.graphql");
 
 /// Attachments read per Linear Issue, in the query that lists it. An issue
@@ -127,22 +131,18 @@ fn record(coverage: &mut Coverage, owner: &str, kind: LinearSourceKind, state: S
 impl LinearApi {
     fn survey_workflow(&self, workflow: &LinearWorkflow, survey: &mut LinearSurvey) {
         let owner = &workflow.owner;
+        let sources = workflow.linear_sources();
+        // One trouble that stops every source (no key, no viewer) is
+        // recorded for each, so none reads as complete.
+        let record_all = |coverage: &mut Coverage, state: SourceState| {
+            for kind in &sources {
+                record(coverage, owner, *kind, state.clone());
+            }
+        };
         let key = match self.key(workflow) {
             Ok(key) => key,
             Err(error) => {
-                let failed = SourceState::Failed { error };
-                record(
-                    &mut survey.coverage,
-                    owner,
-                    LinearSourceKind::Viewer,
-                    failed.clone(),
-                );
-                record(
-                    &mut survey.coverage,
-                    owner,
-                    LinearSourceKind::AssignedIssues,
-                    failed,
-                );
+                record_all(&mut survey.coverage, SourceState::Failed { error });
                 return;
             }
         };
@@ -160,18 +160,7 @@ impl LinearApi {
             Err(state) => {
                 // Without the viewer den doesn't ask for its issues: the
                 // same trouble (a refused key, no network) would stop them.
-                record(
-                    &mut survey.coverage,
-                    owner,
-                    LinearSourceKind::Viewer,
-                    state.clone(),
-                );
-                record(
-                    &mut survey.coverage,
-                    owner,
-                    LinearSourceKind::AssignedIssues,
-                    state,
-                );
+                record_all(&mut survey.coverage, state);
                 return;
             }
         }
@@ -183,6 +172,26 @@ impl LinearApi {
             state,
         );
         survey.part.issues.extend(issues);
+        if sources.contains(&LinearSourceKind::TeamStates) {
+            let (teams, state) = start::team_states(&session, workflow);
+            record(
+                &mut survey.coverage,
+                owner,
+                LinearSourceKind::TeamStates,
+                state,
+            );
+            survey.part.team_states.extend(teams);
+        }
+        if sources.contains(&LinearSourceKind::StartTeamIssues) {
+            let (issues, state) = start::start_team_issues(&session, workflow, &survey.part.issues);
+            record(
+                &mut survey.coverage,
+                owner,
+                LinearSourceKind::StartTeamIssues,
+                state,
+            );
+            survey.part.issues.extend(issues);
+        }
     }
 
     /// The workflow's key, or why there is none (naming the variable, never
@@ -297,47 +306,30 @@ fn assigned_issues(
     let mut issues: Vec<LinearIssue> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut unreadable: Vec<String> = Vec::new();
-    loop {
-        let variables = issue_page_variables(pager.cursor.as_deref());
-        let (page, page_complete) = match session.run::<AssignedData>(
-            "LinearAssignedIssues",
-            ASSIGNED_ISSUES_QUERY,
-            variables,
-        ) {
-            Answer::Lost(state) => {
-                pager.page_lost(state);
-                break;
+    let list = pages::List {
+        operation: "LinearAssignedIssues",
+        query: ASSIGNED_ISSUES_QUERY,
+        variables: issue_page_variables,
+        connection: |data: AssignedData| data.viewer.assigned_issues,
+    };
+    let end = pages::read_list(
+        session,
+        &mut pager,
+        MAX_LINEAR_PAGES,
+        &list,
+        |node, page_complete| match serde_json::from_value::<RawIssue>(node) {
+            Ok(raw) if seen.insert(raw.id.clone()) => {
+                issues.push(raw.into_issue(workflow, page_complete))
             }
-            Answer::Data { data, state } => {
-                let complete = state.is_complete();
-                pager.page_read(state);
-                (data.viewer.assigned_issues, complete)
-            }
-        };
-        for node in page.nodes {
-            match serde_json::from_value::<RawIssue>(node) {
-                Ok(raw) if seen.insert(raw.id.clone()) => {
-                    issues.push(raw.into_issue(workflow, page_complete));
-                }
-                Ok(_) => {}
-                Err(e) => unreadable.push(e.to_string()),
-            }
-        }
-        if !pager.advance(page.page_info.has_next_page, page.page_info.end_cursor) {
-            break;
-        }
-        if !pager.may_continue() {
-            break;
-        }
+            Ok(_) => {}
+            Err(e) => unreadable.push(e.to_string()),
+        },
+    );
+    if end == pages::End::Cut {
+        let bound = pages::page_bound(&pager, None);
+        pager.note(bound);
     }
-    if let Some(first) = unreadable.first() {
-        pager.note(SourceState::Partial(Incompleteness::FollowUpTruncated {
-            what: format!(
-                "{} Linear Issue(s) den could not read, first: {first}",
-                unreadable.len()
-            ),
-        }));
-    }
+    pages::note_unreadable(&mut pager, &unreadable, "Linear Issue(s)");
     (issues, pager.finish())
 }
 
@@ -398,6 +390,16 @@ struct RawCycle {
     is_active: bool,
 }
 
+impl RawState {
+    fn into_state(self) -> LinearState {
+        LinearState {
+            id: self.id,
+            name: self.name,
+            kind: LinearStateKind::from_linear(&self.kind),
+        }
+    }
+}
+
 impl RawIssue {
     /// `page_complete`: the page that listed it came without errors; when it
     /// didn't, den can't tell whether an error took some of its attachments.
@@ -412,11 +414,7 @@ impl RawIssue {
                 id: self.team.id,
                 key: self.team.key,
             },
-            state: LinearState {
-                id: self.state.id,
-                name: self.state.name,
-                kind: LinearStateKind::from_linear(&self.state.kind),
-            },
+            state: self.state.into_state(),
             assignee: self.assignee.map(|a| LinearUser {
                 id: a.id,
                 name: a.name,

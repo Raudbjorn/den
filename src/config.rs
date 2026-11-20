@@ -20,7 +20,7 @@ pub mod linear;
 pub use linear::{LinearWorkflow, Reviewer};
 
 use crate::domain::{
-    LinearWorkflowPolicy, Policies,
+    Policies,
     ids::{MAX_LOGIN_CHARS, is_valid_login},
 };
 use serde::Deserialize;
@@ -60,7 +60,7 @@ impl Config {
     /// workflow here.
     pub fn policies(&self) -> Policies {
         self.linear.iter().fold(Policies::default(), |policies, w| {
-            policies.with(w.owner.clone(), LinearWorkflowPolicy::default())
+            policies.with(w.owner.clone(), w.policy())
         })
     }
 

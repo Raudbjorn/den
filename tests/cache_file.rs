@@ -193,6 +193,21 @@ fn a_cache_milestone_1_wrote_is_refused_by_its_format_version() {
     assert_eq!(cache.load(), Ok(Some(fresh)));
 }
 
+/// Both stacked branches used format 7 for different shapes; the combined reader refuses it.
+#[test]
+fn a_format_seven_cache_is_refused_before_decoding() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCache::in_state_dir(dir.path());
+    cache.store(&cached("me", 1)).unwrap();
+    let file = cache.file_for("me").unwrap();
+    let mut body: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    body["format"] = serde_json::json!(7);
+    fs::write(&file, serde_json::to_vec(&body).unwrap()).unwrap();
+    assert!(
+        matches!(cache.load(), Err(CacheError::Format { found: 7, expected, .. }) if expected == CACHE_FORMAT)
+    );
+}
+
 #[test]
 fn an_oversized_cache_is_not_read() {
     let dir = tempfile::tempdir().unwrap();

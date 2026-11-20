@@ -19,14 +19,15 @@
 //! - assigned → **Implement**, Waiting On the Linear assignee: me when that is
 //!   the Linear viewer of the issue's workspace (by Linear user ID, never
 //!   matched to a GitHub login);
-//! - unassigned → no Next Step yet (Start arrives with the start teams, #33).
+//! - unassigned and eligible under the workflow policy → **Start**, ordered
+//!   by priority, active cycle and age; other unassigned issues have no Decision.
 
 use super::{
-    Attribution, Context, Decision, Explanation, WorkItem,
+    Attribution, Context, Decision, Explanation, StartOrder, WorkItem,
     correlation::{Landing, Member, MemberStatus},
 };
 use crate::domain::{
-    NextStep,
+    NextStep, StartPolicy,
     facts::{Attachment, AttachmentsRead, LinearIssue},
 };
 
@@ -42,11 +43,11 @@ pub fn decide_all(ctx: &Context<'_>) -> Vec<Decision> {
         .linear
         .issues
         .iter()
-        .map(|issue| decide(ctx, issue))
+        .filter_map(|issue| decide(ctx, issue))
         .collect()
 }
 
-fn decide(ctx: &Context<'_>, issue: &LinearIssue) -> Decision {
+fn decide(ctx: &Context<'_>, issue: &LinearIssue) -> Option<Decision> {
     let item = WorkItem {
         id: issue.work_item_id(),
         identifier: Some(issue.identifier.clone()),
@@ -76,10 +77,10 @@ fn decide(ctx: &Context<'_>, issue: &LinearIssue) -> Decision {
                 ..Explanation::default()
             },
         ),
-        None => by_assignment(ctx, issue, item, other_conditions, unknowns),
+        None => by_assignment(ctx, issue, item, other_conditions, unknowns)?,
     };
     decision.landing = landing;
-    decision
+    Some(decision)
 }
 
 /// Why the Landing Group leaves the issue no Next Step of its own, if it
@@ -131,17 +132,17 @@ fn group_gate(issue: &LinearIssue, landing: &Landing) -> Option<String> {
     None
 }
 
-/// No members and every attachment read: the assignment decides.
+/// No members and every attachment read: assignment or the Start policy decides.
 fn by_assignment(
     ctx: &Context<'_>,
     issue: &LinearIssue,
     item: WorkItem,
-    other_conditions: Vec<String>,
+    mut other_conditions: Vec<String>,
     unknowns: Vec<String>,
-) -> Decision {
-    let viewer = ctx.viewers.linear(&issue.id.workspace);
-    match &issue.assignee {
-        Some(assignee) => Decision::new(
+) -> Option<Decision> {
+    if let Some(assignee) = &issue.assignee {
+        let viewer = ctx.viewers.linear(&issue.id.workspace);
+        return Some(Decision::new(
             ctx,
             item,
             Some(NextStep::Implement),
@@ -155,20 +156,52 @@ fn by_assignment(
                 unknowns,
                 ..Explanation::default()
             },
-        ),
-        None => Decision::new(
-            ctx,
-            item,
-            None,
-            Attribution::nobody("nobody is assigned"),
-            Explanation {
-                no_step_reason: Some("the Linear Issue is unassigned".to_owned()),
-                other_conditions,
-                unknowns,
-                ..Explanation::default()
-            },
-        ),
+        ));
     }
+    let start = &ctx.policy(&issue.owner).start;
+    if !start.offers(issue) {
+        return None;
+    }
+    if start.active_cycle_only
+        && let Some(cycle) = &issue.cycle
+    {
+        other_conditions.push(format!(
+            "this Linear Workflow offers only the active cycle's issues: {}",
+            cycle.describe()
+        ));
+    }
+    let mut decision = Decision::new(
+        ctx,
+        item,
+        Some(NextStep::Start),
+        Attribution::nobody("nobody: it is unassigned, so anyone may start it"),
+        Explanation {
+            winning_rule: Some(start_rule(start, issue)),
+            other_conditions,
+            unknowns,
+            ..Explanation::default()
+        },
+    );
+    decision.start_order = Some(StartOrder {
+        urgency: StartOrder::urgency(issue.priority),
+        outside_active_cycle: !issue.cycle.as_ref().is_some_and(|c| c.active),
+        created_at: issue.created_at,
+    });
+    Some(decision)
+}
+
+/// "the Linear Issue is unassigned, in start team TEAM, and not started yet
+/// (Todo)".
+fn start_rule(start: &StartPolicy, issue: &LinearIssue) -> String {
+    let not_started = if start.include_backlog {
+        "not started yet (unstarted or backlog, as this Linear Workflow includes the backlog)"
+    } else {
+        "not started yet"
+    };
+    format!(
+        "the Linear Issue is unassigned, in start team {}, and {not_started}: {}",
+        issue.team.key, issue.state.name
+    )
 }
 
 /// The group, in the Explanation: each member and its status, each hint,

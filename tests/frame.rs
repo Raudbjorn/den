@@ -803,6 +803,7 @@ fn linear_markers_are_glyphs_that_read_in_monochrome() {
         part: LinearPart {
             viewers: vec![linear_viewer("acme", "acme")],
             issues: vec![linear_issue("acme", "id-7", "TEAM-7").build()],
+            ..LinearPart::default()
         },
         coverage: Coverage::default(),
     });

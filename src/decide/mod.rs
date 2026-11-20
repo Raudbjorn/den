@@ -25,7 +25,7 @@ pub use correlation::{Correlation, Landing, correlate};
 
 use crate::domain::{
     CoverageEntry, LinearWorkflowPolicy, NextStep, Observation, Policies, UpstreamTargets, Viewers,
-    WaitingOn, WorkItemId,
+    WaitingOn, WorkItemId, facts::LinearPriority,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -87,6 +87,39 @@ pub struct Decision {
     /// milestone 1's Decisions read and compare unchanged.
     #[serde(default, skip_serializing_if = "Landing::is_empty")]
     pub landing: Landing,
+    /// Where a Start falls among Starts (#33); `None` for every other Next
+    /// Step, which order by update time alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_order: Option<StartOrder>,
+}
+
+/// Where a **Start** falls among Starts (spec 0002, "Ordering": priority, then
+/// active cycle, then oldest first). Lower comes first: the fields compare in
+/// declaration order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct StartOrder {
+    /// Linear's priority as urgency: urgent 0, high 1, medium 2, low 3, a
+    /// number den doesn't know 4, no priority 5 (see [`StartOrder::urgency`]).
+    pub urgency: u8,
+    /// `false` when the issue is in its team's active cycle, so those come first.
+    pub outside_active_cycle: bool,
+    /// When the issue was created: the oldest comes first.
+    pub created_at: Timestamp,
+}
+
+impl StartOrder {
+    /// Linear's priority as an urgency rank (lower is more urgent). Linear's
+    /// own number puts "no priority" (0) first; den puts it last.
+    pub fn urgency(priority: LinearPriority) -> u8 {
+        match priority {
+            LinearPriority::Urgent => 0,
+            LinearPriority::High => 1,
+            LinearPriority::Medium => 2,
+            LinearPriority::Low => 3,
+            LinearPriority::Other(_) => 4,
+            LinearPriority::None => 5,
+        }
+    }
 }
 
 impl Decision {
@@ -109,6 +142,7 @@ impl Decision {
             coverage,
             observed_at: ctx.observation.observed_at,
             landing: Landing::default(),
+            start_order: None,
         }
     }
 }

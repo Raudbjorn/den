@@ -105,6 +105,7 @@ fn harness_with(extra: Vec<LinearIssue>) -> Harness {
     harness.linear.push_answer(LinearSurvey {
         part: LinearPart {
             viewers: vec![linear_viewer("octo", "acme")],
+            team_states: Vec::new(),
             issues: vec![
                 linear_issue("octo", "id-1", "TEAM-1")
                     .attached("octo/app", 7)

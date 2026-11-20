@@ -23,8 +23,8 @@ use crate::{
     config::{Config, ConfigError, LinearWorkflow},
     decide::{self, Decision},
     domain::{
-        Coverage, LinearSourceKind, Observation, Policies, Source, SourceKind, SourceState,
-        UpstreamTargets, Viewer, Viewers, WorkItemId, ids::same_login,
+        Coverage, Observation, Policies, Source, SourceKind, SourceState, UpstreamTargets, Viewer,
+        Viewers, WorkItemId, ids::same_login,
     },
     handoff::{
         JobCheck, JobsCheck,
@@ -781,12 +781,13 @@ impl App {
             .linear
             .iter()
             .flat_map(|workflow| {
-                [LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues].map(|kind| {
-                    Source::Owner {
+                workflow
+                    .linear_sources()
+                    .into_iter()
+                    .map(|kind| Source::Owner {
                         owner: workflow.owner.clone(),
                         kind: SourceKind::Linear(kind),
-                    }
-                })
+                    })
             })
             .collect()
     }
@@ -816,6 +817,7 @@ fn fit_linear(shown: &mut CachedObservation, workflows: &[LinearWorkflow]) {
         .iter()
         .map(|v| (&v.owner, &v.workspace))
         .chain(part.issues.iter().map(|i| (&i.owner, &i.id.workspace)))
+        .chain(part.team_states.iter().map(|t| (&t.owner, &t.workspace)))
         .filter(|(owner, workspace)| {
             !workspace_of(owner).is_some_and(|w| w.eq_ignore_ascii_case(workspace))
         })
@@ -827,6 +829,7 @@ fn fit_linear(shown: &mut CachedObservation, workflows: &[LinearWorkflow]) {
     let part = &mut shown.observation.linear;
     part.viewers.retain(|v| keep(&v.owner));
     part.issues.retain(|i| keep(&i.owner));
+    part.team_states.retain(|t| keep(&t.owner));
     let kept = |source: &Source| match source {
         Source::Owner { owner, .. } if source.is_linear() => keep(owner),
         _ => true,

@@ -5,7 +5,9 @@
 //! on a default branch › Resolve conflicts › Address review › Land › Merge ›
 //! Review › Request review › Fix CI on a PR › Finish draft › Mark for release ›
 //! Implement › Start › Triage › Open PR › Prune or revive › no Next Step; spec
-//! 0002, "Ordering"), then most recently updated first. The Work Item's
+//! 0002, "Ordering"), then most recently updated first, except that Starts
+//! order by priority, then active cycle, then oldest first
+//! ([`StartOrder`](crate::decide::StartOrder)). The Work Item's
 //! identity breaks remaining ties, so the order is total and stable across
 //! refreshes.
 
@@ -176,6 +178,9 @@ fn sort_key(d: &Decision) -> impl Ord + '_ {
     (
         d.waiting_on,
         kind_rank(d.next_step, d.item.id.kind()),
+        // Only Starts carry one, so it orders Starts among themselves and
+        // leaves every other kind to the update time.
+        d.start_order,
         Reverse(d.item.updated_at),
         &d.item.id,
     )

@@ -61,6 +61,7 @@ fn decision(
         coverage: Vec::new(),
         observed_at: ts(support::build::NOW),
         landing: Landing::default(),
+        start_order: None,
     }
 }
 
