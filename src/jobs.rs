@@ -63,8 +63,9 @@ pub const JOBS_LOCK_WAIT_SECS: u64 = 10;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum JobSubject {
     /// A GitHub Work Item: an Issue, a Pull Request, a Branch or a Run (every
-    /// milestone-1 Job).
-    #[serde(rename = "github")]
+    /// milestone-1 Job). Format-2 files written before the name was pinned
+    /// stored the variant's own name, `"GitHub"`, which still reads.
+    #[serde(rename = "github", alias = "GitHub")]
     GitHub(WorkItemId),
 }
 

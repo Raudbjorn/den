@@ -166,6 +166,55 @@ fn a_github_subject_is_stored_under_its_pinned_name() {
     );
 }
 
+/// A format-2 file written before the subject name was pinned stored the
+/// Rust variant's name, `"GitHub"`. It still loads as a GitHub Work Item, and
+/// the next append rewrites it under the pinned name.
+#[test]
+fn a_format_2_file_from_before_the_pinned_name_still_loads() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = FileJobStore::in_state_dir(temp.path());
+    let written_before_the_pin = r#"{
+  "format": 2,
+  "jobs": [
+    {
+      "subject": {
+        "GitHub": {
+          "PullRequest": {
+            "repo": { "owner": "octo", "name": "app" },
+            "number": 7
+          }
+        }
+      },
+      "next_step": "AddressReview",
+      "target": { "owner": "octo", "name": "app" },
+      "main_clone": "/home/me/dev/app",
+      "worktree": "/home/me/dev/app/.claude/worktrees/feature-7",
+      "branch": "feature-7",
+      "session": "app-pr7-address-review",
+      "launched_at": "2026-11-19T12:00:00Z"
+    }
+  ]
+}"#;
+    fs::write(store.path(), written_before_the_pin).unwrap();
+
+    let records = store.load().unwrap();
+    assert_eq!(
+        records.iter().map(|r| &r.subject).collect::<Vec<_>>(),
+        [&JobSubject::GitHub(WorkItemId::PullRequest {
+            repo: octo_app(),
+            number: 7
+        })]
+    );
+
+    store.record(&store_record()).unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+    assert_eq!(
+        body["jobs"][0]["subject"]["github"]["PullRequest"]["number"], 7,
+        "{body}"
+    );
+    assert_eq!(store.load().unwrap().len(), 2);
+}
+
 /// A format-1 file milestone 1 wrote right up to the bound: converting it to
 /// format 2 (records nested one level deeper) must not lock every later
 /// append out, so the next append still succeeds and keeps every record.
