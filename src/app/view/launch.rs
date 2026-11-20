@@ -1,6 +1,7 @@
 //! The launch sheet's ViewModel: what launching will do, then what it did.
 
 use super::super::launch::{Sheet, SheetState};
+use crate::handoff::{Target, TargetChoice};
 use crate::{
     app::view_model::{LaunchSheet, LaunchStatus, PromptField, SheetField, SheetMessage, Tone},
     domain::WorkItemKind,
@@ -32,6 +33,7 @@ pub fn build(sheet: &Sheet) -> LaunchSheet {
         SheetState::Inspecting => {
             view.status = LaunchStatus::Inspecting;
             view.headline = "Looking at the workspace…".to_owned();
+            view.fields.extend(chosen_target_field(sheet));
         }
         SheetState::Ready {
             plan, moved_from, ..
@@ -59,6 +61,7 @@ pub fn build(sheet: &Sheet) -> LaunchSheet {
         SheetState::Refused(refusal) => {
             view.status = LaunchStatus::Refused;
             view.headline = "Refused: nothing was done".to_owned();
+            view.fields.extend(chosen_target_field(sheet));
             view.messages.extend(refusal_messages(refusal));
         }
         SheetState::Launching { plan, .. } => {
@@ -81,7 +84,7 @@ fn fill_plan(view: &mut LaunchSheet, sheet: &Sheet, plan: &LaunchPlan, moved_fro
     // The plan's Next Step, not the one seen when the sheet opened: a survey
     // that finished in between may have changed it, and the plan is what runs.
     view.next_step = plan.next_step.label().to_owned();
-    view.fields = fields(plan, moved_from);
+    view.fields = fields(sheet, plan, moved_from);
     let prompt = sheet.prompt.text();
     view.command = Some(command::display(
         &plan.window,
@@ -97,15 +100,75 @@ fn fill_plan(view: &mut LaunchSheet, sheet: &Sheet, plan: &LaunchPlan, moved_fro
     });
 }
 
-fn fields(plan: &LaunchPlan, moved_from: Option<&str>) -> Vec<SheetField> {
-    let mut fields = vec![field(
-        "TARGET",
-        plan.target.repo.to_string(),
-        plan.target
-            .is_fork
-            .then(|| "fork: its own Repo, not its Upstream".to_owned()),
-        Tone::Plain,
-    )];
+/// The "upstream →" label: an Upstream target reads as one in monochrome too.
+pub const UPSTREAM_LABEL: &str = "upstream →";
+
+/// The TARGET field of a plan: the Upstream in rust with its text label, or the
+/// Work Item's own Repo (a fork's own, by default).
+fn target_field(sheet: &Sheet, target: &Target) -> SheetField {
+    match &target.upstream_of {
+        Some(fork) => field(
+            "TARGET",
+            format!("{UPSTREAM_LABEL} {}", target.repo),
+            Some(upstream_note(sheet, fork)),
+            Tone::Upstream,
+        ),
+        None => field(
+            "TARGET",
+            target.repo.to_string(),
+            own_repo_note(sheet, target.is_fork),
+            Tone::Plain,
+        ),
+    }
+}
+
+fn upstream_note(sheet: &Sheet, fork: &crate::domain::RepoId) -> String {
+    if sheet.choice == sheet.fork_choice {
+        format!("the Upstream of {fork}, as set for the fork (u: the fork, for this Job)")
+    } else {
+        format!("the Upstream of {fork}, for this Job only (u: back to the fork)")
+    }
+}
+
+fn own_repo_note(sheet: &Sheet, is_fork: bool) -> Option<String> {
+    if !is_fork {
+        return None;
+    }
+    let mut note = "fork: its own Repo, not its Upstream".to_owned();
+    if sheet.choice != sheet.fork_choice {
+        note.push_str(", for this Job only");
+    }
+    Some(note)
+}
+
+/// The TARGET field before there is a plan (looking, or refused), from the
+/// sheet's choice, so a refused Upstream target still shows what was chosen.
+fn chosen_target_field(sheet: &Sheet) -> Option<SheetField> {
+    let fork = sheet.fork.as_ref()?;
+    Some(match (sheet.choice, &fork.upstream) {
+        (TargetChoice::Upstream, Some(upstream)) => field(
+            "TARGET",
+            format!("{UPSTREAM_LABEL} {upstream}"),
+            Some(upstream_note(sheet, &fork.fork)),
+            Tone::Upstream,
+        ),
+        (TargetChoice::Upstream, None) => field(
+            "TARGET",
+            format!("{UPSTREAM_LABEL} (not visible)"),
+            Some(format!("the Upstream of {}", fork.fork)),
+            Tone::Upstream,
+        ),
+        (TargetChoice::OwnRepo, _) => field(
+            "TARGET",
+            fork.fork.to_string(),
+            own_repo_note(sheet, true),
+            Tone::Plain,
+        ),
+    })
+}
+
+fn fields(sheet: &Sheet, plan: &LaunchPlan, moved_from: Option<&str>) -> Vec<SheetField> {
+    let mut fields = vec![target_field(sheet, &plan.target)];
     fields.push(main_clone_field(plan));
     fields.push(field(
         "REMOTE",
@@ -118,6 +181,12 @@ fn fields(plan: &LaunchPlan, moved_from: Option<&str>) -> Vec<SheetField> {
         Tone::Good,
     ));
     let base = format!("{} @ {}", base_words(plan), short_commit(&plan.base.commit));
+    let base_note = matches!(plan.base.reference, BaseRef::PullHead { .. }).then(|| {
+        format!(
+            "the head branch lives in another Repo; fetched from {}, the target's remote",
+            plan.remote.name
+        )
+    });
     fields.push(match moved_from {
         Some(from) => field(
             "BASE",
@@ -125,21 +194,26 @@ fn fields(plan: &LaunchPlan, moved_from: Option<&str>) -> Vec<SheetField> {
             Some(format!("moved from {}", short_commit(from))),
             Tone::Caution,
         ),
-        None => field("BASE", base, None, Tone::Plain),
+        None => field("BASE", base, base_note, Tone::Plain),
     });
     fields.push(field(
         "BRANCH",
         plan.branch.name.clone(),
         Some(match &plan.branch.start {
             BranchStart::New { tracking } => format!("new, tracking {tracking}"),
+            BranchStart::NewUntracked => {
+                "new, tracking nothing (its head lives in another Repo)".to_owned()
+            }
             BranchStart::Existing if plan.work_item.kind() == WorkItemKind::PullRequest => {
                 "existing local branch, already at the PR head".to_owned()
             }
             BranchStart::Existing => "existing local branch, already at the base".to_owned(),
             BranchStart::Fresh => format!(
-                "new, from {}/{}; tracks nothing until pushed",
-                plan.remote.name,
-                plan.base.reference.branch()
+                "new, from {}; tracks nothing until pushed",
+                plan.base
+                    .reference
+                    .branch()
+                    .map_or_else(|| base_words(plan), |b| format!("{}/{b}", plan.remote.name))
             ),
         }),
         Tone::Plain,
@@ -194,6 +268,7 @@ fn base_words(plan: &LaunchPlan) -> String {
         }
         BaseRef::HeadBranch(branch) => format!("branch {branch}"),
         BaseRef::DefaultBranch(branch) => format!("default branch {branch}"),
+        BaseRef::PullHead { number } => format!("PR ref refs/pull/{number}/head"),
     }
 }
 

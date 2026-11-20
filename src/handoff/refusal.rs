@@ -43,9 +43,21 @@ pub enum RefusalReason {
     NoDefaultBranch {
         repo: RepoId,
     },
-    /// The PR's head branch lives in another Repo (#13), or that Repo was deleted.
-    CrossRepoHead {
-        head_repo: Option<RepoId>,
+    /// The Upstream is the target, but the Work Item's Repo is not a fork (the
+    /// stored choice outlived the fork, or `u` was pressed elsewhere).
+    NotAFork {
+        repo: RepoId,
+    },
+    /// The Upstream is the target, but den can't see the fork's Upstream.
+    UpstreamUnknown {
+        fork: RepoId,
+    },
+    /// A PR is fetched from the Repo it is in; another target (a fork's
+    /// Upstream) would fetch a different PR of the same number.
+    PullRequestNotInTarget {
+        repo: RepoId,
+        number: u64,
+        target: RepoId,
     },
     PromptsUnusable {
         error: String,
@@ -157,6 +169,11 @@ pub enum RefusalReason {
     NoFreeWorktreeName {
         wanted: String,
     },
+    /// The target's remote has no `refs/pull/<number>/head`.
+    PullRefGone {
+        remote: String,
+        number: u64,
+    },
     ClaudeMissing,
 }
 
@@ -198,13 +215,22 @@ impl fmt::Display for RefusalReason {
                 "{} appeared since the sheet opened; den won't clone into it. Open the sheet again",
                 path.display()
             ),
-            Self::CrossRepoHead { head_repo: Some(head) } => write!(
+            Self::NotAFork { repo } => write!(
                 f,
-                "the PR's head branch lives in another Repo ({head}); launching for cross-Repo heads isn't built yet"
+                "{repo} is not a fork, so it has no Upstream to target; press u to target {repo}"
             ),
-            Self::CrossRepoHead { head_repo: None } => {
-                f.write_str("the Repo holding the PR's head branch was deleted")
-            }
+            Self::UpstreamUnknown { fork } => write!(
+                f,
+                "the target is {fork}'s Upstream, but den can't see that Upstream (private, or deleted); press u to target {fork} itself"
+            ),
+            Self::PullRequestNotInTarget {
+                repo,
+                number,
+                target,
+            } => write!(
+                f,
+                "PR #{number} is in {repo}, not in {target}: den fetches a PR only from the Repo it is in, and #{number} in {target} would be another PR; press u to target {repo} for this Job"
+            ),
             Self::PromptsUnusable { error } => write!(f, "the prompts file is unusable: {error}"),
             Self::JobRecordsUnreadable { error } => write!(
                 f,
@@ -324,6 +350,10 @@ impl fmt::Display for RefusalReason {
             Self::NoFreeWorktreeName { wanted } => write!(
                 f,
                 "the worktree name {wanted} and every numbered variant of it are taken by other Work Items' Jobs"
+            ),
+            Self::PullRefGone { remote, number } => write!(
+                f,
+                "{remote} has no refs/pull/{number}/head, so the PR's head can't be fetched from it"
             ),
             Self::ClaudeMissing => f.write_str("Claude Code (claude) is not on PATH"),
         }

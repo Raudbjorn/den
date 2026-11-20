@@ -165,3 +165,56 @@ fn print_the_sheet() {
         println!("{}\n", frame::buffer_text(&buffer));
     }
 }
+
+/// #13: a fork whose target is its Upstream, its sheet open on PR 7.
+fn upstream_sheet_open((cols, rows): (u16, u16)) -> Harness {
+    let config = Config {
+        owners: vec!["octo".to_owned()],
+        main_clone_root: Some(PathBuf::from("/home/me/dev")),
+        main_clones: BTreeMap::new(),
+    };
+    let upstreams = std::sync::Arc::new(support::fakes::FakeUpstreams::holding(
+        den::domain::UpstreamTargets::new([support::build::repo_id("octo/app")]),
+    ));
+    let mut harness =
+        Harness::with_stores(Ok(config), support::fakes::FakeCache::default(), upstreams);
+    harness.send(Event::Resized { cols, rows });
+    harness.answer(Ok(ObservationBuilder::new()
+        .owner("octo")
+        .fork("octo/app", Some("up/app"))
+        .pull_request(pr("octo/app", 7).author(ME).changes_requested())
+        .build()));
+    harness.start();
+    harness.settle(Event::Key(Key::Char('c')));
+    harness
+}
+
+#[test]
+fn an_upstream_target_reads_as_upstream_in_monochrome_on_the_sheet_and_in_the_sidebar() {
+    let (cols, rows) = (160, 45);
+    let mut harness = upstream_sheet_open((cols, rows));
+    // The ASCII profile turns the arrow into `>`; the word stays.
+    for (glyphs, target) in [
+        (GlyphProfile::Unicode, "upstream → up/app"),
+        (GlyphProfile::Ascii, "upstream > up/app"),
+    ] {
+        let theme = Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
+        let text =
+            frame::buffer_text(&frame::render(&theme, &harness.view, cols, rows).expect("renders"));
+        assert!(text.contains(target), "{glyphs:?}\n{text}");
+    }
+    harness.settle(Event::Key(Key::Esc));
+    for (glyphs, sidebar_label) in [
+        (GlyphProfile::Unicode, "upstream →"),
+        (GlyphProfile::Ascii, "upstream >"),
+    ] {
+        let theme = Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
+        let text =
+            frame::buffer_text(&frame::render(&theme, &harness.view, cols, rows).expect("renders"));
+        assert!(
+            text.lines()
+                .any(|l| l.contains("  app") && l.contains(sidebar_label)),
+            "{glyphs:?}: no sidebar row with {sidebar_label}\n{text}"
+        );
+    }
+}

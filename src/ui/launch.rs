@@ -170,18 +170,19 @@ fn field_lines(
     let mut lines = Vec::new();
     for field in fields {
         let (glyph, style) = tone(field.tone, glyphs);
+        // An Upstream target's value is rust too; other values are plain.
+        let value_style = if style == LineStyle::Upstream {
+            style
+        } else {
+            LineStyle::Plain
+        };
         match (&field.note, notes) {
             (Some(note), Notes::OwnLine) => {
-                lines.extend(labelled(
-                    &field.label,
-                    &field.value,
-                    width,
-                    LineStyle::Plain,
-                ));
+                lines.extend(labelled(&field.label, &field.value, width, value_style));
                 lines.extend(labelled("", &prefixed(glyph, note), width, style));
             }
             (Some(note), Notes::Inline) => {
-                let style = if style == LineStyle::Caution {
+                let style = if matches!(style, LineStyle::Caution | LineStyle::Upstream) {
                     style
                 } else {
                     LineStyle::Plain
@@ -189,12 +190,7 @@ fn field_lines(
                 let text = format!("{} · {}", field.value, prefixed(glyph, note));
                 lines.extend(labelled(&field.label, &text, width, style));
             }
-            _ => lines.extend(labelled(
-                &field.label,
-                &field.value,
-                width,
-                LineStyle::Plain,
-            )),
+            _ => lines.extend(labelled(&field.label, &field.value, width, value_style)),
         }
     }
     lines
@@ -268,5 +264,7 @@ fn tone(tone: Tone, glyphs: glyphs::Glyphs) -> (Option<&'static str>, LineStyle)
         Tone::Caution => (Some(glyphs.incomplete), LineStyle::Caution),
         Tone::Muted => (None, LineStyle::Muted),
         Tone::Plain => (None, LineStyle::Plain),
+        // The "upstream →" label is in the text itself.
+        Tone::Upstream => (None, LineStyle::Upstream),
     }
 }

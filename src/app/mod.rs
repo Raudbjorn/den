@@ -9,6 +9,7 @@ mod event;
 mod launch;
 mod overlay;
 mod scope;
+mod upstream;
 mod view;
 pub mod view_model;
 
@@ -21,7 +22,7 @@ use crate::{
     cache::{self, CacheError, CachedObservation},
     config::{Config, ConfigError},
     decide::{self, Decision},
-    domain::{Observation, SourceState, WorkItemId},
+    domain::{Observation, SourceState, UpstreamTargets, WorkItemId},
     handoff::prompts::{Prompts, PromptsError},
     layout::{Layout, TerminalSize},
     ordering,
@@ -69,6 +70,13 @@ pub struct App {
     /// Where to search for Main Clones when the config sets no `main_clone_root`.
     default_clone_root: Option<PathBuf>,
     next_launch: u64,
+    /// The forks whose target is their Upstream (#13).
+    upstreams: UpstreamTargets,
+    /// Why the stored Upstream choices couldn't be read at startup, if they
+    /// couldn't; `u` then changes nothing.
+    upstreams_unreadable: Option<String>,
+    /// The last thing that went wrong with a `u` (not saved, Upstream not visible).
+    upstream_problem: Option<String>,
 }
 
 impl App {
@@ -90,6 +98,9 @@ impl App {
             prompts: Ok(Prompts::default()),
             default_clone_root: None,
             next_launch: 0,
+            upstreams: UpstreamTargets::default(),
+            upstreams_unreadable: None,
+            upstream_problem: None,
         }
     }
 
@@ -125,6 +136,7 @@ impl App {
             Event::CacheStored { outcome } => cache_stored(outcome),
             Event::LaunchInspected { id, view } => self.launch_inspected(id, view),
             Event::LaunchFinished { id, report } => self.launch_finished(id, report),
+            Event::UpstreamsStored { outcome } => self.upstreams_stored(outcome),
         };
         (self.view(), effects)
     }
@@ -147,6 +159,8 @@ impl App {
             now: self.now,
             layout: Layout::for_size(self.size),
             overlay: self.overlay.as_ref(),
+            upstreams: &self.upstreams,
+            upstream_note: self.upstream_note(),
         })
     }
 
@@ -155,9 +169,16 @@ impl App {
             Ok(config) => {
                 let request = SurveyRequest {
                     owners: config.owners.clone(),
+                    upstreams: self.upstreams.clone(),
                 };
                 // The cache is read first, so it shows before the survey answers.
                 let mut effects = vec![Effect::LoadCache];
+                if let Some(error) = &self.upstreams_unreadable {
+                    effects.push(Effect::log(
+                        LogLevel::Warn,
+                        format!("ignored the Upstream choices: {error}; every fork targets itself"),
+                    ));
+                }
                 effects.extend(self.begin_survey(request));
                 effects
             }
@@ -222,6 +243,7 @@ impl App {
             }
             Key::Char('r') => self.refresh(),
             Key::Char('c') => self.open_launch_sheet(),
+            Key::Char('u') if self.scope.focus == Focus::Sidebar => self.toggle_upstream(),
             Key::Enter
             | Key::Esc
             | Key::Char(_)
@@ -290,6 +312,7 @@ impl App {
             Ok(config) => {
                 let request = SurveyRequest {
                     owners: config.owners.clone(),
+                    upstreams: self.upstreams.clone(),
                 };
                 self.begin_survey(request)
             }
@@ -344,9 +367,31 @@ impl App {
 
     /// Shows `shown`, deciding its Work Items as of `now`, keeping the selection.
     fn show(&mut self, shown: CachedObservation, now: Timestamp) {
-        let observation = &shown.observation;
-        self.ordered = ordering::order(decide::decide(observation, &observation.viewer, now));
         self.shown = Some(shown);
+        self.decide_shown(now);
+    }
+
+    /// Decides what is shown again (the Upstream choices changed).
+    fn redecide(&mut self) {
+        if let Some(now) = self
+            .now
+            .or_else(|| self.shown.as_ref().map(|s| s.observation.observed_at))
+        {
+            self.decide_shown(now);
+        }
+    }
+
+    fn decide_shown(&mut self, now: Timestamp) {
+        let Some(shown) = &self.shown else {
+            return;
+        };
+        let observation = &shown.observation;
+        self.ordered = ordering::order(decide::decide_with(
+            observation,
+            &observation.viewer,
+            &self.upstreams,
+            now,
+        ));
         self.apply_scope();
     }
 

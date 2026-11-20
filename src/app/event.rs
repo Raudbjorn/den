@@ -5,6 +5,7 @@ use crate::{
     domain::Observation,
     handoff::{LaunchReport, WorkspaceView},
     ports::SurveyFailure,
+    upstreams::UpstreamStoreError,
 };
 use jiff::Timestamp;
 
@@ -75,5 +76,9 @@ pub enum Event {
     LaunchFinished {
         id: LaunchId,
         report: Box<LaunchReport>,
+    },
+    /// The Upstream choices were saved, or why not.
+    UpstreamsStored {
+        outcome: Result<(), UpstreamStoreError>,
     },
 }

@@ -5,7 +5,10 @@
 //! Keys on the sheet: `Enter` launch, `Esc` cancel, `e` or `Tab` edit the
 //! prompt. While editing, typed keys go into the prompt (`←`/`→`, `Home`/`End`,
 //! `Backspace`/`Delete`); `Enter`, `Esc` or `Tab` stop editing. `Ctrl-C` quits
-//! from anywhere. `u` is left free for the per-Job Upstream override (#13).
+//! from anywhere. `u` (#13), on a Work Item in a fork, switches this Job's
+//! target between the fork and its Upstream without changing the fork's own
+//! setting (the sidebar's `u`); the sheet looks at the workspace again for the
+//! new target. Elsewhere `u` changes nothing and says why.
 
 use super::{
     App, Effect, Key, LogLevel, OverlayState,
@@ -13,7 +16,7 @@ use super::{
     event::LaunchId,
 };
 use crate::{
-    domain::{NextStep, WorkItemId},
+    domain::{NextStep, RepoId, WorkItemId},
     handoff::{
         self, LaunchOutcome, LaunchPlan, LaunchReport, LaunchSettings, PlanInput, Refusal,
         TargetChoice, WorkspaceView, check_prompt, short_commit,
@@ -36,6 +39,28 @@ pub(super) struct Sheet {
     pub notice: Option<String>,
     /// The PR head commit the user accepted after it moved.
     pub accepted_head: Option<String>,
+    /// This Job's target: the Work Item's Repo or, for a fork, its Upstream.
+    pub choice: TargetChoice,
+    /// The fork's own setting when the sheet opened; `choice` differs from it
+    /// only after `u` on the sheet (a one-Job override).
+    pub fork_choice: TargetChoice,
+    /// The Work Item's Repo, when it is a fork (so `u` means something), and
+    /// its Upstream if den can see it.
+    pub fork: Option<ForkTargets>,
+    /// The prompt the user edited before switching the target with `u`; kept
+    /// instead of the new target's default prompt.
+    pub edited_prompt: Option<String>,
+    /// The current target's default prompt, as the last inspection planned it.
+    /// A launch attempt puts the edited prompt into the plan, so the plan's
+    /// own prompt can't tell an edit from the default.
+    pub default_prompt: Option<String>,
+}
+
+/// The two targets a Work Item in a fork can have.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ForkTargets {
+    pub fork: RepoId,
+    pub upstream: Option<RepoId>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +91,17 @@ impl App {
         };
         let id = LaunchId(self.next_launch);
         self.next_launch += 1;
+        let fork = self.shown.as_ref().and_then(|shown| {
+            let repo = shown.observation.repo(decision.item.id.repo())?;
+            repo.is_fork.then(|| ForkTargets {
+                fork: repo.id.clone(),
+                upstream: repo.upstream().map(|u| u.id.clone()),
+            })
+        });
+        let fork_choice = match &fork {
+            Some(fork) if self.upstreams.contains(&fork.fork) => TargetChoice::Upstream,
+            _ => TargetChoice::OwnRepo,
+        };
         let mut sheet = Sheet {
             id,
             item: decision.item.id.clone(),
@@ -76,36 +112,89 @@ impl App {
             editing: false,
             notice: None,
             accepted_head: None,
+            choice: fork_choice,
+            fork_choice,
+            fork,
+            edited_prompt: None,
+            default_prompt: None,
+        };
+        let effects = self.inspect_for(&mut sheet, "opened");
+        self.overlay = Some(OverlayState::Launch(Box::new(sheet)));
+        effects
+    }
+
+    /// Asks to inspect the workspace for the sheet's Work Item and target, or
+    /// refuses straight away when den won't even look.
+    fn inspect_for(&self, sheet: &mut Sheet, what: &str) -> Vec<Effect> {
+        let gone = |sheet: &mut Sheet| {
+            let refusal = Refusal::one(handoff::RefusalReason::WorkItemGone);
+            let log = refused_log(sheet.id, &sheet.item, &refusal);
+            sheet.state = SheetState::Refused(refusal);
+            vec![log]
         };
         let Some(observation) = self.shown.as_ref().map(|s| &s.observation) else {
-            return Vec::new();
+            return gone(sheet);
+        };
+        let Some(decision) = self.ordered.iter().find(|d| d.item.id == sheet.item) else {
+            return gone(sheet);
         };
         let settings =
             LaunchSettings::from_config(self.config.as_ref().ok(), self.default_clone_root.clone());
-        let effects = match handoff::inspect_request(
-            decision,
-            observation,
-            TargetChoice::default(),
-            &settings,
-        ) {
-            Ok(request) => vec![
-                Effect::log(
-                    LogLevel::Info,
-                    format!("launch sheet {} opened for {}", id.0, sheet.item),
-                ),
-                Effect::InspectLaunch {
-                    id,
-                    request: Box::new(request),
-                },
-            ],
+        match handoff::inspect_request(decision, observation, sheet.choice, &settings) {
+            Ok(request) => {
+                sheet.state = SheetState::Inspecting;
+                vec![
+                    Effect::log(
+                        LogLevel::Info,
+                        format!(
+                            "launch sheet {} {what} for {}, targeting {}",
+                            sheet.id.0, sheet.item, request.target
+                        ),
+                    ),
+                    Effect::InspectLaunch {
+                        id: sheet.id,
+                        request: Box::new(request),
+                    },
+                ]
+            }
             Err(refusal) => {
-                let log = refused_log(id, &sheet.item, &refusal);
+                let log = refused_log(sheet.id, &sheet.item, &refusal);
                 sheet.state = SheetState::Refused(refusal);
                 vec![log]
             }
+        }
+    }
+
+    /// `u` on the sheet: this Job's target switches between the fork and its
+    /// Upstream; the fork's own setting stays as it is.
+    fn switch_target(&mut self, sheet: &mut Sheet) -> Vec<Effect> {
+        let Some(fork) = &sheet.fork else {
+            sheet.notice = Some(format!(
+                "u does nothing here: {} is not a fork, so it has no Upstream to target",
+                sheet.item.repo()
+            ));
+            return Vec::new();
         };
-        self.overlay = Some(OverlayState::Launch(Box::new(sheet)));
-        effects
+        if sheet.choice == TargetChoice::OwnRepo && fork.upstream.is_none() {
+            sheet.notice = Some(format!(
+                "u does nothing here: den can't see {}'s Upstream",
+                fork.fork
+            ));
+            return Vec::new();
+        }
+        if let SheetState::Ready { plan, .. } = &sheet.state {
+            // The prompt as it stands now wins: an edit undone back to the
+            // default clears the saved one, so it can't come back later.
+            let text = sheet.prompt.text();
+            let default = sheet.default_prompt.as_deref().unwrap_or(&plan.prompt);
+            sheet.edited_prompt = (text != default).then_some(text);
+        }
+        sheet.choice = sheet.choice.flipped();
+        sheet.accepted_head = None;
+        // A new id: an inspection still running for the old target is ignored.
+        sheet.id = LaunchId(self.next_launch);
+        self.next_launch += 1;
+        self.inspect_for(sheet, "switched target")
     }
 
     /// Keys while the launch sheet is open; it claims all of them.
@@ -133,6 +222,10 @@ impl App {
                 return Vec::new();
             }
             (Key::Char('e') | Key::Tab, SheetState::Ready { .. }) => sheet.editing = true,
+            (
+                Key::Char('u'),
+                SheetState::Ready { .. } | SheetState::Refused(_) | SheetState::Inspecting,
+            ) => effects = self.switch_target(&mut sheet),
             (Key::Enter, SheetState::Ready { .. }) => effects = self.launch(&mut sheet),
             _ => {}
         }
@@ -204,7 +297,7 @@ impl App {
         let plan = handoff::plan(&PlanInput {
             decision,
             observation,
-            choice: TargetChoice::default(),
+            choice: sheet.choice,
             view,
             prompts: self.prompts.as_ref(),
         })?;
@@ -224,7 +317,9 @@ impl App {
         };
         let effects = match self.replan(&sheet, &view) {
             Ok(plan) => {
-                sheet.prompt = PromptEditor::new(&plan.prompt);
+                sheet.prompt =
+                    PromptEditor::new(sheet.edited_prompt.as_deref().unwrap_or(&plan.prompt));
+                sheet.default_prompt = Some(plan.prompt.clone());
                 sheet.state = SheetState::Ready {
                     plan: Box::new(plan),
                     view,

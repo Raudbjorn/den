@@ -69,6 +69,8 @@ pub enum LineStyle {
     Input,
     /// An input field that has the keyboard.
     InputActive,
+    /// A fork's Upstream as the target (rust); the text says "upstream →" too.
+    Upstream,
 }
 
 pub fn line_context(text: &str, style: LineStyle) -> TemplateContext {
@@ -81,7 +83,8 @@ pub fn line_context(text: &str, style: LineStyle) -> TemplateContext {
         .set("is_muted", style == LineStyle::Muted)
         .set("is_good", style == LineStyle::Good)
         .set("is_input", style == LineStyle::Input)
-        .set("is_input_active", style == LineStyle::InputActive);
+        .set("is_input_active", style == LineStyle::InputActive)
+        .set("is_upstream", style == LineStyle::Upstream);
     ctx
 }
 

@@ -95,6 +95,27 @@ impl GitWorkspace {
             })
         }
     }
+
+    /// The commit `wanted` (a full ref) is at in the Repo at `url`, asked with
+    /// `ls-remote` outside any clone; `Ok(None)` when it has no such ref.
+    fn url_ref_head(
+        &self,
+        url: &str,
+        wanted: &str,
+        operation: impl Fn() -> String,
+    ) -> Result<Option<String>, WorkspaceError> {
+        let url = checked_url(url, &operation)?;
+        // Outside any clone, so no clone's own config applies.
+        let invocation = self
+            .git(&std::env::temp_dir())
+            .args(["ls-remote", "--", url])
+            .arg(wanted);
+        let output = self.run_ok(&invocation, operation, GIT_NETWORK_TIMEOUT_SECS)?;
+        Ok(output.stdout_text().lines().find_map(|line| {
+            let (commit, name) = line.split_once('\t')?;
+            (name.trim() == wanted).then(|| commit.trim().to_owned())
+        }))
+    }
 }
 
 fn failure_detail(output: &Output) -> String {
@@ -239,6 +260,28 @@ impl Workspace for GitWorkspace {
         }))
     }
 
+    fn remote_pull_head(
+        &self,
+        clone: &Path,
+        remote: &str,
+        number: u64,
+    ) -> Result<Option<String>, WorkspaceError> {
+        let operation = || {
+            format!(
+                "ask {remote} for PR {number}'s head (from {})",
+                clone.display()
+            )
+        };
+        let remote = checked_remote(remote, operation)?;
+        let wanted = format!("refs/pull/{number}/head");
+        let invocation = self.git(clone).args(["ls-remote", remote]).arg(&wanted);
+        let output = self.run_ok(&invocation, operation, GIT_NETWORK_TIMEOUT_SECS)?;
+        Ok(output.stdout_text().lines().find_map(|line| {
+            let (commit, name) = line.split_once('\t')?;
+            (name.trim() == wanted).then(|| commit.trim().to_owned())
+        }))
+    }
+
     fn worktrees(&self, clone: &Path) -> Result<Vec<RegisteredWorktree>, WorkspaceError> {
         let invocation = self.git(clone).args(["worktree", "list", "--porcelain"]);
         let output = self.run_ok(
@@ -291,18 +334,12 @@ impl Workspace for GitWorkspace {
 
     fn url_branch_head(&self, url: &str, branch: &str) -> Result<Option<String>, WorkspaceError> {
         let operation = || format!("ask {url} for {branch}");
-        let url = checked_url(url, operation)?;
-        let wanted = format!("refs/heads/{branch}");
-        // Outside any clone, so no clone's own config applies.
-        let invocation = self
-            .git(&std::env::temp_dir())
-            .args(["ls-remote", "--heads", "--", url])
-            .arg(&wanted);
-        let output = self.run_ok(&invocation, operation, GIT_NETWORK_TIMEOUT_SECS)?;
-        Ok(output.stdout_text().lines().find_map(|line| {
-            let (commit, name) = line.split_once('\t')?;
-            (name.trim() == wanted).then(|| commit.trim().to_owned())
-        }))
+        self.url_ref_head(url, &format!("refs/heads/{branch}"), operation)
+    }
+
+    fn url_pull_head(&self, url: &str, number: u64) -> Result<Option<String>, WorkspaceError> {
+        let operation = || format!("ask {url} for PR {number}'s head");
+        self.url_ref_head(url, &format!("refs/pull/{number}/head"), operation)
     }
 
     fn clone_repo(&self, url: &str, remote: &str, into: &Path) -> Result<(), WorkspaceError> {

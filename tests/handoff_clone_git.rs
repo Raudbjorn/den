@@ -234,6 +234,8 @@ fn clone_plan(root: &Path, url: &str, tip: &str) -> LaunchPlan {
             repo: RepoId::new("octo", "app"),
             url: url.to_owned(),
             is_fork: false,
+            upstream_of: None,
+            default_branch: Some("main".to_owned()),
         },
         main_clone: MainClone {
             path: clone.clone(),

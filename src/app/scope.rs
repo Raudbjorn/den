@@ -73,8 +73,10 @@ impl ScopeState {
                 self.focus = Focus::List;
                 self.set(self.shown_cursor(entries))
             }
-            // While the sidebar has focus, other keys do nothing (the sidebar's
-            // own keys, such as a fork's Upstream toggle, arrive with #13).
+            // `u` switches the fork under the cursor between targeting itself
+            // and its Upstream (#13); the App handles it.
+            (Key::Char('u'), Focus::Sidebar) => Outcome::Unhandled,
+            // While the sidebar has focus, other keys do nothing.
             (_, Focus::Sidebar) => Outcome::Moved,
             (_, Focus::List) => Outcome::Unhandled,
         }

@@ -10,7 +10,7 @@ query OwnerRepos($owner: String!, $after: String) {
         isFork
         isArchived
         defaultBranchRef { name }
-        parent { name owner { login } }
+        parent { name owner { login } url isFork isArchived defaultBranchRef { name } }
       }
     }
   }

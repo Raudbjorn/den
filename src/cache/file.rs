@@ -26,7 +26,8 @@ pub const CACHE_SUBDIR: &str = "cache";
 /// 2: an Issue says whether its labels and assignees were read completely; a
 /// PR carries GitHub's merge state, and its review decision is always present
 /// (`NotRequired` and `Unknown` instead of null).
-pub const CACHE_FORMAT: u32 = 2;
+/// 3: a fork's Upstream is a Repo (URL, default branch), not just its id.
+pub const CACHE_FORMAT: u32 = 3;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// Names the viewer whose cache startup shows.

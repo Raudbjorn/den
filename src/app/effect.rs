@@ -3,6 +3,7 @@
 use super::event::{LaunchId, SurveyId};
 use crate::{
     cache::CachedObservation,
+    domain::UpstreamTargets,
     handoff::{InspectRequest, LaunchPlan},
     ports::SurveyRequest,
 };
@@ -40,6 +41,9 @@ pub enum Effect {
     },
     /// Carry out a confirmed LaunchPlan; answered by `Event::LaunchFinished`.
     Launch { id: LaunchId, plan: Box<LaunchPlan> },
+    /// Save which forks target their Upstream (#13); answered by
+    /// `Event::UpstreamsStored`.
+    StoreUpstreams { upstreams: UpstreamTargets },
     /// Leave den.
     Quit,
     /// Write to den's structured log.

@@ -9,7 +9,7 @@ mod support;
 use den::{
     app::{Effect, Event, Key, LogLevel, SurveyId},
     config::{self, ConfigError},
-    domain::{Incompleteness, NextStep, SourceKind, SourceState, WaitingOn},
+    domain::{Incompleteness, NextStep, SourceKind, SourceState, UpstreamTargets, WaitingOn},
     ports::{SurveyFailure, SurveyRequest},
 };
 use std::path::{Path, PathBuf};
@@ -32,7 +32,8 @@ fn startup_surveys_the_configured_owners_and_lists_their_open_prs() {
     assert_eq!(
         harness.github.requests(),
         [SurveyRequest {
-            owners: vec!["alpha".to_owned(), "beta".to_owned()]
+            owners: vec!["alpha".to_owned(), "beta".to_owned()],
+            upstreams: UpstreamTargets::default(),
         }]
     );
     assert_eq!(harness.survey_effects(), 1);

@@ -34,7 +34,7 @@ use den::{
     launcher::{KittyLauncher, LaunchEnvironment},
     logging::{self, LoggingError},
     paths::{Paths, PathsError},
-    ports::{Ports, SystemClock},
+    ports::{Ports, SystemClock, UpstreamStore},
     runtime::{self, Worker},
     terminal::{SIGNAL_EXIT_STATUS_BASE, TerminalSession},
     ui::{
@@ -42,6 +42,7 @@ use den::{
         bear::{BearArt, BearError, GRAPHICS_ENV, Graphics},
         frame,
     },
+    upstreams::FileUpstreamStore,
     workspace::GitWorkspace,
 };
 use jiff::Timestamp;
@@ -55,7 +56,7 @@ use std::{
 
 const EXIT_FAILURE: u8 = 1;
 const EXIT_USAGE: u8 = 2;
-const USAGE: &str = "usage: den [--dump COLSxROWS | --launch OWNER/REPO#N|OWNER/REPO:BRANCH|OWNER/REPO@WORKFLOW [--prompt TEXT] [--yes]]";
+const USAGE: &str = "usage: den [--dump COLSxROWS | --launch OWNER/REPO#N|OWNER/REPO:BRANCH|OWNER/REPO@WORKFLOW [--switch-target] [--prompt TEXT] [--yes]]";
 /// The terminal size `--launch` lays the sheet out for, in cells.
 const LAUNCH_DUMP_SIZE: (u16, u16) = (160, 45);
 /// The largest `--dump` width or height, in cells. The dump buffer holds
@@ -107,6 +108,9 @@ enum Mode {
         item: LaunchTarget,
         prompt: Option<String>,
         confirm: bool,
+        /// Press `u` on the sheet: a fork's Work Item targets the other of
+        /// the fork and its Upstream, for this Job only (#13).
+        switch_target: bool,
     },
 }
 
@@ -214,6 +218,7 @@ fn parse_launch(item: &str, rest: &[String]) -> Result<Mode, DenError> {
     })?;
     let mut prompt = None;
     let mut confirm = false;
+    let mut switch_target = false;
     let mut args = rest.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -222,6 +227,7 @@ fn parse_launch(item: &str, rest: &[String]) -> Result<Mode, DenError> {
                 None => return Err(DenError::Usage("--prompt needs the prompt text".to_owned())),
             },
             "--yes" => confirm = true,
+            "--switch-target" => switch_target = true,
             other => {
                 return Err(DenError::Usage(format!("unexpected argument {other:?}")));
             }
@@ -231,6 +237,7 @@ fn parse_launch(item: &str, rest: &[String]) -> Result<Mode, DenError> {
         item,
         prompt,
         confirm,
+        switch_target,
     })
 }
 
@@ -386,7 +393,14 @@ fn run(args: &[String]) -> Result<(), DenError> {
     if let Err(error) = &prompts {
         tracing::error!(%error, "prompts");
     }
-    let mut app = App::new(config).with_launch_settings(prompts, paths.default_clone_root.clone());
+    let upstream_store = FileUpstreamStore::in_state_dir(&paths.state_dir);
+    let upstreams = upstream_store.load();
+    if let Err(error) = &upstreams {
+        tracing::error!(%error, "upstream choices");
+    }
+    let mut app = App::new(config)
+        .with_launch_settings(prompts, paths.default_clone_root.clone())
+        .with_upstreams(upstreams);
     let ports = Ports {
         github: Arc::new(GhSource::new(GhCli::new())),
         cache: Arc::new(FileCache::in_state_dir(&paths.state_dir)),
@@ -395,6 +409,7 @@ fn run(args: &[String]) -> Result<(), DenError> {
             std::env::var_os(name)
         }))),
         jobs: Arc::new(FileJobStore::in_state_dir(&paths.state_dir)),
+        upstreams: Arc::new(upstream_store),
         clock: Arc::new(SystemClock),
     };
     match mode {
@@ -414,8 +429,27 @@ fn run(args: &[String]) -> Result<(), DenError> {
             item,
             prompt,
             confirm,
-        } => run_launch(&theme, app, &ports, &item, prompt.as_deref(), confirm),
+            switch_target,
+        } => run_launch(
+            &theme,
+            app,
+            &ports,
+            &LaunchArgs {
+                item: &item,
+                prompt: prompt.as_deref(),
+                confirm,
+                switch_target,
+            },
+        ),
     }
+}
+
+/// What `--launch` was asked for.
+struct LaunchArgs<'a> {
+    item: &'a LaunchTarget,
+    prompt: Option<&'a str>,
+    confirm: bool,
+    switch_target: bool,
 }
 
 /// `--launch`: the same keys a user would press, through the same App and
@@ -424,10 +458,14 @@ fn run_launch(
     theme: &Theme,
     mut app: App,
     ports: &Ports,
-    item: &LaunchTarget,
-    prompt: Option<&str>,
-    confirm: bool,
+    args: &LaunchArgs<'_>,
 ) -> Result<(), DenError> {
+    let LaunchArgs {
+        item,
+        prompt,
+        confirm,
+        switch_target,
+    } = *args;
     let (cols, rows) = LAUNCH_DUMP_SIZE;
     app.handle(Event::Resized { cols, rows });
     let started = Event::Started {
@@ -455,6 +493,9 @@ fn run_launch(
         )));
     }
     view = runtime::settle(&mut app, Event::Key(Key::Char('c')), ports).0;
+    if switch_target {
+        view = runtime::settle(&mut app, Event::Key(Key::Char('u')), ports).0;
+    }
     if let Some(prompt) = prompt {
         view = type_prompt(&mut app, &view, prompt);
     }
