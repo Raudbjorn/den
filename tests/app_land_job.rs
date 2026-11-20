@@ -641,6 +641,8 @@ fn a_survey_with_the_first_merged_and_the_second_failed_shows_the_partial_result
             pr: member("acme/app", 2),
             state: PullRequestState::Merged { merged_at: None },
         }],
+        // The fake fills in every member asked.
+        asked: Vec::new(),
         coverage,
     });
     press(&mut harness, Key::Char('r'));
