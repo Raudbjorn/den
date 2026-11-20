@@ -29,7 +29,9 @@ pub const CACHE_SUBDIR: &str = "cache";
 /// (`NotRequired` and `Unknown` instead of null).
 /// 3: a fork's Upstream is a Repo (URL, default branch), not just its id.
 /// 4: PR detail coverage is separate from open-PR list coverage.
-pub const CACHE_FORMAT: u32 = 4;
+/// 5: an Observation has a Linear part, and coverage has Linear source kinds
+/// (milestone 2). A milestone-1 cache (4) is refused and surveyed afresh.
+pub const CACHE_FORMAT: u32 = 5;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// Names the viewer whose cache startup shows.
@@ -98,7 +100,7 @@ impl FileCache {
         }
     }
 
-    /// A shorter wait for another den's lock (tests).
+    /// Overrides the wait for another den's lock (tests).
     pub fn with_lock_wait(mut self, wait: Duration) -> Self {
         self.lock_wait = wait;
         self
@@ -204,9 +206,16 @@ impl FileCache {
     }
 
     /// When the Observation already stored at `path` was made; `None` when there
-    /// is none, or it can't be read (an unreadable file is overwritten anyway).
+    /// is none, or it can't be read (an unreadable file is overwritten anyway),
+    /// or it is an older format, which no den of this format reads again: its
+    /// age must not keep a survey from replacing it (after a clock change, say).
+    /// A newer format's age still counts: that is a newer den's survey.
     fn stored_observed_at(&self, path: &Path) -> Option<Timestamp> {
         let bytes = self.read_bounded(path).ok()??;
+        let format = serde_json::from_slice::<FormatOnly>(&bytes).ok()?.format;
+        if format < CACHE_FORMAT {
+            return None;
+        }
         serde_json::from_slice::<StoredAge>(&bytes)
             .ok()
             .map(|stored| stored.cached.observation.observed_at)

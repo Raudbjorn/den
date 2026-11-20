@@ -19,6 +19,42 @@ pub enum SourceKind {
     IssueDetails,
     Branches,
     Runs,
+    /// One of the Linear sources of an Owner with a Linear Workflow (spec 0002).
+    /// Reserved: nothing records them before #32 (see [`LinearSourceKind`]).
+    Linear(LinearSourceKind),
+}
+
+/// What a Linear source fetches for an Owner with a Linear Workflow. Each is
+/// recorded as `Source::Owner { owner, kind: SourceKind::Linear(..) }`, keyed
+/// by the Owner whose Linear Workflow reads it, so the per-Owner rules (the
+/// cache's Owner restriction, Owner Scope coverage, "Nothing needs you") hold
+/// for Linear exactly as for GitHub. Owners without a Linear Workflow record
+/// none of them, so a missing Linear part never makes a survey incomplete.
+///
+/// They are not Work Item lists of the Owner's GitHub Repos: an incomplete
+/// Repo list never marks them partial ([`SourceKind::WORK_ITEMS`]), and they
+/// are not applicable to a GitHub Work Item ([`Coverage::applicable_to`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum LinearSourceKind {
+    /// Who the Linear viewer is in the workflow's workspace (#32).
+    Viewer,
+    /// The active Linear Issues assigned to the Linear viewer (#32).
+    AssignedIssues,
+    /// The unassigned Linear Issues of the start teams (#33).
+    StartTeamIssues,
+    /// Each start team's workflow states (#33).
+    TeamStates,
+}
+
+impl LinearSourceKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Viewer => "Linear viewer",
+            Self::AssignedIssues => "assigned Linear Issues",
+            Self::StartTeamIssues => "start-team Linear Issues",
+            Self::TeamStates => "Linear team states",
+        }
+    }
 }
 
 impl SourceKind {
@@ -44,6 +80,7 @@ impl SourceKind {
             Self::IssueDetails => "Issue details",
             Self::Branches => "Branches",
             Self::Runs => "Runs",
+            Self::Linear(kind) => kind.label(),
         }
     }
 }

@@ -1,0 +1,916 @@
+[
+  {
+    "item": {
+      "id": {
+        "PullRequest": {
+          "repo": {
+            "owner": "acme",
+            "name": "app"
+          },
+          "number": 1
+        }
+      },
+      "title": "PR 1",
+      "url": "https://github.com/acme/app/pull/1",
+      "updated_at": "2026-11-18T12:00:00Z"
+    },
+    "next_step": "FinishDraft",
+    "waiting_on": "Me",
+    "waiting_reason": "you are the PR author (me)",
+    "unattributed": false,
+    "explanation": {
+      "winning_rule": "the PR is a draft",
+      "no_step_reason": null,
+      "other_conditions": [
+        "conflicts with main"
+      ],
+      "unknowns": []
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "acme",
+            "kind": "PullRequests"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "PullRequest": {
+          "repo": {
+            "owner": "acme",
+            "name": "app"
+          },
+          "number": 2
+        }
+      },
+      "title": "PR 2",
+      "url": "https://github.com/acme/app/pull/2",
+      "updated_at": "2026-11-18T12:00:00Z"
+    },
+    "next_step": "ResolveConflicts",
+    "waiting_on": "Me",
+    "waiting_reason": "you are the PR author (me)",
+    "unattributed": false,
+    "explanation": {
+      "winning_rule": "conflicts with main",
+      "no_step_reason": null,
+      "other_conditions": [],
+      "unknowns": []
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "acme",
+            "kind": "PullRequests"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "PullRequest": {
+          "repo": {
+            "owner": "acme",
+            "name": "app"
+          },
+          "number": 3
+        }
+      },
+      "title": "PR 3",
+      "url": "https://github.com/acme/app/pull/3",
+      "updated_at": "2026-11-18T12:00:00Z"
+    },
+    "next_step": "FixCi",
+    "waiting_on": "Me",
+    "waiting_reason": "you are the PR author (me)",
+    "unattributed": false,
+    "explanation": {
+      "winning_rule": "1 failing required check: ci (required)",
+      "no_step_reason": null,
+      "other_conditions": [],
+      "unknowns": []
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "acme",
+            "kind": "PullRequests"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "PullRequest": {
+          "repo": {
+            "owner": "acme",
+            "name": "app"
+          },
+          "number": 4
+        }
+      },
+      "title": "PR 4",
+      "url": "https://github.com/acme/app/pull/4",
+      "updated_at": "2026-11-18T12:00:00Z"
+    },
+    "next_step": "AddressReview",
+    "waiting_on": "Me",
+    "waiting_reason": "you are the PR author (me)",
+    "unattributed": false,
+    "explanation": {
+      "winning_rule": "changes requested, 2 unresolved review threads",
+      "no_step_reason": null,
+      "other_conditions": [],
+      "unknowns": []
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "acme",
+            "kind": "PullRequests"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "PullRequest": {
+          "repo": {
+            "owner": "acme",
+            "name": "app"
+          },
+          "number": 5
+        }
+      },
+      "title": "PR 5",
+      "url": "https://github.com/acme/app/pull/5",
+      "updated_at": "2026-11-18T12:00:00Z"
+    },
+    "next_step": "Review",
+    "waiting_on": "Me",
+    "waiting_reason": "you are one of the requested reviewers",
+    "unattributed": false,
+    "explanation": {
+      "winning_rule": "review requested from you",
+      "no_step_reason": null,
+      "other_conditions": [],
+      "unknowns": []
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "acme",
+            "kind": "PullRequests"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "PullRequest": {
+          "repo": {
+            "owner": "acme",
+            "name": "app"
+          },
+          "number": 6
+        }
+      },
+      "title": "PR 6",
+      "url": "https://github.com/acme/app/pull/6",
+      "updated_at": "2026-11-18T12:00:00Z"
+    },
+    "next_step": "Merge",
+    "waiting_on": "Me",
+    "waiting_reason": "you are the PR author (me)",
+    "unattributed": false,
+    "explanation": {
+      "winning_rule": "approved, checks passing and mergeable into main",
+      "no_step_reason": null,
+      "other_conditions": [],
+      "unknowns": []
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "acme",
+            "kind": "PullRequests"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "PullRequest": {
+          "repo": {
+            "owner": "acme",
+            "name": "app"
+          },
+          "number": 7
+        }
+      },
+      "title": "PR 7",
+      "url": "https://github.com/acme/app/pull/7",
+      "updated_at": "2026-11-18T12:00:00Z"
+    },
+    "next_step": null,
+    "waiting_on": "Nobody",
+    "waiting_reason": "no Next Step, so nobody owes one",
+    "unattributed": false,
+    "explanation": {
+      "winning_rule": null,
+      "no_step_reason": "no rule matched: waiting for GitHub to compute mergeability",
+      "other_conditions": [],
+      "unknowns": [
+        "mergeability not computed yet by GitHub"
+      ]
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "acme",
+            "kind": "PullRequests"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "PullRequest": {
+          "repo": {
+            "owner": "acme",
+            "name": "app"
+          },
+          "number": 8
+        }
+      },
+      "title": "PR 8",
+      "url": "https://github.com/acme/app/pull/8",
+      "updated_at": "2026-11-18T12:00:00Z"
+    },
+    "next_step": null,
+    "waiting_on": "Nobody",
+    "waiting_reason": "no Next Step, so nobody owes one",
+    "unattributed": false,
+    "explanation": {
+      "winning_rule": null,
+      "no_step_reason": "no rule matched: already in the merge queue",
+      "other_conditions": [],
+      "unknowns": []
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "acme",
+            "kind": "PullRequests"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "PullRequest": {
+          "repo": {
+            "owner": "acme",
+            "name": "api"
+          },
+          "number": 9
+        }
+      },
+      "title": "PR 9",
+      "url": "https://github.com/acme/api/pull/9",
+      "updated_at": "2026-11-18T12:00:00Z"
+    },
+    "next_step": "AddressReview",
+    "waiting_on": "SomeoneElse",
+    "waiting_reason": "the PR author is someone",
+    "unattributed": false,
+    "explanation": {
+      "winning_rule": "changes requested by me",
+      "no_step_reason": null,
+      "other_conditions": [],
+      "unknowns": []
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "acme",
+            "kind": "PullRequests"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "PullRequest": {
+          "repo": {
+            "owner": "acme",
+            "name": "api"
+          },
+          "number": 10
+        }
+      },
+      "title": "PR 10",
+      "url": "https://github.com/acme/api/pull/10",
+      "updated_at": "2026-11-18T12:00:00Z"
+    },
+    "next_step": null,
+    "waiting_on": "Nobody",
+    "waiting_reason": "no Next Step, so nobody owes one",
+    "unattributed": false,
+    "explanation": {
+      "winning_rule": null,
+      "no_step_reason": "no rule matched: not approved: a review is required; checks could not be read",
+      "other_conditions": [],
+      "unknowns": [
+        "checks could not be read",
+        "review threads could not be read",
+        "review requests could not be read"
+      ]
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "acme",
+            "kind": "PullRequests"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "PullRequest": {
+          "repo": {
+            "owner": "octo",
+            "name": "app"
+          },
+          "number": 1
+        }
+      },
+      "title": "PR 1",
+      "url": "https://github.com/octo/app/pull/1",
+      "updated_at": "2026-11-18T12:00:00Z"
+    },
+    "next_step": "Merge",
+    "waiting_on": "SomeoneElse",
+    "waiting_reason": "the PR author is someone",
+    "unattributed": false,
+    "explanation": {
+      "winning_rule": "approved, checks passing and mergeable into main",
+      "no_step_reason": null,
+      "other_conditions": [],
+      "unknowns": []
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "octo",
+            "kind": "PullRequests"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "Issue": {
+          "repo": {
+            "owner": "acme",
+            "name": "app"
+          },
+          "number": 20
+        }
+      },
+      "title": "Issue 20",
+      "url": "https://github.com/acme/app/issues/20",
+      "updated_at": "2026-11-17T12:00:00Z"
+    },
+    "next_step": "Triage",
+    "waiting_on": "Nobody",
+    "waiting_reason": "Triage is owed by nobody in particular",
+    "unattributed": false,
+    "explanation": {
+      "winning_rule": "the Issue has no labels and no assignee",
+      "no_step_reason": null,
+      "other_conditions": [],
+      "unknowns": []
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "acme",
+            "kind": "Issues"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "Issue": {
+          "repo": {
+            "owner": "acme",
+            "name": "app"
+          },
+          "number": 21
+        }
+      },
+      "title": "Issue 21",
+      "url": "https://github.com/acme/app/issues/21",
+      "updated_at": "2026-11-17T12:00:00Z"
+    },
+    "next_step": "Implement",
+    "waiting_on": "Nobody",
+    "waiting_reason": "nobody is assigned",
+    "unattributed": false,
+    "explanation": {
+      "winning_rule": "the Issue is labelled (bug) but unassigned",
+      "no_step_reason": null,
+      "other_conditions": [],
+      "unknowns": []
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "acme",
+            "kind": "Issues"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "Issue": {
+          "repo": {
+            "owner": "acme",
+            "name": "app"
+          },
+          "number": 22
+        }
+      },
+      "title": "Issue 22",
+      "url": "https://github.com/acme/app/issues/22",
+      "updated_at": "2026-11-17T12:00:00Z"
+    },
+    "next_step": null,
+    "waiting_on": "Nobody",
+    "waiting_reason": "no Next Step: an open linked PR carries the work",
+    "unattributed": false,
+    "explanation": {
+      "winning_rule": null,
+      "no_step_reason": "an open linked PR carries the work: acme/app#2",
+      "other_conditions": [
+        "linked PR acme/app#2 (closing reference, open)",
+        "without an open linked PR it would be Implement: the Issue is labelled (bug) but unassigned"
+      ],
+      "unknowns": []
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "acme",
+            "kind": "Issues"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "Issue": {
+          "repo": {
+            "owner": "acme",
+            "name": "api"
+          },
+          "number": 23
+        }
+      },
+      "title": "Issue 23",
+      "url": "https://github.com/acme/api/issues/23",
+      "updated_at": "2026-11-17T12:00:00Z"
+    },
+    "next_step": "Implement",
+    "waiting_on": "SomeoneElse",
+    "waiting_reason": "the assignee is someone",
+    "unattributed": false,
+    "explanation": {
+      "winning_rule": "the Issue is assigned to someone",
+      "no_step_reason": null,
+      "other_conditions": [],
+      "unknowns": []
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "acme",
+            "kind": "Issues"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "Issue": {
+          "repo": {
+            "owner": "octo",
+            "name": "app"
+          },
+          "number": 1
+        }
+      },
+      "title": "Issue 1",
+      "url": "https://github.com/octo/app/issues/1",
+      "updated_at": "2026-11-17T12:00:00Z"
+    },
+    "next_step": "Implement",
+    "waiting_on": "Me",
+    "waiting_reason": "you are the assignee (me)",
+    "unattributed": false,
+    "explanation": {
+      "winning_rule": "the Issue is assigned to me",
+      "no_step_reason": null,
+      "other_conditions": [],
+      "unknowns": [
+        "den could not read all of the Issue's labels"
+      ]
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "octo",
+            "kind": "Issues"
+          }
+        },
+        "state": {
+          "Partial": {
+            "PaginationStopped": {
+              "pages_read": 2,
+              "reason": "a page timed out"
+            }
+          }
+        }
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "Branch": {
+          "repo": {
+            "owner": "acme",
+            "name": "app"
+          },
+          "name": "feature-x"
+        }
+      },
+      "title": "work on feature-x",
+      "url": "https://github.com/acme/app/tree/feature-x",
+      "updated_at": "2026-11-14T12:00:00Z"
+    },
+    "next_step": "OpenPr",
+    "waiting_on": "Me",
+    "waiting_reason": "you are the author of the Branch's last commit (me)",
+    "unattributed": false,
+    "explanation": {
+      "winning_rule": "unproposed work (3 commits not on main, never the head of a PR, last commit 5 days ago, within 30)",
+      "no_step_reason": null,
+      "other_conditions": [],
+      "unknowns": []
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "acme",
+            "kind": "Branches"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "Branch": {
+          "repo": {
+            "owner": "acme",
+            "name": "app"
+          },
+          "name": "old-idea"
+        }
+      },
+      "title": "work on old-idea",
+      "url": "https://github.com/acme/app/tree/old-idea",
+      "updated_at": "2026-10-05T12:00:00Z"
+    },
+    "next_step": "PruneOrRevive",
+    "waiting_on": "Me",
+    "waiting_reason": "you are the author of the Branch's last commit (me)",
+    "unattributed": false,
+    "explanation": {
+      "winning_rule": "a Stale Branch (1 commit not on main, never the head of a PR, last commit 45 days ago, more than 30): decide whether to prune it or revive it",
+      "no_step_reason": null,
+      "other_conditions": [
+        "this is a decision, not proof the work is unshipped: squash and rebase merges leave Branches like this behind"
+      ],
+      "unknowns": []
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "acme",
+            "kind": "Branches"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "Branch": {
+          "repo": {
+            "owner": "octo",
+            "name": "app"
+          },
+          "name": "feature-x"
+        }
+      },
+      "title": "work on feature-x",
+      "url": "https://github.com/octo/app/tree/feature-x",
+      "updated_at": "2026-11-14T12:00:00Z"
+    },
+    "next_step": "OpenPr",
+    "waiting_on": "Nobody",
+    "waiting_reason": "den could not establish the author of the Branch's last commit",
+    "unattributed": true,
+    "explanation": {
+      "winning_rule": "unproposed work (2 commits not on main, never the head of a PR, last commit 5 days ago, within 30)",
+      "no_step_reason": null,
+      "other_conditions": [],
+      "unknowns": [
+        "the last commit's author is not matched to a GitHub login, so who owes this is unattributed"
+      ]
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "octo",
+            "kind": "Branches"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "Run": {
+          "repo": {
+            "owner": "acme",
+            "name": "app"
+          },
+          "workflow": ".github/workflows/ci.yml"
+        }
+      },
+      "title": "ci",
+      "url": "https://github.com/acme/app/actions/runs/100",
+      "updated_at": "2026-11-18T12:00:00Z"
+    },
+    "next_step": "FixCi",
+    "waiting_on": "Me",
+    "waiting_reason": "you are the Run's triggering actor (me)",
+    "unattributed": false,
+    "explanation": {
+      "winning_rule": "the latest Run of workflow ci on the default branch failed",
+      "no_step_reason": null,
+      "other_conditions": [
+        "Run 100, attempt 1",
+        "triggered by a push event on main at 0000000"
+      ],
+      "unknowns": []
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "acme",
+            "kind": "Runs"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  },
+  {
+    "item": {
+      "id": {
+        "Run": {
+          "repo": {
+            "owner": "octo",
+            "name": "app"
+          },
+          "workflow": ".github/workflows/release.yml"
+        }
+      },
+      "title": "release",
+      "url": "https://github.com/octo/app/actions/runs/102",
+      "updated_at": "2026-11-18T12:00:00Z"
+    },
+    "next_step": "FixCi",
+    "waiting_on": "Nobody",
+    "waiting_reason": "den could not establish the Run's triggering actor",
+    "unattributed": true,
+    "explanation": {
+      "winning_rule": "the latest Run of workflow release on the default branch failed",
+      "no_step_reason": null,
+      "other_conditions": [
+        "Run 102, attempt 1",
+        "triggered by a push event on main at 0000000"
+      ],
+      "unknowns": [
+        "who triggered the Run (GitHub reported no actor)"
+      ]
+    },
+    "coverage": [
+      {
+        "source": "Viewer",
+        "state": "Complete"
+      },
+      {
+        "source": {
+          "Owner": {
+            "owner": "octo",
+            "kind": "Runs"
+          }
+        },
+        "state": "Complete"
+      }
+    ],
+    "observed_at": "2026-11-19T12:00:00Z"
+  }
+]

@@ -9,13 +9,15 @@ mod support;
 
 use den::{
     app::{Effect, Event, Key, LogLevel, ViewModel},
-    cache::{CacheError, CachedObservation},
-    domain::{Incompleteness, Observation, SourceKind, SourceState},
-    ports::SurveyFailure,
+    cache::{CACHE_SUBDIR, CacheError, CachedObservation, FileCache},
+    domain::{
+        Incompleteness, LinearSourceKind, NextStep, Observation, Source, SourceKind, SourceState,
+    },
+    ports::{ObservationCache, SurveyFailure},
 };
 use std::path::PathBuf;
 use support::{
-    build::{ME, ObservationBuilder, now, pr, run, ts},
+    build::{ME, ObservationBuilder, branch, now, pr, run, ts},
     fakes::FakeCache,
     harness::{Harness, config},
 };
@@ -139,6 +141,140 @@ fn startup_shows_the_cached_observation_and_its_age_before_the_survey_answers() 
 }
 
 #[test]
+fn a_partial_survey_that_answers_before_the_cache_is_read_still_keeps_the_cached_data() {
+    // The Worker reads the cache on its store lane and surveys on its remote
+    // lane, so the survey can answer first. Merging it against nothing would
+    // drop beta's cached PR from the screen and from the cache written next.
+    let cache = FakeCache::holding(CachedObservation::fresh(earlier_survey()));
+    let mut harness = Harness::with_cache(Ok(config(&["alpha", "beta"])), cache);
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("alpha")
+        .fully_read_owner("beta")
+        .owner_coverage("beta", SourceKind::PullRequests, failed("gh timed out"))
+        .repo("alpha/app")
+        .repo("beta/lib")
+        .pull_request(pr("alpha/app", 5).title("New alpha PR"))
+        .build()));
+    let effects = harness.send(Event::Started { now: now() });
+    let survey = effect_named(&effects, |e| matches!(e, Effect::Survey { .. }));
+
+    let early = harness.perform(&survey);
+    assert!(
+        !early.iter().any(|e| matches!(e, Effect::StoreCache { .. })),
+        "nothing is saved before the cache it merges with is read: {early:?}"
+    );
+    // Nothing is shown yet, so the header still says the survey is running.
+    assert!(
+        harness.view.header.status.starts_with("Surveying"),
+        "{}",
+        harness.view.header.status
+    );
+
+    let follow_ups = harness.perform(&Effect::LoadCache);
+    assert_eq!(
+        references(&harness.view),
+        ["alpha/app#5", "beta/lib#2"],
+        "alpha was read completely; beta failed, so its cached #2 is kept"
+    );
+    let status = &harness.view.header.status;
+    assert!(
+        !status.contains("refreshing") && !status.contains("cached"),
+        "{status}"
+    );
+    let Effect::StoreCache { cached } =
+        effect_named(&follow_ups, |e| matches!(e, Effect::StoreCache { .. }))
+    else {
+        unreachable!()
+    };
+    assert_eq!(cached.observation.pull_requests.len(), 2, "{cached:?}");
+}
+
+#[test]
+fn a_held_survey_uses_the_latest_tick_for_decisions_without_redating_its_facts() {
+    for cache_answer in [
+        Event::CacheLoaded { outcome: Ok(None) },
+        Event::EffectRejected {
+            effect: Box::new(Effect::LoadCache),
+            reason: "store lane stopped".to_owned(),
+        },
+    ] {
+        let observation = ObservationBuilder::new()
+            .fully_read_owner("alpha")
+            .repo("alpha/app")
+            .branch(branch("alpha/app", "threshold").age_days(30))
+            .build();
+        let mut harness = Harness::with_owners(&["alpha"]);
+        harness.answer(Ok(observation.clone()));
+        let effects = harness.send(Event::Started { now: now() });
+        let survey = effect_named(&effects, |e| matches!(e, Effect::Survey { .. }));
+        harness.perform(&survey);
+        harness.send(Event::Tick {
+            now: now() + jiff::SignedDuration::from_secs(1),
+        });
+
+        let effects = harness.send(cache_answer);
+        let [row] = harness.view.list.rows.as_slice() else {
+            panic!("{:?}", harness.view.list.rows);
+        };
+        // The branch crossed 30 days while the survey waited for the cache.
+        assert_eq!(row.next_step, Some(NextStep::PruneOrRevive));
+        let Effect::StoreCache { cached } =
+            effect_named(&effects, |e| matches!(e, Effect::StoreCache { .. }))
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            cached.observation, observation,
+            "only decision time advances"
+        );
+    }
+}
+
+#[test]
+fn a_survey_answer_held_for_the_cache_is_shown_when_the_cache_cannot_be_read() {
+    let cache = FakeCache::default();
+    cache.answer_load(Err(CacheError::Unreadable {
+        path: PathBuf::from("/tmp/den/cache.json"),
+        detail: "expected value".to_owned(),
+    }));
+    let mut harness = Harness::with_cache(Ok(config(&["alpha"])), cache);
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("alpha")
+        .pull_request(pr("alpha/app", 3).title("New PR"))
+        .build()));
+    let effects = harness.send(Event::Started { now: now() });
+    let survey = effect_named(&effects, |e| matches!(e, Effect::Survey { .. }));
+    harness.perform(&survey);
+    assert!(references(&harness.view).is_empty());
+
+    let follow_ups = harness.perform(&Effect::LoadCache);
+    assert_eq!(references(&harness.view), ["alpha/app#3"]);
+    assert!(
+        follow_ups
+            .iter()
+            .any(|e| matches!(e, Effect::StoreCache { .. }))
+    );
+}
+
+#[test]
+fn a_survey_answer_held_for_the_cache_is_shown_when_the_cache_read_is_not_queued() {
+    let mut harness = Harness::with_owners(&["alpha"]);
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("alpha")
+        .pull_request(pr("alpha/app", 3).title("New PR"))
+        .build()));
+    let effects = harness.send(Event::Started { now: now() });
+    let survey = effect_named(&effects, |e| matches!(e, Effect::Survey { .. }));
+    harness.perform(&survey);
+
+    harness.send(Event::EffectRejected {
+        effect: Box::new(Effect::LoadCache),
+        reason: "den's background worker stopped".to_owned(),
+    });
+    assert_eq!(references(&harness.view), ["alpha/app#3"]);
+}
+
+#[test]
 fn a_refresh_that_fails_keeps_the_old_data_and_shows_the_failure() {
     let mut harness = after_earlier_survey();
     let stored_before = harness.cache.stored().len();
@@ -209,6 +345,48 @@ fn a_source_that_failed_keeps_its_previous_data_marked_with_its_age_and_the_fail
             .any(|c| c.contains("failed") && c.contains("10:00 UTC") && c.contains("2 h ago")),
         "{:?}",
         detail.coverage
+    );
+}
+
+/// Until Linear data is merged per source (#34), a refresh keeps none of the
+/// earlier Linear part, so a Linear source that fails is never said to be
+/// kept from the earlier survey: it reads as failed, with no age.
+#[test]
+fn a_failed_linear_source_is_never_said_to_be_kept() {
+    let linear = SourceKind::Linear(LinearSourceKind::AssignedIssues);
+    let mut harness = Harness::with_owners(&["alpha"]);
+    harness.answer(Ok(ObservationBuilder::new()
+        .observed_at(EARLIER)
+        .fully_read_owner("alpha")
+        .owner_coverage("alpha", linear, SourceState::Complete)
+        .build()));
+    harness.start();
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("alpha")
+        .owner_coverage("alpha", linear, failed("Linear did not answer"))
+        .build()));
+    let follow_ups = refresh(&mut harness);
+
+    let Effect::StoreCache { cached } =
+        effect_named(&follow_ups, |e| matches!(e, Effect::StoreCache { .. }))
+    else {
+        unreachable!()
+    };
+    assert!(
+        !cached.carried.iter().any(|c| matches!(
+            c.source,
+            Source::Owner {
+                kind: SourceKind::Linear(_),
+                ..
+            }
+        )),
+        "{:?}",
+        cached.carried
+    );
+    let coverage = &harness.view.header.coverage;
+    assert!(
+        coverage.contains("Linear did not answer") && !coverage.contains("10:00 UTC"),
+        "{coverage}"
     );
 }
 
@@ -456,6 +634,49 @@ fn an_unreadable_cache_is_a_logged_warning_and_a_fresh_survey() {
         harness.cache.stored().len(),
         1,
         "the good survey replaces it"
+    );
+}
+
+#[test]
+fn a_cache_milestone_1_wrote_is_logged_as_another_format_and_surveyed_afresh() {
+    // What den's real cache answers for the file milestone 1 left on disk.
+    let state = tempfile::tempdir().unwrap();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/milestone-1")
+        .join(CACHE_SUBDIR);
+    let cache_dir = state.path().join(CACHE_SUBDIR);
+    std::fs::create_dir(&cache_dir).unwrap();
+    for name in ["last-viewer", "me.json"] {
+        std::fs::copy(fixture.join(name), cache_dir.join(name)).unwrap();
+    }
+    let refused = FileCache::in_state_dir(state.path()).load().unwrap_err();
+    assert!(
+        matches!(refused, CacheError::Format { found: 4, .. }),
+        "{refused}"
+    );
+
+    let cache = FakeCache::default();
+    cache.answer_load(Err(refused));
+    let mut harness = Harness::with_cache(Ok(config(&["alpha"])), cache);
+    harness.answer(Ok(ObservationBuilder::new()
+        .owner("alpha")
+        .pull_request(pr("alpha/app", 9))
+        .build()));
+    harness.start();
+
+    assert!(harness.effects.iter().any(|e| matches!(
+        e,
+        Effect::Log(r) if r.level == LogLevel::Warn
+            && r.message.contains("me.json")
+            && r.message.contains("format 4")
+    )));
+    // Nothing of the milestone-1 survey (octo/app#7, #12) is shown.
+    assert_eq!(references(&harness.view), ["alpha/app#9"]);
+    assert_eq!(harness.github.requests().len(), 1, "one fresh survey");
+    assert_eq!(
+        harness.cache.stored().len(),
+        1,
+        "the fresh survey replaces it"
     );
 }
 

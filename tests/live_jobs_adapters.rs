@@ -8,7 +8,7 @@
 use den::{
     domain::{NextStep, RepoId, WorkItemId},
     handoff::{WorktreeState, live},
-    jobs::JobRecord,
+    jobs::{JobRecord, JobSubject},
     workspace::GitWorkspace,
 };
 use jiff::Timestamp;
@@ -50,10 +50,10 @@ fn git(dir: &Path, args: &[&str]) -> String {
 
 fn job(clone: &Path, number: u64, name: &str) -> JobRecord {
     JobRecord {
-        work_item: WorkItemId::PullRequest {
+        subject: JobSubject::GitHub(WorkItemId::PullRequest {
             repo: RepoId::new("octo", "app"),
             number,
-        },
+        }),
         next_step: NextStep::AddressReview,
         target: RepoId::new("octo", "app"),
         main_clone: clone.to_owned(),

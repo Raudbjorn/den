@@ -1,8 +1,9 @@
-# den architecture (milestone 1)
+# den architecture (milestones 1 and 2)
 
 How den's modules fit, which seams tests go through, and where each upcoming
 ticket plugs in. Terms are CONTEXT.md's; the binding decisions are in
-`docs/specs/0001-den-milestone-1.md`.
+`docs/specs/0001-den-milestone-1.md` and, for Linear Workflows and Landing
+Groups, `docs/specs/0002-den-milestone-2.md`.
 
 ## Data flow
 
@@ -16,7 +17,8 @@ config.toml ─► config ─► App::new
                            └───────────── Event::SurveyFinished ◄── GitHubSource::survey
                                                                      (github: gh api graphql)
 App, on Started:         Effect::LoadCache (before Effect::Survey) ─► Event::CacheLoaded ─► shown with its age
-App, on SurveyFinished:  cache::merge(shown, Observation) ─► decide::decide ─► ordering::order ─► view
+App, on SurveyFinished:  cache::merge(shown, Observation) ─► decide::decide_with(Observation,
+                         Viewers::of(Observation), App.policies, upstreams, now) ─► ordering::order ─► view
                          ─► Effect::StoreCache
 App, on `u` (sidebar, fork row): UpstreamTargets toggled ─► decide again ─► Effect::StoreUpstreams ─► Event::UpstreamsStored
 App, on `c` (launch):    handoff::inspect_request ─► Effect::InspectLaunch ─► handoff::inspect (Workspace,
@@ -30,10 +32,22 @@ Sheet, on a Live Job:    "open existing or start fresh?" ─ `o`: live::plan_reo
                          `f`: live::fresh_suffix ─► InspectLaunch with suffixed names ─► plan (PlanInput.fresh)
 ```
 
+Milestone 2 (#31) widened the shapes without changing behaviour: the
+Observation carries a Linear part (empty), coverage reserves Linear source
+kinds (none recorded), `decide` takes `Viewers` (the GitHub viewer) and
+`Policies` (each Owner's Linear Workflow policy: empty for every Owner, and
+the empty policy changes nothing), and a Job record's subject is a
+`JobSubject` (a GitHub Work Item). The milestone-2 table below says where each
+later ticket fills them in.
+
 `main` only wires: XDG paths, log, config, ports, and the terminal loop. The
 loop checks for a termination signal (SIGTERM, SIGHUP, SIGINT, SIGQUIT) before
-every input wait, so the terminal is always restored, and hands Effects to a background `runtime::Worker` thread so the UI stays
-responsive while `gh` runs; `den --dump COLSxROWS` and the tests use
+every input wait, so the terminal is always restored, and hands Effects to a background `runtime::Worker` so the UI stays
+responsive while `gh` runs. The Worker has two lanes (`runtime::lane_of`, no wildcard): a store lane for den's
+own state files (cache, Upstream choices), so a write never waits behind a survey, and a remote lane for `gh`,
+git and kitty. An Effect a full lane refuses goes back to the App as `Event::EffectRejected` before the next
+Event. On quit or a signal, `Worker::finish` waits at most `FINISH_WITHIN_SECS` for queued store writes;
+remote work still running is abandoned. `den --dump COLSxROWS` and the tests use
 `runtime::settle`, which performs Effects synchronously through the same
 `ports::perform`.
 
@@ -41,15 +55,15 @@ responsive while `gh` runs; `den --dump COLSxROWS` and the tests use
 
 | Module | Role |
 |---|---|
-| `domain/` | Glossary types. `ids` (RepoId, WorkItemId qualified by Owner and Repo), `next_step` (all ten Next Steps, Waiting On), `observation` (Observation, Viewer with teams, Repo), `coverage` (Source, SourceState: complete / partial(why) / failed(error) / not yet fetched), `facts/` one file per Work Item kind. |
-| `decide/` | **Seam 1.** `decide(&Observation, &Viewer, now) -> Vec<Decision>`. Pure. `mod.rs` defines Decision (Next Step, Waiting On + reason, `unattributed`, Explanation {winning rule, no-step reason, other conditions, unknowns}, applicable coverage) and dispatches to one module per kind: `pull_request.rs`, `issue.rs`, `branch.rs`, `run.rs`. `attribution.rs` resolves people/teams to me / someone else / nobody (+unattributed). |
+| `domain/` | Glossary types. `ids` (RepoId, WorkItemId qualified by Owner and Repo), `next_step` (all ten Next Steps, Waiting On), `observation` (Observation, Viewer with teams, `Viewers`, Repo), `coverage` (Source, SourceKind incl. the reserved `SourceKind::Linear(LinearSourceKind)`, SourceState: complete / partial(why) / failed(error) / not yet fetched), `facts/` one file per Work Item kind, `linear` (`LinearPart`, the Observation's Linear part; empty until #32), `policy` (`LinearWorkflowPolicy`, `Policies`: per Owner, the empty policy when it has none). |
+| `decide/` | **Seam 1.** `decide(&Observation, &Viewers, &Policies, now) -> Vec<Decision>` (`decide_with` adds the Upstream choices). Pure. `Context` carries the viewers and `Context::policy(owner)`. `mod.rs` defines Decision (Next Step, Waiting On + reason, `unattributed`, Explanation {winning rule, no-step reason, other conditions, unknowns}, applicable coverage) and dispatches to one module per kind: `pull_request.rs`, `issue.rs`, `branch.rs`, `run.rs`. `attribution.rs` resolves people/teams to me / someone else / nobody (+unattributed). |
 | `ordering.rs` | Pure: `Scope` (All Owners / Owner / Repo), `in_scope` (the Decisions a Scope covers), and `order` (Waiting On, kind rank, newest first). Owner and Repo names compare case-insensitively, as GitHub's do (`Scope::same`, `same_repo`); the cache merge folds the same way. |
 | `app/` | **Seam 2.** `App::handle(Event) -> (ViewModel, Vec<Effect>)`. No I/O, no clock (time arrives in events). `view_model.rs` has one type per screen section; `view/` has one builder per section (`header`, `sidebar`, `list`, `detail`, `footer`; `scope` builds the header's Scope sentence and segments). `scope.rs` holds the Scope, the sidebar's focus and cursor, and the sidebar's rows. |
 | `cache/` | The last Observation per viewer. `CachedObservation` = Observation + `carried` (per source, the age of data kept from an earlier survey). `merge.rs` (pure, generic over sources): a source read completely is replaced, any other keeps the earlier facts, marked with their own age (a Repo's own, when older than its Owner's); sources and facts are matched by case-folded Owner and Repo; never merged across viewers. `file.rs`: `FileCache`, `$XDG_STATE_HOME/den/cache/<login>.json` + `last-viewer`, versioned (`CACHE_FORMAT`, bumped whenever a cached type's stored shape changes), size-bounded, atomic, 0600; unreadable = error value, logged, fresh survey. `survey_complete` gates "Nothing needs you". |
 | `ports/` | Traits: `GitHubSource` (read-only), `ObservationCache` (#8), `Workspace` (git + filesystem: find clones, remotes, path state, resolve, ls-remote of a branch or a PR ref, worktree list, fetch, worktree add), `Launcher` (kitty window or clipboard), `JobStore` (#11), `UpstreamStore` (#13), `Clock`. `Ports` bundles them; `perform(&Effect, &Ports) -> Vec<Event>`. `SurveyFailure` = no Observation at all (gh missing, logged out, viewer unreadable). |
 | `github/` | The real `GitHubSource`. `graphql.rs`: `GraphQl` transport trait and `GhCli` (`gh api graphql --input -`, `GH_TIMEOUT_SECS`, error classification). `session.rs`: query → `SourceState`, `Pager` (bounded by `MAX_PAGES`), rate-limit memo (once the limit is hit the survey stops fetching; the reset time comes from responses or one `gh api rate_limit`). One fetcher per source: `viewer`, `repos`, `pull_requests`, `issues`, `branches`, `runs`; queries in `queries/*.graphql`. `mod.rs::survey` runs the viewer, then each Owner on its own thread, merged in config order. |
 | `handoff/` | Launching a Job (#11). `inspect` gathers a `WorkspaceView` through the ports (Main Clone candidates and remotes, the chosen clone's state, the worktree path, the local branch, registered worktrees, kitty or not, Job records). `plan` is pure: `PlanInput` (Decision, Observation, `TargetChoice`, WorkspaceView, prompts) → `LaunchPlan` or `Refusal` (every reason, as `RefusalReason`). `execute` runs a confirmed plan step by step (`LaunchStep`), stops at the first failure, never deletes. `clone` (remote URL matching, Main Clone choice), `names` (safe worktree/session names, `suffixed`), `command` (the exact kitty / clipboard command, shared with the Launcher; `SessionStart::Resume` for `claude --resume`), `prompts` (`prompts.toml`, defaults, placeholders), `live` (#14: a recorded Job's worktree is present / missing / unknown; the bounded check; reopening; fresh-start suffixes). |
-| `workspace.rs`, `launcher.rs`, `jobs.rs`, `upstreams.rs` | The real adapters: `GitWorkspace` (git with `GIT_TERMINAL_PROMPT=0`, timeouts), `KittyLauncher` (`kitty --detach`, or `wl-copy`/`xclip`/`xsel`; choices are pure functions), `FileJobStore` (`$XDG_STATE_HOME/den/jobs.json`, versioned, append-only, 0600), `FileUpstreamStore` (`$XDG_STATE_HOME/den/upstreams.json`: the forks targeting their Upstream; versioned, 0600, read once at startup by `main`). |
+| `workspace.rs`, `launcher.rs`, `jobs.rs`, `upstreams.rs` | The real adapters: `GitWorkspace` (git with `GIT_TERMINAL_PROMPT=0`, timeouts), `KittyLauncher` (`kitty --detach`, or `wl-copy`/`xclip`/`xsel`; choices are pure functions), `FileJobStore` (`$XDG_STATE_HOME/den/jobs.json`, versioned, append-only, 0600; `JobRecord.subject` is a `JobSubject`, today only `GitHub(WorkItemId)`, matched by `JobSubject::covers`; format 2, and milestone 1's format 1 still loads), `FileUpstreamStore` (`$XDG_STATE_HOME/den/upstreams.json`: the forks targeting their Upstream; versioned, 0600, read once at startup by `main`). |
 | `ui/` | Draws a ViewModel, nothing else. `frame.rs` lays out plates; `header`, `list` (windowed), `detail`, `footer` each draw one; templates in `templates/{frame,list,detail}.crepus`. `glyphs.rs` gives every glyph an ASCII form, including the ViewModel's sentence separator, ellipsis and Enter key (`view_model::SEPARATOR`, `ELLIPSIS`, `ENTER_KEY`), which `Glyphs::text` swaps in where ViewModel text is drawn. Footer hints take their own width, so all of them fit 80 columns. |
 | `layout.rs` | Pure responsive layout (#10): from the terminal size (`Event::Resized`), the sidebar width (22%, 30–40 cols), the detail pane width or none below 110 cols (then `Enter` opens `Overlay::DetailSheet`), and the 80×24 minimum. The App puts it in `ViewModel.layout`; `ui::frame` turns it into rectangles. `ui::bear` draws the bear (kitty graphics or half-blocks, one protocol state per placement; skipped under overlays). |
 | `config.rs`, `paths.rs`, `logging.rs`, `process.rs`, `files.rs` | Config with file+line errors; XDG paths (config, prompts, state, default Main Clone root `~/dev`); JSON log in the state dir; external commands as `Invocation` values with a timeout (and a bounded wait for output a detached child keeps open); atomic private writes. |
@@ -85,8 +99,25 @@ PR list coverage (`PullRequests`) and follow-up coverage (`PullRequestDetails`)
 are separate. Missing checks or reviews still mark the item incomplete, but a
 fully read open-PR list can remove closed PRs from the cache. Successful Branch
 and Run reads record complete per-Repo entries even when the Owner list is
-partial. Cache format 4 rejects older snapshots and rebuilds them with a fresh
-survey; Job and Upstream state formats are unchanged.
+partial. Cache format 5 (milestone 2: the Linear part and Linear source
+kinds) rejects older snapshots, milestone 1's format 4 included, and rebuilds
+them with a fresh survey. Job records are format 2 (a `JobSubject`, stored under a pinned name such
+as `"github"`) and still read milestone 1's format 1, indented while the file
+fits its bound and compact when only that fits (milestone 1's indented
+records grow when converted). A file of a newer format is refused as a newer
+den's, never overwritten, so every new `JobSubject` variant (and any new
+record field an older den must not drop on its next append) bumps
+`JOBS_FORMAT`. The Upstream state format is unchanged. Files
+milestone 1 wrote are kept as fixtures in `tests/fixtures/milestone-1/`.
+
+Linear sources are recorded as `Source::Owner { owner, kind:
+SourceKind::Linear(..) }`, keyed by the Owner whose Linear Workflow reads them,
+so the per-Owner rules (dropping unwatched Owners from the cache, Owner Scope
+coverage, `survey_complete`) apply to them unchanged. They are not in
+`SourceKind::WORK_ITEMS` (an incomplete Repo list never marks them partial)
+and `Coverage::applicable_to` never gives them to a GitHub Work Item. An Owner
+without a Linear Workflow records none, so it can't make "Nothing needs you"
+false; a recorded one that isn't complete does.
 
 ## Where each ticket plugs in
 
@@ -115,3 +146,24 @@ can truncate them, and prompt wrapping and cursor scrolling use terminal cells.
 | #12 Issues, Branches, Runs; cloning; name suffixes (done) | `handoff/kinds.rs` (Issue/Branch/Run facts; PRs stay in `plan::facts`), `BaseRef::DefaultBranch` + `BranchStart::Fresh` (a `<type>_<slug>` branch tracking nothing; `WorktreeStart::NewBranch`, shared with #13's untracked PR-ref branch). Bases GitHub doesn't pin are asked of the remote at inspect (`WorkspaceView::base_tip`) and re-verified like a PR head. `handoff/cloning.rs` + `CloneSource::ToClone`: no Main Clone → clone into `<root>/<repo>` or `<root>/<owner>-<repo>`, never into anything existing (`Workspace::clone_repo`, `Workspace::url_branch_head` / `url_pull_head`, executor step `Clone` after Verify). `names::free_worktree_name` suffixes a name another Work Item's Job has (`LaunchPlan::renamed`, shown on WORKTREE). `den --launch` takes `OWNER/REPO#N`, `:BRANCH`, `@WORKFLOW`. Tests: `tests/app_launch_kinds.rs`, `tests/handoff_clone_git.rs`. |
 | #13 forks / Upstream (done) | `domain/upstream.rs` (`UpstreamTargets`, `comparison_for`: a Repo's comparison branch given the choices); `Repo.parent` is the Upstream's own facts (URL, default branch); `SurveyRequest.upstreams` → `github::survey_with` compares chosen forks' Branches in the Upstream (`owner:branch`); `decide_with` gives Branches compared against anything else no Next Step ("refresh to compare again": a toggle re-decides at once, the next survey compares again; den doesn't survey by itself). `app/upstream.rs`: sidebar `u` on a fork toggles and emits `Effect::StoreUpstreams`; unreadable choices count as none and `u` won't overwrite them. Sheet `u` (`app/launch.rs`) flips `TargetChoice` for one Job and re-inspects under a new `LaunchId`. A sheet starts from `TargetChoice::default_for`: Issues and Runs follow the fork's setting; a PR's or a Branch's sheet starts on its own Repo (its refs live there), and `u` to the Upstream is refused (`PullRequestNotInTarget`, `BranchNotInTarget`). `handoff`: `Target.upstream_of`/`default_branch` (#12 bases new branches on `default_branch`), `BaseRef::PullHead` fetched as `refs/pull/<n>/head` into `refs/den/pull/<remote>/<n>` (outside remote-tracking branches) with an untracked branch (named `pr-<n>-<head>` when the head's own name is the default branch or already a branch in the Main Clone: `JobBranch.renamed_from`), `RefusalReason::{NotAFork, UpstreamUnknown, PullRequestNotInTarget, PullRefGone}`. Tone::Upstream (rust) + the "upstream →" text on the sheet, sidebar and Scope sentence. Tests: `tests/app_upstream.rs`, `decide_branches.rs`, `github_branches.rs`, `upstreams_file.rs`, `handoff_adapters.rs`, `launch_frame.rs`. |
 | #14 Live Jobs (done) | `handoff/live.rs` (`classify` pure; `check_jobs` one `git worktree list` per Main Clone, `MAX_JOBS_CHECKED`, `JOB_CHECK_BUDGET_SECS`; `plan_reopen`/`reopen`; `fresh_suffix`; suffixes by `names::suffixed`, shared with #12), `Effect::CheckJobs`/`Event::JobsChecked`, `Effect::Reopen`, `WorkspaceView.job_checks`, `InspectRequest.item` + `fresh(n)`, `PlanInput.fresh` (a fresh start on a PR or Branch tracks the original branch under a suffixed name, so the prompt ends with `Push with: git push <remote> HEAD:<branch>`), `LaunchOutcome::Reopened`. App: sheet states `LiveJob`/`JobUnknown`/`ReopenReady`/`Reopening`/`Reopened` (`o`, `f`); `Row.job` and `DetailContent.job` (`app/view/jobs.rs`); a glyph before the title in `templates/list.crepus`. Tests: `tests/app_live_jobs.rs` (seam 2), `tests/live_jobs_adapters.rs` (real git). |
+
+### Milestone 2: where each ticket plugs in
+
+#31 laid the shapes; each later ticket fills one in. "Empty policy" below
+means `LinearWorkflowPolicy::default()`: every ticket that adds a policy field
+keeps the default a policy that changes nothing, and keeps
+`tests/decide_policies.rs` (milestone 1's own Decisions for a deck) passing.
+
+| Ticket | Adds / edits |
+|---|---|
+| #31 groundwork (this) | `domain/policy.rs` (`LinearWorkflowPolicy` with no fields, `Policies::for_owner`), `domain/linear.rs` (`LinearPart {}`), `Observation.linear`, `Viewers { github }` + `Viewers::of` (borrowed from the Observation), `SourceKind::Linear(LinearSourceKind::{Viewer, AssignedIssues, StartTeamIssues, TeamStates})`, `decide`/`decide_with` signatures, `App.policies` (empty), `CACHE_FORMAT` 5, `jobs::JobSubject` + `JOBS_FORMAT` 2 with format-1 loading; identity rules (`RepoId::folded`, `WorkItemId::same`/`folded`) in `domain/ids.rs`. Until #34, `cache::merge` carries no Linear source. Tests: `tests/decide_policies.rs`, `tests/jobs_file.rs`, milestone-1 fixtures, `app_survey::linear_sources_count_toward_nothing_needs_you_only_when_recorded`. |
+| #32 tracer: assigned Linear Issues | `config.rs`: a Linear Workflow block per Owner (file+line errors; key from the named env var) → `App.policies` and a list of workflows in `SurveyRequest`. New read-only port `LinearSource` in `ports/` (fake in `tests/support/fakes.rs`) and a `linear/` adapter (HTTPS GraphQL, timeout per call, bounded paging, scripted-transport checks like `tests/github_source.rs`). `LinearPart` gains the Linear viewer per workspace and Linear Issue facts (`domain/facts/linear_issue.rs`, identity workspace + permanent ID); `Viewers` gains the Linear viewers (borrowed, `&'a [_]`), filled in `Viewers::of`. A Linear Issue identity joins `WorkItemId` (or a sibling id the list and Decision use; `WorkItemId::repo` assumes a Repo today). Records `Linear(Viewer)` and `Linear(AssignedIssues)`. `decide/linear_issue.rs` (Implement). New Effect/Event pair for the Linear survey. List glyph, detail pane, sidebar/header workflow marker. |
+| #33 Start | `LinearPart`: start-team issues and team states; records `Linear(StartTeamIssues)`, `Linear(TeamStates)` (Failed naming a config value Linear lacks). `decide/linear_issue.rs` (Start), new `NextStep` variants, `ordering::kind_rank` gains the milestone-2 kinds, Start ordered by priority, cycle, age. |
+| #34 Linear data in the cache | `cache/merge.rs`: merge `Observation.linear` per Linear source (today the refresh's part is taken as is), drop it when the Linear viewer changes; `CachedObservation::restricted_to` drops Linear facts of unwatched Owners (their coverage already goes); decide whether `app/view/coverage::applicable_to_repo` should count an Owner's Linear sources for a Repo (it does today, as for any Owner source). Bump `CACHE_FORMAT`. |
+| #35 Landing Groups | Linear Issue attachments in `LinearPart` (PR identity Owner + Repo + number, or unrecognized link); a pure correlation step before the per-kind rules (attached vs hint, ambiguous, not surveyed); `ordering::in_scope` gives a Repo Scope the Linear Issues with a member there; decide whether attachment coverage joins a member PR's `Coverage::applicable_to`. |
+| #36 workflow review rules | `LinearWorkflowPolicy` gains Held Repos, exact-head approval, comment re-review and reviewers (all off/empty by default); `decide/pull_request.rs` reads `ctx.policy(owner)`; PR facts gain each latest review's commit and reviewer type (GitHub source); `NextStep::RequestReview`. |
+| #37 Land and Mark for release | `decide/` gate over the correlation from #35 and the policy from #36; `NextStep::{Land, MarkForRelease}`; member PRs that would Merge get "lands with". |
+| #38 Linear writes and Start/Implement sheets | New port `LinearWriter` (exactly `assign_to_viewer`, `move_state`; done / failed / unknown). `JobSubject::LinearIssue` (a pinned `serde(rename)`; bump `JOBS_FORMAT` to 3), and `LaunchPlan.work_item` becomes a subject. New Effects (re-read, assign, move state) and Events, emitted only from a confirmed sheet; Start and Mark for release overlays in `app/`. |
+| #39 Request review Job | `handoff::command` gains the approval-required permission mode (coordination Jobs only; never a bypass flag); Request review sheet and plan; prompt in `handoff/prompts.rs`. |
+| #40 Land Job | `JobSubject::LandingGroup` (the Linear Issue and member PRs with their approved heads); `covers` then also matches each member, so Live Job markers and the "open existing or start fresh?" prompt reach members through the existing call sites; Land sheet, landing order from the policy (`LinearWorkflowPolicy` gains it), coordination plan. A new variant: bump `JOBS_FORMAT` again (pinned `serde(rename)`), so an older den refuses the file as a newer den's instead of failing on an unknown variant. |
+| #41 Review Jobs with Linear context, workflow check | Review plan in a workflow Owner: Linear context, verdict-only prompt, approval-required mode; `handoff::inspect` looks up slash commands in the user's and target Repo's Claude directories (reads only) and the sheet shows found / not found. |

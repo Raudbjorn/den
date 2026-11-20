@@ -164,6 +164,35 @@ fn another_format_version_is_refused() {
     ));
 }
 
+/// A temp state directory holding the cache milestone 1 wrote (format 4).
+fn milestone_1_state_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/milestone-1")
+        .join(den::cache::CACHE_SUBDIR);
+    let cache_dir = dir.path().join(den::cache::CACHE_SUBDIR);
+    fs::create_dir(&cache_dir).unwrap();
+    for name in ["last-viewer", "me.json"] {
+        fs::copy(fixture.join(name), cache_dir.join(name)).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn a_cache_milestone_1_wrote_is_refused_by_its_format_version() {
+    let dir = milestone_1_state_dir();
+    let cache = FileCache::in_state_dir(dir.path());
+    assert!(matches!(
+        cache.load(),
+        Err(CacheError::Format { found: 4, expected, ref path })
+            if expected == CACHE_FORMAT && path.ends_with("me.json")
+    ));
+    // The next good survey replaces it.
+    let fresh = cached("me", 9);
+    cache.store(&fresh).unwrap();
+    assert_eq!(cache.load(), Ok(Some(fresh)));
+}
+
 #[test]
 fn an_oversized_cache_is_not_read() {
     let dir = tempfile::tempdir().unwrap();
@@ -212,6 +241,40 @@ fn an_older_survey_never_replaces_a_newer_one() {
     assert_eq!(cache.load(), Ok(Some(newest)));
 }
 
+/// A cache of an older format is never read again, so its age can't keep a
+/// survey from replacing it (its clock may have run ahead). A newer format's
+/// survey is a newer den's, and an older survey still never replaces it.
+#[test]
+fn only_a_readable_or_newer_formats_age_can_supersede_a_survey() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCache::in_state_dir(dir.path());
+    let at = |time: &str, number: u64| {
+        let mut c = cached("me", number);
+        c.observation.observed_at = ts(time);
+        c
+    };
+    let file = cache.file_for("me").unwrap();
+    let restamp = |format: u32| {
+        let mut body: serde_json::Value =
+            serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        body["format"] = serde_json::json!(format);
+        fs::write(&file, serde_json::to_vec(&body).unwrap()).unwrap();
+    };
+
+    cache.store(&at("2026-11-19T11:00:00Z", 2)).unwrap();
+    restamp(CACHE_FORMAT - 1);
+    let earlier = at("2026-11-19T10:00:00Z", 1);
+    cache.store(&earlier).unwrap();
+    assert_eq!(cache.load(), Ok(Some(earlier)));
+
+    cache.store(&at("2026-11-19T11:00:00Z", 2)).unwrap();
+    restamp(CACHE_FORMAT + 1);
+    assert!(matches!(
+        cache.store(&at("2026-11-19T10:00:00Z", 1)),
+        Err(CacheError::Superseded { .. })
+    ));
+}
+
 /// The age check and the replacement are one step for every den sharing the
 /// directory: while another den holds the viewer's lock, a store waits, and
 /// past its bound gives up as an error value, leaving the stored survey as is.
@@ -250,11 +313,15 @@ fn a_store_waits_for_another_dens_lock_and_gives_up_as_an_error_value() {
 fn dens_storing_at_once_leave_the_newest_survey() {
     const WRITERS: u32 = 6;
     const STORES_EACH: u32 = 15;
+    // This checks ordering, not disk latency: 90 durable stores can exceed the
+    // production 2s lock wait on CI. The timeout behavior is tested separately.
+    const ORDERING_TEST_LOCK_WAIT_SECS: u64 = 30;
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().to_owned();
     std::thread::scope(|scope| {
         for writer in 0..WRITERS {
-            let cache = FileCache::in_state_dir(&state);
+            let cache = FileCache::in_state_dir(&state)
+                .with_lock_wait(Duration::from_secs(ORDERING_TEST_LOCK_WAIT_SECS));
             scope.spawn(move || {
                 for i in 0..STORES_EACH {
                     // Interleaved minutes, so every writer offers older and newer ones.

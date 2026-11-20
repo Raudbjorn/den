@@ -29,7 +29,8 @@
 //!   branches start from (the Upstream's when it is the target). A PR's head in
 //!   another Repo is [`BaseRef::PullHead`], fetched as `refs/pull/<n>/head` from
 //!   the target's remote. A PR is only ever fetched from the Repo it is in: an
-//!   Upstream target for a fork's PR is [`RefusalReason::PullRequestNotInTarget`].
+//!   Upstream target for a fork's PR is [`RefusalReason::PullRequestNotInTarget`],
+//!   and for a fork's Branch [`RefusalReason::BranchNotInTarget`].
 //! - #14 (Live Jobs, built): [`live`] tells each recorded Job's worktree
 //!   present / missing / unknown. The WorkspaceView carries this Work Item's
 //!   checks (`job_checks`); the App asks "open existing or start fresh?" on a
@@ -287,8 +288,8 @@ pub struct LaunchPlan {
 pub struct Renamed {
     /// The name den wanted.
     pub wanted: String,
-    /// The Work Items whose Jobs hold that name (or an earlier suffix).
-    pub taken_by: Vec<WorkItemId>,
+    /// The subjects of the Jobs that hold that name (or an earlier suffix).
+    pub taken_by: Vec<crate::jobs::JobSubject>,
 }
 
 /// Why a prompt can't be passed to Claude Code as is.
