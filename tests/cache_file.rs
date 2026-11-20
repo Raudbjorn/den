@@ -281,6 +281,50 @@ fn dens_storing_at_once_leave_the_newest_survey() {
     );
 }
 
+#[test]
+fn a_separate_process_respects_the_cache_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCache::in_state_dir(dir.path());
+    let original = cached("me", 1);
+    cache.store(&original).unwrap();
+    let held = fs::OpenOptions::new()
+        .write(true)
+        .open(cache.lock_for("me").unwrap())
+        .unwrap();
+    held.lock().unwrap();
+    let child = |locked: bool| {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "cache_writer_child", "--nocapture"])
+            .env("DEN_TEST_CACHE_STATE", dir.path())
+            .env("DEN_TEST_CACHE_LOCKED", locked.to_string())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    };
+    child(true);
+    assert_eq!(cache.load(), Ok(Some(original)));
+    drop(held);
+    child(false);
+    assert_eq!(cache.load(), Ok(Some(cached("me", 2))));
+}
+
+#[test]
+fn cache_writer_child() {
+    let Some(state) = std::env::var_os("DEN_TEST_CACHE_STATE") else {
+        return;
+    };
+    let cache = FileCache::in_state_dir(std::path::Path::new(&state))
+        .with_lock_wait(Duration::from_millis(50));
+    let result = cache.store(&cached("me", 2));
+    if std::env::var("DEN_TEST_CACHE_LOCKED").unwrap() == "true" {
+        assert!(
+            matches!(result, Err(CacheError::Write { detail, .. }) if detail.contains("locked"))
+        );
+    } else {
+        result.unwrap();
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn a_cache_file_that_is_not_a_regular_file_is_refused_not_read() {
