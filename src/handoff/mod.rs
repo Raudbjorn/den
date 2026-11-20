@@ -138,6 +138,19 @@ impl TargetChoice {
             Self::Upstream => Self::OwnRepo,
         }
     }
+
+    /// The target a launch sheet for `item` starts from, given the fork's own
+    /// setting (`fork_setting`). A PR's and a Branch's refs live in the Repo
+    /// they are in, so their Jobs start on that Repo whatever the fork's
+    /// setting (a sheet's `u` can still choose the Upstream, which is
+    /// refused with the reason). Issues and Runs follow the fork's setting:
+    /// their new branches start from the target's default branch.
+    pub fn default_for(item: &WorkItemId, fork_setting: Self) -> Self {
+        match item {
+            WorkItemId::PullRequest { .. } | WorkItemId::Branch { .. } => Self::OwnRepo,
+            WorkItemId::Issue { .. } | WorkItemId::Run { .. } => fork_setting,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

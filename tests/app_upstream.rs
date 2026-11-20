@@ -23,7 +23,7 @@ use den::{
 };
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use support::{
-    build::{ME, ObservationBuilder, branch, pr, repo_id},
+    build::{ME, ObservationBuilder, branch, issue, pr, repo_id, run},
     fakes::{FakeCache, FakeUpstreams, WorkspaceCall},
     harness::Harness,
 };
@@ -32,6 +32,10 @@ const ROOT: &str = "/home/me/dev";
 const CLONE: &str = "/home/me/dev/app";
 /// The default head commit of PR 7 (`pr()` uses the number in hex).
 const HEAD_7: &str = "0000000000000000000000000000000000000007";
+const FORK_MAIN: &str = "1111111111111111111111111111111111111111";
+const UPSTREAM_MAIN: &str = "2222222222222222222222222222222222222222";
+const PR_7: &str = "octo/app#7";
+const ISSUE_9: &str = "octo/app#9";
 const FORK: &str = "octo/app";
 const UPSTREAM: &str = "upstream-org/app";
 
@@ -43,15 +47,16 @@ fn config() -> Config {
     }
 }
 
-/// octo/app, a fork of upstream-org/app, with PR #7 (Address review, mine), a
-/// plain Repo octo/lib, and a Branch in the fork compared against the fork's
-/// own default branch.
+/// octo/app, a fork of upstream-org/app, with PR #7 (Address review, mine),
+/// Issue #9 (Implement, mine), a plain Repo octo/lib, and a Branch in the
+/// fork compared against the fork's own default branch.
 fn forked() -> Observation {
     ObservationBuilder::new()
         .owner("octo")
         .fork(FORK, Some(UPSTREAM))
         .repo("octo/lib")
         .pull_request(pr(FORK, 7).author(ME).changes_requested())
+        .issue(issue(FORK, 9).title("Add a login page").assignee(ME))
         .branch(
             branch(FORK, "my-fix")
                 .compared_against(FORK, "main")
@@ -80,6 +85,39 @@ fn fork_clone(harness: &Harness) {
     harness
         .workspace
         .set_remote_head(CLONE, "origin", "feature-7", HEAD_7);
+    // Where each target's default branch is, for new branches (Issues, Runs).
+    harness
+        .workspace
+        .set_remote_head(CLONE, "origin", "main", FORK_MAIN);
+    harness
+        .workspace
+        .set_remote_head(CLONE, "upstream", "main", UPSTREAM_MAIN);
+}
+
+/// Selects the row `reference` (as the list shows it) and presses `c`.
+fn open_sheet(harness: &mut Harness, reference: &str) {
+    let rows: Vec<String> = harness
+        .view
+        .list
+        .rows
+        .iter()
+        .map(|r| r.id.to_string())
+        .collect();
+    let index = rows
+        .iter()
+        .position(|r| r == reference)
+        .unwrap_or_else(|| panic!("no row {reference} in {rows:?}"));
+    while harness.view.list.selected != Some(index) {
+        let before = harness.view.list.selected;
+        let key = if before.is_some_and(|s| s > index) {
+            Key::Up
+        } else {
+            Key::Down
+        };
+        press(harness, key);
+        assert_ne!(before, harness.view.list.selected, "selection stuck");
+    }
+    press(harness, Key::Char('c'));
 }
 
 fn press(harness: &mut Harness, key: Key) {
@@ -186,9 +224,10 @@ fn on_a_fork_the_default_target_is_the_fork_and_u_in_the_sidebar_flips_it_and_th
     let mut harness = started_with(&store, forked());
     fork_clone(&harness);
 
-    // By default the fork is its own target.
+    // By default the fork is its own target. (Decision b: an Issue's sheet
+    // follows the fork's setting; a PR's would start on the fork anyway.)
     assert_eq!(row(&harness.view, &repo_scope(FORK)).upstream, None);
-    press(&mut harness, Key::Char('c'));
+    open_sheet(&mut harness, ISSUE_9);
     let (value, note, tone) = target(sheet(&harness));
     assert_eq!(value, FORK);
     assert_eq!(
@@ -223,7 +262,7 @@ fn on_a_fork_the_default_target_is_the_fork_and_u_in_the_sidebar_flips_it_and_th
         row(&restarted.view, &repo_scope(FORK)).upstream.as_deref(),
         Some(UPSTREAM)
     );
-    press(&mut restarted, Key::Char('c'));
+    open_sheet(&mut restarted, ISSUE_9);
     let (value, note, tone) = target(sheet(&restarted));
     assert_eq!(value, format!("upstream → {UPSTREAM}"));
     assert_eq!(tone, Tone::Upstream);
@@ -239,24 +278,21 @@ fn on_a_fork_the_default_target_is_the_fork_and_u_in_the_sidebar_flips_it_and_th
 
 #[test]
 fn the_per_job_override_on_the_sheet_changes_only_that_jobs_plan() {
-    // The fork's setting is Upstream.
+    // The fork's setting is Upstream. An Issue's sheet follows it (decision
+    // b); before decision b this test used PR #7, whose sheet no longer does.
     let store = Arc::new(FakeUpstreams::holding(targets(&[FORK])));
     let mut harness = started_with(&store, forked());
     fork_clone(&harness);
 
-    press(&mut harness, Key::Char('c'));
+    open_sheet(&mut harness, ISSUE_9);
     let upstream_sheet = sheet(&harness).clone();
-    assert_eq!(target(&upstream_sheet).0, format!("upstream → {UPSTREAM}"));
-    // A PR is fetched only from the Repo it is in: #7 in the Upstream would be
-    // another PR. So the Upstream target refuses, naming why and the way out.
-    assert_eq!(upstream_sheet.status, LaunchStatus::Refused);
-    assert!(
-        messages(&upstream_sheet).contains(
-            "PR #7 is in octo/app, not in upstream-org/app: den fetches a PR only from the Repo it is in"
-        ),
+    assert_eq!(
+        upstream_sheet.status,
+        LaunchStatus::Ready,
         "{}",
         messages(&upstream_sheet)
     );
+    assert_eq!(target(&upstream_sheet).0, format!("upstream → {UPSTREAM}"));
     assert!(
         harness
             .view
@@ -287,6 +323,7 @@ fn the_per_job_override_on_the_sheet_changes_only_that_jobs_plan() {
     assert_eq!(plans.len(), 1);
     assert_eq!(plans[0].target.repo, repo_id(FORK));
     assert_eq!(plans[0].remote.name, "origin");
+    assert_eq!(plans[0].base.commit, FORK_MAIN);
 
     // The fork's own setting never changed: nothing stored, the sidebar still
     // shows the Upstream, and the next sheet starts from the Upstream again.
@@ -297,8 +334,177 @@ fn the_per_job_override_on_the_sheet_changes_only_that_jobs_plan() {
         Some(UPSTREAM)
     );
     press(&mut harness, Key::Esc);
-    press(&mut harness, Key::Char('c'));
-    assert_eq!(target(sheet(&harness)).0, format!("upstream → {UPSTREAM}"));
+    open_sheet(&mut harness, ISSUE_9);
+    // The Job just launched is live, so the sheet asks about it (#14) rather
+    // than showing a TARGET; what it inspected for is the Upstream again.
+    assert_eq!(sheet(&harness).status, LaunchStatus::LiveJob);
+    assert_eq!(last_inspected_target(&harness), repo_id(UPSTREAM));
+}
+
+/// The target of the last workspace inspection the App asked for.
+fn last_inspected_target(harness: &Harness) -> den::domain::RepoId {
+    harness
+        .effects
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            Effect::InspectLaunch { request, .. } => Some(request.target.clone()),
+            _ => None,
+        })
+        .expect("an inspection")
+}
+
+#[test]
+fn a_pr_sheet_starts_on_the_prs_own_repo_even_when_the_fork_targets_its_upstream() {
+    // Decision b: a fork's saved Upstream choice does not apply to PR sheets.
+    let store = Arc::new(FakeUpstreams::holding(targets(&[FORK])));
+    let mut harness = started_with(&store, forked());
+    fork_clone(&harness);
+
+    open_sheet(&mut harness, PR_7);
+    let pr_sheet = sheet(&harness).clone();
+    assert_eq!(
+        pr_sheet.status,
+        LaunchStatus::Ready,
+        "{}",
+        messages(&pr_sheet)
+    );
+    let (value, note, tone) = target(&pr_sheet);
+    assert_eq!(value, FORK);
+    assert_eq!(
+        note.as_deref(),
+        Some(
+            "fork: its own Repo, not its Upstream; the fork targets its Upstream, but a PR's Job targets the Repo the PR is in"
+        )
+    );
+    assert_eq!(tone, Tone::Plain);
+    assert!(
+        harness
+            .view
+            .footer
+            .hints
+            .iter()
+            .any(|h| h.key == "u" && h.label == "upstream")
+    );
+
+    // The sheet's `u` can still choose the Upstream for this Job: refused,
+    // with the existing explanation, and nothing done.
+    press(&mut harness, Key::Char('u'));
+    let refused = sheet(&harness).clone();
+    assert_eq!(refused.status, LaunchStatus::Refused);
+    assert_eq!(target(&refused).0, format!("upstream → {UPSTREAM}"));
+    assert!(
+        messages(&refused).contains(
+            "PR #7 is in octo/app, not in upstream-org/app: den fetches a PR only from the Repo it is in"
+        ),
+        "{}",
+        messages(&refused)
+    );
+    assert!(harness.workspace.calls().is_empty());
+
+    // `u` again: back on the fork, and it launches there.
+    press(&mut harness, Key::Char('u'));
+    assert_eq!(sheet(&harness).status, LaunchStatus::Ready);
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].target.repo, repo_id(FORK));
+    assert!(store.stored().is_empty());
+}
+
+#[test]
+fn issues_and_runs_follow_the_forks_upstream_choice_and_start_from_the_upstreams_default_branch() {
+    // Decision b, the other side: Issues and Runs keep following the fork's
+    // saved choice, and their new branches start from the Upstream's default
+    // branch (Target.default_branch), fetched from the Upstream's remote.
+    let store = Arc::new(FakeUpstreams::holding(targets(&[FORK])));
+    let mut observation = forked();
+    observation
+        .runs
+        .push(run(FORK, "ci.yml", 41).failed().by(ME).build());
+    let mut harness = started_with(&store, observation);
+    fork_clone(&harness);
+
+    for reference in [ISSUE_9, "octo/app workflow .github/workflows/ci.yml"] {
+        open_sheet(&mut harness, reference);
+        let ready = sheet(&harness).clone();
+        assert_eq!(
+            ready.status,
+            LaunchStatus::Ready,
+            "{reference}: {}",
+            messages(&ready)
+        );
+        assert_eq!(
+            target(&ready).0,
+            format!("upstream → {UPSTREAM}"),
+            "{reference}"
+        );
+        let base = ready.fields.iter().find(|f| f.label == "BASE").unwrap();
+        assert_eq!(base.value, "default branch main @ 2222222", "{reference}");
+        press(&mut harness, Key::Enter);
+        let plans = launch_plans(&harness);
+        let plan = plans.last().expect("a plan");
+        assert_eq!(plan.target.repo, repo_id(UPSTREAM), "{reference}");
+        assert_eq!(plan.target.upstream_of, Some(repo_id(FORK)), "{reference}");
+        assert_eq!(plan.remote.name, "upstream", "{reference}");
+        assert_eq!(plan.base.commit, UPSTREAM_MAIN, "{reference}");
+        press(&mut harness, Key::Esc);
+    }
+}
+
+#[test]
+fn a_branch_sheet_starts_on_the_fork_and_an_upstream_target_for_it_is_refused() {
+    // A Branch's commits live in the fork, like a PR's: an Upstream target
+    // would fetch whatever the Upstream has under that name. So its sheet
+    // starts on the fork, and `u` to the Upstream is refused with the reason.
+    let store = Arc::new(FakeUpstreams::holding(targets(&[FORK])));
+    // Branches compared against another branch than their target's wait for a
+    // refresh (#13), so this one is compared against the Upstream's default
+    // branch, as a survey with the fork set to Upstream does.
+    let observation = ObservationBuilder::new()
+        .owner("octo")
+        .fork(FORK, Some(UPSTREAM))
+        .branch(
+            branch(FORK, "my-fix")
+                .compared_against(UPSTREAM, "main")
+                .author(ME),
+        )
+        .build();
+    let mut harness = started_with(&store, observation);
+    fork_clone(&harness);
+    harness
+        .workspace
+        .set_remote_head(CLONE, "origin", "my-fix", HEAD_7);
+    // The Upstream has a branch of the same name: den must never use it.
+    harness
+        .workspace
+        .set_remote_head(CLONE, "upstream", "my-fix", UPSTREAM_MAIN);
+
+    open_sheet(&mut harness, "octo/app:my-fix");
+    let fork_sheet = sheet(&harness).clone();
+    assert_eq!(
+        fork_sheet.status,
+        LaunchStatus::Ready,
+        "{}",
+        messages(&fork_sheet)
+    );
+    let (value, note, _) = target(&fork_sheet);
+    assert_eq!(value, FORK);
+    assert!(
+        note.unwrap()
+            .ends_with("a Branch's Job targets the Repo the Branch is in")
+    );
+    press(&mut harness, Key::Char('u'));
+    let refused = sheet(&harness).clone();
+    assert_eq!(refused.status, LaunchStatus::Refused);
+    assert!(
+        messages(&refused).contains(
+            "the Branch my-fix is in octo/app, not in upstream-org/app: den fetches a Branch only from the Repo it is in"
+        ),
+        "{}",
+        messages(&refused)
+    );
+    assert!(harness.workspace.calls().is_empty());
 }
 
 #[test]
@@ -306,7 +512,7 @@ fn the_sheet_override_to_upstream_shows_on_the_sheet_and_leaves_the_fork_standal
     let store = Arc::new(FakeUpstreams::default());
     let mut harness = started_with(&store, forked());
     fork_clone(&harness);
-    press(&mut harness, Key::Char('c'));
+    open_sheet(&mut harness, PR_7);
     assert_eq!(sheet(&harness).status, LaunchStatus::Ready);
 
     press(&mut harness, Key::Char('u'));
@@ -513,8 +719,9 @@ fn a_cross_repo_pr_ref_missing_from_the_target_remote_refuses_at_launch_doing_no
 fn the_upstream_target_carries_the_upstream_label_as_well_as_the_rust_tone() {
     let store = Arc::new(FakeUpstreams::holding(targets(&[FORK])));
     let mut harness = started_with(&store, forked());
-    // The sheet: rust tone and the text label.
-    press(&mut harness, Key::Char('c'));
+    // The sheet: rust tone and the text label (an Issue's sheet follows the
+    // fork's setting; a PR's starts on the fork, decision b).
+    open_sheet(&mut harness, ISSUE_9);
     let (value, _, tone) = target(sheet(&harness));
     assert!(value.starts_with("upstream → "), "{value}");
     assert_eq!(tone, Tone::Upstream);

@@ -115,6 +115,16 @@ pub(super) fn facts(
         return Err(Refusal { reasons });
     };
     let start = match item {
+        // A Branch's commits live in the Repo it is in; the same name in
+        // another target (a fork's Upstream) is another branch.
+        WorkItemId::Branch { name, .. } if &target.target.repo != repo => {
+            reasons.push(RefusalReason::BranchNotInTarget {
+                repo: repo.clone(),
+                branch: name.clone(),
+                target: target.target.repo.clone(),
+            });
+            None
+        }
         WorkItemId::Branch { name, .. } => {
             Some((BaseRef::HeadBranch(name.clone()), name.clone(), false))
         }

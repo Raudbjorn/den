@@ -4,7 +4,7 @@ use super::super::launch::{Sheet, SheetState};
 use crate::handoff::{Target, TargetChoice};
 use crate::{
     app::view_model::{LaunchSheet, LaunchStatus, PromptField, SheetField, SheetMessage, Tone},
-    domain::WorkItemKind,
+    domain::{WorkItemId, WorkItemKind},
     handoff::{
         BaseRef, BranchStart, CloneSource, JobCheck, LaunchOutcome, LaunchPlan, LaunchReport,
         PathState, Refusal, ReopenPlan, WindowMode, WorktreeState, Writability, command,
@@ -186,6 +186,13 @@ fn own_repo_note(sheet: &Sheet, is_fork: bool) -> Option<String> {
     let mut note = "fork: its own Repo, not its Upstream".to_owned();
     if sheet.choice != sheet.fork_choice {
         note.push_str(", for this Job only");
+    } else if sheet.fork.as_ref().is_some_and(|f| f.set_to_upstream) {
+        // The fork targets its Upstream, but this kind's Job doesn't follow.
+        let kind = match sheet.item {
+            WorkItemId::Branch { .. } => "a Branch's Job targets the Repo the Branch is in",
+            _ => "a PR's Job targets the Repo the PR is in",
+        };
+        note.push_str(&format!("; the fork targets its Upstream, but {kind}"));
     }
     Some(note)
 }
