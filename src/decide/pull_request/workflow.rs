@@ -96,7 +96,8 @@ struct ReviewsRead {
     /// Who requested changes at the current head.
     changes_at_head: Vec<String>,
     /// Who requested changes on an older head and isn't awaiting re-review
-    /// (a bot, the author, or someone asked again).
+    /// (a bot, the author, someone asked again, or someone who has since
+    /// reviewed the current head).
     changes_earlier: Vec<String>,
 }
 
