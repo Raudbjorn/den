@@ -13,6 +13,7 @@ use den::{
     config::LinearWorkflow,
     domain::{
         Incompleteness, LinearIssueId, LinearSourceKind, Source, SourceKind, SourceState,
+        coverage::MAX_KEPT_LINEAR_ERRORS,
         facts::{LinearPriority, LinearStateKind},
     },
     linear::{ApiKey, HttpReply, LinearApi, LinearRequest, MAX_LINEAR_PAGES, TransportError},
@@ -174,8 +175,71 @@ fn errors_next_to_data_are_partial() {
         state(&survey, LinearSourceKind::AssignedIssues),
         SourceState::Partial(Incompleteness::LinearErrorsAlongsideData {
             errors: vec!["cycle could not be resolved".to_owned()],
+            // The new count of messages not kept: none, with one error.
+            more: 0,
         })
     );
+}
+
+#[test]
+fn many_errors_next_to_data_keep_a_few_messages_and_count_the_rest() {
+    const SENT_PER_PAGE: usize = 2000;
+    let (survey, _) = survey_with(|request| {
+        if is_viewer(request) {
+            return Ok(ok(viewer_body("acme")));
+        }
+        let next = request.variables["after"].is_null().then_some("cursor-1");
+        let mut body = issues_page(vec![issue_node("id-1", "TEAM-1")], next);
+        let errors: Vec<_> = (0..SENT_PER_PAGE)
+            .map(|i| json!({ "message": format!("error {i}: {}", "x".repeat(250)) }))
+            .collect();
+        body["errors"] = json!(errors);
+        Ok(ok(body))
+    });
+    let SourceState::Partial(why @ Incompleteness::LinearErrorsAlongsideData { .. }) =
+        state(&survey, LinearSourceKind::AssignedIssues)
+    else {
+        panic!("partial with errors alongside data");
+    };
+    let Incompleteness::LinearErrorsAlongsideData { errors, more } = &why else {
+        unreachable!()
+    };
+    assert_eq!(errors.len(), MAX_KEPT_LINEAR_ERRORS, "only a few are kept");
+    assert_eq!(
+        errors.len() + more,
+        2 * SENT_PER_PAGE,
+        "every error of both pages is counted"
+    );
+    assert!(errors[0].starts_with("error 0:"), "the first are kept");
+    assert!(
+        why.describe()
+            .starts_with(&format!("Linear returned {} errors", 2 * SENT_PER_PAGE)),
+        "{}",
+        why.describe()
+    );
+}
+
+#[test]
+fn a_reply_with_only_errors_keeps_a_few_messages_in_its_failure() {
+    let (survey, _) = survey_with(|request| {
+        if is_viewer(request) {
+            return Ok(ok(viewer_body("acme")));
+        }
+        let errors: Vec<_> = (0..1000)
+            .map(|i| json!({ "message": format!("error {i}") }))
+            .collect();
+        Ok(ok(json!({ "data": null, "errors": errors })))
+    });
+    match state(&survey, LinearSourceKind::AssignedIssues) {
+        SourceState::Failed { error } => {
+            assert!(error.len() < 1000, "bounded: {error}");
+            assert!(
+                error.contains("error 0") && error.ends_with("and 995 more"),
+                "{error}"
+            );
+        }
+        other => panic!("failed, not {other:?}"),
+    }
 }
 
 #[test]

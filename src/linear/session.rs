@@ -5,7 +5,7 @@
 //! failed; no invented counts).
 
 use super::transport::{HttpReply, LinearRequest, LinearTransport};
-use crate::domain::{Incompleteness, SourceState};
+use crate::domain::{Incompleteness, SourceState, coverage::MAX_KEPT_LINEAR_ERRORS};
 use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -139,7 +139,15 @@ impl<'a> Session<'a> {
     fn decode<T: DeserializeOwned>(&self, reply: &HttpReply) -> Answer<T> {
         let body: Option<GraphQlBody> = serde_json::from_slice(&reply.body).ok();
         let body = body.unwrap_or_default();
-        let messages: Vec<String> = body.errors.iter().map(|e| bounded(&e.message)).collect();
+        // Only the first few messages are kept (each cut short); the rest are
+        // counted, so one large reply can't grow coverage without bound.
+        let messages: Vec<String> = body
+            .errors
+            .iter()
+            .take(MAX_KEPT_LINEAR_ERRORS)
+            .map(|e| bounded(&e.message))
+            .collect();
+        let more = body.errors.len().saturating_sub(messages.len());
         let rate_limited = reply.status == HTTP_TOO_MANY_REQUESTS
             || body
                 .errors
@@ -168,9 +176,7 @@ impl<'a> Session<'a> {
         let error_state = if rate_limited {
             self.rate_limited()
         } else {
-            SourceState::Partial(Incompleteness::LinearErrorsAlongsideData {
-                errors: messages.clone(),
-            })
+            SourceState::Partial(Incompleteness::linear_errors(messages.clone(), more))
         };
         let data = match body.data {
             Some(Value::Null) | None => {
@@ -178,9 +184,12 @@ impl<'a> Session<'a> {
                     error_state
                 } else {
                     SourceState::Failed {
-                        error: match first(&messages) {
-                            Some(_) => messages.join("; "),
-                            None => format!("Linear answered HTTP {} without data", reply.status),
+                        error: match (first(&messages), more) {
+                            (None, _) => {
+                                format!("Linear answered HTTP {} without data", reply.status)
+                            }
+                            (Some(_), 0) => messages.join("; "),
+                            (Some(_), more) => format!("{}; and {more} more", messages.join("; ")),
                         },
                     }
                 });
