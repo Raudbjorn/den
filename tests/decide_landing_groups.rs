@@ -170,7 +170,9 @@ fn a_hint_never_makes_a_member_or_withholds_implement() {
             .explanation
             .other_conditions
             .iter()
-            .any(|c| c.contains("possibly for TEAM-1") && c.contains("acme/api #4")),
+            // `acme/api#4`: a member or hint is spelled as `WorkItemId`'s `Display`
+            // spells every Pull Request (was `acme/api #4`, review of #49).
+            .any(|c| c.contains("possibly for TEAM-1") && c.contains("acme/api#4")),
         "{issue:?}"
     );
 
@@ -208,7 +210,7 @@ fn one_pr_attached_to_two_issues_is_ambiguous_in_both() {
             .members
             .iter()
             .find(|m| m.pr == pr_ref("acme/api", 4))
-            .unwrap_or_else(|| panic!("{identifier} has acme/api #4: {decision:?}"));
+            .unwrap_or_else(|| panic!("{identifier} has acme/api#4: {decision:?}"));
         assert!(member.ambiguous());
         assert_eq!(identifiers(&member.also_attached_to), [other]);
         assert!(
@@ -216,7 +218,8 @@ fn one_pr_attached_to_two_issues_is_ambiguous_in_both() {
                 .explanation
                 .other_conditions
                 .iter()
-                .any(|c| c.contains("acme/api #4") && c.contains("ambiguous")),
+                // Spelled as `WorkItemId`'s `Display` (was `acme/api #4`).
+                .any(|c| c.contains("acme/api#4") && c.contains("ambiguous")),
             "{decision:?}"
         );
     }
@@ -306,8 +309,9 @@ fn a_linear_issue_with_open_members_has_no_next_step_of_its_own() {
     let reason = issue.explanation.no_step_reason.as_deref().unwrap();
     assert!(
         reason.contains("carry the work")
-            && reason.contains("acme/api #4")
-            && reason.contains("acme/app #5"),
+            // Spelled as `WorkItemId`'s `Display` (was `acme/api #4`).
+            && reason.contains("acme/api#4")
+            && reason.contains("acme/app#5"),
         "{reason}"
     );
     assert!(issue.explanation.unknowns.is_empty(), "{issue:?}");
@@ -569,4 +573,179 @@ fn an_issue_with_only_links_attached_is_implement() {
     assert_eq!(issue.next_step, Some(NextStep::Implement));
     assert!(issue.explanation.unknowns.is_empty(), "{issue:?}");
     assert!(issue.landing.members.is_empty());
+}
+
+/// A Landing Group's Pull Requests are its Owner's (CONTEXT.md, "Landing
+/// Group"). An acme Linear Issue's attachment to octo's Pull Request is
+/// "not surveyed" on the issue's side, so the Pull Request's side must not
+/// claim the group either, and that attachment must not make acme's own
+/// member ambiguous. Both sides of one group agree.
+#[test]
+fn another_owners_attachment_makes_no_group_and_no_ambiguity() {
+    let observation = two_owners()
+        .pull_request(pr("octo/app", 1).author(ME))
+        .pull_request(pr("acme/api", 4).author(ME))
+        .linear_issue(
+            linear_issue("acme", "id-1", "TEAM-1")
+                .attached("octo/app", 1)
+                .attached("acme/api", 4),
+        )
+        .linear_issue(linear_issue("octo", "id-9", "OCTO-9").attached("acme/api", 4))
+        .build();
+    let decisions = decide_all(&observation);
+
+    let team_1 = linear(&decisions, "TEAM-1");
+    assert_eq!(
+        team_1.landing.members[0].status,
+        MemberStatus::NotSurveyed(NotSurveyed::OtherOwner)
+    );
+    assert!(
+        pull_request(&decisions, "octo/app", 1)
+            .landing
+            .groups
+            .is_empty(),
+        "octo's Pull Request is in no acme group"
+    );
+    let own = &team_1.landing.members[1];
+    assert_eq!(own.pr, pr_ref("acme/api", 4));
+    assert!(
+        !own.ambiguous(),
+        "octo's issue doesn't share acme's member: {own:?}"
+    );
+    assert_eq!(
+        identifiers(&pull_request(&decisions, "acme/api", 4).landing.groups),
+        ["TEAM-1"]
+    );
+}
+
+/// A member is named as every other Pull Request reference in den is,
+/// through `WorkItemId`'s `Display` (`acme/api#4`), so a member line and the
+/// Pull Request's own detail spell it alike.
+#[test]
+fn a_member_is_referenced_as_the_rest_of_den_references_a_pull_request() {
+    let observation = two_owners()
+        .pull_request(pr("acme/api", 4).author(ME))
+        .linear_issue(linear_issue("acme", "id-1", "TEAM-1").attached("acme/api", 4))
+        .build();
+    let decisions = decide_all(&observation);
+    let member = &linear(&decisions, "TEAM-1").landing.members[0];
+    assert_eq!(member.reference(), pr_id("acme/api", 4).to_string());
+    assert_eq!(member.reference(), "acme/api#4");
+}
+
+/// A link den can't read as a Pull Request but that looks like one (no
+/// scheme, `/pulls/`, a GitHub Enterprise host, a name den won't accept)
+/// may be an open Pull Request: den doesn't read it as "no Pull Request",
+/// so it withholds Implement and says why. A plain link still doesn't.
+#[test]
+fn a_link_that_looks_like_a_pull_request_withholds_implement() {
+    for url in [
+        "github.com/acme/api/pull/4",
+        "https://github.com/acme/api/pulls/4",
+        "https://github.example.com/acme/api/pull/4",
+        "https://github.com/acme/a%20pi/pull/4",
+    ] {
+        let observation = two_owners()
+            .linear_issue(linear_issue("acme", "id-1", "TEAM-1").link(url))
+            .build();
+        let decisions = decide_all(&observation);
+        let issue = linear(&decisions, "TEAM-1");
+        assert_eq!(issue.next_step, None, "{url}: {issue:?}");
+        let reason = issue.explanation.no_step_reason.as_deref().unwrap();
+        assert!(reason.contains(PR_EXISTENCE_UNKNOWN), "{url}: {reason}");
+        assert!(reason.contains(url), "{url}: {reason}");
+        assert!(
+            issue
+                .explanation
+                .unknowns
+                .iter()
+                .any(|u| u.contains(PR_EXISTENCE_UNKNOWN) && u.contains(url)),
+            "{url}: {issue:?}"
+        );
+        assert!(
+            !issue
+                .explanation
+                .other_conditions
+                .iter()
+                .any(|c| c.contains("not GitHub Pull Requests")),
+            "{url} isn't counted as a plain link: {issue:?}"
+        );
+    }
+}
+
+/// With an open member, a Pull Request exists. Attachments den couldn't read
+/// in full then leave unknown only whether *more* are attached, as the detail
+/// says; the Explanation doesn't also say den couldn't tell whether one
+/// exists.
+#[test]
+fn incomplete_attachments_beside_an_open_member_say_more_may_be_attached() {
+    let observation = two_owners()
+        .pull_request(pr("acme/api", 4).author(ME))
+        .linear_issue(
+            linear_issue("acme", "id-1", "TEAM-1")
+                .attached("acme/api", 4)
+                .attachments_incomplete("Linear returned errors alongside the page"),
+        )
+        .build();
+    let decisions = decide_all(&observation);
+    let issue = linear(&decisions, "TEAM-1");
+    assert_eq!(issue.next_step, None);
+    assert!(
+        issue
+            .explanation
+            .no_step_reason
+            .as_deref()
+            .is_some_and(|r| r.contains("carries the work")),
+        "{issue:?}"
+    );
+    assert!(
+        !issue
+            .explanation
+            .unknowns
+            .iter()
+            .any(|u| u.contains(PR_EXISTENCE_UNKNOWN)),
+        "{issue:?}"
+    );
+    assert!(
+        issue
+            .explanation
+            .unknowns
+            .iter()
+            .any(|u| u.contains("more Pull Requests may be attached")
+                && u.contains("Linear returned errors")),
+        "{issue:?}"
+    );
+}
+
+/// Two spellings of one Repo are one Repo, as GitHub names are. When the
+/// refresh read it completely under one spelling, every open Pull Request of
+/// it is there, whatever another spelling's entry says: a member missing
+/// from it is merged or closed. This is the rule the cache merge had before
+/// `Coverage::read_completely` (any complete entry of the folded source), so
+/// the merge and the Landing Groups still drop what a complete read proves
+/// is gone.
+#[test]
+fn a_repo_read_completely_under_one_spelling_is_read_completely() {
+    let observation = two_owners()
+        .repo_coverage("ACME/api", SourceKind::PullRequests, SourceState::Complete)
+        .repo_coverage(
+            "acme/api",
+            SourceKind::PullRequests,
+            SourceState::Partial(Incompleteness::PaginationStopped {
+                pages_read: 1,
+                reason: "rate limited".to_owned(),
+            }),
+        )
+        .linear_issue(linear_issue("acme", "id-1", "TEAM-1").attached("acme/api", 4))
+        .build();
+    assert!(
+        observation
+            .coverage
+            .read_completely(&RepoId::new("acme", "api"), SourceKind::PullRequests)
+    );
+    let decisions = decide_all(&observation);
+    assert_eq!(
+        linear(&decisions, "TEAM-1").landing.members[0].status,
+        MemberStatus::NotOpen
+    );
 }

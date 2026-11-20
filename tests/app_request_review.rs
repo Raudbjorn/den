@@ -23,7 +23,7 @@ use den::{
     },
     handoff::{
         LaunchPlan, PermissionMode, ReviewRequest, SessionStart, coordination_mode,
-        prompts::{self, PromptFields},
+        prompts::{self, PromptFields, Prompts},
     },
     jobs::{JobRecord, JobSubject},
 };
@@ -63,7 +63,22 @@ fn config(slack: Option<&str>) -> Config {
 /// acme/api: #2 approved only at an older head (Request review), #3 with an
 /// unresolved thread (Address review), #4 approved at its head (Merge).
 fn started(slack: Option<&str>) -> Harness {
-    let mut harness = Harness::new(Ok(config(slack)));
+    started_with(config(slack), surveyed(pr_2(), pr_4()))
+}
+
+/// Started with `config`, its first survey seeing `observation`.
+fn started_with(config: Config, observation: Observation) -> Harness {
+    started_with_prompts(config, observation, Ok(Prompts::default()))
+}
+
+/// [`started_with`], with `prompts` as read from the prompts file.
+fn started_with_prompts(
+    config: Config,
+    observation: Observation,
+    prompts: Result<Prompts, prompts::PromptsError>,
+) -> Harness {
+    let mut harness = Harness::new(Ok(config.clone()));
+    harness.app = den::app::App::new(Ok(config)).with_launch_settings(prompts, None);
     harness
         .workspace
         .add_clone(CLONE, &[("origin", "git@github.com:acme/api.git")]);
@@ -75,9 +90,16 @@ fn started(slack: Option<&str>) -> Harness {
             &format!("{n:040x}"),
         );
     }
-    harness.answer(Ok(surveyed(pr_2(), pr_4())));
+    harness.answer(Ok(observation));
     harness.start();
     harness
+}
+
+/// [`config`] without a Slack channel, its Linear Workflow naming `reviewers`.
+fn config_with_reviewers(reviewers: Vec<config::Reviewer>) -> Config {
+    let mut config = config(None);
+    config.linear[0].reviewers = reviewers;
+    config
 }
 
 /// #2 as [`started`] sees it: approved only at an older head, so Request review.
@@ -290,6 +312,7 @@ fn c_then_enter_on_request_review_launches_a_coordination_job_on_the_pr_head_in_
         Some(ReviewRequest {
             reviewers: vec![user("alice"), team("acme", "backend")],
             slack_channel: None,
+            announces: true,
         })
     );
     let windows = harness.launcher.windows();
@@ -484,6 +507,38 @@ If you aren't sure an announcement went out, don't send it again: report it as u
             .as_ref()
             .and_then(|r| r.slack_channel.as_deref()),
         Some("#team-dev")
+    );
+}
+
+/// Review on #50: `{announcement}` is optional in a custom template. Without
+/// it, ANNOUNCE never claims the Job posts to the configured channel.
+#[test]
+fn a_template_without_the_announcement_never_says_the_job_announces() {
+    let prompts = prompts::parse(
+        std::path::Path::new("prompts.toml"),
+        "request_review = \"Request {reviewers} on {url}.\"\n",
+    );
+    let mut harness =
+        started_with_prompts(config(Some("#team-dev")), surveyed(pr_2(), pr_4()), prompts);
+    let ready = open_sheet(&mut harness, "#2");
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    assert_eq!(
+        prompt(&ready),
+        format!("Request alice, acme/backend on {URL_2}.")
+    );
+    let (value, note) = field(&ready, "ANNOUNCE").expect("an ANNOUNCE field");
+    assert_eq!(value, "nowhere");
+    assert!(
+        note.is_some_and(|n| n.contains("has no {announcement}") && n.contains("#team-dev")),
+        "{note:?}"
+    );
+    let fields = &ready.fields;
+    assert!(
+        !fields.iter().any(|f| f
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("the Job posts it"))),
+        "{fields:?}"
     );
 }
 
@@ -836,6 +891,173 @@ fn an_edited_reviewer_list_is_kept_when_the_suggestions_change() {
     assert_eq!(plans[0].prompt, prompt_without_slack("alice, dave"));
 }
 
+/// Codex review on #50: a Merge that becomes a Request review with nobody to
+/// suggest gets an empty list. Enter shows the Request review plan first, so
+/// the reviewers field the refusal points at is on the sheet.
+#[test]
+fn a_merge_that_becomes_request_review_with_nobody_suggested_is_shown_before_its_empty_list_is_refused()
+ {
+    let mut harness = started_with(config_with_reviewers(Vec::new()), surveyed(pr_2(), pr_4()));
+    let survey = refresh_pending(
+        &mut harness,
+        "#4",
+        surveyed(
+            pr_2(),
+            pr("acme/api", 4)
+                .author(ME)
+                .passing("ci")
+                .approved()
+                .review_on("alice", ReviewVerdict::Approved, "0ld"),
+        ),
+    );
+    land(&mut harness, &survey);
+
+    press(&mut harness, Key::Enter);
+    let asked = sheet(&harness).clone();
+    assert_eq!(asked.next_step, "Request review", "{}", messages(&asked));
+    assert!(
+        messages(&asked).contains("the Next Step is now Request review (was Merge)"),
+        "{}",
+        messages(&asked)
+    );
+    assert_eq!(field(&asked, "SUGGESTED").map(|f| f.0), Some("none"));
+    assert_eq!(
+        asked.reviewers.as_ref().map(|r| r.text.as_str()),
+        Some(""),
+        "the field the next refusal points at is drawn"
+    );
+    assert!(
+        prompt(&asked).contains("Request reviews on GitHub from exactly these reviewers"),
+        "{}",
+        prompt(&asked)
+    );
+
+    press(&mut harness, Key::Enter);
+    assert!(launch_plans(&harness).is_empty());
+    assert!(
+        messages(sheet(&harness)).contains("no reviewers chosen")
+            && messages(sheet(&harness)).contains("edit the reviewers with r"),
+        "{}",
+        messages(sheet(&harness))
+    );
+
+    edit_reviewers(&mut harness, "dave");
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1, "{}", messages(sheet(&harness)));
+    assert_eq!(
+        plans[0]
+            .review_request
+            .as_ref()
+            .map(|r| r.reviewers.clone()),
+        Some(vec![user("dave")])
+    );
+}
+
+/// Review on #50: suggestions that empty while the sheet is open (alice
+/// approved the head, which still needs another approval) empty an unedited
+/// list. Enter shows that, and says the suggestions changed, before it says
+/// nobody is chosen; the prompt never still names alice.
+#[test]
+fn suggestions_that_empty_while_the_sheet_is_open_are_shown_before_the_empty_list_is_refused() {
+    let needs_review = || pr("acme/api", 2).author(ME).passing("ci");
+    let mut harness = started_with(
+        config_with_reviewers(vec![config::Reviewer::User("alice".to_owned())]),
+        surveyed(needs_review(), pr_4()),
+    );
+    let survey = refresh_pending(
+        &mut harness,
+        "#2",
+        surveyed(
+            needs_review().review_at_head("alice", ReviewVerdict::Approved),
+            pr_4(),
+        ),
+    );
+    assert_eq!(prompt(sheet(&harness)), prompt_without_slack("alice"));
+    land(&mut harness, &survey);
+
+    press(&mut harness, Key::Enter);
+    assert!(launch_plans(&harness).is_empty());
+    let asked = sheet(&harness).clone();
+    assert_eq!(asked.next_step, "Request review");
+    assert!(
+        messages(&asked).contains("the suggested reviewers changed"),
+        "{}",
+        messages(&asked)
+    );
+    assert_eq!(field(&asked, "SUGGESTED").map(|f| f.0), Some("none"));
+    assert_eq!(asked.reviewers.as_ref().map(|r| r.text.as_str()), Some(""));
+    assert_eq!(prompt(&asked), prompt_without_slack(""));
+
+    press(&mut harness, Key::Enter);
+    assert!(launch_plans(&harness).is_empty());
+    assert!(
+        messages(sheet(&harness)).contains("no reviewers chosen"),
+        "{}",
+        messages(sheet(&harness))
+    );
+}
+
+/// Review on #50: editing the reviewers checks the shown plan as Enter does.
+/// A Request review that became a Merge is shown as one, with what changed;
+/// the next Enter launches the Merge the user has now seen.
+#[test]
+fn editing_the_reviewers_after_the_next_step_changed_shows_the_new_plan_and_says_so() {
+    let mut harness = started(None);
+    let survey = refresh_pending(
+        &mut harness,
+        "#2",
+        surveyed(
+            pr_2().review_at_head("alice", ReviewVerdict::Approved),
+            pr_4(),
+        ),
+    );
+    land(&mut harness, &survey);
+
+    edit_reviewers(&mut harness, "bob");
+    assert!(launch_plans(&harness).is_empty());
+    let asked = sheet(&harness).clone();
+    assert_eq!(asked.next_step, "Merge");
+    assert!(
+        messages(&asked).contains("the Next Step is now Merge (was Request review)"),
+        "{}",
+        messages(&asked)
+    );
+    assert_eq!(asked.reviewers, None, "a Merge asks no reviewers");
+    assert_eq!(field(&asked, "PERMISSIONS"), None);
+
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1, "{plans:?}");
+    assert_eq!(plans[0].next_step, NextStep::Merge);
+}
+
+/// An edited list that doesn't parse is explained as such when the
+/// suggestions change underneath it: it plans with the reviewers the sheet
+/// shows, so the new suggestions never read as a change on Enter.
+#[test]
+fn a_malformed_edited_list_is_explained_not_read_as_new_suggestions() {
+    let mut harness = started(None);
+    let survey = refresh_pending(&mut harness, "#2", alice_approved_carol_awaiting());
+    edit_reviewers(&mut harness, "alice not/a/team");
+    land(&mut harness, &survey);
+
+    press(&mut harness, Key::Enter);
+    assert!(launch_plans(&harness).is_empty());
+    let after = sheet(&harness);
+    assert!(
+        messages(after).contains("\"not/a/team\" is not a GitHub login or an org/team"),
+        "{}",
+        messages(after)
+    );
+    assert!(
+        !messages(after).contains("Not launched"),
+        "{}",
+        messages(after)
+    );
+    assert_eq!(prompt(after), prompt_without_slack("alice, acme/backend"));
+}
+
 // ---- Live Jobs ----
 
 /// A recorded Request review Job for #2, live in [`WORKTREE_2`], recorded in
@@ -948,14 +1170,22 @@ fn reviewers_and_announcement_are_request_review_placeholders_only() {
         )
     );
 
+    // Review on #50: a template without {reviewers} no longer makes the whole
+    // file malformed (that refused every kind, after an upgrade, for a
+    // request_review written before #39); it makes Request review alone
+    // unusable, with the same message, file and line.
     let without = prompts::parse(path, "request_review = \"Ask for reviews of {url}.\"\n")
-        .expect_err("a request_review template must name the reviewers chosen on the sheet");
+        .expect("one kind's missing placeholder leaves the other kinds usable");
+    let unusable = without
+        .unusable(NextStep::RequestReview)
+        .expect("a request_review template must name the reviewers chosen on the sheet")
+        .to_string();
     assert!(
-        without
-            .to_string()
-            .contains("`request_review` must use {reviewers}"),
-        "{without}"
+        unusable.contains("prompts.toml, line 1")
+            && unusable.contains("`request_review` must use {reviewers}"),
+        "{unusable}"
     );
+    assert_eq!(without.unusable(NextStep::Review), None);
 
     let misplaced = prompts::parse(path, "review = \"/code-review {url} {reviewers}\"\n")
         .expect_err("another kind may not use {reviewers}");
@@ -965,6 +1195,48 @@ fn reviewers_and_announcement_are_request_review_placeholders_only() {
             .contains("the request_review-only placeholder {reviewers}"),
         "{misplaced}"
     );
+}
+
+/// Review on #50: a request_review template written before #39 (without
+/// `{reviewers}`) refuses only Request review, with its file and line; every
+/// other kind launches with the file's own templates.
+#[test]
+fn a_request_review_template_without_reviewers_refuses_only_request_review() {
+    let prompts = prompts::parse(
+        std::path::Path::new("/cfg/den/prompts.toml"),
+        "address_review = \"/gh-resolve {url} carefully\"\nrequest_review = \"Ask me which reviewers to request on {url}.\"\n",
+    );
+    let mut harness = started_with_prompts(config(None), surveyed(pr_2(), pr_4()), prompts);
+
+    let refused = open_sheet(&mut harness, "#2");
+    assert_eq!(
+        refused.status,
+        LaunchStatus::Refused,
+        "{}",
+        messages(&refused)
+    );
+    let text = messages(&refused);
+    assert!(text.contains("/cfg/den/prompts.toml, line 2"), "{text}");
+    assert!(
+        text.contains("`request_review` must use {reviewers}"),
+        "{text}"
+    );
+    press(&mut harness, Key::Esc);
+
+    let address = open_sheet(&mut harness, "#3");
+    assert_eq!(
+        address.status,
+        LaunchStatus::Ready,
+        "{}",
+        messages(&address)
+    );
+    assert_eq!(
+        prompt(&address),
+        "/gh-resolve https://github.com/acme/api/pull/3 carefully"
+    );
+    press(&mut harness, Key::Esc);
+    let merge = open_sheet(&mut harness, "#4");
+    assert_eq!(merge.status, LaunchStatus::Ready, "{}", messages(&merge));
 }
 
 // ---- drawn ----

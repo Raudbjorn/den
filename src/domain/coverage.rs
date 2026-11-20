@@ -472,22 +472,30 @@ impl Coverage {
     /// completely, its facts are all there even if a later page of its
     /// Owner's list was lost. A Repo without one was read (or not) as part of
     /// its Owner's list, so only a complete Owner source says it is all
-    /// there. Matched case-insensitively, as GitHub names are.
+    /// there.
+    ///
+    /// Matched case-insensitively, as GitHub names are: entries under two
+    /// spellings are one source, read completely when any of them was (a
+    /// complete read of a Repo holds all its facts, whatever another
+    /// spelling's entry says).
     pub fn read_completely(&self, repo: &RepoId, kind: SourceKind) -> bool {
-        let mut own = self.entries.iter().filter(|e| match &e.source {
-            Source::Repo { repo: r, kind: k } => *k == kind && r.same(repo),
-            _ => false,
-        });
-        if let Some(first) = own.next() {
-            return first.state.is_complete() && own.all(|e| e.state.is_complete());
+        let own: Vec<&CoverageEntry> = self
+            .entries
+            .iter()
+            .filter(|e| match &e.source {
+                Source::Repo { repo: r, kind: k } => *k == kind && r.same(repo),
+                _ => false,
+            })
+            .collect();
+        if !own.is_empty() {
+            return own.iter().any(|e| e.state.is_complete());
         }
-        let mut owner = self.entries.iter().filter(|e| match &e.source {
-            Source::Owner { owner, kind: k } => *k == kind && same_login(owner, &repo.owner),
+        self.entries.iter().any(|e| match &e.source {
+            Source::Owner { owner, kind: k } => {
+                *k == kind && same_login(owner, &repo.owner) && e.state.is_complete()
+            }
             _ => false,
-        });
-        owner
-            .next()
-            .is_some_and(|first| first.state.is_complete() && owner.all(|e| e.state.is_complete()))
+        })
     }
 
     /// The sources whose completeness bears on one Work Item: the viewer (for
@@ -497,8 +505,9 @@ impl Coverage {
     ///
     /// A Linear Issue's are its Owner's Linear sources: the Linear viewer (for
     /// Waiting On) and the issue lists; and its Owner's Landing Group member
-    /// states (#37), which Mark for release rests on. The GitHub viewer
-    /// doesn't bear on it.
+    /// states (#37), which Mark for release rests on (the Linear Issue rules
+    /// drop that one from an issue with no member whose end den reads by
+    /// number). The GitHub viewer doesn't bear on it.
     pub fn applicable_to(&self, item: &WorkItemId) -> Vec<CoverageEntry> {
         let Some(repo) = item.repo() else {
             return self

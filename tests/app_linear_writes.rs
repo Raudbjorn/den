@@ -527,7 +527,7 @@ fn a_reread_showing_a_new_state_on_mark_for_release_asks_again_and_writes_nothin
     );
     assert_eq!(field(&ready, "RELEASE").0, RELEASE);
     let text = messages(&ready);
-    assert!(text.contains("evidence: merged acme/api #1"), "{text}");
+    assert!(text.contains("evidence: merged acme/api#1"), "{text}");
     assert!(text.contains("den can't see deployments"), "{text}");
     assert!(ready.prompt.is_none() && ready.command.is_none());
 

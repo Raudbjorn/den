@@ -806,7 +806,7 @@ fn fully_read_repos_drop_deleted_branches_and_runs_even_when_the_owner_list_is_p
         .repo_coverage("alpha/read", SourceKind::Branches, SourceState::Complete)
         .repo_coverage("alpha/read", SourceKind::Runs, SourceState::Complete)
         .build();
-    let merged = cache::merge(Some(CachedObservation::fresh(old)), fresh).cached;
+    let merged = cache::merge(Some(CachedObservation::fresh(old)), fresh);
     assert_eq!(merged.observation.branches.len(), 1);
     assert_eq!(merged.observation.branches[0].repo.name, "unread");
     assert_eq!(merged.observation.runs.len(), 1);

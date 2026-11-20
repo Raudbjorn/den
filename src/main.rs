@@ -406,8 +406,13 @@ fn run(args: &[String]) -> Result<(), DenError> {
         tracing::error!(%error, "config");
     }
     let prompts = prompts::load(&paths.prompts_file);
-    if let Err(error) = &prompts {
-        tracing::error!(%error, "prompts");
+    match &prompts {
+        Err(error) => tracing::error!(%error, "prompts"),
+        Ok(prompts) => {
+            for error in prompts.problems() {
+                tracing::error!(%error, "prompts: a template den won't launch with");
+            }
+        }
     }
     let upstream_store = FileUpstreamStore::in_state_dir(&paths.state_dir);
     let upstreams = upstream_store.load();
