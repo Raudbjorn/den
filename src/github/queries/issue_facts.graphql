@@ -1,0 +1,31 @@
+# The facts den keeps per open Issue. Appended to the Repo Issues query.
+#
+# Linked PRs come from closedByPullRequestsReferences, read twice so each link
+# carries its relationship type: excludeUserLinked gives closing references,
+# userLinkedOnly gives manual links (the two partition the unfiltered list).
+# includeClosedPrs is needed because without it GitHub drops closed PRs but
+# still returns merged ones; den reads every state and judges openness itself.
+# Mentions (cross-references in titles, bodies, branch names) are not read.
+# GitHub allows at most 10 assignees per Issue, so one page of 10 is complete.
+fragment IssueFacts on Issue {
+  number
+  title
+  url
+  updatedAt
+  labels(first: 20) { nodes { name } }
+  assignees(first: 10) { nodes { login } }
+  closingReferences: closedByPullRequestsReferences(first: 10, includeClosedPrs: true, excludeUserLinked: true) {
+    pageInfo { hasNextPage endCursor }
+    nodes { ...LinkedPr }
+  }
+  manualLinks: closedByPullRequestsReferences(first: 10, includeClosedPrs: true, userLinkedOnly: true) {
+    pageInfo { hasNextPage endCursor }
+    nodes { ...LinkedPr }
+  }
+}
+
+fragment LinkedPr on PullRequest {
+  number
+  state
+  repository { name owner { login } }
+}
