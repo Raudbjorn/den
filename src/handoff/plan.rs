@@ -56,6 +56,9 @@ pub struct PlanInput<'a> {
     pub choice: TargetChoice,
     pub view: &'a WorkspaceView,
     pub prompts: Result<&'a Prompts, &'a PromptsError>,
+    /// Start fresh beside a Live Job (#14): the suffix for the worktree name,
+    /// the local branch and the session name. `None` for a plain launch.
+    pub fresh: Option<u32>,
 }
 
 /// The facts for a launch, or every reason it can't happen. PRs here; Issues,
@@ -121,7 +124,7 @@ fn facts(
             base,
             base_commit: Some(pr.head_commit.clone()),
             branch: pr.head_ref.clone(),
-            fresh: false,
+            new_branch: false,
         }),
         _ => Err(Refusal { reasons }),
     }
@@ -156,7 +159,7 @@ pub fn inspect_request(
             .flatten(),
         branch: facts.branch,
         item: decision.item.id.clone(),
-        fresh: facts.fresh,
+        new_branch: facts.new_branch,
     })
 }
 
@@ -189,11 +192,20 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         .map_err(|why| reasons.extend(why))
         .ok();
 
-    // The worktree name: suffixed when other Work Items' Jobs have it.
-    let wanted = names::worktree_name(&facts.branch);
+    // Start fresh beside a Live Job (#14): the worktree name, the local branch
+    // and the session get the suffix, by the same rule as below.
+    let fresh = |name: String, max_chars: usize| match input.fresh {
+        Some(n) => names::suffixed(&name, n, max_chars),
+        None => name,
+    };
+    // The worktree name: suffixed when other Work Items' Jobs have it (#12).
+    let wanted = fresh(
+        names::worktree_name(&facts.branch),
+        names::MAX_WORKTREE_NAME_CHARS,
+    );
     let records = view.jobs.as_ref().map_or(&[][..], Vec::as_slice);
     let named = found.as_ref().and_then(|(clone, _)| {
-        let free = names::free_worktree_name(&wanted, &clone.path, item, facts.fresh, records);
+        let free = names::free_worktree_name(&wanted, &clone.path, item, facts.new_branch, records);
         if free.is_none() {
             reasons.push(RefusalReason::NoFreeWorktreeName {
                 wanted: wanted.clone(),
@@ -204,10 +216,13 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     let worktree_name = named
         .as_ref()
         .map_or_else(|| wanted.clone(), |(name, _)| name.clone());
-    let branch_name = if facts.fresh {
+    // A new `<type>_<slug>` branch is named like its worktree. Otherwise a
+    // fresh start's local branch is new, beside the Live Job's, and still
+    // tracks the same branch on the target's remote.
+    let branch_name = if facts.new_branch {
         worktree_name.clone()
     } else {
-        facts.branch.clone()
+        fresh(facts.branch.clone(), names::MAX_BRANCH_NAME_CHARS)
     };
 
     let base_commit = found
@@ -272,10 +287,19 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             number: facts.number,
             url: decision.item.url.clone(),
             title: decision.item.title.clone(),
-            branch: branch_name.clone(),
+            // The branch the Work Item is about (a PR's head, a Branch), or
+            // the new branch.
+            branch: if facts.new_branch {
+                branch_name.clone()
+            } else {
+                facts.branch.clone()
+            },
         },
     );
-    let session = names::session_name(item, facts.step);
+    let session = fresh(
+        names::session_name(item, facts.step),
+        names::MAX_SESSION_NAME_CHARS,
+    );
     let renamed = named
         .filter(|(name, _)| *name != wanted)
         .map(|(_, taken_by)| Renamed { wanted, taken_by });
@@ -343,12 +367,12 @@ fn base_commit(
     None
 }
 
-/// A local branch the Job creates: a fresh `<type>_<slug>` branch tracking
+/// A local branch the Job creates: a new `<type>_<slug>` branch tracking
 /// nothing, the target's branch tracked under its remote, or a cross-Repo PR
 /// head (a PR ref) tracking nothing.
 fn new_branch_start(facts: &Facts, remote: &Remote) -> BranchStart {
     match facts.base.branch() {
-        _ if facts.fresh => BranchStart::Fresh,
+        _ if facts.new_branch => BranchStart::Fresh,
         Some(branch) => BranchStart::New {
             tracking: format!("{}/{branch}", remote.name),
         },
@@ -363,7 +387,7 @@ struct Checked<'a> {
     view: &'a WorkspaceView,
     clone: &'a MainClone,
     remote: &'a Remote,
-    /// The Job's local branch name (suffixed for a fresh branch).
+    /// The Job's local branch name (suffixed for a new branch or a fresh start).
     branch: &'a str,
     worktree: PathBuf,
     /// `None` when it couldn't be established (already a reason).

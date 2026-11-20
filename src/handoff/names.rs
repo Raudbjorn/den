@@ -19,6 +19,8 @@ pub const MAX_SLUG_CHARS: usize = 48;
 pub const FIRST_NAME_SUFFIX: u32 = 2;
 /// The highest numeric suffix den tries before refusing.
 pub const MAX_NAME_SUFFIX: u32 = 99;
+/// The longest local branch name den makes by suffixing one, in characters.
+pub const MAX_BRANCH_NAME_CHARS: usize = 200;
 /// Separates `<type>` from `<slug>` in a new branch's name.
 const TYPE_SEPARATOR: char = '_';
 /// Used when a name has nothing usable left after cleaning.
@@ -145,9 +147,19 @@ fn within_slug_limit(mut words: impl Iterator<Item = String>) -> Option<String> 
     Some(joined)
 }
 
-/// `name` with numeric suffix `n`: `implement_9-x-2`.
-pub fn suffixed(name: &str, n: u32) -> String {
-    format!("{name}-{n}")
+/// `name` with the numeric suffix `n`, `<name>-<n>`: den's one suffix rule,
+/// for worktree names, branches and session names alike, whether the name is
+/// taken by another Work Item's Job (#12) or the Job starts fresh beside a
+/// Live Job of the same Work Item (#14). `name` is already clean; it is
+/// shortened, never the suffix, so the result stays within `max_chars` and
+/// stays distinct (`implement_9-x-2`).
+pub fn suffixed(name: &str, n: u32, max_chars: usize) -> String {
+    let suffix = format!("-{n}");
+    let room = max_chars.saturating_sub(suffix.chars().count());
+    let base: String = name.chars().take(room).collect();
+    let base = base.trim_end_matches(['.', '-', '/']);
+    let base = if base.is_empty() { FALLBACK_NAME } else { base };
+    format!("{base}{suffix}")
 }
 
 /// The first of `wanted`, `wanted-2`, `wanted-3`, … that `taken` doesn't
@@ -159,8 +171,9 @@ pub fn free_name(
     taken: impl Fn(&str) -> Vec<WorkItemId>,
 ) -> Option<(String, Vec<WorkItemId>)> {
     let mut passed_over: Vec<WorkItemId> = Vec::new();
-    let candidates = std::iter::once(wanted.to_owned())
-        .chain((FIRST_NAME_SUFFIX..=MAX_NAME_SUFFIX).map(|n| suffixed(wanted, n)));
+    let candidates = std::iter::once(wanted.to_owned()).chain(
+        (FIRST_NAME_SUFFIX..=MAX_NAME_SUFFIX).map(|n| suffixed(wanted, n, MAX_WORKTREE_NAME_CHARS)),
+    );
     for candidate in candidates {
         let holders = taken(&candidate);
         if holders.is_empty() {
@@ -178,14 +191,14 @@ pub fn free_name(
 /// The worktree name for `item`'s Job in `clone`: `wanted`, or the first
 /// suffixed name no other Work Item's Job has (spec, "Launch handoff"). A Job
 /// holds a name when its worktree is `clone`'s `.claude/worktrees/<name>`, or,
-/// for a `fresh` branch (whose name is the worktree name), when its branch in
+/// for a new branch (`new_branch`: its name is the worktree name), when its branch in
 /// `clone` is named so. This Work Item's own Jobs never count: an existing
 /// Job of the same Work Item is the Live Job question (#14), not a collision.
 pub fn free_worktree_name(
     wanted: &str,
     clone: &Path,
     item: &WorkItemId,
-    fresh: bool,
+    new_branch: bool,
     jobs: &[JobRecord],
 ) -> Option<(String, Vec<WorkItemId>)> {
     free_name(wanted, |name| {
@@ -194,7 +207,7 @@ pub fn free_worktree_name(
             .filter(|job| &job.work_item != item)
             .filter(|job| {
                 job.worktree == path
-                    || (fresh && job.main_clone.as_path() == clone && job.branch == name)
+                    || (new_branch && job.main_clone.as_path() == clone && job.branch == name)
             })
             .map(|job| job.work_item.clone())
             .collect()

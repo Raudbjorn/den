@@ -6,6 +6,7 @@ use crate::{
     app::{Effect, Event},
     handoff,
 };
+use std::time::Duration;
 
 /// Performs `effect` and returns the events it produced (none for effects the
 /// caller handles itself, such as Quit and Log).
@@ -46,6 +47,27 @@ pub fn perform(effect: &Effect, ports: &Ports) -> Vec<Event> {
         }],
         Effect::StoreUpstreams { upstreams } => vec![Event::UpstreamsStored {
             outcome: ports.upstreams.store(upstreams),
+        }],
+        Effect::CheckJobs => vec![Event::JobsChecked {
+            outcome: ports
+                .jobs
+                .load()
+                .map(|jobs| {
+                    Box::new(handoff::live::check_jobs(
+                        &jobs,
+                        ports.workspace.as_ref(),
+                        Duration::from_secs(handoff::live::JOB_CHECK_BUDGET_SECS),
+                    ))
+                })
+                .map_err(|e| e.to_string()),
+        }],
+        Effect::Reopen { id, plan } => vec![Event::LaunchFinished {
+            id: *id,
+            report: Box::new(handoff::live::reopen(
+                plan,
+                ports.workspace.as_ref(),
+                ports.launcher.as_ref(),
+            )),
         }],
         Effect::Quit | Effect::Log(_) => Vec::new(),
     }

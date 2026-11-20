@@ -9,6 +9,12 @@
 //! target between the fork and its Upstream without changing the fork's own
 //! setting (the sidebar's `u`); the sheet looks at the workspace again for the
 //! new target. Elsewhere `u` changes nothing and says why.
+//!
+//! Live Jobs (#14): when the inspection finds a Live Job for the Work Item, the
+//! sheet asks "open existing or start fresh?" (`o` / `f`). Open existing plans
+//! a window resuming the Job's session (`Enter` opens it); start fresh inspects
+//! again for suffixed names and continues as a normal launch. A Job whose
+//! worktree state is unknown is explained; only an explicit `f` launches.
 
 use super::{
     App, Effect, Key, LogLevel, OverlayState,
@@ -18,8 +24,9 @@ use super::{
 use crate::{
     domain::{NextStep, RepoId, WorkItemId},
     handoff::{
-        self, LaunchOutcome, LaunchPlan, LaunchReport, LaunchSettings, PlanInput, Refusal,
-        TargetChoice, WorkspaceView, check_prompt, short_commit,
+        self, JobCheck, LaunchOutcome, LaunchPlan, LaunchReport, LaunchSettings, PlanInput,
+        Refusal, RefusalReason, ReopenPlan, TargetChoice, WorkspaceView, WorktreeState,
+        check_prompt, live, names, short_commit,
     },
 };
 
@@ -48,6 +55,9 @@ pub(super) struct Sheet {
     /// The prompt the user edited before switching the target with `u`; kept
     /// instead of the new target's default prompt.
     pub edited_prompt: Option<String>,
+    /// Start fresh (#14): the suffix for the new worktree, branch and session,
+    /// and the Job it starts beside.
+    pub fresh: Option<(u32, Box<JobCheck>)>,
 }
 
 /// The two targets a Work Item in a fork can have.
@@ -73,6 +83,28 @@ pub(super) enum SheetState {
     },
     Finished {
         plan: Box<LaunchPlan>,
+        report: Box<LaunchReport>,
+    },
+    /// The Work Item has a Live Job: open existing (`o`) or start fresh (`f`)?
+    LiveJob {
+        check: Box<JobCheck>,
+        view: Box<WorkspaceView>,
+    },
+    /// The Work Item's Job has a worktree den can't tell about: explained,
+    /// never treated as gone; only `f` starts fresh.
+    JobUnknown {
+        check: Box<JobCheck>,
+        view: Box<WorkspaceView>,
+    },
+    /// Open existing is planned: `Enter` opens the window.
+    ReopenReady {
+        plan: Box<ReopenPlan>,
+    },
+    Reopening {
+        plan: Box<ReopenPlan>,
+    },
+    Reopened {
+        plan: Box<ReopenPlan>,
         report: Box<LaunchReport>,
     },
 }
@@ -110,6 +142,7 @@ impl App {
             fork_choice,
             fork,
             edited_prompt: None,
+            fresh: None,
         };
         let effects = self.inspect_for(&mut sheet, "opened");
         self.overlay = Some(OverlayState::Launch(Box::new(sheet)));
@@ -133,7 +166,14 @@ impl App {
         };
         let settings =
             LaunchSettings::from_config(self.config.as_ref().ok(), self.default_clone_root.clone());
-        match handoff::inspect_request(decision, observation, sheet.choice, &settings) {
+        // A fresh start (#14) keeps its suffix when `u` switches the target.
+        let request = handoff::inspect_request(decision, observation, sheet.choice, &settings).map(
+            |request| match &sheet.fresh {
+                Some((n, _)) => request.fresh(*n),
+                None => request,
+            },
+        );
+        match request {
             Ok(request) => {
                 sheet.state = SheetState::Inspecting;
                 vec![
@@ -206,10 +246,14 @@ impl App {
         }
         let mut effects = Vec::new();
         match (key, &sheet.state) {
-            (Key::Esc, SheetState::Launching { .. }) => {
+            (Key::Esc, SheetState::Launching { .. } | SheetState::Reopening { .. }) => {
                 sheet.notice = Some("den is launching; wait for it to finish".to_owned());
             }
-            (Key::Esc, _) | (Key::Enter, SheetState::Refused(_) | SheetState::Finished { .. }) => {
+            (Key::Esc, _)
+            | (
+                Key::Enter,
+                SheetState::Refused(_) | SheetState::Finished { .. } | SheetState::Reopened { .. },
+            ) => {
                 // Closed: nothing was or will be done by this sheet any more.
                 return Vec::new();
             }
@@ -219,6 +263,37 @@ impl App {
                 SheetState::Ready { .. } | SheetState::Refused(_) | SheetState::Inspecting,
             ) => effects = self.switch_target(&mut sheet),
             (Key::Enter, SheetState::Ready { .. }) => effects = self.launch(&mut sheet),
+            (Key::Char('o'), SheetState::LiveJob { check, view }) => {
+                let (check, view) = (check.clone(), view.clone());
+                effects = open_existing(&mut sheet, &check, &view);
+            }
+            (
+                Key::Char('f'),
+                SheetState::LiveJob { check, view } | SheetState::JobUnknown { check, view },
+            ) => {
+                let (check, view) = (check.clone(), view.clone());
+                effects = self.start_fresh(&mut sheet, check, &view);
+            }
+            (Key::Enter, SheetState::ReopenReady { plan }) => {
+                let plan = plan.clone();
+                effects = vec![
+                    Effect::log(
+                        LogLevel::Info,
+                        format!(
+                            "launch sheet {} reopening {} in {} (session {})",
+                            sheet.id.0,
+                            sheet.item,
+                            plan.job.worktree.display(),
+                            plan.job.session
+                        ),
+                    ),
+                    Effect::Reopen {
+                        id: sheet.id,
+                        plan: plan.clone(),
+                    },
+                ];
+                sheet.state = SheetState::Reopening { plan };
+            }
             _ => {}
         }
         self.overlay = Some(OverlayState::Launch(sheet));
@@ -273,6 +348,72 @@ impl App {
         }
     }
 
+    /// `f` on a Live (or unknown) Job: picks a suffix no Job or worktree uses,
+    /// then inspects again for the suffixed worktree and branch. The old
+    /// worktree is left as it is.
+    fn start_fresh(
+        &self,
+        sheet: &mut Sheet,
+        beside: Box<JobCheck>,
+        view: &WorkspaceView,
+    ) -> Vec<Effect> {
+        let gone = || Refusal::one(RefusalReason::WorkItemGone);
+        let request = self
+            .ordered
+            .iter()
+            .find(|d| d.item.id == sheet.item)
+            .ok_or_else(gone)
+            .and_then(|decision| {
+                let observation = self
+                    .shown
+                    .as_ref()
+                    .map(|s| &s.observation)
+                    .ok_or_else(gone)?;
+                let settings = LaunchSettings::from_config(
+                    self.config.as_ref().ok(),
+                    self.default_clone_root.clone(),
+                );
+                handoff::inspect_request(decision, observation, sheet.choice, &settings)
+            })
+            .and_then(|request| {
+                live::fresh_suffix(view, &request.worktree_name, &request.branch)
+                    .map(|n| (n, request.fresh(n)))
+                    .ok_or_else(|| {
+                        Refusal::one(RefusalReason::NoFreshName {
+                            last_tried: names::MAX_NAME_SUFFIX,
+                        })
+                    })
+            });
+        match request {
+            Ok((n, request)) => {
+                let log = Effect::log(
+                    LogLevel::Info,
+                    format!(
+                        "launch sheet {} starting fresh for {} as {} beside {}",
+                        sheet.id.0,
+                        sheet.item,
+                        request.worktree_name,
+                        beside.job.worktree.display()
+                    ),
+                );
+                sheet.fresh = Some((n, beside));
+                sheet.state = SheetState::Inspecting;
+                vec![
+                    log,
+                    Effect::InspectLaunch {
+                        id: sheet.id,
+                        request: Box::new(request),
+                    },
+                ]
+            }
+            Err(refusal) => {
+                let log = refused_log(sheet.id, &sheet.item, &refusal);
+                sheet.state = SheetState::Refused(refusal);
+                vec![log]
+            }
+        }
+    }
+
     /// Plans the sheet's launch from the current Observation and `view`.
     fn replan(&self, sheet: &Sheet, view: &WorkspaceView) -> Result<LaunchPlan, Refusal> {
         let gone = || Refusal::one(handoff::RefusalReason::WorkItemGone);
@@ -292,6 +433,7 @@ impl App {
             choice: sheet.choice,
             view,
             prompts: self.prompts.as_ref(),
+            fresh: sheet.fresh.as_ref().map(|(n, _)| *n),
         })?;
         Ok(match &sheet.accepted_head {
             Some(commit) => plan.on_commit(commit),
@@ -307,22 +449,52 @@ impl App {
         let Some(mut sheet) = self.current_sheet(id) else {
             return vec![stale(id, "inspection")];
         };
-        let effects = match self.replan(&sheet, &view) {
-            Ok(plan) => {
-                sheet.prompt =
-                    PromptEditor::new(sheet.edited_prompt.as_deref().unwrap_or(&plan.prompt));
-                sheet.state = SheetState::Ready {
-                    plan: Box::new(plan),
+        self.remember_checks(&sheet.item, &view.job_checks);
+        let existing = live::most_telling(&view.job_checks, &sheet.item)
+            .filter(|_| sheet.fresh.is_none())
+            .cloned();
+        let effects = match existing {
+            // A Live Job: ask, never launch a second one silently.
+            Some(check) if check.is_live() => {
+                let log = asking_log(id, &sheet.item, "a Live Job", &check);
+                sheet.state = SheetState::LiveJob {
+                    check: Box::new(check),
                     view,
-                    moved_from: None,
                 };
-                Vec::new()
-            }
-            Err(refusal) => {
-                let log = refused_log(id, &sheet.item, &refusal);
-                sheet.state = SheetState::Refused(refusal);
                 vec![log]
             }
+            // Unknown: explain; never treated as gone, never relaunched silently.
+            Some(check) if matches!(check.state, WorktreeState::Unknown(_)) => {
+                let log = asking_log(
+                    id,
+                    &sheet.item,
+                    "a Job whose worktree den can't tell about",
+                    &check,
+                );
+                sheet.state = SheetState::JobUnknown {
+                    check: Box::new(check),
+                    view,
+                };
+                vec![log]
+            }
+            // No Job, or its worktree is gone: launch as usual.
+            _ => match self.replan(&sheet, &view) {
+                Ok(plan) => {
+                    sheet.prompt =
+                        PromptEditor::new(sheet.edited_prompt.as_deref().unwrap_or(&plan.prompt));
+                    sheet.state = SheetState::Ready {
+                        plan: Box::new(plan),
+                        view,
+                        moved_from: None,
+                    };
+                    Vec::new()
+                }
+                Err(refusal) => {
+                    let log = refused_log(id, &sheet.item, &refusal);
+                    sheet.state = SheetState::Refused(refusal);
+                    vec![log]
+                }
+            },
         };
         self.overlay = Some(OverlayState::Launch(sheet));
         effects
@@ -333,14 +505,26 @@ impl App {
         id: LaunchId,
         report: Box<LaunchReport>,
     ) -> Vec<Effect> {
+        let mut effects = vec![finished_log(id, &report)];
+        // A new Job was recorded: check the Jobs again so the list marks it.
+        if matches!(report.outcome, LaunchOutcome::Launched { .. }) {
+            effects.push(Effect::CheckJobs);
+        }
         let Some(mut sheet) = self.current_sheet(id) else {
-            // The sheet is gone but the launch happened: say so in the log.
-            return vec![finished_log(id, &report)];
+            // The sheet is gone but the launch happened: the log says so.
+            return effects;
         };
-        let log = finished_log(id, &report);
-        let SheetState::Launching { plan, view } = sheet.state.clone() else {
-            self.overlay = Some(OverlayState::Launch(sheet));
-            return vec![log];
+        let (plan, view) = match sheet.state.clone() {
+            SheetState::Launching { plan, view } => (plan, view),
+            SheetState::Reopening { plan } => {
+                sheet.state = SheetState::Reopened { plan, report };
+                self.overlay = Some(OverlayState::Launch(sheet));
+                return effects;
+            }
+            _ => {
+                self.overlay = Some(OverlayState::Launch(sheet));
+                return effects;
+            }
         };
         sheet.state = match &report.outcome {
             LaunchOutcome::HeadMoved { from, to } => {
@@ -354,7 +538,13 @@ impl App {
             _ => SheetState::Finished { plan, report },
         };
         self.overlay = Some(OverlayState::Launch(sheet));
-        vec![log]
+        effects
+    }
+
+    /// Keeps the fresher checks of `item`'s Jobs from a sheet's inspection.
+    fn remember_checks(&mut self, item: &WorkItemId, checks: &[JobCheck]) {
+        self.job_checks.retain(|c| &c.job.work_item != item);
+        self.job_checks.extend(checks.iter().cloned());
     }
 
     /// Takes the open sheet out of the overlay when it is sheet `id`.
@@ -367,6 +557,34 @@ impl App {
             }
         }
     }
+}
+
+/// `o` on a Live Job: plans the reopen, or refuses (never in the Main Clone).
+fn open_existing(sheet: &mut Sheet, check: &JobCheck, view: &WorkspaceView) -> Vec<Effect> {
+    match live::plan_reopen(check, view) {
+        Ok(plan) => {
+            sheet.state = SheetState::ReopenReady {
+                plan: Box::new(plan),
+            };
+            Vec::new()
+        }
+        Err(refusal) => {
+            let log = refused_log(sheet.id, &sheet.item, &refusal);
+            sheet.state = SheetState::Refused(refusal);
+            vec![log]
+        }
+    }
+}
+
+fn asking_log(id: LaunchId, item: &WorkItemId, what: &str, check: &JobCheck) -> Effect {
+    Effect::log(
+        LogLevel::Info,
+        format!(
+            "launch sheet {} for {item} found {what} at {}; asking",
+            id.0,
+            check.job.worktree.display()
+        ),
+    )
 }
 
 fn stale(id: LaunchId, what: &str) -> Effect {
@@ -393,6 +611,15 @@ fn finished_log(id: LaunchId, report: &LaunchReport) -> Effect {
             LogLevel::Info,
             format!(
                 "launched {} in {} (session {})",
+                job.work_item,
+                job.worktree.display(),
+                job.session
+            ),
+        ),
+        LaunchOutcome::Reopened { job } => (
+            LogLevel::Info,
+            format!(
+                "reopened {} in {} (resuming session {})",
                 job.work_item,
                 job.worktree.display(),
                 job.session

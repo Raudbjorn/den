@@ -250,9 +250,12 @@ fn prefixed(glyph: Option<&str>, text: &str) -> String {
 
 fn status_tone(status: LaunchStatus) -> Tone {
     match status {
-        LaunchStatus::Launched => Tone::Good,
-        LaunchStatus::Refused | LaunchStatus::Failed | LaunchStatus::HeadMoved => Tone::Caution,
-        LaunchStatus::Ready => Tone::Plain,
+        LaunchStatus::Launched | LaunchStatus::Reopened => Tone::Good,
+        LaunchStatus::Refused
+        | LaunchStatus::Failed
+        | LaunchStatus::HeadMoved
+        | LaunchStatus::JobUnknown => Tone::Caution,
+        LaunchStatus::Ready | LaunchStatus::LiveJob | LaunchStatus::ReopenReady => Tone::Plain,
         LaunchStatus::Inspecting | LaunchStatus::Launching => Tone::Muted,
     }
 }

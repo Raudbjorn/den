@@ -14,6 +14,12 @@ pub struct Glyphs {
     pub chamfer: &'static str,
     /// The text cursor in an input field.
     pub cursor: &'static str,
+    /// A Live Job: its worktree exists and is registered (teal) (#14).
+    pub live_job: &'static str,
+    /// A Job whose worktree is gone (faint).
+    pub job_missing: &'static str,
+    /// A Job whose worktree den can't tell about (amber).
+    pub job_unknown: &'static str,
 }
 
 pub fn for_profile(profile: GlyphProfile) -> Glyphs {
@@ -25,6 +31,9 @@ pub fn for_profile(profile: GlyphProfile) -> Glyphs {
             complete: "✓",
             chamfer: "◢",
             cursor: "▏",
+            live_job: "●",
+            job_missing: "○",
+            job_unknown: "◌",
         },
         GlyphProfile::Ascii => Glyphs {
             tick: ">",
@@ -33,6 +42,9 @@ pub fn for_profile(profile: GlyphProfile) -> Glyphs {
             complete: "+",
             chamfer: "/",
             cursor: "|",
+            live_job: "*",
+            job_missing: "o",
+            job_unknown: "~",
         },
     }
 }
