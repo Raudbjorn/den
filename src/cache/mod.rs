@@ -11,7 +11,7 @@
 //!   one versioned JSON file per viewer under `$XDG_STATE_HOME/den/cache/`.
 //!
 //! The merge is generic over sources: it works from coverage entries and each
-//! fact's Repo, so a Work Item kind's ticket never needs to touch it.
+//! fact's Repo, so adding a Work Item kind never needs to touch it.
 
 mod file;
 mod merge;
