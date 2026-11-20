@@ -5,8 +5,8 @@
 //! [`parse`] and [`folded`] too.
 
 use crate::{
-    config::{is_valid_login, is_valid_team_slug},
-    domain::{TeamRef, facts::Reviewer},
+    config::is_valid_team_slug,
+    domain::{TeamRef, facts::Reviewer, ids::is_valid_login},
 };
 
 /// A reviewer as the sheet and the prompt spell it: `alice`, `acme/backend`.
