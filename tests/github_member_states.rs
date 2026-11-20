@@ -253,3 +253,28 @@ fn transport_trouble_is_coverage() {
         read.coverage
     );
 }
+
+/// When `gh` fails on one batch, the batches never sent fail with the same
+/// error: they weren't read because `gh` failed, not because of den's bound,
+/// so an Owner only in a later batch reads failed, with the real cause.
+#[test]
+fn batches_not_sent_after_gh_fails_carry_its_error_not_the_bound() {
+    let logged_out = Arc::new(ScriptedGraphQl::new(|_| {
+        Err(TransportError::NotLoggedIn {
+            detail: "run gh auth login".to_owned(),
+        })
+    }));
+    let members: Vec<PullRequestRef> = (1..=MEMBERS_PER_QUERY as u64)
+        .map(|n| member("acme/api", n + 10))
+        .chain((1..=15).map(|n| member("beta/api", n + 10)))
+        .collect();
+    let read = read_with(logged_out.clone(), members);
+    assert_eq!(logged_out.requests().len(), 1, "stops after gh fails");
+    match read.coverage.get(&source("beta")) {
+        Some(SourceState::Failed { error }) => {
+            assert!(error.contains("not logged in"), "{error}");
+            assert!(!error.contains("at most"), "{error}");
+        }
+        other => panic!("beta: {other:?}"),
+    }
+}

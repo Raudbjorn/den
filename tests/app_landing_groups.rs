@@ -208,11 +208,13 @@ fn a_linear_issue_detail_lists_every_member() {
     let landing = detail.landing.expect("a Landing Group section");
     assert_eq!(landing.label, "LANDING GROUP");
     let texts: Vec<&str> = landing.lines.iter().map(|l| l.text.as_str()).collect();
+    // Members are spelled as `WorkItemId`'s `Display` spells every Pull
+    // Request, as their own detail does (was `octo/app #7`, review of #49).
     assert_eq!(
         texts,
         [
-            "octo/app #7 · open · Next Step Address review · Live Job · ambiguous, also attached to TEAM-2",
-            "octo/api #8 · draft · Next Step Finish draft",
+            "octo/app#7 · open · Next Step Address review · Live Job · ambiguous, also attached to TEAM-2",
+            "octo/api#8 · draft · Next Step Finish draft",
         ]
     );
     assert_eq!(landing.lines[0].job, Some(JobMarker::Live));
@@ -243,7 +245,8 @@ fn a_hinted_linear_issue_detail_says_possibly_for_and_not_a_member() {
         texts,
         [
             "no Pull Request attached in Linear",
-            "possibly for TEAM-3: octo/api #9 (branch team-3-cache), not a member",
+            // Spelled as `WorkItemId`'s `Display` (was `octo/api #9`).
+            "possibly for TEAM-3: octo/api#9 (branch team-3-cache), not a member",
         ]
     );
 
@@ -299,11 +302,41 @@ fn a_linear_issue_detail_never_says_no_pr_when_attachments_are_incomplete() {
     assert_eq!(
         texts,
         [
-            "octo/api #8 · draft · Next Step Finish draft · ambiguous, also attached to TEAM-1",
+            // Spelled as `WorkItemId`'s `Display` (was `octo/api #8`).
+            "octo/api#8 · draft · Next Step Finish draft · ambiguous, also attached to TEAM-1",
             "den couldn't read all of its attachments in Linear (more than 50 attachments): more Pull Requests may be attached",
         ]
     );
     assert!(landing.lines[1].caution, "unknown is a caution");
+}
+
+/// A link that looks like a Pull Request den can't read
+/// (`github.com/octo/api/pull/8`, no scheme) is no member, and the detail
+/// never says "no Pull Request attached" for it: it names the link as a
+/// caution, agreeing with the Explanation's unknown.
+#[test]
+fn a_linear_issue_detail_names_a_link_that_looks_like_a_pull_request() {
+    let mut harness = harness_with(vec![
+        linear_issue("octo", "id-6", "TEAM-6")
+            .link("github.com/octo/api/pull/8")
+            .build(),
+    ]);
+    let detail = detail_of(&mut harness, "TEAM-6");
+    assert_eq!(detail.next_step, "none");
+    assert!(
+        detail
+            .why
+            .contains("couldn't establish whether a PR exists"),
+        "{}",
+        detail.why
+    );
+    let landing = detail.landing.expect("a Landing Group section");
+    let texts: Vec<&str> = landing.lines.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        ["attached github.com/octo/api/pull/8: looks like a Pull Request den can't read"]
+    );
+    assert!(landing.lines[0].caution, "unknown is a caution");
 }
 
 /// "Ordering and Scope": a Repo Scope shows the Linear Issues with a member
@@ -440,5 +473,8 @@ fn a_held_member_reads_as_held_for_release_in_the_landing_group() {
     let detail = detail_of(&mut harness, "TEAM-1");
     let landing = detail.landing.expect("a Landing Group section");
     let texts: Vec<&str> = landing.lines.iter().map(|l| l.text.as_str()).collect();
-    assert_eq!(texts, ["octo/app #7 · open · held for release"]);
+    // Was "octo/app #7 · …". Changed in the merge of #49 (634c48b), which
+    // spells a member PR one way everywhere, `owner/repo#n`; the line's
+    // content (open, held for release) is unchanged.
+    assert_eq!(texts, ["octo/app#7 · open · held for release"]);
 }

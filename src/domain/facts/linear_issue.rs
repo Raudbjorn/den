@@ -257,6 +257,28 @@ impl Attachment {
         }
     }
 
+    /// A link den couldn't read as a Pull Request that may still be one:
+    /// its path has a `pull` or `pulls` segment followed by another, on any
+    /// host, with or without a scheme (`github.com/acme/api/pull/4`,
+    /// `…/pulls/4`, a GitHub Enterprise host, a percent-encoded name). den
+    /// reads none of these as a member, and none as "no Pull Request" either.
+    pub fn may_be_pull_request(&self) -> bool {
+        let Self::Link { url } = self else {
+            return false;
+        };
+        let rest = url.split_once("://").map_or(url.as_str(), |(_, rest)| rest);
+        let path = rest.split(['?', '#']).next().unwrap_or_default();
+        // The first segment is the host.
+        let segments: Vec<&str> = path.split('/').skip(1).collect();
+        segments.windows(2).any(|pair| match pair {
+            [segment, next] => {
+                (segment.eq_ignore_ascii_case("pull") || segment.eq_ignore_ascii_case("pulls"))
+                    && !next.is_empty()
+            }
+            _ => false,
+        })
+    }
+
     /// A Pull Request when `url` parses as one, otherwise a link.
     pub fn from_url(url: &str) -> Self {
         PullRequestRef::from_url(url).map_or_else(

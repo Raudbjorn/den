@@ -138,7 +138,8 @@ fn all_non_held_members_ready_gives_land_and_each_member_lands_with() {
         issue,
         &[
             "every open member outside a Held Repo would Merge",
-            "acme/api #1, acme/app #2",
+            // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+            "acme/api#1, acme/app#2",
         ],
     );
     for (repo, number) in [("acme/api", 1), ("acme/app", 2)] {
@@ -178,11 +179,13 @@ fn one_member_conflicting_gives_no_land_and_names_the_member() {
         &[
             "carry the work",
             "1 blocking",
-            "blocking: acme/app #2: its own Next Step is Resolve conflicts (conflicts with main)",
+            // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+            "blocking: acme/app#2: its own Next Step is Resolve conflicts (conflicts with main)",
         ],
     );
     assert!(
-        !said(issue).contains("blocking: acme/api #1"),
+        // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+        !said(issue).contains("blocking: acme/api#1"),
         "the ready member doesn't block: {}",
         said(issue)
     );
@@ -216,8 +219,9 @@ fn a_held_member_with_conflicts_does_not_block_land_and_keeps_resolve_conflicts(
     assert_says(
         issue,
         &[
-            "held; not blocking: acme/web #3 (Held Repo acme/web; its own Next Step Resolve conflicts)",
-            "held members are not landed: acme/web #3",
+            // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+            "held; not blocking: acme/web#3 (Held Repo acme/web; its own Next Step Resolve conflicts)",
+            "held members are not landed: acme/web#3",
         ],
     );
     let held = pull_request(&decisions, "acme/web", 3);
@@ -264,8 +268,9 @@ fn unknown_mergeability_or_a_queued_member_never_gives_land_and_names_the_queued
     assert_says(
         issue,
         &[
-            "blocking: acme/app #2",
-            "acme/app #2: mergeability not computed yet by GitHub",
+            // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+            "blocking: acme/app#2",
+            "acme/app#2: mergeability not computed yet by GitHub",
         ],
     );
 
@@ -274,7 +279,8 @@ fn unknown_mergeability_or_a_queued_member_never_gives_land_and_names_the_queued
     assert_eq!(issue.next_step, None, "{issue:#?}");
     assert_says(
         issue,
-        &["blocking: acme/app #2: queued: in the merge queue, not merged yet"],
+        // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+        &["blocking: acme/app#2: queued: in the merge queue, not merged yet"],
     );
 
     // Spec 0002 rule 1: no member is in a merge queue, held ones included.
@@ -290,14 +296,15 @@ fn unknown_mergeability_or_a_queued_member_never_gives_land_and_names_the_queued
     let issue = decide_all(&held_queued, &acme());
     let issue = linear(&issue, "TEAM-1");
     assert_eq!(issue.next_step, None, "{issue:#?}");
-    assert_says(issue, &["blocking: acme/web #3: queued"]);
+    // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+    assert_says(issue, &["blocking: acme/web#3: queued"]);
 }
 
 /// Acceptance: ambiguous or not-surveyed members block Land, and so do
 /// attachments or member facts den didn't read completely.
 #[test]
 fn ambiguous_not_surveyed_or_unread_members_block_land() {
-    // Ambiguous: acme/app #2 is also attached to TEAM-2.
+    // Ambiguous: acme/app#2 is also attached to TEAM-2.
     let ambiguous = acme_owner()
         .pull_request(ready("acme/api", 1))
         .pull_request(ready("acme/app", 2))
@@ -313,7 +320,8 @@ fn ambiguous_not_surveyed_or_unread_members_block_land() {
     assert_eq!(issue.next_step, None, "{issue:#?}");
     assert_says(
         issue,
-        &["blocking: acme/app #2: ambiguous, also attached to TEAM-2"],
+        // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+        &["blocking: acme/app#2: ambiguous, also attached to TEAM-2"],
     );
     assert_eq!(
         pull_request(&decisions, "acme/app", 2).held_back,
@@ -335,7 +343,8 @@ fn ambiguous_not_surveyed_or_unread_members_block_land() {
     assert_eq!(issue.next_step, None, "{issue:#?}");
     assert_says(
         issue,
-        &["blocking: acme/infra #9: member not surveyed (den didn't survey its Repo)"],
+        // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+        &["blocking: acme/infra#9: member not surveyed (den didn't survey its Repo)"],
     );
 
     // Attachments not all read: there may be a member den doesn't know.
@@ -378,7 +387,8 @@ fn ambiguous_not_surveyed_or_unread_members_block_land() {
     assert_says(
         issue,
         &[
-            "blocking: acme/app #2: den didn't read all of its facts: Pull Request details of acme/app partial",
+            // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+            "blocking: acme/app#2: den didn't read all of its facts: Pull Request details of acme/app partial",
         ],
     );
 }
@@ -415,7 +425,8 @@ fn an_open_held_member_keeps_the_issue_from_mark_for_release() {
         issue,
         &[
             "every open member is in a Held Repo, so nothing would land (and Mark for release waits for held Pull Requests)",
-            "held; not blocking: acme/web #3 (Held Repo acme/web; held for release)",
+            // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+            "held; not blocking: acme/web#3 (Held Repo acme/web; held for release)",
         ],
     );
 }
@@ -447,10 +458,11 @@ fn landed_members_give_mark_for_release_with_the_evidence() {
     assert_says(
         issue,
         &[
-            "no open Pull Request is attached, and acme/api #1 merged",
+            // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+            "no open Pull Request is attached, and acme/api#1 merged",
             "it is in In Progress (started), neither the release state Ready for Release nor completed or canceled",
-            "evidence: merged acme/api #1",
-            "evidence: closed without merging acme/app #2",
+            "evidence: merged acme/api#1",
+            "evidence: closed without merging acme/app#2",
             "den can't see deployments",
         ],
     );
@@ -515,7 +527,8 @@ fn mark_for_release_needs_a_member_read_merged_and_a_release_state() {
         issue,
         &[
             "den withholds Mark for release until it has read that one of them merged",
-            "whether acme/api #1 merged or was closed without merging: den hasn't read its state yet",
+            // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+            "whether acme/api#1 merged or was closed without merging: den hasn't read its state yet",
         ],
     );
 
@@ -536,7 +549,8 @@ fn mark_for_release_needs_a_member_read_merged_and_a_release_state() {
     let issue = decide_all(&closed, &acme());
     let issue = linear(&issue, "TEAM-1");
     assert_eq!(issue.next_step, None);
-    assert_says(issue, &["none merged: acme/api #1 closed without merging"]);
+    // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+    assert_says(issue, &["none merged: acme/api#1 closed without merging"]);
 
     let reopened = attached(acme_owner().member_state("acme/api", 1, PullRequestState::Open));
     let issue = decide_all(&reopened, &acme());
@@ -659,4 +673,234 @@ fn a_merge_pr_says_when_den_could_not_establish_its_landing_group() {
     let merge = pull_request(&decisions, "acme/api", 1);
     assert_eq!(merge.next_step, Some(NextStep::Merge));
     assert!(merge.explanation.unknowns.is_empty(), "{merge:?}");
+}
+
+/// A member GitHub reported open again when den read its state after the
+/// survey is open, though the survey didn't list it: den hasn't read its
+/// facts. It keeps the issue from Mark for release (no open member may
+/// remain) and blocks Land (it can't be judged ready), and is named.
+#[test]
+fn a_member_reported_open_again_blocks_mark_for_release_and_land() {
+    let merged_and_reopened = acme_owner()
+        .member_state("acme/api", 1, PullRequestState::Merged { merged_at: None })
+        .member_state("acme/app", 2, PullRequestState::Open)
+        .linear_issue(
+            linear_issue("acme", "id-1", "TEAM-1")
+                .attached("acme/api", 1)
+                .attached("acme/app", 2),
+        )
+        .build();
+    let decisions = decide_all(&merged_and_reopened, &acme());
+    let issue = linear(&decisions, "TEAM-1");
+    assert_eq!(issue.next_step, None, "{issue:#?}");
+    assert_eq!(issue.landing.members[1].status, MemberStatus::OpenAgain);
+    assert_says(
+        issue,
+        // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+        &["blocking: acme/app#2: GitHub reported it open again"],
+    );
+
+    let ready_and_reopened = acme_owner()
+        .pull_request(ready("acme/api", 1))
+        .member_state("acme/app", 2, PullRequestState::Open)
+        .linear_issue(
+            linear_issue("acme", "id-1", "TEAM-1")
+                .attached("acme/api", 1)
+                .attached("acme/app", 2),
+        )
+        .build();
+    let decisions = decide_all(&ready_and_reopened, &acme());
+    let issue = linear(&decisions, "TEAM-1");
+    assert_eq!(issue.next_step, None, "{issue:#?}");
+    assert_says(
+        issue,
+        // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+        &["blocking: acme/app#2: GitHub reported it open again"],
+    );
+
+    // Held: reported open again in a Held Repo, it never blocks Land, but it
+    // is open, so it still keeps the issue from Mark for release.
+    let held_reopened = acme_owner()
+        .pull_request(ready("acme/api", 1))
+        .member_state("acme/web", 3, PullRequestState::Open)
+        .linear_issue(
+            linear_issue("acme", "id-1", "TEAM-1")
+                .attached("acme/api", 1)
+                .attached("acme/web", 3),
+        )
+        .build();
+    let decisions = decide_all(&held_reopened, &acme());
+    assert_eq!(linear(&decisions, "TEAM-1").next_step, Some(NextStep::Land));
+}
+
+/// A held member never blocks Land, ambiguous or not: TEAM-1's Land would
+/// never land it. It is listed as held, and its ambiguity is still said.
+#[test]
+fn an_ambiguous_held_member_does_not_block_land() {
+    let observation = acme_owner()
+        .pull_request(ready("acme/api", 4))
+        .pull_request(ready("acme/web", 3))
+        .linear_issue(
+            linear_issue("acme", "id-1", "TEAM-1")
+                .attached("acme/web", 3)
+                .attached("acme/api", 4),
+        )
+        .linear_issue(linear_issue("acme", "id-2", "TEAM-2").attached("acme/web", 3))
+        .build();
+    let decisions = decide_all(&observation, &acme());
+    let issue = linear(&decisions, "TEAM-1");
+    assert_eq!(issue.next_step, Some(NextStep::Land), "{}", said(issue));
+    assert_says(
+        issue,
+        &[
+            // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+            "held; not blocking: acme/web#3 (Held Repo acme/web; held for release; ambiguous, also attached to TEAM-2)",
+        ],
+    );
+}
+
+/// A member den hasn't asked about yet, after an earlier read that was
+/// complete, reads "den hasn't read its state yet": GitHub was never asked,
+/// so den doesn't say GitHub didn't report it.
+#[test]
+fn a_member_not_asked_yet_after_a_complete_read_is_not_blamed_on_github() {
+    let observation = acme_owner()
+        .owner_coverage("acme", SourceKind::MemberStates, SourceState::Complete)
+        .linear_issue(linear_issue("acme", "id-1", "TEAM-1").attached("acme/api", 7))
+        .build();
+    let decisions = decide_all(&observation, &acme());
+    let issue = linear(&decisions, "TEAM-1");
+    assert_says(
+        issue,
+        &[
+            // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+            "whether acme/api#7 merged or was closed without merging: den hasn't read its state yet",
+        ],
+    );
+    assert!(
+        !said(issue).contains("GitHub didn't report its state"),
+        "{}",
+        said(issue)
+    );
+}
+
+/// With the Linear Issue lists read completely but one issue's attachments
+/// not, a Merge PR might be a member den didn't see: the list that listed
+/// that issue joins its coverage as partial, naming the issue, so its row
+/// reads incomplete, not just its unknowns.
+#[test]
+fn a_merge_pr_is_incomplete_when_an_issues_attachments_were_not_all_read() {
+    let observation = acme_owner()
+        .owner_coverage(
+            "acme",
+            SourceKind::Linear(LinearSourceKind::AssignedIssues),
+            SourceState::Complete,
+        )
+        .pull_request(ready("acme/api", 1))
+        .linear_issue(
+            linear_issue("acme", "id-3", "TEAM-3")
+                .attachments_incomplete("more than 50 attachments"),
+        )
+        .build();
+    let decisions = decide_all(&observation, &acme());
+    let merge = pull_request(&decisions, "acme/api", 1);
+    assert_eq!(merge.next_step, Some(NextStep::Merge), "{merge:#?}");
+    let assigned = Source::Owner {
+        owner: "acme".to_owned(),
+        kind: SourceKind::Linear(LinearSourceKind::AssignedIssues),
+    };
+    let entry = merge
+        .coverage
+        .iter()
+        .find(|c| c.source == assigned)
+        .unwrap_or_else(|| panic!("{:?}", merge.coverage));
+    assert_eq!(
+        entry.state,
+        SourceState::Partial(Incompleteness::FollowUpTruncated {
+            what: "the attachments of TEAM-3 (more than 50 attachments)".to_owned(),
+        })
+    );
+}
+
+/// The Owner's member-state read bears only on a Linear Issue with a member
+/// whose end den reads by number (merged or closed, not read yet, or read
+/// closed). One member den can't read leaves that issue incomplete, never
+/// the Owner's other Linear Issues: an Implement with no members, or a Mark
+/// for release whose members are all read merged.
+#[test]
+fn a_failed_member_state_read_marks_only_the_issues_that_rest_on_it() {
+    let partial = SourceState::Partial(Incompleteness::FollowUpLost {
+        what: "the state of acme/api #99".to_owned(),
+        reason: "GitHub returned no such Pull Request".to_owned(),
+    });
+    let observation = acme_owner()
+        .owner_coverage("acme", SourceKind::MemberStates, partial)
+        .member_state("acme/app", 2, PullRequestState::Merged { merged_at: None })
+        .linear_issue(linear_issue("acme", "id-1", "TEAM-1").attached("acme/api", 99))
+        .linear_issue(linear_issue("acme", "id-2", "TEAM-2").attached("acme/app", 2))
+        .linear_issue(linear_issue("acme", "id-3", "TEAM-3"))
+        .build();
+    let decisions = decide_all(&observation, &acme());
+    let member_states = |d: &Decision| d.coverage.iter().any(|c| c.source.is_member_states());
+
+    let unread = linear(&decisions, "TEAM-1");
+    assert!(member_states(unread), "{:?}", unread.coverage);
+
+    let landed = linear(&decisions, "TEAM-2");
+    assert_eq!(landed.next_step, Some(NextStep::MarkForRelease));
+    assert!(!member_states(landed), "{:?}", landed.coverage);
+
+    let implement = linear(&decisions, "TEAM-3");
+    assert_eq!(implement.next_step, Some(NextStep::Implement));
+    assert!(!member_states(implement), "{:?}", implement.coverage);
+}
+
+/// Where #49's fixes meet #37's rules (merge of integrate/m2-wave3). A link
+/// that looks like a Pull Request den can't read withholds Mark for release,
+/// as an unread attachment does: den can't tell that no member is open. And
+/// a member reported open again is open, so the link's unknown says only
+/// that more Pull Requests may be attached (`MemberStatus::is_open`).
+#[test]
+fn a_pull_request_like_link_withholds_mark_for_release_and_a_member_open_again_is_open() {
+    const LINK: &str = "github.com/acme/api/pull/8";
+    let merged_and_link = acme_owner()
+        .member_state("acme/api", 1, PullRequestState::Merged { merged_at: None })
+        .linear_issue(
+            linear_issue("acme", "id-1", "TEAM-1")
+                .attached("acme/api", 1)
+                .link(LINK),
+        )
+        .build();
+    let decisions = decide_all(&merged_and_link, &acme());
+    let issue = linear(&decisions, "TEAM-1");
+    assert_eq!(issue.next_step, None, "{issue:#?}");
+    assert_says(
+        issue,
+        &[&format!(
+            "den couldn't establish whether a PR exists: attached {LINK} looks like a Pull Request it can't read"
+        )],
+    );
+
+    let reopened_and_link = acme_owner()
+        .member_state("acme/app", 2, PullRequestState::Open)
+        .linear_issue(
+            linear_issue("acme", "id-1", "TEAM-1")
+                .attached("acme/app", 2)
+                .link(LINK),
+        )
+        .build();
+    let decisions = decide_all(&reopened_and_link, &acme());
+    let issue = linear(&decisions, "TEAM-1");
+    assert_eq!(issue.landing.members[0].status, MemberStatus::OpenAgain);
+    assert_says(
+        issue,
+        &[&format!(
+            "more Pull Requests may be attached: attached {LINK} looks like a Pull Request den can't read"
+        )],
+    );
+    assert!(
+        !said(issue).contains("couldn't establish whether a PR exists"),
+        "{}",
+        said(issue)
+    );
 }

@@ -12,19 +12,24 @@
 //! withholds a step. The rules, in order (spec 0002, "Next Step rules:
 //! Linear Issues"):
 //!
-//! 1. Open members → the group decides (#37). Every open member outside a
-//!    Held Repo would Merge (its own Decision "lands with" this issue), none
-//!    is ambiguous, no member is unseen ("not surveyed"), none is in a merge
+//! 1. Open members (in the survey, or reported **open again** when den read
+//!    their state after it) → the group decides (#37). Every open member
+//!    outside a Held Repo would Merge (its own Decision "lands with" this
+//!    issue; one open again has no Decision yet, so it blocks), none is
+//!    ambiguous, no member is unseen ("not surveyed"), none is in a merge
 //!    queue, and den read every attachment and every such member's facts
 //!    completely → **Land**, Waiting On the Linear assignee. Otherwise no
 //!    Next Step: its Pull Requests carry the work, and the Explanation names
 //!    each blocking member with its own Next Step or reason, and each held
 //!    member as "held; not blocking". A held member never blocks (its own row
-//!    keeps its repair steps), but at least one member outside Held Repos
-//!    must be open for there to be anything to land.
+//!    keeps its repair steps), ambiguous or not, except in a merge queue (no
+//!    member may be queued); but at least one member outside Held Repos must
+//!    be open for there to be anything to land.
 //! 2. No open members:
-//!    - attachments not read completely, or a member den can't see → no
-//!      Next Step: den couldn't establish whether a Pull Request exists;
+//!    - attachments not read completely, a member den can't see, or a link
+//!      that looks like a Pull Request den can't read
+//!      (`Attachment::may_be_pull_request`) → no Next Step: den couldn't
+//!      establish whether a Pull Request exists;
 //!    - in the workflow's release state → no Next Step, "release is outside
 //!      den", Waiting On nobody and unattributed (den doesn't know who
 //!      releases);
@@ -57,16 +62,21 @@ use super::{
 };
 use crate::domain::{
     NextStep, Source, SourceKind, StartPolicy, WaitingOn, WorkItemId,
-    facts::{Attachment, AttachmentsRead, LinearIssue, LinearStateKind, PullRequestState},
+    facts::{Attachment, AttachmentsRead, LinearIssue, LinearStateKind},
     ids::same_login,
 };
 
 const ASSIGNEE_ROLE: &str = "the Linear assignee";
+/// Why a member reported open again after the survey can't be judged.
+const OPEN_AGAIN: &str = "GitHub reported it open again when den read its state after the survey, which didn't list it, so den hasn't read its facts; refresh to see it";
 /// The unknown that withholds Start and Implement (spec 0002, rule 4).
 pub const PR_EXISTENCE_UNKNOWN: &str = "couldn't establish whether a PR exists";
 /// What Mark for release's Explanation says about what it doesn't claim
 /// (spec 0002, story 84).
 pub const DEPLOYMENTS_UNSEEN: &str = "den can't see deployments: Mark for release rests only on the Pull Requests having merged, not on the work having shipped";
+/// The same unknown once an open member shows a Pull Request exists: only
+/// whether more are attached is unknown (the detail's wording too).
+pub const MORE_MAY_BE_ATTACHED: &str = "more Pull Requests may be attached";
 
 /// Decides every Linear Issue. `pull_requests` are the Pull Requests' own
 /// Decisions, already made: Land reads its members' there.
@@ -145,6 +155,16 @@ fn decide(ctx: &Context<'_>, issue: &LinearIssue, pull_requests: &[Decision]) ->
         }
         Group::Ungrouped => by_assignment(ctx, issue, item, other_conditions, unknowns),
     };
+    // The Owner's member-state read bears only on an issue with a member
+    // whose end den reads by number; it never marks the Owner's other
+    // issues incomplete.
+    if !landing
+        .members
+        .iter()
+        .any(|m| matches!(m.status, MemberStatus::NotOpen | MemberStatus::Closed))
+    {
+        decision.coverage.retain(|c| !c.source.is_member_states());
+    }
     decision.landing = landing;
     Some(decision)
 }
@@ -185,6 +205,8 @@ fn no_step_of_its_own() -> Attribution {
     Attribution::nobody("no Next Step of its own")
 }
 
+/// Waiting On the Linear assignee, for Implement, Land and Mark for release:
+/// me when that is the Linear viewer of the issue's workspace.
 fn assignee(ctx: &Context<'_>, issue: &LinearIssue) -> Attribution {
     let viewer = ctx.viewers.linear(&issue.id.workspace);
     Attribution::linear_person(
@@ -205,7 +227,7 @@ fn group_rules(
     let open: Vec<&Member> = landing
         .members
         .iter()
-        .filter(|m| matches!(m.status, MemberStatus::Open { .. }))
+        .filter(|m| m.status.is_open())
         .collect();
     if !open.is_empty() {
         return land(ctx, issue, landing, &open, pull_requests);
@@ -224,6 +246,13 @@ fn group_rules(
         return Group::no_step(format!(
             "den {PR_EXISTENCE_UNKNOWN}: attached {} (member not surveyed)",
             references(&unseen)
+        ));
+    }
+    let unread = pull_request_like_links(issue);
+    if !unread.is_empty() {
+        return Group::no_step(format!(
+            "den {PR_EXISTENCE_UNKNOWN}: attached {} looks like a Pull Request it can't read",
+            unread.join(", ")
         ));
     }
     if ctx.policy(&issue.owner).is_release_state(&issue.state.name) {
@@ -342,16 +371,23 @@ fn blocking_reasons(
             return reasons;
         }
         MemberStatus::Open { .. } => {}
+        // Open, but not in the survey: den can't judge it. A held one would
+        // never be landed, so it doesn't block.
+        MemberStatus::OpenAgain => {
+            if !held {
+                reasons.push(OPEN_AGAIN.to_owned());
+            }
+            return reasons;
+        }
         // Not open: it won't be landed, so it doesn't block.
-        _ => return reasons,
+        MemberStatus::NotOpen | MemberStatus::Merged { .. } | MemberStatus::Closed => {
+            return reasons;
+        }
     }
-    if member.ambiguous() {
-        let others: Vec<&str> = member
-            .also_attached_to
-            .iter()
-            .map(|g| g.identifier.as_str())
-            .collect();
-        reasons.push(format!("ambiguous, also attached to {}", others.join(", ")));
+    // A held member is never landed, so its ambiguity doesn't block; only
+    // the merge queue holds for every member (rule 1: none is queued).
+    if !held && let Some(ambiguity) = member.ambiguity() {
+        reasons.push(ambiguity);
     }
     let queued = ctx
         .observation
@@ -405,6 +441,7 @@ fn blocking_reasons(
 /// Resolve conflicts)".
 fn held_line(member: &Member, own: Option<&Decision>) -> String {
     let own_step = match own {
+        None if member.status == MemberStatus::OpenAgain => OPEN_AGAIN.to_owned(),
         Some(d) => match (&d.next_step, &d.held_back) {
             (Some(step), _) => format!("its own Next Step {}", step.label()),
             (None, Some(held)) => held.label(),
@@ -412,8 +449,12 @@ fn held_line(member: &Member, own: Option<&Decision>) -> String {
         },
         None => "its Decision isn't known".to_owned(),
     };
+    let ambiguity = member
+        .ambiguity()
+        .map(|a| format!("; {a}"))
+        .unwrap_or_default();
     format!(
-        "held; not blocking: {} (Held Repo {}; {own_step})",
+        "held; not blocking: {} (Held Repo {}; {own_step}{ambiguity})",
         member.reference(),
         member.pr.repo
     )
@@ -516,15 +557,8 @@ fn mark_for_release(ctx: &Context<'_>, issue: &LinearIssue, landing: &Landing) -
 
 /// Why den doesn't know how a not-open member ended.
 fn why_unread(ctx: &Context<'_>, member: &Member) -> String {
-    let observation = ctx.observation;
-    let reopened = observation
-        .member_states
-        .iter()
-        .any(|m| m.pr.is(&member.pr.repo, member.pr.number) && m.state == PullRequestState::Open);
-    if reopened {
-        return "GitHub reported it open again when den read its state after the survey; refresh to see it".to_owned();
-    }
-    let source = observation
+    let source = ctx
+        .observation
         .coverage
         .entries()
         .iter()
@@ -535,12 +569,14 @@ fn why_unread(ctx: &Context<'_>, member: &Member) -> String {
             } => same_login(owner, &member.pr.repo.owner),
             _ => false,
         });
+    // A member den asked about either has a state or left its Owner's
+    // entry incomplete; so with no state and a complete entry (or none), den
+    // hasn't asked about it yet.
     match source {
         Some(entry) if !entry.state.is_complete() => {
             format!("{} {}", entry.source.label(), entry.state.describe())
         }
-        Some(_) => "GitHub didn't report its state".to_owned(),
-        None => "den hasn't read its state yet".to_owned(),
+        Some(_) | None => "den hasn't read its state yet".to_owned(),
     }
 }
 
@@ -552,17 +588,16 @@ fn by_assignment(
     other_conditions: Vec<String>,
     unknowns: Vec<String>,
 ) -> Decision {
-    let viewer = ctx.viewers.linear(&issue.id.workspace);
     match &issue.assignee {
-        Some(assignee) => Decision::new(
+        Some(person) => Decision::new(
             ctx,
             item,
             Some(NextStep::Implement),
-            Attribution::linear_person(viewer, &issue.id.workspace, Some(assignee), ASSIGNEE_ROLE),
+            assignee(ctx, issue),
             Explanation {
                 winning_rule: Some(format!(
                     "the Linear Issue is assigned to {} and no Pull Request is attached to it",
-                    assignee.name
+                    person.name
                 )),
                 other_conditions,
                 unknowns,
@@ -651,11 +686,12 @@ fn group_conditions(issue: &LinearIssue, landing: &Landing) -> Vec<String> {
             hint.branch
         )
     }));
+    // A link that may be a Pull Request is an unknown, not a plain link.
     let links = issue
         .attachments
         .links
         .iter()
-        .filter(|a| matches!(a, Attachment::Link { .. }))
+        .filter(|a| matches!(a, Attachment::Link { .. }) && !a.may_be_pull_request())
         .count();
     if links > 0 {
         lines.push(format!(
@@ -667,12 +703,26 @@ fn group_conditions(issue: &LinearIssue, landing: &Landing) -> Vec<String> {
 }
 
 fn unknowns(issue: &LinearIssue, landing: &Landing) -> Vec<String> {
+    // An open member is a Pull Request that exists; then only whether more
+    // are attached is unknown, so the Explanation agrees with the no-step
+    // reason ("its Pull Request carries the work"). A member reported open
+    // again after the survey is open too (`MemberStatus::is_open`, #37).
+    let unknown = if landing.members.iter().any(|m| m.status.is_open()) {
+        MORE_MAY_BE_ATTACHED
+    } else {
+        PR_EXISTENCE_UNKNOWN
+    };
     let mut unknowns = Vec::new();
     if let AttachmentsRead::Incomplete { why } = &issue.attachments.read {
         unknowns.push(format!(
-            "{PR_EXISTENCE_UNKNOWN}: the Linear Issue's attachments weren't read completely ({why})"
+            "{unknown}: the Linear Issue's attachments weren't read completely ({why})"
         ));
     }
+    unknowns.extend(
+        pull_request_like_links(issue).into_iter().map(|url| {
+            format!("{unknown}: attached {url} looks like a Pull Request den can't read")
+        }),
+    );
     unknowns.extend(landing.members.iter().filter_map(|m| match &m.status {
         MemberStatus::NotSurveyed(why) => Some(format!(
             "attached {} is a member den can't see: {}",
@@ -682,6 +732,19 @@ fn unknowns(issue: &LinearIssue, landing: &Landing) -> Vec<String> {
         _ => None,
     }));
     unknowns
+}
+
+/// The URLs of the attachments that may be Pull Requests den can't read.
+pub fn pull_request_like_links(issue: &LinearIssue) -> Vec<&str> {
+    issue
+        .attachments
+        .links
+        .iter()
+        .filter_map(|a| match a {
+            Attachment::Link { url } if a.may_be_pull_request() => Some(url.as_str()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn references(members: &[&Member]) -> String {
