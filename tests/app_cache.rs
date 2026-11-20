@@ -9,9 +9,9 @@ mod support;
 
 use den::{
     app::{Effect, Event, Key, LogLevel, ViewModel},
-    cache::{CacheError, CachedObservation},
-    domain::{Incompleteness, Observation, SourceKind, SourceState},
-    ports::SurveyFailure,
+    cache::{CACHE_SUBDIR, CacheError, CachedObservation, FileCache},
+    domain::{Incompleteness, LinearSourceKind, Observation, Source, SourceKind, SourceState},
+    ports::{ObservationCache, SurveyFailure},
 };
 use std::path::PathBuf;
 use support::{
@@ -209,6 +209,48 @@ fn a_source_that_failed_keeps_its_previous_data_marked_with_its_age_and_the_fail
             .any(|c| c.contains("failed") && c.contains("10:00 UTC") && c.contains("2 h ago")),
         "{:?}",
         detail.coverage
+    );
+}
+
+/// Until Linear data is merged per source (#34), a refresh keeps none of the
+/// earlier Linear part, so a Linear source that fails is never said to be
+/// kept from the earlier survey: it reads as failed, with no age.
+#[test]
+fn a_failed_linear_source_is_never_said_to_be_kept() {
+    let linear = SourceKind::Linear(LinearSourceKind::AssignedIssues);
+    let mut harness = Harness::with_owners(&["alpha"]);
+    harness.answer(Ok(ObservationBuilder::new()
+        .observed_at(EARLIER)
+        .fully_read_owner("alpha")
+        .owner_coverage("alpha", linear, SourceState::Complete)
+        .build()));
+    harness.start();
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("alpha")
+        .owner_coverage("alpha", linear, failed("Linear did not answer"))
+        .build()));
+    let follow_ups = refresh(&mut harness);
+
+    let Effect::StoreCache { cached } =
+        effect_named(&follow_ups, |e| matches!(e, Effect::StoreCache { .. }))
+    else {
+        unreachable!()
+    };
+    assert!(
+        !cached.carried.iter().any(|c| matches!(
+            c.source,
+            Source::Owner {
+                kind: SourceKind::Linear(_),
+                ..
+            }
+        )),
+        "{:?}",
+        cached.carried
+    );
+    let coverage = &harness.view.header.coverage;
+    assert!(
+        coverage.contains("Linear did not answer") && !coverage.contains("10:00 UTC"),
+        "{coverage}"
     );
 }
 
@@ -456,6 +498,49 @@ fn an_unreadable_cache_is_a_logged_warning_and_a_fresh_survey() {
         harness.cache.stored().len(),
         1,
         "the good survey replaces it"
+    );
+}
+
+#[test]
+fn a_cache_milestone_1_wrote_is_logged_as_another_format_and_surveyed_afresh() {
+    // What den's real cache answers for the file milestone 1 left on disk.
+    let state = tempfile::tempdir().unwrap();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/milestone-1")
+        .join(CACHE_SUBDIR);
+    let cache_dir = state.path().join(CACHE_SUBDIR);
+    std::fs::create_dir(&cache_dir).unwrap();
+    for name in ["last-viewer", "me.json"] {
+        std::fs::copy(fixture.join(name), cache_dir.join(name)).unwrap();
+    }
+    let refused = FileCache::in_state_dir(state.path()).load().unwrap_err();
+    assert!(
+        matches!(refused, CacheError::Format { found: 4, .. }),
+        "{refused}"
+    );
+
+    let cache = FakeCache::default();
+    cache.answer_load(Err(refused));
+    let mut harness = Harness::with_cache(Ok(config(&["alpha"])), cache);
+    harness.answer(Ok(ObservationBuilder::new()
+        .owner("alpha")
+        .pull_request(pr("alpha/app", 9))
+        .build()));
+    harness.start();
+
+    assert!(harness.effects.iter().any(|e| matches!(
+        e,
+        Effect::Log(r) if r.level == LogLevel::Warn
+            && r.message.contains("me.json")
+            && r.message.contains("format 4")
+    )));
+    // Nothing of the milestone-1 survey (octo/app#7, #12) is shown.
+    assert_eq!(references(&harness.view), ["alpha/app#9"]);
+    assert_eq!(harness.github.requests().len(), 1, "one fresh survey");
+    assert_eq!(
+        harness.cache.stored().len(),
+        1,
+        "the fresh survey replaces it"
     );
 }
 

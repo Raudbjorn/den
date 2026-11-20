@@ -1,6 +1,11 @@
-//! The decision engine (test seam 1): `decide(Observation, viewer, now) -> Decisions`.
+//! The decision engine (test seam 1):
+//! `decide(Observation, viewers, policies, now) -> Decisions`.
 //!
-//! Pure: no I/O, no clock reads, deterministic. Each Work Item kind has its own
+//! Pure: no I/O, no clock reads, deterministic. `viewers` says who "me" is (the
+//! GitHub viewer; from #32 also a Linear viewer per workspace) and `policies`
+//! holds each Owner's Linear Workflow policy, which is empty, and changes
+//! nothing, for an Owner without one. Decisions are made on the whole
+//! Observation; Scope filtering comes after (`crate::ordering`). Each Work Item kind has its own
 //! module with its own rules; this module only dispatches and defines what a
 //! Decision is. Adding a kind's rules means editing that kind's module only.
 
@@ -13,7 +18,8 @@ mod run;
 pub use attribution::Attribution;
 
 use crate::domain::{
-    CoverageEntry, NextStep, Observation, UpstreamTargets, Viewer, WaitingOn, WorkItemId,
+    CoverageEntry, LinearWorkflowPolicy, NextStep, Observation, Policies, UpstreamTargets, Viewers,
+    WaitingOn, WorkItemId,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -83,11 +89,21 @@ impl Decision {
 /// Everything a kind's rules may look at.
 pub struct Context<'a> {
     pub observation: &'a Observation,
-    pub viewer: &'a Viewer,
+    pub viewers: &'a Viewers<'a>,
+    /// Each Owner's Linear Workflow policy; read it through [`Context::policy`].
+    pub policies: &'a Policies,
     pub now: Timestamp,
     /// The forks whose target is their Upstream (#13): their Branches must have
     /// been compared against the Upstream's default branch.
     pub upstreams: &'a UpstreamTargets,
+}
+
+impl Context<'_> {
+    /// The Linear Workflow policy of `owner`: the empty policy, which changes
+    /// nothing, when `owner` has no Linear Workflow.
+    pub fn policy(&self, owner: &str) -> &LinearWorkflowPolicy {
+        self.policies.for_owner(owner)
+    }
 }
 
 /// Decides every Work Item in the Observation, in kind order (Pull Requests,
@@ -96,20 +112,33 @@ pub struct Context<'a> {
 ///
 /// Every fork is its own target (ADR-0003); [`decide_with`] takes the forks
 /// whose target is their Upstream.
-pub fn decide(observation: &Observation, viewer: &Viewer, now: Timestamp) -> Vec<Decision> {
-    decide_with(observation, viewer, &UpstreamTargets::default(), now)
+pub fn decide(
+    observation: &Observation,
+    viewers: &Viewers,
+    policies: &Policies,
+    now: Timestamp,
+) -> Vec<Decision> {
+    decide_with(
+        observation,
+        viewers,
+        policies,
+        &UpstreamTargets::default(),
+        now,
+    )
 }
 
 /// [`decide`], with `upstreams` naming the forks whose target is their Upstream.
 pub fn decide_with(
     observation: &Observation,
-    viewer: &Viewer,
+    viewers: &Viewers,
+    policies: &Policies,
     upstreams: &UpstreamTargets,
     now: Timestamp,
 ) -> Vec<Decision> {
     let ctx = Context {
         observation,
-        viewer,
+        viewers,
+        policies,
         now,
         upstreams,
     };

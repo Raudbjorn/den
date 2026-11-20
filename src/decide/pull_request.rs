@@ -78,7 +78,10 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         (NextStep::ResolveConflicts, conflicts(pr)),
         (NextStep::FixCi, fix_ci(pr.details.as_ref())),
         (NextStep::AddressReview, address_review(pr)),
-        (NextStep::Review, review(pr.details.as_ref(), ctx.viewer)),
+        (
+            NextStep::Review,
+            review(pr.details.as_ref(), ctx.viewers.github),
+        ),
         (NextStep::Merge, merge(pr, &approval, &merge_blockers)),
     ];
     let winner = rules
@@ -163,7 +166,7 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
 }
 
 fn waiting_on(step: NextStep, pr: &PullRequest, ctx: &Context<'_>) -> Attribution {
-    let viewer = ctx.viewer;
+    let viewer = ctx.viewers.github;
     if step != NextStep::Review {
         return Attribution::person(viewer, pr.author.as_deref(), AUTHOR_ROLE);
     }

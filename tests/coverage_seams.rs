@@ -12,6 +12,7 @@
 
 mod support;
 
+use den::domain::{Policies, Viewers};
 use den::{
     app::{Effect, Key, ViewModel, view_model::SidebarRow},
     decide::{Decision, decide},
@@ -40,7 +41,12 @@ fn repo_list_incomplete(owner: &str) -> SourceState {
 }
 
 fn decisions(observation: &Observation) -> Vec<Decision> {
-    decide(observation, &observation.viewer, now())
+    decide(
+        observation,
+        &Viewers::of(observation),
+        &Policies::default(),
+        now(),
+    )
 }
 
 /// The state of `kind` for `owner` that a Decision carries, if any.

@@ -9,7 +9,10 @@ mod support;
 use den::{
     app::{Effect, Event, Key, LogLevel, SurveyId},
     config::{self, ConfigError},
-    domain::{Incompleteness, NextStep, SourceKind, SourceState, UpstreamTargets, WaitingOn},
+    domain::{
+        Incompleteness, LinearSourceKind, NextStep, SourceKind, SourceState, UpstreamTargets,
+        WaitingOn,
+    },
     ports::{SurveyFailure, SurveyRequest},
 };
 use std::path::{Path, PathBuf};
@@ -158,6 +161,44 @@ fn errors_alongside_data_show_as_incomplete_not_as_success() {
         "{:?}",
         detail.coverage
     );
+}
+
+/// Milestone-2 groundwork (#31): an Owner without a Linear Workflow records
+/// no Linear source, so the missing Linear part never stops "Nothing needs
+/// you"; a Linear source once recorded counts like any GitHub one.
+#[test]
+fn linear_sources_count_toward_nothing_needs_you_only_when_recorded() {
+    let mut github_only = Harness::with_owners(&["alpha"]);
+    github_only.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("alpha")
+        .build()));
+    let view = github_only.start().clone();
+    assert_eq!(view.list.empty.expect("empty").title, "Nothing needs you.");
+
+    for state in [
+        SourceState::NotYetFetched,
+        SourceState::Failed {
+            error: "Linear did not answer".to_owned(),
+        },
+    ] {
+        let mut harness = Harness::with_owners(&["alpha"]);
+        harness.answer(Ok(ObservationBuilder::new()
+            .fully_read_owner("alpha")
+            .owner_coverage(
+                "alpha",
+                SourceKind::Linear(LinearSourceKind::AssignedIssues),
+                state.clone(),
+            )
+            .build()));
+        let view = harness.start().clone();
+        let empty = view.list.empty.expect("empty");
+        assert_ne!(empty.title, "Nothing needs you.", "{state:?}");
+        assert!(
+            empty.detail.contains("assigned Linear Issues"),
+            "says which Linear source: {empty:?}"
+        );
+        assert!(!view.header.coverage_complete, "{state:?}");
+    }
 }
 
 #[test]

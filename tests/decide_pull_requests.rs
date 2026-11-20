@@ -8,6 +8,7 @@
 
 mod support;
 
+use den::domain::{Policies, Viewers};
 use den::{
     decide::{Decision, decide},
     domain::{
@@ -19,7 +20,12 @@ use den::{
 use support::build::{ME, ObservationBuilder, PrBuilder, now, pr, repo_id};
 
 fn decisions(observation: &Observation) -> Vec<Decision> {
-    decide(observation, &observation.viewer, now())
+    decide(
+        observation,
+        &Viewers::of(observation),
+        &Policies::default(),
+        now(),
+    )
 }
 
 fn pr_id(repo: &str, number: u64) -> WorkItemId {
@@ -773,8 +779,18 @@ fn deciding_is_deterministic_and_reads_no_clock() {
         .pull_request(pr("o/r", 1).draft())
         .pull_request(pr("o/r", 2))
         .build();
-    let first = decide(&observation, &observation.viewer, now());
-    let second = decide(&observation, &observation.viewer, now());
+    let first = decide(
+        &observation,
+        &Viewers::of(&observation),
+        &Policies::default(),
+        now(),
+    );
+    let second = decide(
+        &observation,
+        &Viewers::of(&observation),
+        &Policies::default(),
+        now(),
+    );
     assert_eq!(first, second);
 }
 

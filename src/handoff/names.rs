@@ -5,8 +5,7 @@
 use super::worktree_path;
 use crate::{
     domain::{NextStep, RepoId, WorkItemId},
-    jobs::JobRecord,
-    ordering::same_work_item,
+    jobs::{JobRecord, JobSubject},
 };
 use std::path::Path;
 
@@ -170,16 +169,16 @@ pub struct FreeName {
     /// The suffix added to the wanted name (`None`: it was free), so the
     /// Job's other names can carry the same one.
     pub suffix: Option<u32>,
-    /// The Work Items whose Jobs held the names passed over.
-    pub passed_over: Vec<WorkItemId>,
+    /// The subjects of the Jobs that held the names passed over.
+    pub passed_over: Vec<JobSubject>,
 }
 
 /// The first of `wanted`, `wanted-2`, `wanted-3`, … that `taken` doesn't
 /// claim, with the Work Items that claimed the ones passed over; `None` when
 /// every name up to [`MAX_NAME_SUFFIX`] is taken. `taken` says which other
 /// Work Items' Jobs hold a name (empty when it is free).
-pub fn free_name(wanted: &str, taken: impl Fn(&str) -> Vec<WorkItemId>) -> Option<FreeName> {
-    let mut passed_over: Vec<WorkItemId> = Vec::new();
+pub fn free_name(wanted: &str, taken: impl Fn(&str) -> Vec<JobSubject>) -> Option<FreeName> {
+    let mut passed_over: Vec<JobSubject> = Vec::new();
     let candidates = std::iter::once((wanted.to_owned(), None)).chain(
         (FIRST_NAME_SUFFIX..=MAX_NAME_SUFFIX)
             .map(|n| (suffixed(wanted, n, MAX_WORKTREE_NAME_CHARS), Some(n))),
@@ -218,12 +217,12 @@ pub fn free_worktree_name(
     free_name(wanted, |name| {
         let path = worktree_path(clone, name);
         jobs.iter()
-            .filter(|job| !same_work_item(&job.work_item, item))
+            .filter(|job| !job.subject.covers(item))
             .filter(|job| {
                 job.worktree == path
                     || (new_branch && job.main_clone.as_path() == clone && job.branch == name)
             })
-            .map(|job| job.work_item.clone())
+            .map(|job| job.subject.clone())
             .collect()
     })
 }

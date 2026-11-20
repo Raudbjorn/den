@@ -4,6 +4,7 @@ use super::{
     coverage::Coverage,
     facts::{Branch, Issue, PullRequest, Run},
     ids::{RepoId, same_login},
+    linear::LinearPart,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,27 @@ impl Viewer {
         self.teams
             .iter()
             .any(|t| same_login(&t.org, &team.org) && t.slug.eq_ignore_ascii_case(&team.slug))
+    }
+}
+
+/// Everyone den decides "me" by: the GitHub viewer now, and, from #32, the
+/// Linear viewer of each Linear Workflow's workspace. A Linear viewer is never
+/// matched to a GitHub login (spec 0002, "Waiting On").
+///
+/// It borrows the viewers from where they are recorded (the Observation), so
+/// deciding copies nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Viewers<'a> {
+    pub github: &'a Viewer,
+}
+
+impl<'a> Viewers<'a> {
+    /// The viewers an Observation recorded: its GitHub viewer (and, from #32,
+    /// the Linear viewers in its Linear part).
+    pub fn of(observation: &'a Observation) -> Self {
+        Self {
+            github: &observation.viewer,
+        }
     }
 }
 
@@ -62,6 +84,9 @@ pub struct Observation {
     pub issues: Vec<Issue>,
     pub branches: Vec<Branch>,
     pub runs: Vec<Run>,
+    /// What den read from Linear, for Owners with a Linear Workflow. Empty when
+    /// no Owner has one; its sources are in `coverage` like GitHub's.
+    pub linear: LinearPart,
     pub coverage: Coverage,
 }
 
@@ -84,6 +109,7 @@ impl Observation {
             issues: Vec::new(),
             branches: Vec::new(),
             runs: Vec::new(),
+            linear: LinearPart::default(),
             coverage: Coverage::default(),
         }
     }

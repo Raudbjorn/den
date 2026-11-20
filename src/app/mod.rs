@@ -22,7 +22,7 @@ use crate::{
     cache::{self, CacheError, CachedObservation},
     config::{Config, ConfigError},
     decide::{self, Decision},
-    domain::{Observation, SourceState, UpstreamTargets, WorkItemId},
+    domain::{Observation, Policies, SourceState, UpstreamTargets, Viewers, WorkItemId},
     handoff::{
         JobCheck, JobsCheck,
         prompts::{Prompts, PromptsError},
@@ -84,6 +84,9 @@ pub struct App {
     upstreams_unreadable: Option<String>,
     /// The last thing that went wrong with a `u` (not saved, Upstream not visible).
     upstream_problem: Option<String>,
+    /// Each Owner's Linear Workflow policy for the decision engine. Empty for
+    /// every Owner until the config's Linear Workflows fill it (#32).
+    policies: Policies,
 }
 
 impl App {
@@ -108,6 +111,7 @@ impl App {
             next_launch: 0,
             job_checks: Vec::new(),
             upstreams: UpstreamTargets::default(),
+            policies: Policies::default(),
             upstreams_unreadable: None,
             upstream_problem: None,
         }
@@ -449,7 +453,8 @@ impl App {
         let observation = &shown.observation;
         self.ordered = ordering::order(decide::decide_with(
             observation,
-            &observation.viewer,
+            &Viewers::of(observation),
+            &self.policies,
             &self.upstreams,
             now,
         ));

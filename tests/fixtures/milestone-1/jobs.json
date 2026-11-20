@@ -1,0 +1,47 @@
+{
+  "format": 1,
+  "jobs": [
+    {
+      "work_item": {
+        "PullRequest": {
+          "repo": {
+            "owner": "octo",
+            "name": "app"
+          },
+          "number": 7
+        }
+      },
+      "next_step": "AddressReview",
+      "target": {
+        "owner": "octo",
+        "name": "app"
+      },
+      "main_clone": "/home/me/dev/app",
+      "worktree": "/home/me/dev/app/.claude/worktrees/feature-7",
+      "branch": "feature-7",
+      "session": "app-pr7-address-review",
+      "launched_at": "2026-11-19T12:00:00Z"
+    },
+    {
+      "work_item": {
+        "Issue": {
+          "repo": {
+            "owner": "octo",
+            "name": "app"
+          },
+          "number": 12
+        }
+      },
+      "next_step": "Implement",
+      "target": {
+        "owner": "octo",
+        "name": "app"
+      },
+      "main_clone": "/home/me/dev/app",
+      "worktree": "/home/me/dev/app/.claude/worktrees/feat_issue-12",
+      "branch": "feat_issue-12",
+      "session": "app-issue12-implement",
+      "launched_at": "2026-11-19T12:00:00Z"
+    }
+  ]
+}

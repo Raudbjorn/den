@@ -33,7 +33,6 @@ use crate::{
         PlanInput, Refusal, RefusalReason, ReopenPlan, TargetChoice, WorkspaceView, WorktreeState,
         check_prompt, live, names, short_commit,
     },
-    ordering::same_work_item,
 };
 
 /// One open launch sheet.
@@ -608,8 +607,7 @@ impl App {
 
     /// Keeps the fresher checks of `item`'s Jobs from a sheet's inspection.
     fn remember_checks(&mut self, item: &WorkItemId, checks: &[JobCheck]) {
-        self.job_checks
-            .retain(|c| !same_work_item(&c.job.work_item, item));
+        self.job_checks.retain(|c| !c.job.subject.covers(item));
         self.job_checks.extend(checks.iter().cloned());
     }
 
@@ -633,7 +631,7 @@ fn live_job_request(
     observation: &Observation,
 ) -> Option<InspectRequest> {
     let check = live::most_telling(checks, item).filter(|c| c.is_live())?;
-    InspectRequest::for_job(&check.job, observation)
+    InspectRequest::for_job(&check.job, item, observation)
 }
 
 /// `o` on a Live Job: plans the reopen, or refuses (never in the Main Clone).
@@ -688,7 +686,7 @@ fn finished_log(id: LaunchId, report: &LaunchReport) -> Effect {
             LogLevel::Info,
             format!(
                 "launched {} in {} (session {})",
-                job.work_item,
+                job.subject,
                 job.worktree.display(),
                 job.session
             ),
@@ -697,7 +695,7 @@ fn finished_log(id: LaunchId, report: &LaunchReport) -> Effect {
             LogLevel::Info,
             format!(
                 "reopened {} in {} (resuming session {})",
-                job.work_item,
+                job.subject,
                 job.worktree.display(),
                 job.session
             ),
