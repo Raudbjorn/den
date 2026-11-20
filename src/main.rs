@@ -21,10 +21,12 @@
 //! This file only wires things together: paths, log, config, ports, and the
 //! terminal loop that feeds the App events and performs its Effects.
 
+mod doctor;
+
 use crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use den::{
     app::view_model::{LaunchStatus, Overlay},
-    app::{App, Effect, Event, Key, ViewModel},
+    app::{App, Event, Key, ViewModel},
     cache::FileCache,
     config,
     domain::{RepoId, WorkItemId},
@@ -36,7 +38,7 @@ use den::{
     logging::{self, LoggingError},
     paths::{Paths, PathsError},
     ports::{Ports, SystemClock, UpstreamStore},
-    runtime::{self, Worker},
+    runtime::{self, Flow, Worker},
     terminal::{SIGNAL_EXIT_STATUS_BASE, TerminalSession},
     ui::{
         Theme, UiError,
@@ -49,7 +51,6 @@ use den::{
 use jiff::Timestamp;
 use raudbjorn_tui::profile::{ProfileError, TerminalProfile};
 use std::{
-    collections::VecDeque,
     io::{self, Write as _},
     process::ExitCode,
     sync::Arc,
@@ -58,7 +59,7 @@ use std::{
 
 const EXIT_FAILURE: u8 = 1;
 const EXIT_USAGE: u8 = 2;
-const USAGE: &str = "usage: den [--dump COLSxROWS | --launch OWNER/REPO#N|OWNER/REPO:BRANCH|OWNER/REPO@WORKFLOW [--switch-target] [--prompt TEXT] [--yes]]";
+const USAGE: &str = "usage: den [--help | --version | --doctor | --dump COLSxROWS | --launch OWNER/REPO#N|OWNER/REPO:BRANCH|OWNER/REPO@WORKFLOW [--switch-target] [--prompt TEXT] [--yes]]";
 /// The terminal size `--launch` lays the sheet out for, in cells.
 const LAUNCH_DUMP_SIZE: (u16, u16) = (160, 45);
 /// The largest `--dump` width or height, in cells. The dump buffer holds
@@ -86,9 +87,11 @@ enum DenError {
     Logging(#[from] LoggingError),
     #[error(transparent)]
     Graphics(#[from] BearError),
+    #[error("local prerequisite checks failed; see the report above")]
+    Doctor,
     #[error("launch: {0}")]
     Launch(String),
-    #[error("writing the dump: {0}")]
+    #[error("writing output: {0}")]
     Output(io::Error),
     #[error("stopped by signal {0}")]
     Signalled(i32),
@@ -273,32 +276,6 @@ fn translate_key(key: &KeyEvent) -> Option<Key> {
     }
 }
 
-/// What the loop should do after a batch of Effects.
-enum Flow {
-    Continue,
-    Quit,
-}
-
-/// Hands Effects to the worker (or the log); reports whether one asked to quit.
-fn dispatch(effects: Vec<Effect>, worker: &Worker, app: &mut App, view: &mut ViewModel) -> Flow {
-    let mut flow = Flow::Continue;
-    let mut pending: VecDeque<_> = effects.into();
-    while let Some(effect) = pending.pop_front() {
-        match effect {
-            Effect::Quit => flow = Flow::Quit,
-            Effect::Log(record) => runtime::log(&record),
-            other => {
-                if let Err(rejected) = worker.submit(other) {
-                    let (next_view, effects) = app.handle(*rejected);
-                    *view = next_view;
-                    pending.extend(effects);
-                }
-            }
-        }
-    }
-    flow
-}
-
 fn run_interactive(
     theme: &Theme,
     mut app: App,
@@ -311,6 +288,11 @@ fn run_interactive(
     let mut bear = BearArt::detect(theme.profile(), graphics);
     let outcome = event_loop(&mut session, theme, &mut app, &worker, &mut bear);
     let restored = session.finish();
+    // After the terminal is back, on quit and on a signal alike: queued writes
+    // of den's state get a bounded time to land.
+    if let Err(error) = worker.finish(&mut app, Duration::from_secs(runtime::FINISH_WITHIN_SECS)) {
+        tracing::error!(%error, "quit");
+    }
     match (outcome, restored) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(error),
@@ -337,7 +319,7 @@ fn event_loop(
     let (mut view, effects) = app.handle(Event::Started {
         now: Timestamp::now(),
     });
-    if let Flow::Quit = dispatch(effects, worker, app, &mut view) {
+    if let Flow::Quit = worker.dispatch(app, &mut view, effects) {
         return Ok(());
     }
     let mut dirty = true;
@@ -358,7 +340,13 @@ fn event_loop(
                 now: Timestamp::now(),
             });
         }
-        if event::poll(Duration::from_millis(INPUT_POLL_MS))? {
+        // Events already waiting are handled now; input is only waited for when idle.
+        let wait = if incoming.is_empty() {
+            Duration::from_millis(INPUT_POLL_MS)
+        } else {
+            Duration::ZERO
+        };
+        if event::poll(wait)? {
             match event::read()? {
                 TermEvent::Key(key) => incoming.extend(translate_key(&key).map(Event::Key)),
                 TermEvent::Resize(cols, rows) => incoming.push(Event::Resized { cols, rows }),
@@ -369,7 +357,7 @@ fn event_loop(
             let (next_view, effects) = app.handle(event);
             view = next_view;
             dirty = true;
-            if let Flow::Quit = dispatch(effects, worker, app, &mut view) {
+            if let Flow::Quit = worker.dispatch(app, &mut view, effects) {
                 return Ok(());
             }
         }
@@ -390,6 +378,38 @@ fn draw(
 }
 
 fn run(args: &[String]) -> Result<(), DenError> {
+    match args {
+        [flag] if flag == "--help" => {
+            return writeln!(
+                io::stdout().lock(),
+                "{USAGE}\n\n\
+                With no arguments, open the interactive workspace.\n\
+                --help       Show this help without loading configuration.\n\
+                --version    Print the package version.\n\
+                --doctor     Check local survey and launch prerequisites (no network or writes).\n\
+                --dump       Survey GitHub and print a frame of COLSxROWS cells.\n\
+                --launch     Survey and preview a Job; --yes confirms the launch.\n\n\
+                See README.md for setup, keyboard controls and diagnostic limits."
+            )
+            .map_err(DenError::Output);
+        }
+        [flag] if flag == "--version" => {
+            return writeln!(io::stdout().lock(), "den {}", env!("CARGO_PKG_VERSION"))
+                .map_err(DenError::Output);
+        }
+        [flag] if flag == "--doctor" => {
+            let paths = Paths::from_env(|name| std::env::var_os(name))?;
+            let environment = LaunchEnvironment::from_env(|name| std::env::var_os(name));
+            return if doctor::run(&paths, &environment, &mut io::stdout().lock())
+                .map_err(DenError::Output)?
+            {
+                Ok(())
+            } else {
+                Err(DenError::Doctor)
+            };
+        }
+        _ => {}
+    }
     let mode = parse_args(args)?;
     let paths = Paths::from_env(|name| std::env::var_os(name))?;
     logging::init(&paths.log_file())?;

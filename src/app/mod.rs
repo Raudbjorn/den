@@ -23,8 +23,8 @@ use crate::{
     config::{Config, ConfigError, LinearWorkflow},
     decide::{self, Decision},
     domain::{
-        Coverage, Observation, Policies, Source, SourceKind, SourceState, UpstreamTargets, Viewer,
-        Viewers, WorkItemId, ids::same_login,
+        Coverage, LinearSourceKind, Observation, Policies, Source, SourceKind, SourceState,
+        UpstreamTargets, Viewer, Viewers, WorkItemId, ids::same_login,
     },
     handoff::{
         JobCheck, JobsCheck,
@@ -47,6 +47,13 @@ enum OverlayState {
     Launch(Box<launch::Sheet>),
 }
 
+/// A survey answer held until the startup cache read answers.
+struct HeldAnswer {
+    id: SurveyId,
+    outcome: Result<Box<Observation>, SurveyFailure>,
+    now: Timestamp,
+}
+
 pub struct App {
     config: Result<Config, ConfigError>,
     /// The survey in flight, if any.
@@ -57,6 +64,12 @@ pub struct App {
     shown: Option<CachedObservation>,
     /// `shown` came from the cache and no survey has answered yet this session.
     from_cache: bool,
+    /// The startup cache read is queued and hasn't answered. The Worker reads
+    /// the cache and surveys on different lanes, so a survey can answer first.
+    awaiting_cache: bool,
+    /// A survey answer that arrived while `awaiting_cache`: it is merged with
+    /// the cache once that is read, so data kept for failed sources survives.
+    held_answer: Option<HeldAnswer>,
     /// Every Decision, ordered for display.
     ordered: Vec<Decision>,
     /// The ordered Decisions in the current Scope: what the list shows.
@@ -110,6 +123,8 @@ impl App {
             next_survey: 0,
             shown: None,
             from_cache: false,
+            awaiting_cache: false,
+            held_answer: None,
             ordered: Vec::new(),
             decisions: Vec::new(),
             scope: ScopeState::default(),
@@ -211,8 +226,9 @@ impl App {
                 };
                 // The cache is read first, so it shows before the survey answers;
                 // then the Jobs (local and bounded), so their markers don't wait
-                // for gh on the single worker.
+                // for gh on the Worker's remote lane.
                 let mut effects = vec![Effect::LoadCache, Effect::CheckJobs];
+                self.awaiting_cache = true;
                 if let Some(error) = &self.upstreams_unreadable {
                     effects.push(Effect::log(
                         LogLevel::Warn,
@@ -260,7 +276,14 @@ impl App {
                 }
                 return effects;
             }
-            Effect::LoadCache => "read cache",
+            Effect::LoadCache => {
+                let mut effects = vec![Effect::log(
+                    LogLevel::Error,
+                    format!("could not queue read cache: {reason}"),
+                )];
+                effects.extend(self.cache_answered());
+                return effects;
+            }
             Effect::StoreCache { .. } => "save cache",
             Effect::CheckJobs => "check Jobs",
             Effect::Quit => "quit",
@@ -416,6 +439,17 @@ impl App {
                 ),
             )];
         }
+        if self.awaiting_cache {
+            // Still `running`, so the view says it is refreshing and `r` waits.
+            self.held_answer = Some(HeldAnswer { id, outcome, now });
+            return vec![Effect::log(
+                LogLevel::Info,
+                format!(
+                    "survey {} answered before the cache was read; holding it until then",
+                    id.0
+                ),
+            )];
+        }
         self.running = None;
         match outcome {
             Ok(observation) => {
@@ -485,6 +519,27 @@ impl App {
     }
 
     fn cache_loaded(
+        &mut self,
+        outcome: Result<Option<Box<CachedObservation>>, CacheError>,
+    ) -> Vec<Effect> {
+        let mut effects = self.show_cache(outcome);
+        effects.extend(self.cache_answered());
+        effects
+    }
+
+    /// The startup cache read answered (or was never queued): handles the
+    /// survey answer held for it, if any.
+    fn cache_answered(&mut self) -> Vec<Effect> {
+        self.awaiting_cache = false;
+        match self.held_answer.take() {
+            Some(HeldAnswer { id, outcome, now }) => {
+                self.survey_finished(id, outcome, self.now.unwrap_or(now))
+            }
+            None => Vec::new(),
+        }
+    }
+
+    fn show_cache(
         &mut self,
         outcome: Result<Option<Box<CachedObservation>>, CacheError>,
     ) -> Vec<Effect> {
@@ -831,6 +886,13 @@ fn fit_linear(shown: &mut CachedObservation, workflows: &[LinearWorkflow]) {
     part.issues.retain(|i| keep(&i.owner));
     part.team_states.retain(|t| keep(&t.owner));
     let kept = |source: &Source| match source {
+        // The cache has no query scope: these sources must be fetched again
+        // before claiming they cover the configured teams, filters and states.
+        Source::Owner {
+            kind:
+                SourceKind::Linear(LinearSourceKind::StartTeamIssues | LinearSourceKind::TeamStates),
+            ..
+        } => false,
         Source::Owner { owner, .. } if source.is_linear() => keep(owner),
         _ => true,
     };

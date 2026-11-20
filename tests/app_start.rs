@@ -11,6 +11,8 @@
 mod support;
 
 use den::{
+    app::{Effect, Event},
+    cache::CachedObservation,
     config::Config,
     domain::{
         Coverage, LinearPart, LinearSourceKind, NextStep, Source, SourceKind, SourceState,
@@ -19,7 +21,8 @@ use den::{
     ports::LinearSurvey,
 };
 use support::{
-    build::{ObservationBuilder, linear_issue, linear_viewer},
+    build::{ObservationBuilder, linear_issue, linear_viewer, now},
+    fakes::FakeCache,
     harness::{Harness, config_with_linear},
 };
 
@@ -136,6 +139,76 @@ fn unanswered_start_sources_are_not_yet_fetched() {
         view.list.empty.expect("no rows").title,
         "Nothing needs you."
     );
+}
+
+/// Cached Start coverage has no query scope. A broader config must wait for
+/// its own survey before an empty cache can say that nothing needs attention.
+#[test]
+fn cached_start_coverage_is_unconfirmed_until_the_current_query_answers() {
+    let mut cached = ObservationBuilder::new()
+        .fully_read_owner("acme")
+        .fully_read_owner("octo")
+        .linear_viewer("acme", "acme");
+    for kind in ALL_FOUR {
+        cached = cached.owner_coverage("acme", SourceKind::Linear(kind), SourceState::Complete);
+    }
+    let cached = CachedObservation::fresh(cached.build());
+    for expansion in ["team", "backlog", "cycle", "unchanged"] {
+        let mut config = start_config();
+        config.linear[0].active_cycle_only = true;
+        match expansion {
+            "team" => config.linear[0].start_teams.push("OPS".to_owned()),
+            "backlog" => config.linear[0].include_backlog = true,
+            "cycle" => config.linear[0].active_cycle_only = false,
+            // Even unchanged configs cannot be proven compatible with this cache.
+            "unchanged" => {}
+            _ => unreachable!(),
+        }
+        let mut harness = Harness::with_cache(Ok(config), FakeCache::holding(cached.clone()));
+        harness.answer(Ok(ObservationBuilder::new()
+            .fully_read_owner("acme")
+            .fully_read_owner("octo")
+            .build()));
+        harness.linear.push_answer(answer(Vec::new(), &complete()));
+        let effects = harness.send(Event::Started { now: now() });
+        let load = effects
+            .iter()
+            .find(|e| matches!(e, Effect::LoadCache))
+            .unwrap();
+        harness.perform(load);
+        assert!(!harness.view.header.coverage_complete, "{expansion}");
+        for label in ["start-team Linear Issues", "Linear team states"] {
+            assert!(
+                harness.view.header.coverage.contains(label),
+                "{expansion}: {}",
+                harness.view.header.coverage
+            );
+        }
+        assert!(harness.view.header.coverage.contains("not fetched yet"));
+        assert_ne!(
+            harness.view.list.empty.as_ref().unwrap().title,
+            "Nothing needs you."
+        );
+        let github = effects
+            .iter()
+            .find(|e| matches!(e, Effect::Survey { .. }))
+            .unwrap();
+        harness.perform(github);
+        assert!(
+            !harness.view.header.coverage_complete,
+            "GitHub cannot confirm Linear: {expansion}"
+        );
+        let linear = effects
+            .iter()
+            .find(|e| matches!(e, Effect::SurveyLinear { .. }))
+            .unwrap();
+        harness.perform(linear);
+        assert!(
+            harness.view.header.coverage_complete,
+            "the current query answered: {expansion}: {}",
+            harness.view.header.coverage
+        );
+    }
 }
 
 /// A config value Linear doesn't have is a failed source the user sees,

@@ -63,8 +63,13 @@ workflow markers. The policy is still empty for every Owner.
 `main` only wires: XDG paths, log, config, ports, and the terminal loop. The
 loop checks for a termination signal (SIGTERM, SIGHUP, SIGINT, SIGQUIT) before
 every input wait, so the terminal is always restored, and hands Effects to a background `runtime::Worker` so the UI stays
-responsive while `gh` runs. The worker has two lanes, one thread each: Linear surveys run on their own (so a hung
-Linear call never holds back GitHub's answer), everything else in order on the main lane; `den --dump COLSxROWS` and the tests use
+responsive while `gh` runs. The Worker has three bounded lanes (`runtime::lane_of`, no wildcard): Linear
+surveys run independently so a hung Linear call never holds back GitHub's answer; a store lane reads and
+writes den's own state files (cache, Upstream choices), so a write never waits behind either survey; and
+a remote lane runs `gh`, git and kitty. An Effect a full lane refuses goes back to the App as
+`Event::EffectRejected` before the next Event. On quit or a signal, `Worker::finish` waits at most
+`FINISH_WITHIN_SECS` for queued store writes; remote and Linear work still running is abandoned.
+`den --dump COLSxROWS` and the tests use
 `runtime::settle`, which performs Effects synchronously through the same
 `ports::perform`.
 

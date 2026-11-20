@@ -334,11 +334,15 @@ fn a_store_waits_for_another_dens_lock_and_gives_up_as_an_error_value() {
 fn dens_storing_at_once_leave_the_newest_survey() {
     const WRITERS: u32 = 6;
     const STORES_EACH: u32 = 15;
+    // This checks ordering, not disk latency: 90 durable stores can exceed the
+    // production 2s lock wait on CI. The timeout behavior is tested separately.
+    const ORDERING_TEST_LOCK_WAIT_SECS: u64 = 30;
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().to_owned();
     std::thread::scope(|scope| {
         for writer in 0..WRITERS {
-            let cache = FileCache::in_state_dir(&state);
+            let cache = FileCache::in_state_dir(&state)
+                .with_lock_wait(Duration::from_secs(ORDERING_TEST_LOCK_WAIT_SECS));
             scope.spawn(move || {
                 for i in 0..STORES_EACH {
                     // Interleaved minutes, so every writer offers older and newer ones.

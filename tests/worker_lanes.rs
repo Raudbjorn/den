@@ -7,9 +7,9 @@
 mod support;
 
 use den::{
-    app::{Effect, Event, SurveyId},
+    app::{App, Effect, Event, SurveyId},
     ports::{LinearSource, LinearSurvey, LinearSurveyRequest, Ports, SurveyRequest},
-    runtime::Worker,
+    runtime::{Flow, Worker},
 };
 use std::{
     sync::{
@@ -23,7 +23,7 @@ use support::{
     fakes::{
         FakeCache, FakeGitHub, FakeJobs, FakeLauncher, FakeUpstreams, FakeWorkspace, FixedClock,
     },
-    harness::linear_workflow,
+    harness::{config_with_linear, linear_workflow},
 };
 
 /// How long the test waits for an answer the worker should give at once.
@@ -76,32 +76,51 @@ fn next_event(worker: &Worker) -> Option<Event> {
 }
 
 #[test]
-fn github_answers_while_a_linear_survey_hangs() {
+fn github_and_local_writes_answer_while_a_linear_survey_hangs() {
     let (worker, release) = worker();
     let id = SurveyId(0);
+    let mut app = App::new(Ok(config_with_linear(&["acme"], &[("acme", "acme")])));
+    let mut view = app.view();
     // In the App's order: Linear first, then GitHub.
-    worker
-        .submit(Effect::SurveyLinear {
+    let effects = vec![
+        Effect::SurveyLinear {
             id,
             request: LinearSurveyRequest {
                 workflows: vec![linear_workflow("acme", "acme")],
             },
-        })
-        .expect("queued");
-    worker
-        .submit(Effect::Survey {
+        },
+        Effect::Survey {
             id,
             request: SurveyRequest {
                 owners: vec!["acme".to_owned()],
                 upstreams: Default::default(),
             },
-        })
-        .expect("queued");
+        },
+        Effect::StoreUpstreams {
+            upstreams: Default::default(),
+        },
+    ];
+    // The merged dispatcher keeps local writes and GitHub independent of Linear.
+    assert_eq!(
+        worker.dispatch(&mut app, &mut view, effects),
+        Flow::Continue
+    );
 
-    let first = next_event(&worker).expect("GitHub answers while Linear is held");
+    let finished = [
+        next_event(&worker).expect("GitHub or the store answers while Linear is held"),
+        next_event(&worker).expect("both answer while Linear is held"),
+    ];
     assert!(
-        matches!(first, Event::SurveyFinished { outcome: Ok(_), .. }),
-        "{first:?}"
+        finished
+            .iter()
+            .any(|e| matches!(e, Event::SurveyFinished { outcome: Ok(_), .. })),
+        "{finished:?}"
+    );
+    assert!(
+        finished
+            .iter()
+            .any(|e| matches!(e, Event::UpstreamsStored { outcome: Ok(()) })),
+        "{finished:?}"
     );
     release.send(()).expect("Linear still waiting");
     let second = next_event(&worker).expect("Linear answers once let go");

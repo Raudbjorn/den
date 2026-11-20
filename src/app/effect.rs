@@ -36,7 +36,8 @@ pub enum Effect {
         request: LinearSurveyRequest,
     },
     /// Read the cache; answered by `Event::CacheLoaded`. Emitted before the
-    /// startup survey, so cached data shows before any network call completes.
+    /// startup survey, so cached data shows before any network call completes;
+    /// a survey that answers first anyway is held until this one answers.
     LoadCache,
     /// Write what den shows to the cache; answered by `Event::CacheStored`.
     StoreCache { cached: Box<CachedObservation> },
