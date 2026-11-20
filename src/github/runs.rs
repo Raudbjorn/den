@@ -12,11 +12,14 @@
 //!
 //! The facts keep, per workflow, only the latest attempt of the newest Run that
 //! ran on the default branch itself. Anything den skipped or could not read is
-//! recorded as partial or failed coverage for that Repo; a rate limit stops the
-//! Owner's remaining Repos and marks the Owner's Runs partial.
+//! recorded as partial or failed coverage for that Repo. A rate limit, or
+//! [`MAX_TIMED_OUT_REQUESTS_PER_OWNER`] timed-out requests, stops the Owner's
+//! remaining requests and marks the Owner's Runs partial. The Owner's Runs are
+//! never more complete than the list of Repos they were read from.
 
 use super::{
-    rest::{self, Rest, encode},
+    graphql::TransportError,
+    rest::{self, Rest, RestResponse, encode},
     session::{Fetched, KindFetch, Session},
 };
 use crate::{
@@ -32,7 +35,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     },
 };
 
@@ -45,6 +48,10 @@ pub const WORKFLOW_RUNS_PAGE_SIZE: usize = 10;
 /// REST requests in flight at once for one Owner's Repos. Bounded to stay well
 /// inside GitHub's secondary rate limits while keeping ~100 Repos to seconds.
 pub const CONCURRENT_REQUESTS_PER_OWNER: usize = 8;
+/// Timed-out REST requests one Owner's Runs survive. One more and den stops
+/// reading them: a GitHub that slow would otherwise hold the survey for a full
+/// `gh` timeout per remaining request.
+pub const MAX_TIMED_OUT_REQUESTS_PER_OWNER: usize = 3;
 
 /// What GitHub appends to a Run's workflow path when it names the ref the
 /// workflow file was read from. Workflow files live directly in
@@ -125,13 +132,17 @@ struct Target<'r> {
     default_branch: &'r str,
 }
 
-/// Shared by one Owner's workers: stop when GitHub rate-limits or the survey
-/// cannot go on.
+/// Shared by one Owner's workers: stop when GitHub rate-limits, keeps timing
+/// out, or the survey cannot go on.
 #[derive(Default)]
 struct Stop {
     stopped: AtomicBool,
     rate_limited: AtomicBool,
     resets_at: Mutex<Option<Timestamp>>,
+    /// Requests that got an HTTP response.
+    responses: AtomicU32,
+    timeouts: AtomicUsize,
+    gave_up_on_timeouts: AtomicBool,
 }
 
 impl Stop {
@@ -154,6 +165,19 @@ impl Stop {
         }
     }
 
+    fn responded(&self) {
+        self.responses.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// One more request timed out; past the bound the remaining requests stop.
+    fn timed_out(&self) {
+        let timeouts = self.timeouts.fetch_add(1, Ordering::Relaxed) + 1;
+        if timeouts > MAX_TIMED_OUT_REQUESTS_PER_OWNER {
+            self.gave_up_on_timeouts.store(true, Ordering::Relaxed);
+            self.halt();
+        }
+    }
+
     fn rate_limit(&self) -> Option<SourceState> {
         self.rate_limited.load(Ordering::Relaxed).then(|| {
             SourceState::Partial(Incompleteness::RateLimited {
@@ -161,12 +185,47 @@ impl Stop {
             })
         })
     }
+
+    /// Why den stopped early, for the Owner's Runs: `None` if it didn't.
+    fn owner_state(&self) -> Option<SourceState> {
+        self.rate_limit().or_else(|| {
+            self.gave_up_on_timeouts.load(Ordering::Relaxed).then(|| {
+                SourceState::Partial(Incompleteness::PaginationStopped {
+                    pages_read: self.responses.load(Ordering::Relaxed),
+                    reason: format!(
+                        "more than {MAX_TIMED_OUT_REQUESTS_PER_OWNER} requests to GitHub timed out, so den stopped reading this Owner's Runs"
+                    ),
+                })
+            })
+        })
+    }
 }
 
+/// The Owner's REST side, with every request's outcome noted on [`Stop`].
+struct Watched<'a> {
+    rest: &'a dyn Rest,
+    stop: &'a Stop,
+}
+
+impl Rest for Watched<'_> {
+    fn get(&self, path: &str) -> Result<RestResponse, TransportError> {
+        let result = self.rest.get(path);
+        match &result {
+            Ok(_) => self.stop.responded(),
+            Err(TransportError::TimedOut { .. }) => self.stop.timed_out(),
+            Err(_) => {}
+        }
+        result
+    }
+}
+
+/// Reads the default-branch Runs of `repos`. `repo_list` is how completely the
+/// Owner's Repos were listed: Runs of Repos missing from the list weren't read.
 pub fn fetch(
     session: &Session<'_>,
     owner: &str,
     repos: &[Repo],
+    repo_list: &SourceState,
 ) -> Result<KindFetch<Run>, SurveyFailure> {
     let owner_source = Source::Owner {
         owner: owner.to_owned(),
@@ -194,6 +253,8 @@ pub fn fetch(
         })
         .collect();
     let stop = Stop::default();
+    let watched = Watched { rest, stop: &stop };
+    let rest: &dyn Rest = &watched;
     let mut progress: Vec<Progress> = targets.iter().map(|_| Progress::default()).collect();
 
     // Each phase spreads its requests over the same bounded pool, so one Repo
@@ -253,7 +314,7 @@ pub fn fetch(
 
     let mut out = KindFetch::default();
     for (target, repo) in targets.iter().zip(progress) {
-        // Not attempted: a rate limit stopped the Owner (recorded below).
+        // Not attempted: den stopped the Owner early (recorded below).
         if !repo.attempted {
             continue;
         }
@@ -268,11 +329,24 @@ pub fn fetch(
             });
         }
     }
+    let stopped = stop.owner_state().unwrap_or(SourceState::Complete);
     out.coverage.push(CoverageEntry {
         source: owner_source,
-        state: stop.rate_limit().unwrap_or(SourceState::Complete),
+        // On a tie the stop wins: a rate limit carries its reset time.
+        state: stopped.worst(runs_of_listed_repos_only(repo_list)),
     });
     Ok(out)
+}
+
+/// The Owner's Runs, as far as the list of Repos limits them.
+fn runs_of_listed_repos_only(repo_list: &SourceState) -> SourceState {
+    match repo_list {
+        SourceState::Failed { error } => SourceState::Failed {
+            error: format!("the Owner's Repos could not be listed, so no Runs were read: {error}"),
+        },
+        // Partial (with the list's own reason), not yet fetched, or complete.
+        other => other.clone(),
+    }
 }
 
 /// One Repo's Runs as the phases fill them in.
@@ -464,7 +538,14 @@ fn beyond_first_page(lost: SourceState, what: &str) -> SourceState {
 /// A Repo whose later requests were skipped because the Owner stopped.
 fn stopped_early(stop: &Stop) -> SourceState {
     stop.rate_limit().unwrap_or_else(|| {
-        stopped_after_first_page("den stopped reading this Repo's Runs early".to_owned())
+        stopped_after_first_page(
+            if stop.gave_up_on_timeouts.load(Ordering::Relaxed) {
+                "den stopped reading this Owner's Runs after repeated timeouts"
+            } else {
+                "den stopped reading this Repo's Runs early"
+            }
+            .to_owned(),
+        )
     })
 }
 

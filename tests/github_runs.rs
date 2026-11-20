@@ -15,7 +15,7 @@ use den::{
         facts::{Run, RunConclusion, RunStatus},
     },
     github::{
-        graphql::{GhCli, GraphQl, GraphQlRequest, GraphQlResponse, TransportError},
+        graphql::{GhCli, GraphQl, GraphQlError, GraphQlRequest, GraphQlResponse, TransportError},
         rest::{Rest, RestResponse},
         runs,
         session::{KindFetch, RateLimitMemo, Session},
@@ -32,20 +32,31 @@ use support::{
 
 const RESET_EPOCH_SECS: i64 = 1_795_136_400;
 
-type RestScript = dyn Fn(&str) -> RestResponse + Send + Sync;
+type RestScript = dyn Fn(&str) -> Result<RestResponse, TransportError> + Send + Sync;
 
 /// A transport with both sides: GraphQL answers the viewer and the Repo list
 /// (anything else gets empty data), REST answers from `script` by path.
 struct ScriptedGitHub {
     repos: Value,
+    /// An error GitHub sends alongside the Repo list's data.
+    repo_list_error: Option<GraphQlError>,
     script: Box<RestScript>,
     paths: Mutex<Vec<String>>,
 }
 
 impl ScriptedGitHub {
     fn new(repos: Value, script: impl Fn(&str) -> RestResponse + Send + Sync + 'static) -> Self {
+        Self::fallible(repos, move |path| Ok(script(path)))
+    }
+
+    /// REST answers that may be transport errors (no HTTP response at all).
+    fn fallible(
+        repos: Value,
+        script: impl Fn(&str) -> Result<RestResponse, TransportError> + Send + Sync + 'static,
+    ) -> Self {
         Self {
             repos,
+            repo_list_error: None,
             script: Box::new(script),
             paths: Mutex::default(),
         }
@@ -60,7 +71,12 @@ impl ScriptedGitHub {
 
 impl GraphQl for ScriptedGitHub {
     fn execute(&self, request: &GraphQlRequest) -> Result<GraphQlResponse, TransportError> {
-        Ok(data(match operation(request).as_str() {
+        let operation = operation(request);
+        let errors = match (operation.as_str(), &self.repo_list_error) {
+            ("OwnerRepos", Some(error)) => vec![error.clone()],
+            _ => Vec::new(),
+        };
+        let response = data(match operation.as_str() {
             "Viewer" => json!({ "viewer": { "login": "me" } }),
             "ViewerTeams" => json!({ "viewer": { "organizations": {
                 "pageInfo": { "hasNextPage": false }, "nodes": []
@@ -70,7 +86,8 @@ impl GraphQl for ScriptedGitHub {
             }}}),
             // Other kinds' queries: not this file's concern.
             _ => json!({}),
-        }))
+        });
+        Ok(GraphQlResponse { errors, ..response })
     }
 
     fn rest(&self) -> Option<&dyn Rest> {
@@ -81,7 +98,7 @@ impl GraphQl for ScriptedGitHub {
 impl Rest for ScriptedGitHub {
     fn get(&self, path: &str) -> Result<RestResponse, TransportError> {
         self.paths.lock().expect("lock").push(path.to_owned());
-        Ok((self.script)(path))
+        (self.script)(path)
     }
 }
 
@@ -168,8 +185,38 @@ fn repo(name: &str, default_branch: Option<&str>, archived: bool) -> Repo {
 }
 
 fn fetch(github: &ScriptedGitHub, repos: &[Repo]) -> Result<KindFetch<Run>, SurveyFailure> {
+    fetch_listed(github, repos, &SourceState::Complete)
+}
+
+/// `fetch`, with the Owner's Repos listed only as completely as `repo_list`.
+fn fetch_listed(
+    github: &ScriptedGitHub,
+    repos: &[Repo],
+    repo_list: &SourceState,
+) -> Result<KindFetch<Run>, SurveyFailure> {
     let memo = RateLimitMemo::default();
-    runs::fetch(&Session::new(github, &memo), "octo", repos)
+    runs::fetch(&Session::new(github, &memo), "octo", repos, repo_list)
+}
+
+fn owner_state(fetched: &KindFetch<Run>) -> &SourceState {
+    &fetched
+        .coverage
+        .iter()
+        .find(|e| e.source == owner_runs())
+        .expect("owner coverage")
+        .state
+}
+
+fn twenty_repos() -> Vec<Repo> {
+    (0..20)
+        .map(|i| repo(&format!("r{i}"), Some("main"), false))
+        .collect()
+}
+
+fn timed_out() -> TransportError {
+    TransportError::TimedOut {
+        after: Duration::from_secs(30),
+    }
 }
 
 fn owner_runs() -> Source {
@@ -475,6 +522,125 @@ fn a_rate_limit_marks_the_owners_runs_partial_with_the_reset_time() {
         github.paths().len() < repos.len(),
         "the remaining Repos are not requested once rate limited ({} requests)",
         github.paths().len()
+    );
+}
+
+#[test]
+fn ordinary_answers_never_stop_the_owners_other_repos() {
+    // Twenty Repos, more than the Owner's concurrent requests, so a fetcher
+    // that stopped the Owner after any answer (not only a rate limit) would
+    // leave some unread. This isolates the rate limit as what stops it.
+    let github = ScriptedGitHub::new(json!([]), |path| match path {
+        p if p.starts_with("repos/octo/r1/") || p.starts_with("repos/octo/r2/") => {
+            http(404, "Not Found")
+        }
+        p if p.starts_with("repos/octo/r3/") => http(502, "Server Error"),
+        _ => ok(runs_page(0, vec![])),
+    });
+    let repos = twenty_repos();
+    let fetched = fetch(&github, &repos).expect("fetch");
+    assert_eq!(
+        github.paths().len(),
+        repos.len(),
+        "every Repo read: {:?}",
+        github.paths()
+    );
+    assert_eq!(owner_state(&fetched), &SourceState::Complete);
+}
+
+#[test]
+fn a_few_timeouts_are_recorded_on_their_repos_and_the_rest_are_still_read() {
+    let slow: Vec<String> = (0..runs::MAX_TIMED_OUT_REQUESTS_PER_OWNER)
+        .map(|i| format!("repos/octo/r{i}/"))
+        .collect();
+    let github = ScriptedGitHub::fallible(json!([]), move |path| {
+        if slow.iter().any(|s| path.starts_with(s.as_str())) {
+            Err(timed_out())
+        } else {
+            Ok(ok(runs_page(0, vec![])))
+        }
+    });
+    let repos = twenty_repos();
+    let fetched = fetch(&github, &repos).expect("fetch");
+    assert_eq!(github.paths().len(), repos.len(), "{:?}", github.paths());
+    assert_eq!(owner_state(&fetched), &SourceState::Complete);
+    let r0 = fetched
+        .coverage
+        .iter()
+        .find(|e| e.source == repo_runs("r0"))
+        .expect("coverage for r0");
+    assert!(
+        matches!(&r0.state, SourceState::Failed { error } if error.contains("did not answer")),
+        "{:?}",
+        r0.state
+    );
+}
+
+#[test]
+fn repeated_timeouts_stop_the_owner_and_mark_its_runs_partial() {
+    let github = ScriptedGitHub::fallible(json!([]), |_| Err(timed_out()));
+    let repos = twenty_repos();
+    let fetched = fetch(&github, &repos).expect("fetch");
+    assert!(
+        github.paths().len() < repos.len(),
+        "the remaining Repos are not requested once GitHub keeps timing out ({} requests)",
+        github.paths().len()
+    );
+    assert!(
+        matches!(
+            owner_state(&fetched),
+            SourceState::Partial(Incompleteness::PaginationStopped { reason, .. }) if reason.contains("timed out")
+        ),
+        "{:?}",
+        owner_state(&fetched)
+    );
+}
+
+#[test]
+fn the_owners_runs_are_no_more_complete_than_its_repo_list() {
+    let github = ScriptedGitHub::new(json!([]), |_| ok(runs_page(0, vec![])));
+    let repos = [repo("r", Some("main"), false)];
+    let cut_short = SourceState::Partial(Incompleteness::PaginationStopped {
+        pages_read: 2,
+        reason: "page 3 failed".to_owned(),
+    });
+    let fetched = fetch_listed(&github, &repos, &cut_short).expect("fetch");
+    assert_eq!(
+        owner_state(&fetched),
+        &cut_short,
+        "Repos missing from the list had no Runs read"
+    );
+
+    let unlisted = SourceState::Failed {
+        error: "HTTP 502".to_owned(),
+    };
+    let fetched = fetch_listed(&github, &[], &unlisted).expect("fetch");
+    assert!(
+        matches!(owner_state(&fetched), SourceState::Failed { error } if error.contains("could not be listed") && error.contains("HTTP 502")),
+        "{:?}",
+        owner_state(&fetched)
+    );
+}
+
+#[test]
+fn the_survey_passes_the_repo_lists_coverage_to_the_owners_runs() {
+    let mut github = ScriptedGitHub::new(json!([repo_node("r", Some("main"), false)]), |_| {
+        ok(runs_page(0, vec![]))
+    });
+    github.repo_list_error = Some(GraphQlError {
+        message: "Something went wrong listing a repository".to_owned(),
+        kind: None,
+    });
+    let observation = survey(&github, &["octo".to_owned()], now()).expect("survey");
+    assert!(
+        matches!(
+            observation.coverage.get(&owner_runs()),
+            Some(SourceState::Partial(
+                Incompleteness::ErrorsAlongsideData { .. }
+            ))
+        ),
+        "{:?}",
+        observation.coverage.get(&owner_runs())
     );
 }
 
