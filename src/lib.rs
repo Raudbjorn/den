@@ -18,6 +18,7 @@ pub mod cache;
 pub mod config;
 pub mod decide;
 pub mod domain;
+pub mod files;
 pub mod github;
 pub mod layout;
 pub mod logging;

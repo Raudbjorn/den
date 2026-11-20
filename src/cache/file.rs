@@ -8,11 +8,10 @@
 //! afresh. It never crashes den, and is overwritten by the next good survey.
 
 use super::{CacheError, CachedObservation};
-use crate::ports::ObservationCache;
+use crate::{files, ports::ObservationCache};
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
-    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -28,11 +27,6 @@ const LAST_VIEWER_FILE: &str = "last-viewer";
 const CACHE_EXTENSION: &str = "json";
 /// GitHub's longest login, in characters.
 const MAX_LOGIN_CHARS: usize = 39;
-/// Owner-only read and write.
-#[cfg(unix)]
-const FILE_MODE: u32 = 0o600;
-#[cfg(unix)]
-const DIR_MODE: u32 = 0o700;
 
 #[derive(Serialize)]
 struct EnvelopeOut<'a> {
@@ -139,16 +133,7 @@ impl FileCache {
     }
 
     fn ensure_dir(&self) -> Result<(), CacheError> {
-        let mut builder = fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(DIR_MODE);
-        }
-        builder
-            .create(&self.dir)
-            .map_err(|e| write_error(&self.dir, &e))
+        files::ensure_private_dir(&self.dir).map_err(|e| write_error(&self.dir, &e))
     }
 }
 
@@ -195,29 +180,8 @@ impl ObservationCache for FileCache {
     }
 }
 
-/// Writes `body` to a temp file beside `path`, then renames it over `path`, so a
-/// crash mid-write never leaves a half-written cache.
 fn write_atomically(path: &Path, body: &[u8]) -> Result<(), CacheError> {
-    let temp = path.with_extension(format!("tmp-{}", std::process::id()));
-    let written = write_private(&temp, body).and_then(|()| fs::rename(&temp, path));
-    written.map_err(|e| {
-        // Best effort: the temp file is den's own and useless after a failure.
-        let _ = fs::remove_file(&temp);
-        write_error(path, &e)
-    })
-}
-
-fn write_private(path: &Path, body: &[u8]) -> io::Result<()> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(FILE_MODE);
-    }
-    let mut file = options.open(path)?;
-    file.write_all(body)?;
-    file.sync_all()
+    files::write_atomically(path, body).map_err(|e| write_error(path, &e))
 }
 
 fn read_error(path: &Path, error: &io::Error) -> CacheError {
