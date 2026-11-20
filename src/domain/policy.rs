@@ -6,7 +6,8 @@
 //! nothing: it is decided exactly as in milestone 1
 //! (`tests/decide_policies.rs`). A Linear Workflow's policy says which
 //! unassigned Linear Issues are offered to Start ([`StartPolicy`], #33), its
-//! review rules ([`ReviewPolicy`], #36) and its Held Repos (#36).
+//! review rules ([`ReviewPolicy`], #36), its Held Repos (#36), its release
+//! state (#37) and its landing order (#40).
 
 use super::{
     RepoId,
@@ -19,8 +20,7 @@ use super::{
 /// policy that changes no Decision: it offers no Start, has no review rules,
 /// holds no Repo and names no release state.
 ///
-/// Fields arrive with the tickets that use them; the landing order comes with
-/// #40.
+/// Fields arrive with the tickets that use them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LinearWorkflowPolicy {
     /// Which unassigned Linear Issues are offered to Start (#33). Offers
@@ -38,9 +38,20 @@ pub struct LinearWorkflowPolicy {
     /// with the issue's state name, ignoring case. `None` in the empty
     /// policy.
     pub release_state: Option<String>,
+    /// The Repos whose Landing Group members land first, in this order
+    /// (#40); every other member lands after them. Empty in the empty
+    /// policy, where no Linear Issue (and so no Land) exists.
+    pub landing_order: Vec<RepoId>,
 }
 
 impl LinearWorkflowPolicy {
+    /// Where `repo` comes in the landing order: its place in
+    /// [`Self::landing_order`], or `None` when it isn't listed (it lands
+    /// after every listed Repo). Compared as GitHub compares names.
+    pub fn landing_rank(&self, repo: &RepoId) -> Option<usize> {
+        self.landing_order.iter().position(|first| first.same(repo))
+    }
+
     /// Whether `repo` is a Held Repo (compared as GitHub compares names).
     pub fn holds(&self, repo: &RepoId) -> bool {
         self.held_repos.iter().any(|held| held.same(repo))
@@ -136,6 +147,7 @@ static EMPTY_POLICY: LinearWorkflowPolicy = LinearWorkflowPolicy {
     review: None,
     held_repos: Vec::new(),
     release_state: None,
+    landing_order: Vec::new(),
 };
 
 impl Policies {

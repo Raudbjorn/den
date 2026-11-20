@@ -31,11 +31,17 @@
 //! the user never edited follows the Decision's suggestions when a survey
 //! changes them.
 //!
+//! Land (#40): `c` on a Linear Issue whose Next Step is Land opens the Land
+//! sheet: the members to land in landing order (Repo, PR, head commit,
+//! checks) and the held members as "not landed: held". The Job is a
+//! coordination Job on the first member's head.
+//!
 //! `Enter` plans again from the current Decision. When a survey that landed
 //! while the sheet was open changed what decides the Job (its Next Step, and
-//! so its permission mode and prompt template; its reviewers; den's prompt),
-//! nothing is launched: the sheet shows the new plan, says what changed, and
-//! asks again (spec 0001, "Re-verification").
+//! so its permission mode and prompt template; its reviewers; a Landing
+//! Group's members, heads or held members; den's prompt), nothing is
+//! launched: the sheet shows the new plan, says what changed, and asks again
+//! (spec 0001, "Re-verification").
 
 use super::{
     App, Effect, Key, LogLevel, OverlayState,
@@ -245,8 +251,14 @@ impl App {
         let settings =
             LaunchSettings::from_config(self.config.as_ref().ok(), self.default_clone_root.clone());
         sheet.launch_refused = None;
-        let request = match handoff::inspect_request(decision, observation, sheet.choice, &settings)
-        {
+        let policy = self.policies.for_owner(sheet.item.owner());
+        let request = match handoff::inspect_request(
+            decision,
+            observation,
+            sheet.choice,
+            &settings,
+            policy,
+        ) {
             Ok(request) => Ok((
                 format!(
                     "launch sheet {} {what} for {}, targeting {}",
@@ -512,7 +524,13 @@ impl App {
                     self.config.as_ref().ok(),
                     self.default_clone_root.clone(),
                 );
-                handoff::inspect_request(decision, observation, sheet.choice, &settings)
+                handoff::inspect_request(
+                    decision,
+                    observation,
+                    sheet.choice,
+                    &settings,
+                    self.policies.for_owner(sheet.item.owner()),
+                )
             })
             .and_then(|request| {
                 live::fresh_suffix(view, &request.worktree_name, &request.branch)
@@ -651,6 +669,7 @@ impl App {
             fresh: sheet.fresh.as_ref().map(|(n, _)| *n),
             reviewers: chosen.as_deref(),
             slack_channel,
+            policy: self.policies.for_owner(sheet.item.owner()),
         })?;
         Ok(match &sheet.accepted_head {
             Some(commit) => plan.on_commit(commit),
@@ -841,6 +860,19 @@ fn what_changed(
         }
         (before, after) if before != after => {
             return Some("the announcement channel changed".to_owned());
+        }
+        _ => {}
+    }
+    // Land (#40): the members, their heads and the held members are what
+    // the user approved; any difference asks again.
+    match (&shown.landing, &now.landing) {
+        (Some(before), Some(after)) => {
+            if let Some(change) = after.change_from(before) {
+                return Some(change);
+            }
+        }
+        (before, after) if before != after => {
+            return Some("the Landing Group changed".to_owned());
         }
         _ => {}
     }

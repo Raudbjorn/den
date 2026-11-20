@@ -61,6 +61,15 @@ pub fn session_name(item: &WorkItemId, step: NextStep) -> String {
     )
 }
 
+/// The Claude Code session name for a Land Job (#40):
+/// `<owner>-<identifier>-land`, e.g. `acme-team-2-land`.
+pub fn landing_session_name(owner: &str, identifier: &str) -> String {
+    clean(
+        &format!("{owner}-{}-{}", slug(identifier), step_slug(NextStep::Land)),
+        MAX_SESSION_NAME_CHARS,
+    )
+}
+
 /// A workflow's file name without its folder and extension:
 /// `.github/workflows/ci.yml` → `ci`.
 fn workflow_stem(workflow: &str) -> &str {

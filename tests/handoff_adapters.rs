@@ -389,6 +389,7 @@ fn plan_for(clone: &Path, url: &str, head: &str) -> LaunchPlan {
         prompt: "/gh-resolve https://github.com/octo/app/pull/7".to_owned(),
         permission_mode: None,
         review_request: None,
+        landing: None,
         window: WindowMode::Kitty,
         command: String::new(),
     };

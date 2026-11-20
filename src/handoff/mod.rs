@@ -51,6 +51,15 @@
 //! gets no push line. A Request review plan also carries the reviewers chosen
 //! on the sheet ([`PlanInput::reviewers`], [`reviewers`]) and the Owner's
 //! Slack channel, both only in its prompt.
+//!
+//! Land (#40): `c` on a Linear Issue whose Next Step is Land plans a
+//! coordination Job for its Landing Group ([`landing`]): the open members
+//! outside Held Repos in landing order, each pinned to its head, with a
+//! worktree on the first member's head. The plan carries the group
+//! ([`LaunchPlan::landing`]); the executor re-reads every member's head from
+//! GitHub before it changes anything, and the Job record's subject is the
+//! Landing Group ([`crate::jobs::JobSubject::LandingGroup`]), which covers
+//! the Linear Issue and every landed member.
 
 pub mod clone;
 pub mod cloning;
@@ -58,6 +67,7 @@ pub mod command;
 mod execute;
 mod inspect;
 mod kinds;
+pub mod landing;
 pub mod live;
 pub mod names;
 mod plan;
@@ -70,6 +80,7 @@ pub use cloning::NewCloneView;
 pub use command::{PermissionMode, SessionStart, WindowCommand, WindowMode};
 pub use execute::{LaunchOutcome, LaunchReport, LaunchStep, execute};
 pub use inspect::{ChosenClone, CloneSearch, InspectRequest, WorkspaceView, inspect};
+pub use landing::{HeldMember, LandingGroupPlan, LandingMember};
 pub use live::{JobCheck, JobsCheck, ReopenPlan, WorktreeState};
 pub use plan::{LaunchSettings, PlanInput, inspect_request, plan};
 pub use refusal::{Refusal, RefusalReason};
@@ -181,7 +192,8 @@ impl TargetChoice {
         match item {
             WorkItemId::PullRequest { .. } | WorkItemId::Branch { .. } => Self::OwnRepo,
             WorkItemId::Issue { .. } | WorkItemId::Run { .. } => fork_setting,
-            // Not launchable yet (#38); the sheet refuses before any target matters.
+            // No Repo of its own: a Land Job targets its first member's Repo
+            // (#40); Start and Implement aren't launchable yet (#38).
             WorkItemId::LinearIssue { .. } => Self::OwnRepo,
         }
     }
@@ -315,6 +327,9 @@ pub struct LaunchPlan {
     pub permission_mode: Option<PermissionMode>,
     /// Request review only: whom the prompt asks, and where it announces.
     pub review_request: Option<ReviewRequest>,
+    /// Land only (#40): the members the Job lands, in order, pinned to their
+    /// heads, and the held members it leaves alone.
+    pub landing: Option<LandingGroupPlan>,
     pub window: WindowMode,
     /// The exact command, as shown on the sheet.
     pub command: String,
@@ -370,6 +385,15 @@ pub fn check_prompt(prompt: &str) -> Result<(), PromptProblem> {
 }
 
 impl LaunchPlan {
+    /// What the Job's record is for: the Landing Group for a Land Job, the
+    /// Work Item otherwise.
+    pub fn subject(&self) -> crate::jobs::JobSubject {
+        match &self.landing {
+            Some(group) => crate::jobs::JobSubject::LandingGroup(group.subject()),
+            None => crate::jobs::JobSubject::GitHub(self.work_item.clone()),
+        }
+    }
+
     /// What the Job's window runs.
     pub fn window_command(&self) -> WindowCommand {
         WindowCommand {

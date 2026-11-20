@@ -19,6 +19,14 @@
 //! separate-outcomes and no-blind-resend rules; without one, it only asks for
 //! the request's outcome, so the prompt has no announcement step. den never
 //! touches Slack: the channel is an opaque string in the prompt.
+//!
+//! `land` alone has `{members}` (the members to land, in landing order, each
+//! as its URL and full head commit), which it must use, and `{held}` (the
+//! held members' URLs after a colon, or nothing) (#40). The default tells the
+//! Job to merge each member pinned to its head, wait for an observed merge
+//! before the next, stop at the first failure or unexpected state, report
+//! each member as merged, queued, failed or not attempted, and never merge a
+//! held member, undo a merge or touch another Pull Request.
 
 use crate::config::{Location, location_of};
 use crate::domain::NextStep;
@@ -37,6 +45,8 @@ pub const MAX_TEMPLATE_CHARS: usize = 4_000;
 const PLACEHOLDERS: [&str; 5] = ["repo", "number", "url", "title", "branch"];
 /// Placeholders only the Request review template has (#39).
 const REQUEST_REVIEW_PLACEHOLDERS: [&str; 2] = ["reviewers", "announcement"];
+/// Placeholders only the Land template has (#40).
+const LAND_PLACEHOLDERS: [&str; 2] = ["members", "held"];
 
 /// The file's key for a Next Step kind: "Address review" → `address_review`.
 pub fn step_key(step: NextStep) -> String {
@@ -70,13 +80,15 @@ pub fn default_template(step: NextStep) -> &'static str {
         }
         // Milestone 2 (spec 0002, "Prompts"). Start launches an Implement
         // Job (#38); Request review (#39) and Land (#40) are coordination
-        // Jobs; Land's full prompt arrives with #40; Mark for release is a
-        // Linear write den makes itself, never a Job (#38).
+        // Jobs; Mark for release is a Linear write den makes itself, never a
+        // Job (#38).
         NextStep::Start => "/implement {url}",
         NextStep::RequestReview => {
             "Pull Request {repo}#{number} ({url}) needs review. Request reviews on GitHub from exactly these reviewers: {reviewers}. Change nothing else on the Pull Request.{announcement}"
         }
-        NextStep::Land => "Landing Group {url} is ready to land. Ask me before merging anything.",
+        NextStep::Land => {
+            "Land the Landing Group of Linear Issue {url}. Merge exactly these Pull Requests, one at a time and in this order, each pinned to its approved head commit (gh pr merge --match-head-commit <commit>): {members}. Before merging the next one, wait until GitHub shows the previous one as merged: queued in a merge queue or set to auto-merge is not merged. Stop at the first failure or anything unexpected, such as a head that moved, a failing check or a state you didn't expect, and merge nothing more. Never merge a Pull Request in a Held Repo{held}. Never undo or revert a merge, and never change any other Pull Request. When you stop or finish, report each Pull Request above as merged, queued, failed (with the error) or not attempted."
+        }
         NextStep::MarkForRelease => {
             "Linear Issue {url} can move to its release state. den makes this change itself; do nothing remote."
         }
@@ -93,6 +105,16 @@ The announcement is best-effort: if it fails, the review request still stands. \
 Report the two as separate outcomes: the review request (done or failed, with the error), and the announcement (sent, failed, or unknown when you can't tell whether it went out). \
 If you aren't sure an announcement went out, don't send it again: report it as unknown."
     )
+}
+
+/// What `{members}` is: `1. <url> at <commit>; 2. <url> at <commit>`.
+fn members_list(members: &[(String, String)]) -> String {
+    members
+        .iter()
+        .enumerate()
+        .map(|(i, (url, head))| format!("{}. {url} at {head}", i + 1))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// What `{announcement}` is without a Slack channel: no announcement step,
@@ -112,6 +134,10 @@ pub struct PromptFields {
     pub reviewers: Vec<String>,
     /// Request review only: the Owner's Slack channel, opaque.
     pub slack_channel: Option<String>,
+    /// Land only: the members to land, in order, as (URL, full head commit).
+    pub landing_members: Vec<(String, String)>,
+    /// Land only: the held members' URLs.
+    pub held_members: Vec<String>,
 }
 
 /// A template per Next Step kind.
@@ -216,14 +242,9 @@ pub fn parse(path: &Path, text: &str) -> Result<Prompts, PromptsError> {
 /// Checks every `{…}` in `step`'s `template` is a placeholder it has, and
 /// that it uses every placeholder `step` needs ([`required_placeholders`]).
 fn check(template: &str, step: NextStep) -> Result<(), String> {
-    let only_request_review: &[&str] = if step == NextStep::RequestReview {
-        &REQUEST_REVIEW_PLACEHOLDERS
-    } else {
-        &[]
-    };
     let usable: Vec<&str> = PLACEHOLDERS
         .iter()
-        .chain(only_request_review)
+        .chain(own_placeholders(step))
         .copied()
         .collect();
     let mut used: Vec<String> = Vec::new();
@@ -239,11 +260,13 @@ fn check(template: &str, step: NextStep) -> Result<(), String> {
             '{' => {
                 let name: String = chars.by_ref().take_while(|&c| c != '}').collect();
                 if !usable.contains(&name.as_str()) {
-                    let kind = if REQUEST_REVIEW_PLACEHOLDERS.contains(&name.as_str()) {
-                        "the request_review-only"
-                    } else {
-                        "unknown"
-                    };
+                    let kind = [NextStep::RequestReview, NextStep::Land]
+                        .into_iter()
+                        .find(|&owner| own_placeholders(owner).contains(&name.as_str()))
+                        .map_or_else(
+                            || "unknown".to_owned(),
+                            |owner| format!("the {}-only", step_key(owner)),
+                        );
                     return Err(format!(
                         "{kind} placeholder {{{name}}}; use {}",
                         spelled(&usable)
@@ -267,11 +290,22 @@ fn check(template: &str, step: NextStep) -> Result<(), String> {
     }
 }
 
+/// The placeholders only `step`'s template has, besides everyone's.
+fn own_placeholders(step: NextStep) -> &'static [&'static str] {
+    match step {
+        NextStep::RequestReview => &REQUEST_REVIEW_PLACEHOLDERS,
+        NextStep::Land => &LAND_PLACEHOLDERS,
+        _ => &[],
+    }
+}
+
 /// The placeholders `step`'s template must use: a Request review Job learns
-/// whom to ask only from `{reviewers}`, the list chosen on the sheet.
+/// whom to ask only from `{reviewers}`, the list chosen on the sheet; a Land
+/// Job what to merge, and at which heads, only from `{members}`.
 fn required_placeholders(step: NextStep) -> &'static [&'static str] {
     match step {
         NextStep::RequestReview => &["reviewers"],
+        NextStep::Land => &["members"],
         _ => &[],
     }
 }
@@ -313,6 +347,11 @@ fn fill(template: &str, fields: &PromptFields) -> String {
                         Some(channel) => out.push_str(&announcement_step(channel)),
                         None => out.push_str(NO_ANNOUNCEMENT),
                     },
+                    "members" => out.push_str(&members_list(&fields.landing_members)),
+                    "held" if !fields.held_members.is_empty() => {
+                        out.push_str(": ");
+                        out.push_str(&fields.held_members.join(", "));
+                    }
                     _ => {}
                 }
             }
