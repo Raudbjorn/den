@@ -6,9 +6,11 @@
 
 pub mod issue;
 pub mod pull_request;
+pub mod run;
 
 pub use issue::{IssueBuilder, issue};
 pub use pull_request::{PrBuilder, pr};
+pub use run::{RunBuilder, run};
 
 use den::domain::{Observation, Repo, RepoId, Source, SourceKind, SourceState, TeamRef, Viewer};
 use jiff::Timestamp;
@@ -137,6 +139,11 @@ impl ObservationBuilder {
 
     pub fn pull_request(mut self, pr: PrBuilder) -> Self {
         self.observation.pull_requests.push(pr.build());
+        self
+    }
+
+    pub fn run(mut self, run: RunBuilder) -> Self {
+        self.observation.runs.push(run.build());
         self
     }
 

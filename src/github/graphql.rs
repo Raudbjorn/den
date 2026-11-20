@@ -5,6 +5,7 @@
 //! GraphQL body: then stderr says whether `gh` is logged out, rate limited, or
 //! something else failed.
 
+use super::rest::Rest;
 use crate::process::{self, ProcessError};
 use serde::Deserialize;
 use serde_json::Value;
@@ -70,13 +71,20 @@ pub enum TransportError {
 /// Executes GraphQL requests. The real one is [`GhCli`]; tests use canned responses.
 pub trait GraphQl: Send + Sync {
     fn execute(&self, request: &GraphQlRequest) -> Result<GraphQlResponse, TransportError>;
+
+    /// REST through the same CLI, for facts GraphQL lacks (workflow Runs; see
+    /// `rest.rs`). `None` when this transport has no REST (GraphQL-only test
+    /// scripts): sources that need it are then recorded as not yet fetched.
+    fn rest(&self) -> Option<&dyn Rest> {
+        None
+    }
 }
 
 /// `gh api graphql --input -`, with the request body on stdin.
 #[derive(Debug, Clone)]
 pub struct GhCli {
-    program: OsString,
-    timeout: Duration,
+    pub(super) program: OsString,
+    pub(super) timeout: Duration,
 }
 
 impl GhCli {
@@ -133,6 +141,10 @@ impl GraphQl for GhCli {
             "gh api graphql"
         );
         result
+    }
+
+    fn rest(&self) -> Option<&dyn Rest> {
+        Some(self)
     }
 }
 

@@ -55,7 +55,7 @@ responsive while `gh` runs; `den --dump COLSxROWS` and the tests use
 | #4 PR rules, Explanation, Waiting On | `domain/facts/pull_request.rs` (mergeability, checks, reviews, queue), `github/queries/pull_request_facts.graphql` + `github/pull_requests.rs`, `decide/pull_request.rs`, `tests/support/build/pull_request.rs`, its seam-1 deck. |
 | #5 Issues | `domain/facts/issue.rs`, `github/issues.rs` + query, `decide/issue.rs`, `tests/support/build/issue.rs` + `ObservationBuilder::issue`. |
 | #6 Branches | Same pattern: `facts/branch.rs`, `github/branches.rs`, `decide/branch.rs` (`STALE_BRANCH_AGE_DAYS` there). |
-| #7 Runs | Same pattern: `facts/run.rs`, `github/runs.rs`, `decide/run.rs` (per-workflow latest attempt). |
+| #7 Runs | Same pattern: `facts/run.rs`, `github/runs.rs`, `decide/run.rs` (per-workflow latest attempt). Runs come from REST, not GraphQL: `github/rest.rs` (`Rest` trait, `gh api -i` with real HTTP status and rate-limit headers), reached through `GraphQl::rest()` / `Session::rest()`; a transport without REST leaves Runs not yet fetched. |
 | #8 cache, refresh, coverage display, empty states | New `cache` module + port; `r` key and refresh Effects in `app/mod.rs`; `app/view/header.rs` and `app/view/list.rs` (empty states); Detail coverage lines. |
 | #9 sidebar, Scope, ordering | `ordering.rs` (kind order, `Scope`, `in_scope`); Scope state, sidebar focus, cursor and rows + their keys in `app/scope.rs` (the App routes keys there first); `app/view/sidebar.rs` and `app/view/scope.rs`; `ui/sidebar.rs` and its template. |
 | #10 layout and the bear | `ui/frame.rs` (widths, narrow < 110 cols), an `Overlay::DetailSheet` variant, a `Resized` event, bear rendering in `ui/`. |
