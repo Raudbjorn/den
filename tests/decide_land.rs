@@ -716,3 +716,28 @@ fn a_member_reported_open_again_blocks_mark_for_release_and_land() {
     let decisions = decide_all(&held_reopened, &acme());
     assert_eq!(linear(&decisions, "TEAM-1").next_step, Some(NextStep::Land));
 }
+
+/// A held member never blocks Land, ambiguous or not: TEAM-1's Land would
+/// never land it. It is listed as held, and its ambiguity is still said.
+#[test]
+fn an_ambiguous_held_member_does_not_block_land() {
+    let observation = acme_owner()
+        .pull_request(ready("acme/api", 4))
+        .pull_request(ready("acme/web", 3))
+        .linear_issue(
+            linear_issue("acme", "id-1", "TEAM-1")
+                .attached("acme/web", 3)
+                .attached("acme/api", 4),
+        )
+        .linear_issue(linear_issue("acme", "id-2", "TEAM-2").attached("acme/web", 3))
+        .build();
+    let decisions = decide_all(&observation, &acme());
+    let issue = linear(&decisions, "TEAM-1");
+    assert_eq!(issue.next_step, Some(NextStep::Land), "{}", said(issue));
+    assert_says(
+        issue,
+        &[
+            "held; not blocking: acme/web #3 (Held Repo acme/web; held for release; ambiguous, also attached to TEAM-2)",
+        ],
+    );
+}

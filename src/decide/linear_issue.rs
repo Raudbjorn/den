@@ -22,8 +22,9 @@
 //!    Next Step: its Pull Requests carry the work, and the Explanation names
 //!    each blocking member with its own Next Step or reason, and each held
 //!    member as "held; not blocking". A held member never blocks (its own row
-//!    keeps its repair steps), but at least one member outside Held Repos
-//!    must be open for there to be anything to land.
+//!    keeps its repair steps), ambiguous or not, except in a merge queue (no
+//!    member may be queued); but at least one member outside Held Repos must
+//!    be open for there to be anything to land.
 //! 2. No open members:
 //!    - attachments not read completely, or a member den can't see → no
 //!      Next Step: den couldn't establish whether a Pull Request exists;
@@ -359,13 +360,10 @@ fn blocking_reasons(
             return reasons;
         }
     }
-    if member.ambiguous() {
-        let others: Vec<&str> = member
-            .also_attached_to
-            .iter()
-            .map(|g| g.identifier.as_str())
-            .collect();
-        reasons.push(format!("ambiguous, also attached to {}", others.join(", ")));
+    // A held member is never landed, so its ambiguity doesn't block; only
+    // the merge queue holds for every member (rule 1: none is queued).
+    if !held && let Some(ambiguity) = member.ambiguity() {
+        reasons.push(ambiguity);
     }
     let queued = ctx
         .observation
@@ -427,8 +425,12 @@ fn held_line(member: &Member, own: Option<&Decision>) -> String {
         },
         None => "its Decision isn't known".to_owned(),
     };
+    let ambiguity = member
+        .ambiguity()
+        .map(|a| format!("; {a}"))
+        .unwrap_or_default();
     format!(
-        "held; not blocking: {} (Held Repo {}; {own_step})",
+        "held; not blocking: {} (Held Repo {}; {own_step}{ambiguity})",
         member.reference(),
         member.pr.repo
     )
