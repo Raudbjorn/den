@@ -29,7 +29,7 @@
 use super::{Location, location_of};
 use crate::domain::{
     LinearSourceKind, LinearWorkflowPolicy, RepoId, ReviewPolicy, StartPolicy, TeamRef,
-    ids::{is_valid_login, is_valid_repo_name},
+    ids::{is_valid_login, is_valid_repo_name, is_valid_team_slug},
 };
 use serde::Deserialize;
 use std::{collections::BTreeMap, ops::Range};
@@ -41,8 +41,6 @@ const MAX_WORKSPACE_CHARS: usize = 64;
 const MAX_ENV_NAME_CHARS: usize = 128;
 /// den's bound on a Linear team key, in characters.
 const MAX_TEAM_KEY_CHARS: usize = 32;
-/// den's bound on a team slug, in characters.
-const MAX_TEAM_SLUG_CHARS: usize = 100;
 /// den's bound on a state name or Slack channel, in characters.
 const MAX_SETTING_CHARS: usize = 100;
 
@@ -392,11 +390,7 @@ fn reviewer(value: Spanned<String>) -> Result<Reviewer, Invalid> {
         None if is_valid_login(&value) => Ok(Reviewer::User(value.clone())),
         None => Err(invalid()),
         Some((org, slug)) => {
-            let slug_ok = (1..=MAX_TEAM_SLUG_CHARS).contains(&slug.chars().count())
-                && slug
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
-            if is_valid_login(org) && slug_ok {
+            if is_valid_login(org) && is_valid_team_slug(slug) {
                 Ok(Reviewer::Team(TeamRef {
                     org: org.to_owned(),
                     slug: slug.to_owned(),

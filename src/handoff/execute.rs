@@ -211,6 +211,7 @@ fn run(
         branch: plan.branch.name.clone(),
         session: plan.session.clone(),
         launched_at: now,
+        permission_mode: plan.permission_mode,
     };
     if let Err(e) = jobs.record(&job) {
         return failed(LaunchStep::RecordJob, e.to_string());

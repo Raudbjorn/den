@@ -80,6 +80,8 @@ fn harness_with(extra: Vec<LinearIssue>) -> Harness {
         branch: "feature-7".to_owned(),
         session: "app-pr7-address-review".to_owned(),
         launched_at: now(),
+        // A coding Job: no permission mode (#39).
+        permission_mode: None,
     });
     harness.workspace.add_existing(WORKTREE_7);
     harness

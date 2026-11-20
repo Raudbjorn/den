@@ -35,6 +35,7 @@ fn window() -> WindowCommand {
         session: "app-pr7-address-review".to_owned(),
         prompt: "/gh-resolve https://github.com/octo/app/pull/7 — it's fine".to_owned(),
         start: SessionStart::New,
+        permission_mode: None,
     }
 }
 
@@ -386,6 +387,8 @@ fn plan_for(clone: &Path, url: &str, head: &str) -> LaunchPlan {
         renamed: None,
         session: "app-pr7-address-review".to_owned(),
         prompt: "/gh-resolve https://github.com/octo/app/pull/7".to_owned(),
+        permission_mode: None,
+        review_request: None,
         window: WindowMode::Kitty,
         command: String::new(),
     };
@@ -539,6 +542,7 @@ fn job_records_are_appended_and_an_unreadable_file_is_never_overwritten() {
         branch: format!("b{n}"),
         session: format!("s{n}"),
         launched_at: "2026-11-20T10:00:00Z".parse().unwrap(),
+        permission_mode: None,
     };
     store.record(&job(1)).unwrap();
     store.record(&job(2)).unwrap();
@@ -634,6 +638,7 @@ fn dens_appending_job_records_at_once_keep_every_record() {
         branch: format!("b{n}"),
         session: format!("s{n}"),
         launched_at: "2026-11-20T10:00:00Z".parse().unwrap(),
+        permission_mode: None,
     };
     // Each writer has its own store and its own lock file handle, as two den
     // processes would.
@@ -718,6 +723,7 @@ fn a_record_that_exceeds_the_read_limit_keeps_the_existing_history_readable() {
         branch: "feature".into(),
         session: String::new(),
         launched_at: "2026-11-20T10:00:00Z".parse().unwrap(),
+        permission_mode: None,
     };
     let overhead =
         serde_json::to_vec_pretty(&serde_json::json!({"format": JOBS_FORMAT, "jobs": [&job]}))

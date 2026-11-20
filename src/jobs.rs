@@ -6,16 +6,20 @@
 //!
 //! Format 2 (milestone 2) names a Job's [`JobSubject`] instead of a GitHub
 //! Work Item. A format-1 file (milestone 1) still loads: each of its records
-//! becomes a [`JobSubject::GitHub`] record. The next append writes the whole
-//! file as format 2, keeping every earlier record.
+//! becomes a [`JobSubject::GitHub`] record. Format 3 (#39) adds a record's
+//! optional `permission_mode`; a format-2 file loads as is, its records
+//! without one. The next append writes the whole file in the current format,
+//! keeping every earlier record.
 //!
 //! A file from a newer den (a format above [`JOBS_FORMAT`]) is refused as such,
 //! never half-read and never overwritten: an older den can't tell what it would
-//! lose. So every new [`JobSubject`] variant bumps [`JOBS_FORMAT`].
+//! lose. So every new [`JobSubject`] variant, and every new record field an
+//! older den would drop, bumps [`JOBS_FORMAT`].
 
 use crate::{
     domain::{NextStep, RepoId, WorkItemId},
     files::{self, BoundedReadError},
+    handoff::{PermissionMode, coordination_mode},
     ports::JobStore,
 };
 use jiff::Timestamp;
@@ -38,9 +42,15 @@ pub const JOBS_FILE: &str = "jobs.json";
 ///
 /// 1: milestone 1, a record's subject is a GitHub Work Item (`work_item`).
 /// 2: a record's subject is a [`JobSubject`] (`subject`).
-pub const JOBS_FORMAT: u32 = 2;
+/// 3: a record may carry its `permission_mode` (#39). A den of format 2 would
+///    read the file, ignore the mode and drop it on its next append; at 3 it
+///    refuses the file instead.
+pub const JOBS_FORMAT: u32 = 3;
 /// Milestone 1's format, still read and converted on load.
 const JOBS_FORMAT_GITHUB_ONLY: u32 = 1;
+/// Format 2: the current record without `permission_mode`, which decodes as
+/// absent, so it is read as the current format is.
+const JOBS_FORMAT_NO_PERMISSION_MODE: u32 = 2;
 /// The largest Job records file den will read or write, in bytes.
 pub const MAX_JOBS_BYTES: u64 = 8 * 1024 * 1024;
 /// The lock file held while a record is appended, beside the records file.
@@ -109,6 +119,23 @@ pub struct JobRecord {
     /// The Claude Code session name (`claude -n`).
     pub session: String,
     pub launched_at: Timestamp,
+    /// The permission mode the Job was launched in (#39). Absent for coding
+    /// Jobs and in older records, so the stored shape of those is unchanged.
+    /// Reopening reads [`JobRecord::reopen_mode`], never this alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<PermissionMode>,
+}
+
+impl JobRecord {
+    /// The permission mode reopening the Job passes: the recorded one, else
+    /// the mode a Job for its Next Step launches in ([`coordination_mode`]).
+    /// A den from before #39 also reads format 2, ignores `permission_mode`
+    /// and drops it when it rewrites the file, so the record alone could
+    /// reopen a coordination Job with no mode at all: this fails safe instead.
+    pub fn reopen_mode(&self) -> Option<PermissionMode> {
+        self.permission_mode
+            .or_else(|| coordination_mode(self.next_step))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -177,6 +204,7 @@ impl From<GitHubOnlyRecord> for JobRecord {
             branch: old.branch,
             session: old.session,
             launched_at: old.launched_at,
+            permission_mode: None,
         }
     }
 }
@@ -234,9 +262,11 @@ impl JobStore for FileJobStore {
             .map_err(|e| self.read_error(e))?
             .format;
         match format {
-            JOBS_FORMAT => serde_json::from_slice::<Envelope>(&bytes)
-                .map(|e| e.jobs)
-                .map_err(|e| self.read_error(e)),
+            JOBS_FORMAT | JOBS_FORMAT_NO_PERMISSION_MODE => {
+                serde_json::from_slice::<Envelope>(&bytes)
+                    .map(|e| e.jobs)
+                    .map_err(|e| self.read_error(e))
+            }
             JOBS_FORMAT_GITHUB_ONLY => serde_json::from_slice::<GitHubOnlyEnvelope>(&bytes)
                 .map(|e| e.jobs.into_iter().map(JobRecord::from).collect())
                 .map_err(|e| self.read_error(e)),

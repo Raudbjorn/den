@@ -290,6 +290,9 @@ pub struct LaunchSheet {
     pub headline: String,
     /// Target, Main Clone, remote, base, branch, worktree, session, window.
     pub fields: Vec<SheetField>,
+    /// Request review (#39): the reviewers the Job will ask, editable in
+    /// place (`r`); `None` on any other sheet.
+    pub reviewers: Option<PromptField>,
     /// The prompt, editable in place; `None` until there is a plan.
     pub prompt: Option<PromptField>,
     /// The exact command; `None` until there is a plan.

@@ -1,13 +1,18 @@
 //! The Job records file across formats (thin adapter checks in a temp
 //! directory): a file milestone 1 wrote (format 1, a GitHub Work Item per
 //! record) still loads, each record's subject a GitHub Work Item, and the next
-//! append keeps every earlier record and writes the current format.
+//! append keeps every earlier record and writes the current format. A
+//! coordination Job's permission mode (#39) reads back; a coding Job's record
+//! has no such key. Format 3 adds that key, so a den reading only format 2
+//! refuses the file instead of dropping the mode when it rewrites it; a
+//! format-2 file still loads.
 
 // Test code: helpers outside #[test] fns may fail loudly too (clippy.toml covers only #[test]).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use den::{
     domain::{NextStep, RepoId, WorkItemId},
+    handoff::PermissionMode,
     jobs::{
         FileJobStore, JOBS_FILE, JOBS_FORMAT, JobRecord, JobStoreError, JobSubject, MAX_JOBS_BYTES,
     },
@@ -101,6 +106,79 @@ fn a_subject_reads_back_as_written() {
         store.record(record).unwrap();
     }
     assert_eq!(store.load().unwrap(), records);
+}
+
+#[test]
+fn a_coordination_jobs_permission_mode_reads_back_and_a_coding_jobs_record_has_none() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = FileJobStore::in_state_dir(temp.path());
+    let coding = store_record();
+    let coordination = JobRecord {
+        next_step: NextStep::RequestReview,
+        permission_mode: Some(PermissionMode::ApprovalRequired),
+        ..store_record()
+    };
+    store.record(&coding).unwrap();
+    store.record(&coordination).unwrap();
+    assert_eq!(store.load().unwrap(), [coding, coordination]);
+    let body: serde_json::Value = serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+    assert_eq!(format_of(&store), u64::from(JOBS_FORMAT));
+    assert!(body["jobs"][0].get("permission_mode").is_none(), "{body}");
+    assert_eq!(body["jobs"][1]["permission_mode"], "ApprovalRequired");
+}
+
+/// Format 2 is the format before `permission_mode`: the format an older den
+/// writes and reads. A file carrying a mode must be above it, or that den
+/// would read it, ignore the mode and drop it on its next append.
+const FORMAT_WITHOUT_PERMISSION_MODE: u64 = 2;
+
+#[test]
+fn a_file_with_a_permission_mode_is_a_format_an_older_den_refuses() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = FileJobStore::in_state_dir(temp.path());
+    store
+        .record(&JobRecord {
+            next_step: NextStep::RequestReview,
+            permission_mode: Some(PermissionMode::ApprovalRequired),
+            ..store_record()
+        })
+        .unwrap();
+    assert!(
+        format_of(&store) > FORMAT_WITHOUT_PERMISSION_MODE,
+        "format {}",
+        format_of(&store)
+    );
+}
+
+#[test]
+fn a_format_2_file_loads_and_the_next_append_writes_the_current_format() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = FileJobStore::in_state_dir(temp.path());
+    // A file as a den before #39 wrote it: format 2, no `permission_mode`.
+    let earlier = JobRecord {
+        next_step: NextStep::RequestReview,
+        ..store_record()
+    };
+    let body = serde_json::json!({
+        "format": FORMAT_WITHOUT_PERMISSION_MODE,
+        "jobs": [serde_json::to_value(&earlier).unwrap()],
+    });
+    assert!(body["jobs"][0].get("permission_mode").is_none(), "{body}");
+    fs::write(store.path(), serde_json::to_vec(&body).unwrap()).unwrap();
+    assert_eq!(store.load().unwrap(), std::slice::from_ref(&earlier));
+    assert_eq!(
+        earlier.reopen_mode(),
+        Some(PermissionMode::ApprovalRequired),
+        "a record from before the field reopens in its Next Step's mode"
+    );
+
+    let new = JobRecord {
+        permission_mode: Some(PermissionMode::ApprovalRequired),
+        ..store_record()
+    };
+    store.record(&new).unwrap();
+    assert_eq!(format_of(&store), u64::from(JOBS_FORMAT));
+    assert_eq!(store.load().unwrap(), [earlier, new]);
 }
 
 /// A file from a newer den is refused as one, naming every format this den
@@ -279,5 +357,6 @@ fn store_record() -> JobRecord {
         branch: "feature-x".to_owned(),
         session: "app-feature-x-open-pr".to_owned(),
         launched_at: jiff::Timestamp::UNIX_EPOCH,
+        permission_mode: None,
     }
 }
