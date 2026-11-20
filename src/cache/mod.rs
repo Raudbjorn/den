@@ -160,6 +160,15 @@ pub enum CacheError {
     },
     #[error("cannot write the cache {}: {detail}", path.display())]
     Write { path: PathBuf, detail: String },
+    #[error(
+        "did not replace the cache {}: it holds a newer survey ({stored}) than this one ({offered})",
+        path.display()
+    )]
+    Superseded {
+        path: PathBuf,
+        stored: Timestamp,
+        offered: Timestamp,
+    },
     #[error("{login:?} is not a GitHub login den can name a cache file after")]
     BadViewer { login: String },
 }

@@ -120,12 +120,104 @@ fn another_format_version_is_refused() {
 #[test]
 fn an_oversized_cache_is_not_read() {
     let dir = tempfile::tempdir().unwrap();
+    // Written by a cache with the default bound: the small one now refuses to
+    // write what it could not read back (see the next test).
+    FileCache::in_state_dir(dir.path())
+        .store(&cached("me", 1))
+        .unwrap();
     let small = FileCache::in_state_dir(dir.path()).with_max_bytes(64);
-    small.store(&cached("me", 1)).unwrap();
     assert!(matches!(
         small.load(),
         Err(CacheError::TooLarge { limit: 64, .. })
     ));
+}
+
+#[test]
+fn an_observation_too_large_to_read_back_is_not_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let small = FileCache::in_state_dir(dir.path()).with_max_bytes(64);
+    assert!(matches!(
+        small.store(&cached("me", 1)),
+        Err(CacheError::TooLarge { limit: 64, .. })
+    ));
+    assert!(!small.file_for("me").unwrap().exists());
+}
+
+#[test]
+fn an_older_survey_never_replaces_a_newer_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCache::in_state_dir(dir.path());
+    let at = |time: &str, number: u64| {
+        let mut c = cached("me", number);
+        c.observation.observed_at = ts(time);
+        c
+    };
+    let newer = at("2026-11-19T11:00:00Z", 2);
+    cache.store(&newer).unwrap();
+    assert!(matches!(
+        cache.store(&at("2026-11-19T10:00:00Z", 1)),
+        Err(CacheError::Superseded { stored, offered, .. })
+            if stored == ts("2026-11-19T11:00:00Z") && offered == ts("2026-11-19T10:00:00Z")
+    ));
+    assert_eq!(cache.load(), Ok(Some(newer)));
+    let newest = at("2026-11-19T12:00:00Z", 3);
+    cache.store(&newest).unwrap();
+    assert_eq!(cache.load(), Ok(Some(newest)));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_cache_file_that_is_not_a_regular_file_is_refused_not_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCache::in_state_dir(dir.path());
+    fs::create_dir_all(cache.dir()).unwrap();
+    // /dev/zero never ends: reading it whole would exhaust memory.
+    std::os::unix::fs::symlink("/dev/zero", cache.dir().join("last-viewer")).unwrap();
+    assert!(matches!(cache.load(), Err(CacheError::Read { .. })));
+
+    fs::remove_file(cache.dir().join("last-viewer")).unwrap();
+    fs::write(cache.dir().join("last-viewer"), "me").unwrap();
+    std::os::unix::fs::symlink("/dev/zero", cache.file_for("me").unwrap()).unwrap();
+    assert!(matches!(cache.load(), Err(CacheError::Read { .. })));
+}
+
+#[cfg(unix)]
+#[test]
+fn an_existing_open_directory_and_file_are_made_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCache::in_state_dir(dir.path());
+    fs::create_dir_all(cache.dir()).unwrap();
+    fs::set_permissions(cache.dir(), fs::Permissions::from_mode(0o755)).unwrap();
+    let file = cache.file_for("me").unwrap();
+    fs::write(&file, "{}").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+
+    cache.store(&cached("me", 1)).unwrap();
+    let mode = |path: &std::path::Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(cache.dir()), 0o700);
+    assert_eq!(mode(&file), 0o600);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_planted_at_the_temp_file_is_never_written_through() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCache::in_state_dir(dir.path());
+    fs::create_dir_all(cache.dir()).unwrap();
+    let elsewhere = dir.path().join("elsewhere");
+    fs::write(&elsewhere, "untouched").unwrap();
+    // The temp name den uses: `<login>.tmp-<pid>`, beside the cache file.
+    let temp = cache
+        .file_for("me")
+        .unwrap()
+        .with_extension(format!("tmp-{}", std::process::id()));
+    std::os::unix::fs::symlink(&elsewhere, &temp).unwrap();
+
+    let me = cached("me", 1);
+    cache.store(&me).unwrap();
+    assert_eq!(fs::read_to_string(&elsewhere).unwrap(), "untouched");
+    assert_eq!(cache.load(), Ok(Some(me)));
 }
 
 #[test]
