@@ -288,8 +288,8 @@ pub struct LaunchPlan {
 pub struct Renamed {
     /// The name den wanted.
     pub wanted: String,
-    /// The Work Items whose Jobs hold that name (or an earlier suffix).
-    pub taken_by: Vec<WorkItemId>,
+    /// The subjects of the Jobs that hold that name (or an earlier suffix).
+    pub taken_by: Vec<crate::jobs::JobSubject>,
 }
 
 /// Why a prompt can't be passed to Claude Code as is.
