@@ -154,6 +154,21 @@ pub struct Row {
     /// A Job den launched for it, by its worktree's state (#14); `None`
     /// without one. Drawn as a glyph plus a colour.
     pub job: Option<JobMarker>,
+    /// A Pull Request's Landing Groups (#35), drawn after the reference.
+    pub landing: RowLanding,
+}
+
+/// Which Linear Issues a Pull Request's row names (#35). Every meaning is in
+/// words or the Linear glyph, never colour alone.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RowLanding {
+    /// The identifiers of the Linear Issues it is attached to: its Landing
+    /// Groups, drawn after the Linear glyph.
+    pub groups: Vec<String>,
+    /// Attached to more than one: drawn as the word "ambiguous".
+    pub ambiguous: bool,
+    /// Identifiers its branch name only hints at: "possibly for TEAM-123".
+    pub possibly_for: Vec<String>,
 }
 
 /// A recorded Job's worktree state, for the list and the detail (#14).
@@ -216,6 +231,29 @@ pub struct DetailContent {
     /// Issue's team, state, assignee, priority and cycle (#32). `None` for
     /// GitHub Work Items, whose facts are in the Explanation.
     pub facts: Option<DetailFacts>,
+    /// The Landing Group (#35): a Linear Issue's members, or the groups a
+    /// Pull Request belongs to or is possibly for. `None` when it has none.
+    pub landing: Option<LandingDetail>,
+}
+
+/// The detail's Landing Group section (#35).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LandingDetail {
+    /// "LANDING GROUP", drawn after the Linear glyph.
+    pub label: String,
+    pub lines: Vec<LandingLine>,
+}
+
+/// One line of the Landing Group section. A member's line says its Repo,
+/// number, state, own Next Step and Job in words; `job` adds the glyph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LandingLine {
+    pub text: String,
+    /// A member's recorded Job, drawn as its glyph before the text.
+    pub job: Option<JobMarker>,
+    /// den can't see this member, or the membership is ambiguous: drawn as
+    /// a caution, and said in the text.
+    pub caution: bool,
 }
 
 /// A section of facts in the detail.

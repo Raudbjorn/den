@@ -28,8 +28,9 @@ impl Scope {
     /// Whether a Work Item belongs to this Scope.
     ///
     /// A Linear Issue belongs to its Owner, so the Owner and All Owners
-    /// Scopes include it. A Repo Scope will include the Linear Issues with a
-    /// member PR there (#35); before Landing Groups none has one.
+    /// Scopes include it; a Repo Scope never does by identity alone. Whether
+    /// a Repo Scope includes one depends on its Landing Group:
+    /// [`Scope::contains_decision`].
     pub fn contains(&self, item: &WorkItemId) -> bool {
         match item.repo() {
             Some(repo) => self.contains_repo(repo),
@@ -38,6 +39,25 @@ impl Scope {
                 Self::Owner(owner) => same_login(owner, item.owner()),
                 Self::Repo(_) => false,
             },
+        }
+    }
+
+    /// Whether a decided Work Item belongs to this Scope: [`Scope::contains`],
+    /// and a Repo Scope also includes the Linear Issues with a member (an
+    /// attached Pull Request, never a hint) in that Repo (spec 0002,
+    /// "Ordering and Scope"; #35). The Decision was made on the whole
+    /// Observation, so narrowing never changes it.
+    pub fn contains_decision(&self, decision: &Decision) -> bool {
+        if self.contains(&decision.item.id) {
+            return true;
+        }
+        match self {
+            Self::Repo(scoped) => decision
+                .landing
+                .members
+                .iter()
+                .any(|member| same_repo(scoped, &member.pr.repo)),
+            Self::AllOwners | Self::Owner(_) => false,
         }
     }
 
@@ -167,5 +187,5 @@ pub fn in_scope<'a>(
     decisions: &'a [Decision],
     scope: &'a Scope,
 ) -> impl Iterator<Item = &'a Decision> + 'a {
-    decisions.iter().filter(|d| scope.contains(&d.item.id))
+    decisions.iter().filter(|d| scope.contains_decision(d))
 }

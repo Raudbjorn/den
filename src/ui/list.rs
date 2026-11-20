@@ -130,7 +130,7 @@ fn row_context(row: &Row, selected: bool, glyphs: &glyphs::Glyphs) -> TemplateCo
         .set("step", row.step_label.as_str())
         .set("flag", flag)
         .set("repo", place(row, glyphs))
-        .set("reference", row.reference.as_str())
+        .set("reference", reference(row, glyphs))
         .set("title", row.title.as_str())
         .set("waiting", row.waiting_label.as_str())
         .set("age", row.age.as_str())
@@ -148,6 +148,27 @@ pub fn job_glyph(job: Option<JobMarker>, glyphs: &glyphs::Glyphs) -> &'static st
         Some(JobMarker::Unknown) => glyphs.job_unknown,
         None => " ",
     }
+}
+
+/// The reference, then a Pull Request's Landing Groups (#35) in the
+/// Linear glyph and words: `#4  ◇ TEAM-1`, `#4  ◇ TEAM-1 TEAM-2 ambiguous`,
+/// `#4  possibly for TEAM-3`.
+fn reference(row: &Row, glyphs: &glyphs::Glyphs) -> String {
+    let landing = &row.landing;
+    let mut text = row.reference.clone();
+    if !landing.groups.is_empty() {
+        text.push_str(&format!("  {} {}", glyphs.linear, landing.groups.join(" ")));
+        if landing.ambiguous {
+            text.push_str(" ambiguous");
+        }
+    }
+    if !landing.possibly_for.is_empty() {
+        text.push_str(&format!(
+            "  possibly for {}",
+            landing.possibly_for.join(" ")
+        ));
+    }
+    text
 }
 
 /// The row's Repo, or for a Linear Issue the Linear glyph and its Owner: the
