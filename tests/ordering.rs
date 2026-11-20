@@ -13,7 +13,7 @@
 mod support;
 
 use den::{
-    decide::{Decision, Explanation, WorkItem},
+    decide::{Decision, Explanation, Landing, WorkItem},
     domain::{NextStep, WaitingOn, WorkItemId, WorkflowId},
     ordering::{self, Scope},
 };
@@ -51,6 +51,7 @@ fn decision(
             url: String::new(),
             updated_at: ts(updated),
             id,
+            identifier: None,
         },
         next_step: step,
         waiting_on,
@@ -59,6 +60,11 @@ fn decision(
         explanation: Explanation::default(),
         coverage: Vec::new(),
         observed_at: ts(support::build::NOW),
+        held_back: None,
+        suggested_reviewers: None,
+        landing: Landing::default(),
+        start_order: None,
+        suggested_reviewers_unread: None,
     }
 }
 
@@ -68,7 +74,9 @@ fn ids(decisions: &[Decision]) -> Vec<String> {
 
 #[test]
 fn within_a_waiting_on_group_the_kind_order_holds_across_all_four_kinds() {
-    // The spec's kind order; Fix CI is ranked by where it failed.
+    // The spec's kind order (milestone 2's kinds included, spec 0002
+    // "Ordering"); Fix CI is ranked by where it failed. A Land or Start
+    // ranks by its Next Step alone, whatever the Work Item kind.
     let expected = vec![
         decision(
             item("run", "o/r", 1),
@@ -89,6 +97,12 @@ fn within_a_waiting_on_group_the_kind_order_holds_across_all_four_kinds() {
             UPDATED,
         ),
         decision(
+            item("pr", "o/r", 13),
+            Some(NextStep::Land),
+            WaitingOn::Me,
+            UPDATED,
+        ),
+        decision(
             item("pr", "o/r", 4),
             Some(NextStep::Merge),
             WaitingOn::Me,
@@ -97,6 +111,12 @@ fn within_a_waiting_on_group_the_kind_order_holds_across_all_four_kinds() {
         decision(
             item("pr", "o/r", 5),
             Some(NextStep::Review),
+            WaitingOn::Me,
+            UPDATED,
+        ),
+        decision(
+            item("pr", "o/r", 14),
+            Some(NextStep::RequestReview),
             WaitingOn::Me,
             UPDATED,
         ),
@@ -113,8 +133,20 @@ fn within_a_waiting_on_group_the_kind_order_holds_across_all_four_kinds() {
             UPDATED,
         ),
         decision(
+            item("issue", "o/r", 15),
+            Some(NextStep::MarkForRelease),
+            WaitingOn::Me,
+            UPDATED,
+        ),
+        decision(
             item("issue", "o/r", 8),
             Some(NextStep::Implement),
+            WaitingOn::Me,
+            UPDATED,
+        ),
+        decision(
+            item("issue", "o/r", 16),
+            Some(NextStep::Start),
             WaitingOn::Me,
             UPDATED,
         ),

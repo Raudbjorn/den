@@ -56,13 +56,21 @@ fn segments(header: &Header, width: u16, glyphs: &Glyphs) -> TemplateValue {
 /// The active segment carries the tick glyph as well as its fill.
 fn segment_context(segment: &ScopeSegment, glyphs: &Glyphs) -> TemplateContext {
     let room = SEGMENT_COLS - SEGMENT_MARK_COLS;
-    let label: String = if segment.label.chars().count() > room {
-        let kept = room.saturating_sub(glyphs.ellipsis.chars().count());
+    // An Owner with a Linear Workflow carries the Linear glyph (#32).
+    let suffix = if segment.linear_workflow {
+        format!(" {}", glyphs.linear)
+    } else {
+        String::new()
+    };
+    let room_for_name = room.saturating_sub(suffix.chars().count());
+    let label: String = if segment.label.chars().count() > room_for_name {
+        let kept = room_for_name.saturating_sub(glyphs.ellipsis.chars().count());
         let mut cut: String = segment.label.chars().take(kept).collect();
         cut.push_str(glyphs.ellipsis);
+        cut.push_str(&suffix);
         cut
     } else {
-        segment.label.clone()
+        format!("{}{suffix}", segment.label)
     };
     let mark = if segment.active { glyphs.tick } else { " " };
     let mut ctx = TemplateContext::default();

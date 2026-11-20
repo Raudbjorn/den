@@ -71,10 +71,14 @@ fn carried_note_in(state: &State<'_>, source: &Source, repo: &RepoId) -> Option<
 }
 
 /// "Pull Requests of alpha: failed: timeout; showing data from 10:00 UTC, 2 h ago",
-/// for an item of `repo`.
-pub fn entry_line(state: &State<'_>, entry: &CoverageEntry, repo: &RepoId) -> String {
+/// for an item of `repo` (`None` for a Linear Issue, which is in no Repo).
+pub fn entry_line(state: &State<'_>, entry: &CoverageEntry, repo: Option<&RepoId>) -> String {
     let line = format!("{}: {}", entry.source.label(), entry.state.describe());
-    match carried_note_in(state, &entry.source, repo) {
+    let note = match repo {
+        Some(repo) => carried_note_in(state, &entry.source, repo),
+        None => carried_note(state, &entry.source),
+    };
+    match note {
         Some(note) => format!("{line}; {note}"),
         None => line,
     }
@@ -83,18 +87,38 @@ pub fn entry_line(state: &State<'_>, entry: &CoverageEntry, repo: &RepoId) -> St
 /// The latest rate-limit reset any source reported, as a note for the status
 /// line: "rate limited until 13:00 UTC". `None` when nothing was rate limited.
 pub fn rate_limit_note(observation: &Observation) -> Option<String> {
-    let mut limited = false;
-    let mut latest: Option<Timestamp> = None;
+    let mut github: Option<Option<Timestamp>> = None;
+    let mut linear: Option<Option<Timestamp>> = None;
     for entry in observation.coverage.entries() {
-        if let SourceState::Partial(Incompleteness::RateLimited { resets_at }) = &entry.state {
-            limited = true;
-            latest = latest.max(*resets_at);
+        let SourceState::Partial(why) = &entry.state else {
+            continue;
+        };
+        let slot = match why {
+            Incompleteness::RateLimited { .. } => &mut github,
+            Incompleteness::LinearRateLimited { .. } => &mut linear,
+            _ => continue,
+        };
+        if let Some(resets_at) = why.rate_limit_reset() {
+            *slot = Some(slot.flatten().max(resets_at));
         }
     }
-    limited.then(|| match latest {
-        Some(at) => format!("rate limited until {}", format::clock_time(at)),
-        None => "rate limited; GitHub did not say when it resets".to_owned(),
-    })
+    let note = |service: &str, latest: Option<Timestamp>| match latest {
+        Some(at) => format!("{service}rate limited until {}", format::clock_time(at)),
+        None => format!(
+            "{service}rate limited; {} did not say when it resets",
+            if service.is_empty() {
+                "GitHub"
+            } else {
+                "Linear"
+            }
+        ),
+    };
+    match (github, linear) {
+        (None, None) => None,
+        (Some(g), None) => Some(note("", g)),
+        (None, Some(l)) => Some(note("Linear ", l)),
+        (Some(g), Some(l)) => Some(format!("{}; {}", note("", g), note("Linear ", l))),
+    }
 }
 
 /// True when everything behind `scope` was read completely: the viewer (for
@@ -126,14 +150,19 @@ pub fn scope_complete(observation: &Observation, scope: &Scope) -> bool {
     }
 }
 
-/// The sources behind one Repo's Work Items: its Owner's and its own.
+/// The sources behind one Repo's Work Items: its Owner's and its own. Its
+/// Owner's Linear sources only once a Repo Scope can hold Linear Issues
+/// ([`Scope::holds_linear_issues`]).
 fn applicable_to_repo<'o>(observation: &'o Observation, repo: &RepoId) -> Vec<&'o CoverageEntry> {
+    let with_linear = Scope::Repo(repo.clone()).holds_linear_issues();
     observation
         .coverage
         .entries()
         .iter()
         .filter(|e| match &e.source {
-            Source::Owner { owner, .. } => owner.eq_ignore_ascii_case(&repo.owner),
+            Source::Owner { owner, .. } => {
+                owner.eq_ignore_ascii_case(&repo.owner) && (with_linear || !e.source.is_linear())
+            }
             Source::Repo { repo: r, .. } => same_repo(r, repo),
             Source::Viewer => false,
         })

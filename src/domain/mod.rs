@@ -12,9 +12,9 @@ pub mod upstream;
 pub use coverage::{
     Coverage, CoverageEntry, Incompleteness, LinearSourceKind, Source, SourceKind, SourceState,
 };
-pub use ids::{RepoId, WorkItemId, WorkItemKind, WorkflowId};
-pub use linear::LinearPart;
+pub use ids::{LinearIssueId, RepoId, WorkItemId, WorkItemKind, WorkflowId};
+pub use linear::{LinearPart, LinearTeamStates, LinearViewer};
 pub use next_step::{NextStep, WaitingOn};
 pub use observation::{Observation, Repo, TeamRef, Viewer, Viewers};
-pub use policy::{LinearWorkflowPolicy, Policies};
+pub use policy::{LinearWorkflowPolicy, Policies, ReviewPolicy, StartPolicy};
 pub use upstream::{Comparison, UpstreamTargets, comparison_for};

@@ -120,6 +120,40 @@ fn malformed_prompts_fail_without_echoing_contents() {
 }
 
 #[test]
+fn a_linear_workflow_needs_its_key_without_echoing_the_value() {
+    let fixture = Fixture::new();
+    fixture.config("owners = ['example-owner']\n[linear.example-owner]\nworkspace = 'acme'\napi_key_env = 'DEN_TEST_LINEAR_KEY'\n");
+    let missing = fixture.doctor();
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(stdout(&missing).contains("api_key_env"));
+    let present = fixture
+        .command()
+        .arg("--doctor")
+        .env("DEN_TEST_LINEAR_KEY", "secret-sentinel")
+        .output()
+        .unwrap();
+    assert!(present.status.success(), "{present:?}");
+    assert!(!stdout(&present).contains("secret-sentinel"));
+    assert!(!String::from_utf8_lossy(&present.stderr).contains("secret-sentinel"));
+    assert!(!fixture.root.path().join("state").exists());
+    assert!(!fixture.root.path().join("invoked").exists());
+}
+
+#[test]
+fn an_unusable_request_review_template_fails_diagnostics() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.root.path().join("config/den/prompts.toml"),
+        "request_review = '/secret-sentinel {url}'",
+    )
+    .unwrap();
+    let output = fixture.doctor();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stdout(&output).contains("required placeholder"));
+    assert!(!stdout(&output).contains("secret-sentinel"));
+}
+
+#[test]
 fn missing_and_non_executable_programs_are_reported_together() {
     let fixture = Fixture::new();
     fs::remove_file(fixture.root.path().join("bin/gh")).unwrap();

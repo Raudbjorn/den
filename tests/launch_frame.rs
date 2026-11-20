@@ -28,6 +28,7 @@ fn sheet_open((cols, rows): (u16, u16)) -> Harness {
         owners: vec!["octo".to_owned()],
         main_clone_root: Some(PathBuf::from("/home/me/dev")),
         main_clones: BTreeMap::new(),
+        linear: Vec::new(),
     };
     let mut harness = Harness::new(Ok(config));
     harness.send(Event::Resized { cols, rows });
@@ -172,6 +173,7 @@ fn upstream_sheet_open((cols, rows): (u16, u16)) -> Harness {
         owners: vec!["octo".to_owned()],
         main_clone_root: Some(PathBuf::from("/home/me/dev")),
         main_clones: BTreeMap::new(),
+        linear: Vec::new(),
     };
     let upstreams = std::sync::Arc::new(support::fakes::FakeUpstreams::holding(
         den::domain::UpstreamTargets::new([support::build::repo_id("octo/app")]),

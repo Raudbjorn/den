@@ -42,6 +42,33 @@
 //! One suffix rule for every name den suffixes ([`names::suffixed`],
 //! `<name>-<n>`): a worktree name another Work Item's Job has (#12), and a
 //! fresh start beside this Work Item's Live Job (#14).
+//!
+//! Coordination Jobs (#39): a Request review (and, with #40, a Land) Job acts
+//! on GitHub rather than on code. It still gets a worktree on the PR head, as
+//! a PR Job does, but runs in the approval-required permission mode
+//! ([`job_permission_mode`], [`LaunchPlan::permission_mode`]), recorded with
+//! the Job so reopening it asks again; a record without the mode falls back
+//! to its Next Step's and Owner's ([`crate::jobs::JobRecord::reopen_mode`]).
+//! Its prompt gets no push line.
+//!
+//! Review Jobs in a Linear Workflow (#41) run in the same mode, from the
+//! Owner's policy rather than the Next Step alone. Their prompt is the
+//! `review_linear` template ([`prompts::PromptKind`]): the verdict-only
+//! instruction and, for a Pull Request in a Landing Group, the Linear
+//! Issue's identifier and URL. Every sheet lists the slash commands its
+//! prompt invokes as found or not found ([`workflows`]), from the Claude
+//! command and skill directories `inspect` read. A Request review plan also carries the reviewers chosen
+//! on the sheet ([`PlanInput::reviewers`], [`reviewers`]) and the Owner's
+//! Slack channel, both only in its prompt.
+//!
+//! Land (#40): `c` on a Linear Issue whose Next Step is Land plans a
+//! coordination Job for its Landing Group ([`landing`]): the open members
+//! outside Held Repos in landing order, each pinned to its head, with a
+//! worktree on the first member's head. The plan carries the group
+//! ([`LaunchPlan::landing`]); the executor re-reads every member's head from
+//! GitHub before it changes anything, and the Job record's subject is the
+//! Landing Group ([`crate::jobs::JobSubject::LandingGroup`]), which covers
+//! the Linear Issue and every landed member.
 
 pub mod clone;
 pub mod cloning;
@@ -49,22 +76,28 @@ pub mod command;
 mod execute;
 mod inspect;
 mod kinds;
+pub mod landing;
 pub mod live;
 pub mod names;
 mod plan;
 pub mod prompts;
 mod refusal;
+pub mod reviewers;
+pub mod trust;
+pub mod workflows;
 
 pub use clone::Remote;
 pub use cloning::NewCloneView;
-pub use command::{SessionStart, WindowCommand, WindowMode};
+pub use command::{PermissionMode, SessionStart, SettingSources, WindowCommand, WindowMode};
 pub use execute::{LaunchOutcome, LaunchReport, LaunchStep, execute};
 pub use inspect::{ChosenClone, CloneSearch, InspectRequest, WorkspaceView, inspect};
+pub use landing::{HeldMember, LandingGroupPlan, LandingMember};
 pub use live::{JobCheck, JobsCheck, ReopenPlan, WorktreeState};
 pub use plan::{LaunchSettings, PlanInput, inspect_request, plan};
 pub use refusal::{Refusal, RefusalReason};
+pub use trust::{OffReason, ProjectSettings};
 
-use crate::domain::{NextStep, RepoId, WorkItemId};
+use crate::domain::{LinearWorkflowPolicy, NextStep, RepoId, WorkItemId, facts::Reviewer};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -74,6 +107,35 @@ pub const WORKTREES_DIR: [&str; 2] = [".claude", "worktrees"];
 pub const MAX_PROMPT_CHARS: usize = 8_000;
 /// Characters of a commit shown on the sheet.
 pub const SHORT_COMMIT_CHARS: usize = 7;
+
+/// The permission mode a Job for `step` runs in, given its Owner's Linear
+/// Workflow `policy` (the empty policy for an Owner without one):
+/// approval-required for a coordination Job (Request review, Land) and for a
+/// Review Job in a Linear Workflow, which returns a verdict only (#41,
+/// [`LinearWorkflowPolicy::reviews_verdict_only`]); none (milestone 1's
+/// command) for every other Job. The match is exhaustive, so a new kind
+/// must choose.
+pub fn job_permission_mode(
+    step: NextStep,
+    policy: &LinearWorkflowPolicy,
+) -> Option<PermissionMode> {
+    match step {
+        NextStep::RequestReview | NextStep::Land => Some(PermissionMode::ApprovalRequired),
+        NextStep::Review if policy.reviews_verdict_only() => Some(PermissionMode::ApprovalRequired),
+        NextStep::Review
+        | NextStep::FinishDraft
+        | NextStep::ResolveConflicts
+        | NextStep::FixCi
+        | NextStep::AddressReview
+        | NextStep::Merge
+        | NextStep::Triage
+        | NextStep::Implement
+        | NextStep::OpenPr
+        | NextStep::PruneOrRevive
+        | NextStep::Start
+        | NextStep::MarkForRelease => None,
+    }
+}
 
 /// The worktree path for a Job named `name` in `clone`.
 pub fn worktree_path(clone: &Path, name: &str) -> PathBuf {
@@ -150,6 +212,9 @@ impl TargetChoice {
         match item {
             WorkItemId::PullRequest { .. } | WorkItemId::Branch { .. } => Self::OwnRepo,
             WorkItemId::Issue { .. } | WorkItemId::Run { .. } => fork_setting,
+            // No Repo of its own: a Land Job targets its first member's Repo
+            // (#40); Start and Implement aren't launchable yet (#38).
+            WorkItemId::LinearIssue { .. } => Self::OwnRepo,
         }
     }
 }
@@ -277,9 +342,35 @@ pub struct LaunchPlan {
     pub renamed: Option<Renamed>,
     pub session: String,
     pub prompt: String,
+    /// The approval-required mode for a coordination Job and for a Review Job
+    /// in a Linear Workflow; `None` for any other Job, whose command is
+    /// milestone 1's ([`job_permission_mode`]).
+    pub permission_mode: Option<PermissionMode>,
+    /// Off (`--setting-sources user`) for a coordination Job and for a PR
+    /// head the viewer didn't write ([`trust`]).
+    pub project_settings: ProjectSettings,
+    /// Request review only: whom the prompt asks, and where it announces.
+    pub review_request: Option<ReviewRequest>,
+    /// Land only (#40): the members the Job lands, in order, pinned to their
+    /// heads, and the held members it leaves alone.
+    pub landing: Option<LandingGroupPlan>,
     pub window: WindowMode,
     /// The exact command, as shown on the sheet.
     pub command: String,
+}
+
+/// What a Request review Job's prompt names (#39), besides the PR's URL.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewRequest {
+    /// The reviewers to request on GitHub, as chosen on the sheet.
+    pub reviewers: Vec<Reviewer>,
+    /// The Owner's Slack channel, opaque; `None`: no announcement step.
+    pub slack_channel: Option<String>,
+    /// The prompt carries `{announcement}`: the announcement step with a
+    /// channel, the outcome report without. A custom `request_review`
+    /// template may leave it out; then the prompt neither announces nor asks
+    /// for the outcome, whatever `slack_channel` says.
+    pub announces: bool,
 }
 
 /// A worktree name (and, for a new branch, the branch name) that got a
@@ -323,6 +414,15 @@ pub fn check_prompt(prompt: &str) -> Result<(), PromptProblem> {
 }
 
 impl LaunchPlan {
+    /// What the Job's record is for: the Landing Group for a Land Job, the
+    /// Work Item otherwise.
+    pub fn subject(&self) -> crate::jobs::JobSubject {
+        match &self.landing {
+            Some(group) => crate::jobs::JobSubject::LandingGroup(group.subject()),
+            None => crate::jobs::JobSubject::GitHub(self.work_item.clone()),
+        }
+    }
+
     /// What the Job's window runs.
     pub fn window_command(&self) -> WindowCommand {
         WindowCommand {
@@ -330,6 +430,8 @@ impl LaunchPlan {
             session: self.session.clone(),
             prompt: self.prompt.clone(),
             start: SessionStart::New,
+            permission_mode: self.permission_mode,
+            setting_sources: self.project_settings.sources(),
         }
     }
 

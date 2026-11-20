@@ -5,12 +5,17 @@
 
 use den::{
     cache::{CacheError, CachedObservation},
-    domain::{Observation, UpstreamTargets},
+    domain::{Observation, Source, SourceKind, SourceState, UpstreamTargets},
     github::graphql::{GraphQl, GraphQlRequest, GraphQlResponse, TransportError},
-    handoff::{PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode, Writability},
+    handoff::{
+        PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode, Writability,
+        workflows::{ClaudeDir, PluginDir, PluginsRead, installed_plugins_file},
+    },
     jobs::{JobRecord, JobStoreError},
+    linear::{HttpReply, LinearRequest, LinearTransport, TransportError as LinearTransportError},
     ports::{
-        Clock, GitHubSource, JobStore, LaunchError, Launcher, ObservationCache, Ports,
+        Clock, GitHubSource, JobStore, LaunchError, Launcher, LinearSource, LinearSurvey,
+        LinearSurveyRequest, MemberStatesRead, MemberStatesRequest, ObservationCache, Ports,
         SurveyFailure, SurveyRequest, UpstreamStore, Workspace, WorkspaceError, WorktreeAdd,
         WorktreeStart,
     },
@@ -25,19 +30,30 @@ use std::{
 
 type SurveyOutcome = Result<Observation, SurveyFailure>;
 
-/// Answers surveys from a queue, and records every request.
+/// Answers surveys, and reads of Landing Group members' states (#37), from
+/// queues, and records every request.
 #[derive(Default)]
 pub struct FakeGitHub {
     answers: Mutex<VecDeque<SurveyOutcome>>,
     requests: Mutex<Vec<SurveyRequest>>,
+    member_answers: Mutex<VecDeque<MemberStatesRead>>,
+    member_requests: Mutex<Vec<MemberStatesRequest>>,
 }
 
 impl FakeGitHub {
     pub fn answering(answers: impl IntoIterator<Item = SurveyOutcome>) -> Self {
         Self {
             answers: Mutex::new(answers.into_iter().collect()),
-            requests: Mutex::default(),
+            ..Self::default()
         }
+    }
+
+    pub fn push_member_states(&self, answer: MemberStatesRead) {
+        self.member_answers.lock().expect("lock").push_back(answer);
+    }
+
+    pub fn member_requests(&self) -> Vec<MemberStatesRequest> {
+        self.member_requests.lock().expect("lock").clone()
     }
 
     pub fn push_answer(&self, answer: SurveyOutcome) {
@@ -61,6 +77,112 @@ impl GitHubSource for FakeGitHub {
                     detail: "the fake GitHub source has no more answers".to_owned(),
                 })
             })
+    }
+
+    /// The next queued answer; without one, every Owner asked about failed.
+    fn member_states(&self, request: &MemberStatesRequest) -> MemberStatesRead {
+        self.member_requests
+            .lock()
+            .expect("lock")
+            .push(request.clone());
+        let mut read = self
+            .member_answers
+            .lock()
+            .expect("lock")
+            .pop_front()
+            .unwrap_or_else(|| {
+                let mut read = MemberStatesRead::default();
+                for pr in &request.pull_requests {
+                    read.coverage.record(
+                        Source::Owner {
+                            owner: pr.repo.owner.clone(),
+                            kind: SourceKind::MemberStates,
+                        },
+                        SourceState::Failed {
+                            error: "the fake GitHub source has no member states to give".to_owned(),
+                        },
+                    );
+                }
+                read
+            });
+        // Like the real source unbounded: every member asked was sent,
+        // unless the scripted answer says which were.
+        if read.asked.is_empty() {
+            read.asked.clone_from(&request.pull_requests);
+        }
+        read
+    }
+}
+
+/// Answers Linear surveys from a queue (an empty survey once it runs out),
+/// and records every request.
+#[derive(Default)]
+pub struct FakeLinear {
+    answers: Mutex<VecDeque<LinearSurvey>>,
+    requests: Mutex<Vec<LinearSurveyRequest>>,
+}
+
+impl FakeLinear {
+    pub fn push_answer(&self, answer: LinearSurvey) {
+        self.answers.lock().expect("lock").push_back(answer);
+    }
+
+    pub fn requests(&self) -> Vec<LinearSurveyRequest> {
+        self.requests.lock().expect("lock").clone()
+    }
+}
+
+impl LinearSource for FakeLinear {
+    fn survey(&self, request: &LinearSurveyRequest) -> LinearSurvey {
+        self.requests.lock().expect("lock").push(request.clone());
+        self.answers
+            .lock()
+            .expect("lock")
+            .pop_front()
+            .unwrap_or_default()
+    }
+}
+
+type LinearScript = dyn Fn(&LinearRequest) -> Result<HttpReply, LinearTransportError> + Send + Sync;
+
+/// A Linear transport answering from a closure, recording every request.
+/// Shared (`Arc`) so a test can keep it after handing it to the source.
+pub struct ScriptedLinear {
+    script: Box<LinearScript>,
+    requests: Mutex<Vec<LinearRequest>>,
+}
+
+impl ScriptedLinear {
+    pub fn new(
+        script: impl Fn(&LinearRequest) -> Result<HttpReply, LinearTransportError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self {
+            script: Box::new(script),
+            requests: Mutex::default(),
+        }
+    }
+
+    pub fn requests(&self) -> Vec<LinearRequest> {
+        self.requests.lock().expect("lock").clone()
+    }
+}
+
+impl LinearTransport for ScriptedLinear {
+    fn post(&self, request: &LinearRequest) -> Result<HttpReply, LinearTransportError> {
+        self.requests.lock().expect("lock").push(request.clone());
+        (self.script)(request)
+    }
+}
+
+/// Lets an `Arc<ScriptedLinear>` be handed out as a boxed transport.
+pub struct SharedLinear(pub Arc<ScriptedLinear>);
+
+impl LinearTransport for SharedLinear {
+    fn post(&self, request: &LinearRequest) -> Result<HttpReply, LinearTransportError> {
+        self.0.post(request)
     }
 }
 
@@ -109,6 +231,11 @@ struct WorkspaceState {
     unwritable: BTreeSet<PathBuf>,
     /// Repos reachable by URL (not cloned): URL → branch → commit.
     hosted: BTreeMap<String, BTreeMap<String, String>>,
+    /// Claude directories (#41): path → what defines slash commands there.
+    /// Any other directory reads as empty.
+    claude_dirs: BTreeMap<PathBuf, ClaudeDir>,
+    /// The installed plugins (#41); `None`: none installed, the list read.
+    plugins: Option<PluginsRead>,
     calls: Vec<WorkspaceCall>,
 }
 
@@ -119,6 +246,70 @@ pub struct FakeWorkspace {
 }
 
 impl FakeWorkspace {
+    /// Changes the Claude directory `dir` (#41), empty to begin with.
+    pub fn with_claude_dir(&self, dir: &str, change: impl FnOnce(&mut ClaudeDir)) {
+        let mut state = self.state.lock().expect("lock");
+        let entry = state
+            .claude_dirs
+            .entry(PathBuf::from(dir))
+            .or_insert_with(|| ClaudeDir::empty(PathBuf::from(dir)));
+        change(entry);
+    }
+
+    /// Adds `commands/<relative>` to the Claude directory `dir`.
+    pub fn add_claude_command(&self, dir: &str, relative: &str) {
+        self.with_claude_dir(dir, |d| {
+            d.commands
+                .as_mut()
+                .expect("readable commands")
+                .push(PathBuf::from(relative));
+        });
+    }
+
+    /// Adds the skill folder `skills/<name>` (with its SKILL.md) to `dir`.
+    pub fn add_claude_skill(&self, dir: &str, name: &str) {
+        self.with_claude_dir(dir, |d| {
+            d.skills
+                .as_mut()
+                .expect("readable skills")
+                .push(name.to_owned());
+        });
+    }
+
+    /// Installs plugin `name` at `path` with these `commands/` files and
+    /// `skills/` folders (relative paths), listed in `claude_dir`'s
+    /// `installed_plugins.json`.
+    pub fn add_plugin(
+        &self,
+        claude_dir: &str,
+        name: &str,
+        path: &str,
+        commands: &[&str],
+        skills: &[&str],
+    ) {
+        let mut state = self.state.lock().expect("lock");
+        let plugin = PluginDir {
+            name: name.to_owned(),
+            path: PathBuf::from(path),
+            commands: Ok(commands.iter().map(PathBuf::from).collect()),
+            skills: Ok(skills.iter().map(PathBuf::from).collect()),
+        };
+        match &mut state.plugins {
+            Some(PluginsRead::Read { plugins, .. }) => plugins.push(plugin),
+            _ => {
+                state.plugins = Some(PluginsRead::Read {
+                    file: installed_plugins_file(Path::new(claude_dir)),
+                    plugins: vec![plugin],
+                });
+            }
+        }
+    }
+
+    /// The installed plugins' list can't be used: `why`.
+    pub fn plugins_not_checked(&self, why: &str) {
+        self.state.lock().expect("lock").plugins = Some(PluginsRead::NotChecked(why.to_owned()));
+    }
+
     /// Adds a clone at `path` with `(name, url)` remotes.
     pub fn add_clone(&self, path: &str, remotes: &[(&str, &str)]) {
         let clone = FakeClone {
@@ -505,6 +696,23 @@ impl Workspace for FakeWorkspace {
         state.clones.insert(into.to_owned(), clone);
         Ok(())
     }
+
+    fn claude_dir(&self, dir: &Path) -> ClaudeDir {
+        let state = self.state.lock().expect("lock");
+        state
+            .claude_dirs
+            .get(dir)
+            .cloned()
+            .unwrap_or_else(|| ClaudeDir::empty(dir.to_path_buf()))
+    }
+
+    fn installed_plugins(&self, claude_dir: &Path) -> PluginsRead {
+        let state = self.state.lock().expect("lock");
+        state.plugins.clone().unwrap_or_else(|| PluginsRead::Read {
+            file: installed_plugins_file(claude_dir),
+            plugins: Vec::new(),
+        })
+    }
 }
 
 /// A launcher that records what it would open or copy.
@@ -623,6 +831,22 @@ impl Clock for FixedClock {
     }
 }
 
+/// A clock the test moves forward, as time passes during a call.
+pub struct MovingClock(pub Mutex<Timestamp>);
+
+impl MovingClock {
+    pub fn advance(&self, by: jiff::SignedDuration) {
+        let mut now = self.0.lock().expect("lock");
+        *now = now.checked_add(by).expect("in range");
+    }
+}
+
+impl Clock for MovingClock {
+    fn now(&self) -> Timestamp {
+        *self.0.lock().expect("lock")
+    }
+}
+
 /// An in-memory cache: `load` answers with what was last stored (or a scripted
 /// answer), `store` records every write.
 #[derive(Default)]
@@ -728,6 +952,7 @@ pub fn ports(github: Arc<FakeGitHub>, now: Timestamp) -> Ports {
 pub fn ports_with_cache(github: Arc<FakeGitHub>, cache: Arc<FakeCache>, now: Timestamp) -> Ports {
     Ports {
         github,
+        linear: Arc::new(FakeLinear::default()),
         cache,
         workspace: Arc::new(FakeWorkspace::default()),
         launcher: Arc::new(FakeLauncher::default()),

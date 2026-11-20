@@ -1,7 +1,7 @@
 //! Waiting On: resolving the person who owes a step to me / someone else /
 //! nobody (+ unattributed). Shared by every kind's rules.
 
-use crate::domain::{TeamRef, Viewer, WaitingOn};
+use crate::domain::{LinearViewer, TeamRef, Viewer, WaitingOn, facts::LinearUser};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attribution {
@@ -78,6 +78,42 @@ impl Attribution {
             waiting_on: WaitingOn::SomeoneElse,
             reason: format!("you are not one of {role}"),
             unattributed: false,
+        }
+    }
+
+    /// The step is owed by one Linear user, described by `role` ("the Linear
+    /// assignee"). Me only when that user is the Linear viewer of the issue's
+    /// workspace, compared by Linear's user ID: never by name, never against a
+    /// GitHub login. Without a Linear viewer den can't tell, so it is Waiting
+    /// On nobody and unattributed.
+    pub fn linear_person(
+        viewer: Option<&LinearViewer>,
+        workspace: &str,
+        user: Option<&LinearUser>,
+        role: &str,
+    ) -> Self {
+        let Some(user) = user else {
+            return Self::nobody(format!("there is no {role}"));
+        };
+        match viewer {
+            Some(viewer) if viewer.is(&user.id) => Self {
+                waiting_on: WaitingOn::Me,
+                reason: format!("you are {role} ({}, your Linear account)", user.name),
+                unattributed: false,
+            },
+            Some(_) => Self {
+                waiting_on: WaitingOn::SomeoneElse,
+                reason: format!("{role} is {}", user.name),
+                unattributed: false,
+            },
+            None => Self {
+                waiting_on: WaitingOn::Nobody,
+                reason: format!(
+                    "{role} is {}, but den could not read who you are in the Linear workspace {workspace}",
+                    user.name
+                ),
+                unattributed: true,
+            },
         }
     }
 

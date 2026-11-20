@@ -72,6 +72,9 @@ pub struct RepoCoverage {
 pub struct ScopeSegment {
     pub label: String,
     pub active: bool,
+    /// An Owner segment whose Owner has a Linear Workflow (#32); drawn as
+    /// the Linear glyph beside the label.
+    pub linear_workflow: bool,
 }
 
 /// Every Repo of the watched Owners, grouped by Owner, each row a Scope.
@@ -108,6 +111,9 @@ pub struct SidebarRow {
     pub archived: bool,
     /// This row is the current Scope.
     pub current: bool,
+    /// An Owner row whose Owner has a Linear Workflow (#32); drawn as the
+    /// Linear glyph, never colour alone.
+    pub linear_workflow: bool,
     /// Some source behind this row's Scope was not read completely (the
     /// viewer, or a source of its Owner or Repo); drawn as a glyph.
     pub incomplete: bool,
@@ -130,9 +136,10 @@ pub struct Row {
     pub next_step: Option<NextStep>,
     /// The Next Step's name, or the text shown when there is none.
     pub step_label: String,
-    /// `owner/name`.
+    /// `owner/name`; for a Linear Issue, its Owner (the row's kind,
+    /// [`WorkItemKind::LinearIssue`], draws the Linear glyph before it).
     pub repo: String,
-    /// `#12`, a branch name, a workflow.
+    /// `#12`, a branch name, a workflow, a Linear identifier (`TEAM-123`).
     pub reference: String,
     pub title: String,
     pub waiting_on: WaitingOn,
@@ -147,6 +154,21 @@ pub struct Row {
     /// A Job den launched for it, by its worktree's state (#14); `None`
     /// without one. Drawn as a glyph plus a colour.
     pub job: Option<JobMarker>,
+    /// A Pull Request's Landing Groups (#35), drawn after the reference.
+    pub landing: RowLanding,
+}
+
+/// Which Linear Issues a Pull Request's row names (#35). Every meaning is in
+/// words or the Linear glyph, never colour alone.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RowLanding {
+    /// The identifiers of the Linear Issues it is attached to: its Landing
+    /// Groups, drawn after the Linear glyph.
+    pub groups: Vec<String>,
+    /// Attached to more than one: drawn as the word "ambiguous".
+    pub ambiguous: bool,
+    /// Identifiers its branch name only hints at: "possibly for TEAM-123".
+    pub possibly_for: Vec<String>,
 }
 
 /// A recorded Job's worktree state, for the list and the detail (#14).
@@ -205,6 +227,43 @@ pub struct DetailContent {
     pub observed: String,
     /// The Job den launched for this Work Item, if any (#14).
     pub job: Option<JobDetail>,
+    /// Facts about the Work Item shown as a section of their own: a Linear
+    /// Issue's team, state, assignee, priority and cycle (#32); a PR's Linear
+    /// Workflow section: "held for release" and the suggested reviewers (#36).
+    /// `None` for other GitHub Work Items, whose facts are in the Explanation.
+    pub facts: Option<DetailFacts>,
+    /// The Landing Group (#35): a Linear Issue's members, or the groups a
+    /// Pull Request belongs to or is possibly for. `None` when it has none.
+    pub landing: Option<LandingDetail>,
+}
+
+/// The detail's Landing Group section (#35).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LandingDetail {
+    /// "LANDING GROUP", drawn after the Linear glyph.
+    pub label: String,
+    pub lines: Vec<LandingLine>,
+}
+
+/// One line of the Landing Group section. A member's line says its Repo,
+/// number, state, own Next Step and Job in words; `job` adds the glyph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LandingLine {
+    pub text: String,
+    /// A member's recorded Job, drawn as its glyph before the text.
+    pub job: Option<JobMarker>,
+    /// den can't see this member, or the membership is ambiguous: drawn as
+    /// a caution, and said in the text.
+    pub caution: bool,
+}
+
+/// A section of facts in the detail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetailFacts {
+    /// "LINEAR ISSUE", "LINEAR WORKFLOW".
+    pub label: String,
+    /// One fact per line, each saying what it is ("team TEAM").
+    pub lines: Vec<String>,
 }
 
 /// Sheets drawn over the screen; at most one at a time.
@@ -231,6 +290,9 @@ pub struct LaunchSheet {
     pub headline: String,
     /// Target, Main Clone, remote, base, branch, worktree, session, window.
     pub fields: Vec<SheetField>,
+    /// Request review (#39): the reviewers the Job will ask, editable in
+    /// place (`r`); `None` on any other sheet.
+    pub reviewers: Option<PromptField>,
     /// The prompt, editable in place; `None` until there is a plan.
     pub prompt: Option<PromptField>,
     /// The exact command; `None` until there is a plan.

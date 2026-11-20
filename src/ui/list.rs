@@ -7,7 +7,10 @@ use super::{
     templates,
     text::{self, LineStyle},
 };
-use crate::app::view_model::{JobMarker, List, Row};
+use crate::{
+    app::view_model::{JobMarker, List, Row},
+    domain::WorkItemKind,
+};
 use crepuscularity_tui::TemplateContext;
 use ratatui::{Frame, layout::Rect};
 
@@ -126,8 +129,8 @@ fn row_context(row: &Row, selected: bool, glyphs: &glyphs::Glyphs) -> TemplateCo
         .set("tick", if selected { glyphs.tick } else { " " })
         .set("step", row.step_label.as_str())
         .set("flag", flag)
-        .set("repo", row.repo.as_str())
-        .set("reference", row.reference.as_str())
+        .set("repo", place(row, glyphs))
+        .set("reference", reference(row, glyphs))
         .set("title", row.title.as_str())
         .set("waiting", row.waiting_label.as_str())
         .set("age", row.age.as_str())
@@ -144,5 +147,36 @@ pub fn job_glyph(job: Option<JobMarker>, glyphs: &glyphs::Glyphs) -> &'static st
         Some(JobMarker::Missing) => glyphs.job_missing,
         Some(JobMarker::Unknown) => glyphs.job_unknown,
         None => " ",
+    }
+}
+
+/// The reference, then a Pull Request's Landing Groups (#35) in the
+/// Linear glyph and words: `#4  ◇ TEAM-1`, `#4  ◇ TEAM-1 TEAM-2 ambiguous`,
+/// `#4  possibly for TEAM-3`.
+fn reference(row: &Row, glyphs: &glyphs::Glyphs) -> String {
+    let landing = &row.landing;
+    let mut text = row.reference.clone();
+    if !landing.groups.is_empty() {
+        text.push_str(&format!("  {} {}", glyphs.linear, landing.groups.join(" ")));
+        if landing.ambiguous {
+            text.push_str(" ambiguous");
+        }
+    }
+    if !landing.possibly_for.is_empty() {
+        text.push_str(&format!(
+            "  possibly for {}",
+            landing.possibly_for.join(" ")
+        ));
+    }
+    text
+}
+
+/// The row's Repo, or for a Linear Issue the Linear glyph and its Owner: the
+/// glyph, not colour, says it is Linear's (#32).
+fn place(row: &Row, glyphs: &glyphs::Glyphs) -> String {
+    if row.kind == WorkItemKind::LinearIssue {
+        format!("{} {}", glyphs.linear, row.repo)
+    } else {
+        row.repo.clone()
     }
 }

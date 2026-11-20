@@ -9,7 +9,10 @@ mod support;
 use den::{
     app::{App, Effect, Event, SurveyId},
     domain::{Observation, upstream::UpstreamTargets},
-    ports::{GitHubSource, Ports, SurveyFailure, SurveyRequest, UpstreamStore},
+    ports::{
+        GitHubSource, MemberStatesRead, MemberStatesRequest, Ports, SurveyFailure, SurveyRequest,
+        UpstreamStore,
+    },
     runtime::{FinishError, Flow, Worker},
     upstreams::UpstreamStoreError,
 };
@@ -60,6 +63,10 @@ impl GitHubSource for Gate {
         Err(SurveyFailure::NotLoggedIn {
             detail: "released".to_owned(),
         })
+    }
+
+    fn member_states(&self, _: &MemberStatesRequest) -> MemberStatesRead {
+        MemberStatesRead::default()
     }
 }
 

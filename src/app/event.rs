@@ -4,7 +4,7 @@ use crate::{
     cache::{CacheError, CachedObservation},
     domain::Observation,
     handoff::{JobsCheck, LaunchReport, WorkspaceView},
-    ports::SurveyFailure,
+    ports::{LinearSurvey, MemberStatesRead, SurveyFailure},
     upstreams::UpstreamStoreError,
 };
 use jiff::Timestamp;
@@ -64,6 +64,18 @@ pub enum Event {
     SurveyFinished {
         id: SurveyId,
         outcome: Result<Box<Observation>, SurveyFailure>,
+        now: Timestamp,
+    },
+    /// A Linear survey finished (#32): the Linear part and its coverage.
+    LinearSurveyFinished {
+        id: SurveyId,
+        survey: Box<LinearSurvey>,
+        now: Timestamp,
+    },
+    /// Landing Group members' states were read (#37), with their coverage.
+    MemberStatesRead {
+        id: SurveyId,
+        read: Box<MemberStatesRead>,
         now: Timestamp,
     },
     /// The cache was read: the last viewer's Observation, none, or why not.

@@ -11,7 +11,9 @@
 //! where the base branch is, and the sheet shows (and the executor re-checks)
 //! that commit like a PR head.
 
-use super::{BaseRef, Refusal, RefusalReason, Target, TargetChoice, names};
+use super::{
+    BaseRef, Refusal, RefusalReason, Target, TargetChoice, landing::LandingGroupPlan, names,
+};
 use crate::{
     decide::Decision,
     domain::{NextStep, Observation, Repo, WorkItemId},
@@ -35,6 +37,8 @@ pub(super) struct Facts {
     pub branch: String,
     /// A new `<type>_<slug>` branch: its name is the worktree name, suffix included.
     pub new_branch: bool,
+    /// Land (#40): the Landing Group the Job lands. `None` for every other kind.
+    pub landing: Option<LandingGroupPlan>,
 }
 
 /// The target a choice names, and whether it is archived.
@@ -94,7 +98,10 @@ pub(super) fn facts(
         reasons.push(RefusalReason::WorkItemGone);
         return Err(Refusal { reasons });
     }
-    let repo = item.repo();
+    let Some(repo) = item.repo() else {
+        reasons.push(RefusalReason::LinearIssueNotLaunchable);
+        return Err(Refusal { reasons });
+    };
     let Some(repo_facts) = observation.repo(repo) else {
         reasons.push(RefusalReason::RepoUnknown { repo: repo.clone() });
         return Err(Refusal { reasons });
@@ -145,6 +152,11 @@ pub(super) fn facts(
             reasons.push(RefusalReason::WorkItemGone);
             return Err(Refusal { reasons });
         }
+        // Refused above: a Linear Issue has no Repo.
+        WorkItemId::LinearIssue { .. } => {
+            reasons.push(RefusalReason::LinearIssueNotLaunchable);
+            return Err(Refusal { reasons });
+        }
     };
     let (Some((base, branch, new_branch)), true) = (start, reasons.is_empty()) else {
         return Err(Refusal { reasons });
@@ -160,6 +172,7 @@ pub(super) fn facts(
         base_commit: None,
         branch,
         new_branch,
+        landing: None,
     })
 }
 
@@ -203,5 +216,8 @@ fn observed(item: &WorkItemId, observation: &Observation) -> bool {
             .pull_requests
             .iter()
             .any(|p| &p.repo == repo && p.number == *number),
+        WorkItemId::LinearIssue { issue, .. } => {
+            observation.linear.issues.iter().any(|i| &i.id == issue)
+        }
     }
 }

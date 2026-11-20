@@ -29,17 +29,25 @@ pub fn detail(checks: &[JobCheck], item: &WorkItemId) -> Option<JobDetail> {
             "The Job's worktree is unknown: {why}. den doesn't treat it as gone and deletes nothing"
         ),
     };
+    // A Land Job covering a member names its Landing Group (#40).
+    let land_job = job
+        .subject
+        .landing_group()
+        .map(|group| format!("Land Job of {}: {}", group.identifier, group.members_text()));
     Some(JobDetail {
         marker: marker(&check.state),
         summary,
-        lines: vec![
-            job.worktree.display().to_string(),
-            format!(
-                "session {}, launched {}",
-                job.session,
-                job.launched_at.strftime("%Y-%m-%d %H:%M UTC")
-            ),
-            format!("branch {}", job.branch),
-        ],
+        lines: land_job
+            .into_iter()
+            .chain([
+                job.worktree.display().to_string(),
+                format!(
+                    "session {}, launched {}",
+                    job.session,
+                    job.launched_at.strftime("%Y-%m-%d %H:%M UTC")
+                ),
+                format!("branch {}", job.branch),
+            ])
+            .collect(),
     })
 }

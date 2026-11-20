@@ -10,15 +10,15 @@ use den::{
     app::{Effect, Event, Key, LogLevel, SurveyId},
     config::{self, ConfigError},
     domain::{
-        Incompleteness, LinearSourceKind, NextStep, SourceKind, SourceState, UpstreamTargets,
-        WaitingOn,
+        Coverage, Incompleteness, LinearPart, LinearSourceKind, NextStep, Source, SourceKind,
+        SourceState, UpstreamTargets, WaitingOn,
     },
-    ports::{SurveyFailure, SurveyRequest},
+    ports::{LinearSurvey, SurveyFailure, SurveyRequest},
 };
 use std::path::{Path, PathBuf};
 use support::{
     build::{ME, ObservationBuilder, now, pr},
-    harness::Harness,
+    harness::{Harness, config_with_linear},
 };
 
 #[test]
@@ -166,6 +166,14 @@ fn errors_alongside_data_show_as_incomplete_not_as_success() {
 /// Milestone-2 groundwork (#31): an Owner without a Linear Workflow records
 /// no Linear source, so the missing Linear part never stops "Nothing needs
 /// you"; a Linear source once recorded counts like any GitHub one.
+///
+/// Changed in #32: the Linear sources used to arrive on the GitHub survey's
+/// Observation, because no Linear source existed. They now come from the
+/// Linear source of an Owner with a Linear Workflow (the App drops any Linear
+/// coverage a GitHub answer carries, as GitHub can't report on Linear), so
+/// the incomplete cases configure one and script the Linear answer. Not yet
+/// fetched is a Linear survey that recorded nothing for the source, which
+/// the App must still count as not fetched.
 #[test]
 fn linear_sources_count_toward_nothing_needs_you_only_when_recorded() {
     let mut github_only = Harness::with_owners(&["alpha"]);
@@ -181,15 +189,31 @@ fn linear_sources_count_toward_nothing_needs_you_only_when_recorded() {
             error: "Linear did not answer".to_owned(),
         },
     ] {
-        let mut harness = Harness::with_owners(&["alpha"]);
+        let mut harness = Harness::new(Ok(config_with_linear(&["alpha"], &[("alpha", "acme")])));
         harness.answer(Ok(ObservationBuilder::new()
             .fully_read_owner("alpha")
-            .owner_coverage(
-                "alpha",
-                SourceKind::Linear(LinearSourceKind::AssignedIssues),
-                state.clone(),
-            )
             .build()));
+        let mut coverage = Coverage::default();
+        coverage.record(
+            Source::Owner {
+                owner: "alpha".to_owned(),
+                kind: SourceKind::Linear(LinearSourceKind::Viewer),
+            },
+            SourceState::Complete,
+        );
+        if state != SourceState::NotYetFetched {
+            coverage.record(
+                Source::Owner {
+                    owner: "alpha".to_owned(),
+                    kind: SourceKind::Linear(LinearSourceKind::AssignedIssues),
+                },
+                state.clone(),
+            );
+        }
+        harness.linear.push_answer(LinearSurvey {
+            part: LinearPart::default(),
+            coverage,
+        });
         let view = harness.start().clone();
         let empty = view.list.empty.expect("empty");
         assert_ne!(empty.title, "Nothing needs you.", "{state:?}");

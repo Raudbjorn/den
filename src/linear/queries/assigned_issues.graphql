@@ -1,0 +1,18 @@
+query LinearAssignedIssues($first: Int!, $after: String, $attachmentsPerIssue: Int!) {
+  viewer {
+    assignedIssues(
+      first: $first
+      after: $after
+      orderBy: updatedAt
+      filter: { state: { type: { nin: ["completed", "canceled"] } } }
+    ) {
+      nodes {
+        ...LinearIssueFields
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}

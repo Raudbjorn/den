@@ -34,6 +34,7 @@ use den::{
     handoff::prompts,
     jobs::FileJobStore,
     launcher::{KittyLauncher, LaunchEnvironment},
+    linear::LinearApi,
     logging::{self, LoggingError},
     paths::{Paths, PathsError},
     ports::{Ports, SystemClock, UpstreamStore},
@@ -415,13 +416,23 @@ fn run(args: &[String]) -> Result<(), DenError> {
     tracing::info!(config = %paths.config_file.display(), "den starting");
     let theme = Theme::new(TerminalProfile::from_env()?)?;
     let graphics = requested_graphics()?;
-    let config = config::load(&paths.config_file);
+    // A Linear Workflow whose key variable isn't set is a config error naming
+    // the variable; the key itself is only read by the Linear source.
+    let config = config::load(&paths.config_file).and_then(|config| {
+        config.check_linear_keys(&paths.config_file, |name| std::env::var_os(name))?;
+        Ok(config)
+    });
     if let Err(error) = &config {
         tracing::error!(%error, "config");
     }
     let prompts = prompts::load(&paths.prompts_file);
-    if let Err(error) = &prompts {
-        tracing::error!(%error, "prompts");
+    match &prompts {
+        Err(error) => tracing::error!(%error, "prompts"),
+        Ok(prompts) => {
+            for error in prompts.problems() {
+                tracing::error!(%error, "prompts: a template den won't launch with");
+            }
+        }
     }
     let upstream_store = FileUpstreamStore::in_state_dir(&paths.state_dir);
     let upstreams = upstream_store.load();
@@ -430,9 +441,11 @@ fn run(args: &[String]) -> Result<(), DenError> {
     }
     let mut app = App::new(config)
         .with_launch_settings(prompts, paths.default_clone_root.clone())
+        .with_claude_dir(paths.claude_dir.clone())
         .with_upstreams(upstreams);
     let ports = Ports {
         github: Arc::new(GhSource::new(GhCli::new())),
+        linear: Arc::new(LinearApi::new(Arc::new(SystemClock))),
         cache: Arc::new(FileCache::in_state_dir(&paths.state_dir)),
         workspace: Arc::new(GitWorkspace::new()),
         launcher: Arc::new(KittyLauncher::new(LaunchEnvironment::from_env(|name| {

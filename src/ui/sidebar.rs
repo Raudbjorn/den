@@ -87,7 +87,7 @@ pub fn draw(
             break;
         }
         let cursor = sidebar.focused && sidebar.cursor == Some(index);
-        let ctx = row_context(row, cursor, shared.tick, shared.incomplete, &marks);
+        let ctx = row_context(row, cursor, &shared, &marks);
         theme.draw(frame, templates::SIDEBAR_ROW, &ctx, row_area)?;
     }
     Ok(())
@@ -96,15 +96,18 @@ pub fn draw(
 fn row_context(
     row: &SidebarRow,
     cursor: bool,
-    tick: &str,
-    incomplete: &str,
+    shared: &glyphs::Glyphs,
     marks: &RepoGlyphs,
 ) -> TemplateContext {
+    let (tick, incomplete) = (shared.tick, shared.incomplete);
     let heading = row.entry != SidebarEntry::Repo;
-    let label = if heading {
-        row.label.clone()
-    } else {
+    let label = if !heading {
         format!("{REPO_INDENT}{}", row.label)
+    } else if row.linear_workflow {
+        // An Owner with a Linear Workflow: the glyph says so, not colour.
+        format!("{} {}", row.label, shared.linear)
+    } else {
+        row.label.clone()
     };
     let mut icons = String::new();
     if row.fork {

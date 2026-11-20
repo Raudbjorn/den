@@ -95,6 +95,7 @@ fn decide_one(ctx: &Context<'_>, run: &Run) -> Option<Decision> {
     };
     let item = WorkItem {
         id: run.id(),
+        identifier: None,
         title: run.workflow_name.clone(),
         url: run.url.clone(),
         // When the failing attempt ran; GitHub's own `updated_at` drifts.

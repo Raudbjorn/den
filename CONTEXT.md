@@ -49,12 +49,24 @@ A GitHub Actions workflow run. Only ever means this.
 _Avoid_: Pending run (for anything that is not a workflow run), job (for workflow runs)
 
 **Linear Issue**:
-An issue in the Linear workspace of an Owner's Linear Workflow. "Issue" alone always means a GitHub Issue.
+An issue in the Linear workspace of an Owner's Linear Workflow. "Issue" alone always means a GitHub Issue. It is identified by its workspace and Linear's permanent ID; its identifier (`TEAM-123`) changes when it moves to another team.
 _Avoid_: Ticket, task, Issue (unqualified)
+
+**Linear viewer**:
+The Linear account a Linear Workflow's API key belongs to, in that workspace. A Linear Issue is Waiting On you when its assignee is the Linear viewer; a Linear account is never matched to a GitHub login.
+_Avoid_: Linear user (for the viewer), Linear me
 
 **Landing Group**:
 A Linear Issue together with the Pull Requests, in any of its Owner's Repos, that implement it and land together. Each Pull Request keeps its own Next Step; the group decides when they may land.
 _Avoid_: Issue group, PR group, release
+
+**Attached**:
+How a Pull Request becomes a member of a Landing Group: Linear records it as an attachment of the Linear Issue, by a URL that names the Pull Request's Owner, Repo and number. It is the only way to be a member. A Pull Request attached to two Linear Issues is a member of both and is **ambiguous**; a member den can't see (another Owner's Repo, a Repo it didn't survey, or one whose Pull Requests it didn't read completely) is **not surveyed**, never absent.
+_Avoid_: Linked (a GitHub Issue's link to a Pull Request), associated
+
+**Hint**:
+A Pull Request whose branch name contains a Linear Issue's identifier on word boundaries (`TEAM-1` in `me/team-1-fix`, never in `team-12-fix`). Shown as "possibly for TEAM-1" and never a member: it can't hold up, authorize or withhold anything.
+_Avoid_: Guess, match, probable member
 
 **Next Step**:
 The single action a Work Item needs next to move forward, regardless of who has to take it.
@@ -91,15 +103,27 @@ Each Work Item has at most one. An Issue with a linked open Pull Request has non
 - **Review**: a Pull Request is waiting for a requested review.
 - **Merge**: a Pull Request is approved, passing and mergeable.
 - **Triage**: an Issue has neither labels nor an assignee.
-- **Implement**: an Issue is ready to be worked on.
+- **Implement**: an Issue is ready to be worked on, or a Linear Issue is assigned and has no Pull Request yet.
 - **Open PR**: a Branch has unmerged commits and no Pull Request.
 - **Prune or revive**: a Stale Branch needs a decision.
+- **Start**: an unassigned Linear Issue in one of its Linear Workflow's start teams, not yet started and with no Pull Request, can be picked up. "Not yet started" is Linear's unstarted state type, or backlog when the workflow includes it; the workflow may also limit Start to the active cycle. Start is Waiting On nobody: anyone may pick it up.
+- **Request review**: a Pull Request in a Linear Workflow, with no review request pending, has no approval at its current head, or a reviewer whose feedback was given on an older head and needs a fresh look. Its author asks reviewers, or asks them again.
+- **Land**: every open Pull Request of a Landing Group outside Held Repos would Merge, none is ambiguous, not surveyed or in a merge queue, and den read all of the Linear Issue's attachments and those Pull Requests' facts, so the group can land as a whole. Waiting On the Linear assignee. Each such member shows no Next Step of its own and "lands with TEAM-123" instead of Merge, so half a group is never merged by itself. A held member never blocks Land and is never landed; otherwise the Linear Issue has no Next Step and its Explanation names each blocking member.
+- **Mark for release**: a Linear Issue has no open Pull Request (held ones included), at least one of its Pull Requests is known to have merged (den reads a member's state by number when it isn't among the open Pull Requests; closed without merging is no evidence), and its state is neither the release state nor completed or canceled, so it can move to its release state. Waiting On the Linear assignee. It claims only that Pull Requests merged, never that the work shipped. A Linear Issue already in the release state has no Next Step: release is outside den.
 
 ### Doing it
 
 **Job**:
 A Claude Code session den launched to carry out one Next Step, in its own worktree and window.
 _Avoid_: Run, task, session (alone)
+
+**Coordination Job**:
+A Job that coordinates rather than codes: it asks for review (Request review) or lands a Landing Group (Land). It still gets a worktree on a PR head, but Claude Code runs it in a permission mode that asks before acting, shown on the sheet; Jobs that change code keep their usual command.
+_Avoid_: Ops job, admin job, meta job
+
+**Verdict-only Review Job**:
+A Review Job for a Pull Request of an Owner with a Linear Workflow. It is told to return a verdict only (no edits, commits, approvals, change requests or posts; the user decides what to publish), gets the Linear Issue's identifier and URL when the Pull Request is in a Landing Group, and runs in the same ask-first permission mode as a Coordination Job.
+_Avoid_: Read-only review, dry-run review
 
 **Live Job**:
 A Job whose worktree still exists. A Work Item with a Live Job is not launched again without asking.

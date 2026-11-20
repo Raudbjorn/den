@@ -13,6 +13,7 @@
 //!   Job-record and Upstream-choice adapters.
 //! - [`runtime`]: performing Effects (background worker, or synchronously).
 //! - [`ordering`], [`config`], [`paths`], [`logging`], [`process`].
+//! - [`paging`]: walking one paginated list, shared by the GitHub and Linear sources.
 //! - [`layout`]: the responsive layout (plate widths, narrow terminals).
 //! - [`palette`], [`ui`], [`terminal`]: IRONMAW Oxide rendering of the ViewModel.
 
@@ -27,8 +28,10 @@ pub mod handoff;
 pub mod jobs;
 pub mod launcher;
 pub mod layout;
+pub mod linear;
 pub mod logging;
 pub mod ordering;
+pub mod paging;
 pub mod palette;
 pub mod paths;
 pub mod ports;

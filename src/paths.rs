@@ -3,6 +3,8 @@
 //! - config: `$XDG_CONFIG_HOME/den/config.toml`, else `~/.config/den/config.toml`
 //! - prompts: `prompts.toml` beside the config
 //! - state (log, cache in `cache/`, Job records in `jobs.json`): `$XDG_STATE_HOME/den/`, else `~/.local/state/den/`
+//! - the user's Claude directory, read for the workflow availability check
+//!   (#41): `$CLAUDE_CONFIG_DIR`, else `~/.claude`, as Claude Code finds it
 //!
 //! Relative XDG values are ignored, as the spec requires.
 
@@ -16,6 +18,8 @@ const DEFAULT_CLONE_ROOT: &str = "dev";
 const LOG_FILE: &str = "den.log";
 const DEFAULT_CONFIG_HOME: &str = ".config";
 const DEFAULT_STATE_HOME: &str = ".local/state";
+/// Claude Code's own directory under HOME, when `CLAUDE_CONFIG_DIR` is unset.
+const DEFAULT_CLAUDE_DIR: &str = ".claude";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
@@ -25,6 +29,9 @@ pub struct Paths {
     pub state_dir: PathBuf,
     /// `~/dev`, the default Main Clone search root; `None` without a HOME.
     pub default_clone_root: Option<PathBuf>,
+    /// `$CLAUDE_CONFIG_DIR`, else `~/.claude`; `None` when neither is an
+    /// absolute path. Only read, never written.
+    pub claude_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -55,6 +62,8 @@ impl Paths {
             prompts_file: config_dir.join(PROMPTS_FILE),
             state_dir: base("XDG_STATE_HOME", DEFAULT_STATE_HOME, "state")?.join(APP_DIR),
             default_clone_root: home.as_ref().map(|h| h.join(DEFAULT_CLONE_ROOT)),
+            claude_dir: absolute("CLAUDE_CONFIG_DIR")
+                .or_else(|| home.as_ref().map(|h| h.join(DEFAULT_CLAUDE_DIR))),
         })
     }
 

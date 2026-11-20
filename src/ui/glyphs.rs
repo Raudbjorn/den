@@ -22,6 +22,9 @@ pub struct Glyphs {
     pub job_missing: &'static str,
     /// A Job whose worktree den can't tell about (amber).
     pub job_unknown: &'static str,
+    /// A Linear Issue in the list, and an Owner with a Linear Workflow in the
+    /// sidebar and header (#32).
+    pub linear: &'static str,
     /// The ViewModel's [`SEPARATOR`] in this profile.
     pub separator: &'static str,
     /// The ViewModel's [`ELLIPSIS`] in this profile.
@@ -62,6 +65,7 @@ pub fn for_profile(profile: GlyphProfile) -> Glyphs {
             live_job: "●",
             job_missing: "○",
             job_unknown: "◌",
+            linear: "◇",
             separator: "·",
             ellipsis: "…",
             enter: "⏎",
@@ -76,6 +80,7 @@ pub fn for_profile(profile: GlyphProfile) -> Glyphs {
             live_job: "*",
             job_missing: "o",
             job_unknown: "~",
+            linear: "[L]",
             separator: "-",
             ellipsis: "...",
             enter: "RET",

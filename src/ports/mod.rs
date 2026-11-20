@@ -1,6 +1,6 @@
 //! Ports: den's I/O behind traits, so the App and its tests never touch the
 //! network, git, kitty or the clock directly. Real adapters live in
-//! `crate::github`, `crate::cache`, `crate::workspace`, `crate::launcher`,
+//! `crate::github`, `crate::linear`, `crate::cache`, `crate::workspace`, `crate::launcher`,
 //! `crate::jobs` and `crate::upstreams`; fakes live with the tests (`tests/support/fakes.rs`).
 
 mod perform;
@@ -9,8 +9,15 @@ pub use perform::perform;
 
 use crate::{
     cache::{CacheError, CachedObservation},
-    domain::{Observation, UpstreamTargets},
-    handoff::{PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode},
+    config::LinearWorkflow,
+    domain::{
+        Coverage, LinearPart, Observation, UpstreamTargets,
+        facts::{MemberPullRequestState, PullRequestRef},
+    },
+    handoff::{
+        PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode,
+        workflows::{ClaudeDir, PluginsRead},
+    },
     jobs::{JobRecord, JobStoreError},
     upstreams::UpstreamStoreError,
 };
@@ -71,6 +78,54 @@ impl SurveyFailure {
 /// Reads GitHub. Read-only by construction (ADR-0002): there is no write method.
 pub trait GitHubSource: Send + Sync {
     fn survey(&self, request: &SurveyRequest) -> Result<Observation, SurveyFailure>;
+    /// Reads the states of Landing Group members den didn't find among the
+    /// open Pull Requests (#37), by Owner, Repo and number. Never fails: what
+    /// it couldn't read is coverage (`SourceKind::MemberStates` per Owner).
+    fn member_states(&self, request: &MemberStatesRequest) -> MemberStatesRead;
+}
+
+/// Which Landing Group members' states to read (#37): Pull Requests attached
+/// to a Linear Issue that weren't among their Repo's open Pull Requests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberStatesRequest {
+    pub pull_requests: Vec<PullRequestRef>,
+}
+
+/// What a read of members' states found, and its coverage: one
+/// `Source::Owner { kind: SourceKind::MemberStates }` entry per Owner asked
+/// about. A member without a state here wasn't read; its Owner's entry says
+/// why.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MemberStatesRead {
+    pub states: Vec<MemberPullRequestState>,
+    /// The members den sent to GitHub (all of them, unless the read was
+    /// bounded or stopped): the ones of these without a state were asked
+    /// about and not answered.
+    pub asked: Vec<PullRequestRef>,
+    pub coverage: Coverage,
+}
+
+/// What to survey in Linear: the Linear Workflows, one per Owner that has one.
+/// Never empty when sent: without Linear Workflows den asks Linear nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinearSurveyRequest {
+    pub workflows: Vec<LinearWorkflow>,
+}
+
+/// What one Linear survey read: the Observation's Linear part, and the
+/// coverage of its Linear sources (`Source::Owner { kind: SourceKind::Linear(..) }`
+/// only). A source that couldn't be read is coverage, never an error: the
+/// survey always answers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LinearSurvey {
+    pub part: LinearPart,
+    pub coverage: Coverage,
+}
+
+/// Reads Linear for the Owners with a Linear Workflow. Read-only: the two
+/// Linear writes ADR-0004 allows are a separate port (#38).
+pub trait LinearSource: Send + Sync {
+    fn survey(&self, request: &LinearSurveyRequest) -> LinearSurvey;
 }
 
 /// den's own on-disk cache of the last Observation, per viewer. Read-only
@@ -140,6 +195,18 @@ pub trait Workspace: Send + Sync {
     /// clone's remote for `url` is named `remote`, whatever the user's git
     /// config would name it, so the fetch that follows finds it.
     fn clone_repo(&self, url: &str, remote: &str, into: &Path) -> Result<(), WorkspaceError>;
+    /// What defines slash commands in the Claude directory `dir` (`~/.claude`
+    /// or a Main Clone's `.claude`, #41): the Markdown files under
+    /// `commands/` and the folders under `skills/` holding a `SKILL.md`.
+    /// Reads only. A folder that isn't there reads as empty; one that can't
+    /// be read fully is an error for that folder.
+    fn claude_dir(&self, dir: &Path) -> ClaudeDir;
+    /// The plugins Claude Code lists as installed in the user's Claude
+    /// directory `claude_dir` (`plugins/installed_plugins.json`, #41), each
+    /// with its `commands/` files and the skill folders under its `skills/`.
+    /// Reads only. A missing or unparseable list is
+    /// [`PluginsRead::NotChecked`], never an error.
+    fn installed_plugins(&self, claude_dir: &Path) -> PluginsRead;
 }
 
 /// A worktree to add: where, on which branch, starting how.
@@ -225,6 +292,7 @@ impl Clock for SystemClock {
 #[derive(Clone)]
 pub struct Ports {
     pub github: Arc<dyn GitHubSource>,
+    pub linear: Arc<dyn LinearSource>,
     pub cache: Arc<dyn ObservationCache>,
     pub workspace: Arc<dyn Workspace>,
     pub launcher: Arc<dyn Launcher>,

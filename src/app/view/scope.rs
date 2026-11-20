@@ -9,6 +9,8 @@ use crate::{
 
 const ALL_OWNERS: &str = "All Owners";
 const NO_OWNERS: &str = "No Owners configured";
+/// Said in the Scope sentence of an Owner (or its Repo) with a Linear Workflow.
+const LINEAR_WORKFLOW: &str = "Linear Workflow";
 
 /// `(sentence, segments)`, e.g. ("Repo · octo/app · fork of up/app", [All
 /// Owners, octo, app*]).
@@ -46,23 +48,31 @@ pub fn describe(state: &State<'_>) -> (String, Vec<ScopeSegment>) {
             sentence
         }
     };
-    let mut segments = vec![segment(ALL_OWNERS, current == &Scope::AllOwners)];
-    segments.extend(
-        state
-            .owners
-            .iter()
-            .map(|owner| segment(owner, current.same(&Scope::Owner(owner.clone())))),
-    );
+    let sentence = match current.owner() {
+        Some(owner) if super::has_linear_workflow(state, owner) => {
+            format!("{sentence} {SEPARATOR} {LINEAR_WORKFLOW}")
+        }
+        _ => sentence,
+    };
+    let mut segments = vec![segment(ALL_OWNERS, current == &Scope::AllOwners, false)];
+    segments.extend(state.owners.iter().map(|owner| {
+        segment(
+            owner,
+            current.same(&Scope::Owner(owner.clone())),
+            super::has_linear_workflow(state, owner),
+        )
+    }));
     if let Scope::Repo(id) = current {
-        segments.push(segment(&id.name, true));
+        segments.push(segment(&id.name, true, false));
     }
     (sentence, segments)
 }
 
-fn segment(label: &str, active: bool) -> ScopeSegment {
+fn segment(label: &str, active: bool, linear_workflow: bool) -> ScopeSegment {
     ScopeSegment {
         label: label.to_owned(),
         active,
+        linear_workflow,
     }
 }
 
