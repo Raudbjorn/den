@@ -619,3 +619,37 @@ fn a_cache_write_failure_is_logged_and_nothing_else_changes() {
     ));
     assert_eq!(harness.view, before);
 }
+
+#[test]
+fn a_repo_read_completely_drops_its_closed_prs_even_when_its_owner_was_read_in_part() {
+    let mut harness = Harness::with_owners(&["alpha"]);
+    harness.answer(Ok(ObservationBuilder::new()
+        .observed_at(EARLIER)
+        .fully_read_owner("alpha")
+        .repo("alpha/app")
+        .repo("alpha/web")
+        .pull_request(pr("alpha/app", 1).title("Closed since"))
+        .pull_request(pr("alpha/web", 3).title("Maybe still open"))
+        .build()));
+    harness.start();
+    // alpha's PR list stopped after its first page, but alpha/app's own PRs were
+    // read to the end (its later pages, Repo by Repo): alpha/app#1 is gone for
+    // sure. alpha/web has no source of its own, so whether the lost page held
+    // it is unknown and its PR is kept.
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("alpha")
+        .owner_coverage(
+            "alpha",
+            SourceKind::PullRequests,
+            SourceState::Partial(Incompleteness::PaginationStopped {
+                pages_read: 1,
+                reason: "page 2 lost".to_owned(),
+            }),
+        )
+        .repo_coverage("alpha/app", SourceKind::PullRequests, SourceState::Complete)
+        .repo("alpha/app")
+        .repo("alpha/web")
+        .build()));
+    refresh(&mut harness);
+    assert_eq!(references(&harness.view), ["alpha/web#3"]);
+}

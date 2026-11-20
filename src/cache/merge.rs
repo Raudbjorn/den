@@ -121,6 +121,11 @@ impl Reading {
     /// Should an earlier fact of this Repo and kind, absent from the refresh, be
     /// kept? Yes unless the refresh read its source completely, or no longer
     /// watches its Owner.
+    ///
+    /// A Repo the refresh recorded a source for is judged by that source alone:
+    /// read completely, its facts are all there even if a later page of its
+    /// Owner's list was lost. A Repo with no source of its own was read (or not)
+    /// as part of its Owner's list, so only a complete Owner says it is all there.
     fn keeps(&self, repo: &RepoId, kind: SourceKind) -> bool {
         if !self.owners.iter().any(|o| same_login(o, &repo.owner)) {
             return false;
@@ -131,10 +136,12 @@ impl Reading {
             kind,
         };
         let repo_source = Source::Repo { repo, kind };
-        let owner_complete = self.complete.contains(&owner_source);
-        let repo_complete =
-            !self.recorded.contains(&repo_source) || self.complete.contains(&repo_source);
-        !(owner_complete && repo_complete)
+        let read_completely = if self.recorded.contains(&repo_source) {
+            self.complete.contains(&repo_source)
+        } else {
+            self.complete.contains(&owner_source)
+        };
+        !read_completely
     }
 }
 
