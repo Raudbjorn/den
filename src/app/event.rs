@@ -33,6 +33,12 @@ pub enum Event {
         now: Timestamp,
     },
     Key(Key),
+    /// The terminal's size, in cells: sent once at start (before `Started` is
+    /// fine) and whenever it changes. Until then den assumes its design size.
+    Resized {
+        cols: u16,
+        rows: u16,
+    },
     /// Time passed (sent periodically so ages stay current).
     Tick {
         now: Timestamp,

@@ -10,12 +10,13 @@ mod scope;
 mod sidebar;
 
 use super::scope::ScopeState;
-use super::view_model::ViewModel;
+use super::view_model::{Overlay, ViewModel};
 use crate::{
     cache::Carried,
     config::{Config, ConfigError},
     decide::Decision,
     domain::Observation,
+    layout::Layout,
     ordering::Scope,
     ports::SurveyFailure,
 };
@@ -42,6 +43,8 @@ pub struct State<'a> {
     pub failure: Option<&'a SurveyFailure>,
     pub selected: Option<usize>,
     pub now: Option<Timestamp>,
+    pub layout: Layout,
+    pub overlay: Option<&'a Overlay>,
 }
 
 pub fn build(state: &State<'_>) -> ViewModel {
@@ -50,7 +53,18 @@ pub fn build(state: &State<'_>) -> ViewModel {
         sidebar: sidebar::build(state),
         list: list::build(state),
         detail: detail::build(state),
-        overlay: None,
+        overlay: state.overlay.cloned(),
         footer: footer::build(state),
+        layout: state.layout,
+        splash: splash(state),
     }
+}
+
+/// The splash stands in for the plates only while den has nothing else to show:
+/// the first survey is running and there is no Observation and no failure yet.
+fn splash(state: &State<'_>) -> bool {
+    state.config.is_ok()
+        && state.surveying
+        && state.observation.is_none()
+        && state.failure.is_none()
 }

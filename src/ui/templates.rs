@@ -55,3 +55,16 @@ pub const SIDEBAR: TemplateRef = section(SIDEBAR_FILE, "Sidebar");
 pub const ALL_SECTIONS: [TemplateRef; 8] = [
     HEADER, FOOTER, SUTURE_V, CHAMFER, LIST_ROWS, LIST_EMPTY, DETAIL, SIDEBAR,
 ];
+
+// The responsive frame and the bear (#10).
+/// The mark-tone plate under the header bear.
+pub const MARK_PLATE: TemplateRef = section(FRAME, "MarkPlate");
+/// The sidebar's plate (its content arrives with #9).
+pub const RAIL: TemplateRef = section(FRAME, "Rail");
+/// The splash: large bear, brand, what den is doing.
+pub const SPLASH: TemplateRef = section(FRAME, "Splash");
+/// A one-line caution over the footer (terminal smaller than supported).
+pub const NOTICE: TemplateRef = section(FRAME, "Notice");
+
+/// The sections the responsive frame adds (also checked by the template tests).
+pub const LAYOUT_SECTIONS: [TemplateRef; 4] = [MARK_PLATE, RAIL, SPLASH, NOTICE];

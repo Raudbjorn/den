@@ -29,6 +29,11 @@ toml = "1.2.1"
 jiff = { version = "1.0.1", features = ["serde"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "json", "std"] }
+# The bear (#10): rasterised from assets/brand/bear-mark.svg, drawn with the kitty
+# graphics protocol or half-blocks. Versions as proven in the prototype.
+ratatui-image = { version = "=12.0.0-rc.3", default-features = false, features = ["crossterm"] }
+image = { version = "0.25.6", default-features = false }
+resvg = { version = "0.50", default-features = false }
 
 [build-dependencies]
 # build.rs generates the Oxide palette from assets/tokens/oxide.tokens.json.
