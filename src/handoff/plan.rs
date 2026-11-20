@@ -10,6 +10,7 @@ use super::{
     cloning, command,
     inspect::CloneSearch,
     kinds::{self, Facts},
+    live::MAX_FRESH_BRANCH_CHARS,
     names,
     prompts::{PromptFields, Prompts, PromptsError},
     worktree_path,
@@ -56,6 +57,9 @@ pub struct PlanInput<'a> {
     pub choice: TargetChoice,
     pub view: &'a WorkspaceView,
     pub prompts: Result<&'a Prompts, &'a PromptsError>,
+    /// Start fresh beside a Live Job (#14): the suffix for the worktree name,
+    /// the local branch and the session name. `None` for a plain launch.
+    pub fresh: Option<u32>,
 }
 
 /// The facts for a launch, or every reason it can't happen. PRs here; Issues,
@@ -189,8 +193,17 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         .map_err(|why| reasons.extend(why))
         .ok();
 
-    // The worktree name: suffixed when other Work Items' Jobs have it.
-    let wanted = names::worktree_name(&facts.branch);
+    // Starting fresh beside a Live Job (#14) suffixes the worktree name, the
+    // local branch and the session, before any other collision is considered.
+    let beside_live_job = |name: String, max_chars: usize| match input.fresh {
+        Some(n) => names::suffixed_within(&name, n, max_chars),
+        None => name,
+    };
+    // The worktree name: suffixed (again) when other Work Items' Jobs have it.
+    let wanted = beside_live_job(
+        names::worktree_name(&facts.branch),
+        names::MAX_WORKTREE_NAME_CHARS,
+    );
     let records = view.jobs.as_ref().map_or(&[][..], Vec::as_slice);
     let named = found.as_ref().and_then(|(clone, _)| {
         let free = names::free_worktree_name(&wanted, &clone.path, item, facts.fresh, records);
@@ -207,7 +220,9 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     let branch_name = if facts.fresh {
         worktree_name.clone()
     } else {
-        facts.branch.clone()
+        // Beside a Live Job the local branch is new and tracks the same branch
+        // on the target's remote.
+        beside_live_job(facts.branch.clone(), MAX_FRESH_BRANCH_CHARS)
     };
 
     let base_commit = found
@@ -276,7 +291,10 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             branch: branch_name.clone(),
         },
     );
-    let session = names::session_name(item, facts.step);
+    let session = beside_live_job(
+        names::session_name(item, facts.step),
+        names::MAX_SESSION_NAME_CHARS,
+    );
     let renamed = named
         .filter(|(name, _)| *name != wanted)
         .map(|(_, taken_by)| Renamed { wanted, taken_by });

@@ -731,13 +731,20 @@ fn the_same_work_items_own_job_is_never_suffixed_around() {
     press(&mut harness, Key::Esc);
 
     // Launching ci.yml again is the Live Job question (#14), not a collision.
+    // Before #14 landed this was a WorktreeExists refusal naming the Job; with
+    // #14 the sheet asks "open existing or start fresh?" about that same Job,
+    // whose worktree is the unsuffixed one: nothing was suffixed around it.
     open_sheet(&mut harness, "octo/app workflow .github/workflows/ci.yml");
     let again = sheet(&harness);
-    assert_eq!(again.status, LaunchStatus::Refused);
+    assert_eq!(again.status, LaunchStatus::LiveJob, "{}", messages(again));
+    assert_eq!(
+        field(again, "JOB").0,
+        worktree(CLONE, "fix-ci_ci").display().to_string()
+    );
     assert!(
-        messages(again).starts_with("a Job for this Work Item (session app-ci-fix-ci"),
-        "{}",
-        messages(again)
+        field(again, "SESSION").0.starts_with("app-ci-fix-ci"),
+        "{:?}",
+        field(again, "SESSION")
     );
 }
 

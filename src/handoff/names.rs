@@ -41,6 +41,19 @@ pub fn pr_session_name(repo: &RepoId, number: u64, step: NextStep) -> String {
     )
 }
 
+/// `name` with a numeric suffix, `<name>-<n>`, for a Job started fresh beside a
+/// Live Job (#14). `name` is already clean (from [`worktree_name`],
+/// [`pr_session_name`] or a branch name); it is shortened, never the suffix, so
+/// the result stays within `max_chars` and stays distinct.
+pub fn suffixed_within(name: &str, n: u32, max_chars: usize) -> String {
+    let suffix = format!("-{n}");
+    let room = max_chars.saturating_sub(suffix.chars().count());
+    let base: String = name.chars().take(room).collect();
+    let base = base.trim_end_matches(['.', '-', '/']);
+    let base = if base.is_empty() { FALLBACK_NAME } else { base };
+    format!("{base}{suffix}")
+}
+
 /// The Claude Code session name for any Work Item's Job:
 /// `<repo>-pr12-<step>`, `<repo>-issue9-<step>`, `<repo>-<branch>-<step>` or
 /// `<repo>-<workflow>-<step>`.

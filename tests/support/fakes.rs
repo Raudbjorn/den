@@ -207,6 +207,28 @@ impl FakeWorkspace {
         });
     }
 
+    /// Marks the registered worktree at `path` locked and/or prunable.
+    pub fn flag_worktree(&self, clone: &str, path: &str, locked: bool, prunable: bool) {
+        self.with_clone(clone, |c| {
+            let worktree = c
+                .worktrees
+                .iter_mut()
+                .find(|w| w.path == Path::new(path))
+                .expect("a registered worktree at that path");
+            worktree.locked = locked;
+            worktree.prunable = prunable;
+        });
+    }
+
+    /// Something at `path` is gone (a folder removed by hand).
+    pub fn remove_existing(&self, path: &str) {
+        self.state
+            .lock()
+            .expect("lock")
+            .existing
+            .remove(Path::new(path));
+    }
+
     pub fn make_unwritable(&self, clone: &str) {
         self.with_clone(clone, |c| c.not_writable = true);
     }
@@ -236,7 +258,8 @@ impl FakeWorkspace {
             .insert(path.into());
     }
 
-    /// The next `operation` ("fetch", "add_worktree", "ls-remote") fails.
+    /// The next `operation` ("fetch", "add_worktree", "ls-remote",
+    /// "worktree-list") fails.
     pub fn fail(&self, operation: &str, error: &str) {
         self.state
             .lock()
@@ -358,10 +381,20 @@ impl Workspace for FakeWorkspace {
         Self::failure(&self.state.lock().expect("lock"), "check_tracking")
     }
 
+    /// Like `git worktree list`: the clone's own checkout first.
     fn worktrees(&self, clone: &Path) -> Result<Vec<RegisteredWorktree>, WorkspaceError> {
         let state = self.state.lock().expect("lock");
+        Self::failure(&state, "worktree-list")?;
         let fake = state.clones.get(clone).ok_or_else(|| no_clone(clone))?;
-        Ok(fake.worktrees.clone())
+        let own = RegisteredWorktree {
+            path: clone.to_owned(),
+            branch: None,
+            locked: false,
+            prunable: false,
+        };
+        Ok(std::iter::once(own)
+            .chain(fake.worktrees.iter().cloned())
+            .collect())
     }
 
     fn fetch(&self, clone: &Path, remote: &str, refspec: &str) -> Result<(), WorkspaceError> {

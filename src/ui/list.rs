@@ -7,7 +7,7 @@ use super::{
     templates,
     text::{self, LineStyle},
 };
-use crate::app::view_model::{List, Row};
+use crate::app::view_model::{JobMarker, List, Row};
 use crepuscularity_tui::TemplateContext;
 use ratatui::{Frame, layout::Rect};
 
@@ -130,6 +130,19 @@ fn row_context(row: &Row, selected: bool, glyphs: &glyphs::Glyphs) -> TemplateCo
         .set("reference", row.reference.as_str())
         .set("title", row.title.as_str())
         .set("waiting", row.waiting_label.as_str())
-        .set("age", row.age.as_str());
+        .set("age", row.age.as_str())
+        .set("job", job_glyph(row.job, glyphs))
+        .set("job_live", row.job == Some(JobMarker::Live))
+        .set("job_unknown", row.job == Some(JobMarker::Unknown));
     ctx
+}
+
+/// The Job marker before the title (#14): a glyph, coloured by the template.
+pub fn job_glyph(job: Option<JobMarker>, glyphs: &glyphs::Glyphs) -> &'static str {
+    match job {
+        Some(JobMarker::Live) => glyphs.live_job,
+        Some(JobMarker::Missing) => glyphs.job_missing,
+        Some(JobMarker::Unknown) => glyphs.job_unknown,
+        None => " ",
+    }
 }

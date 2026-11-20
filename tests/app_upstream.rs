@@ -23,7 +23,7 @@ use den::{
 };
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use support::{
-    build::{ME, ObservationBuilder, branch, pr, repo_id},
+    build::{ME, ObservationBuilder, branch, issue, pr, repo_id},
     fakes::{FakeCache, FakeUpstreams, WorkspaceCall},
     harness::Harness,
 };
@@ -298,7 +298,129 @@ fn the_per_job_override_on_the_sheet_changes_only_that_jobs_plan() {
     );
     press(&mut harness, Key::Esc);
     press(&mut harness, Key::Char('c'));
-    assert_eq!(target(sheet(&harness)).0, format!("upstream → {UPSTREAM}"));
+    // The launch above made PR #7 a Live Job (#14). Before #14 this sheet showed
+    // the Upstream TARGET field; now the Upstream launch is refused as at the
+    // start, so the sheet offers only to reopen the Live Job, and the refusal
+    // it gives for not starting fresh shows the Upstream target came back.
+    let next = sheet(&harness).clone();
+    assert_eq!(next.status, LaunchStatus::LiveJob, "{}", messages(&next));
+    assert!(
+        messages(&next).contains(
+            "Starting fresh isn't possible: PR #7 is in octo/app, not in upstream-org/app"
+        ),
+        "{}",
+        messages(&next)
+    );
+    let hints = |harness: &Harness| -> Vec<(String, String)> {
+        harness
+            .view
+            .footer
+            .hints
+            .iter()
+            .map(|h| (h.key.clone(), h.label.clone()))
+            .collect()
+    };
+    assert!(hints(&harness).contains(&("u".to_owned(), "the fork".to_owned())));
+    assert!(!hints(&harness).iter().any(|(key, _)| key == "f"));
+
+    // `u` on the question: this Job targets the fork, where starting fresh
+    // beside the Live Job is possible.
+    press(&mut harness, Key::Char('u'));
+    let on_fork = sheet(&harness).clone();
+    assert_eq!(
+        on_fork.status,
+        LaunchStatus::LiveJob,
+        "{}",
+        messages(&on_fork)
+    );
+    assert!(hints(&harness).contains(&("f".to_owned(), "start fresh".to_owned())));
+    assert!(hints(&harness).contains(&("u".to_owned(), "upstream".to_owned())));
+
+    // `f` then starts fresh on the fork the sheet now targets, not on the
+    // fork's own (Upstream) setting.
+    press(&mut harness, Key::Char('f'));
+    let fresh = sheet(&harness).clone();
+    assert_eq!(fresh.status, LaunchStatus::Ready, "{}", messages(&fresh));
+    assert_eq!(target(&fresh).0, FORK);
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 2);
+    assert_eq!(plans[1].target.repo, repo_id(FORK));
+    assert_eq!(plans[1].branch.name, "feature-7-2");
+    assert!(
+        plans[1].worktree.ends_with(".claude/worktrees/feature-7-2"),
+        "{}",
+        plans[1].worktree.display()
+    );
+}
+
+/// The Upstream's default branch tip in the fork's clone (`upstream/main`).
+const UPSTREAM_MAIN: &str = "00000000000000000000000000000000000000aa";
+
+/// `c` on the list row `reference`.
+fn open_sheet_on(harness: &mut Harness, reference: &str) {
+    let index = harness
+        .view
+        .list
+        .rows
+        .iter()
+        .position(|r| r.id.to_string() == reference)
+        .unwrap_or_else(|| panic!("no row {reference}"));
+    while harness.view.list.selected != Some(index) {
+        let before = harness.view.list.selected;
+        press(
+            harness,
+            if before.is_some_and(|s| s > index) {
+                Key::Up
+            } else {
+                Key::Down
+            },
+        );
+        assert_ne!(before, harness.view.list.selected, "selection stuck");
+    }
+    press(harness, Key::Char('c'));
+}
+
+#[test]
+fn starting_fresh_beside_a_live_job_keeps_the_sheets_upstream_target() {
+    // The fork targets its Upstream; an Issue in the fork starts from the
+    // Upstream's default branch.
+    let store = Arc::new(FakeUpstreams::holding(targets(&[FORK])));
+    let observation = ObservationBuilder::new()
+        .owner("octo")
+        .fork(FORK, Some(UPSTREAM))
+        .issue(issue(FORK, 9).assignee(ME).label("feature"))
+        .build();
+    let mut harness = started_with(&store, observation);
+    fork_clone(&harness);
+    harness
+        .workspace
+        .set_remote_head(CLONE, "upstream", "main", UPSTREAM_MAIN);
+
+    open_sheet_on(&mut harness, "octo/app#9");
+    let first = sheet(&harness).clone();
+    assert_eq!(first.status, LaunchStatus::Ready, "{}", messages(&first));
+    assert_eq!(target(&first).0, format!("upstream → {UPSTREAM}"));
+    press(&mut harness, Key::Enter);
+    assert_eq!(sheet(&harness).status, LaunchStatus::Launched);
+    press(&mut harness, Key::Esc);
+
+    // Again: a Live Job. `f` starts fresh for the sheet's target, the Upstream,
+    // not for the default target (the fork itself).
+    open_sheet_on(&mut harness, "octo/app#9");
+    assert_eq!(sheet(&harness).status, LaunchStatus::LiveJob);
+    press(&mut harness, Key::Char('f'));
+    let fresh = sheet(&harness).clone();
+    assert_eq!(fresh.status, LaunchStatus::Ready, "{}", messages(&fresh));
+    assert_eq!(target(&fresh).0, format!("upstream → {UPSTREAM}"));
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 2);
+    assert_eq!(plans[1].target.repo, repo_id(UPSTREAM));
+    assert_eq!(plans[1].remote.name, "upstream");
+    assert_eq!(plans[1].base.commit, UPSTREAM_MAIN);
+    assert_ne!(plans[1].worktree, plans[0].worktree);
+    assert_ne!(plans[1].branch.name, plans[0].branch.name);
 }
 
 #[test]
