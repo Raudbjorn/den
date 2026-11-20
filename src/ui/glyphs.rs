@@ -12,6 +12,8 @@ pub struct Glyphs {
     pub unattributed: &'static str,
     pub complete: &'static str,
     pub chamfer: &'static str,
+    /// The text cursor in an input field.
+    pub cursor: &'static str,
 }
 
 pub fn for_profile(profile: GlyphProfile) -> Glyphs {
@@ -22,6 +24,7 @@ pub fn for_profile(profile: GlyphProfile) -> Glyphs {
             unattributed: "?",
             complete: "✓",
             chamfer: "◢",
+            cursor: "▏",
         },
         GlyphProfile::Ascii => Glyphs {
             tick: ">",
@@ -29,6 +32,7 @@ pub fn for_profile(profile: GlyphProfile) -> Glyphs {
             unattributed: "?",
             complete: "+",
             chamfer: "/",
+            cursor: "|",
         },
     }
 }

@@ -3,15 +3,17 @@
 //! The App holds den's state and decides what to show and what to ask the ports
 //! for. It does no I/O and reads no clock: time arrives in events.
 
+mod editor;
 mod effect;
 mod event;
+mod launch;
 mod overlay;
 mod scope;
 mod view;
 pub mod view_model;
 
 pub use effect::{Effect, LogLevel, LogRecord};
-pub use event::{Event, Key, SurveyId};
+pub use event::{Event, Key, LaunchId, SurveyId};
 pub use scope::Focus;
 pub use view_model::ViewModel;
 
@@ -20,13 +22,23 @@ use crate::{
     config::{Config, ConfigError},
     decide::{self, Decision},
     domain::{Observation, SourceState, WorkItemId},
+    handoff::prompts::{Prompts, PromptsError},
     layout::{Layout, TerminalSize},
     ordering,
     ports::{SurveyFailure, SurveyRequest},
 };
 use jiff::Timestamp;
 use scope::ScopeState;
-use view_model::Overlay;
+use std::path::PathBuf;
+
+/// The sheet over the screen, if any, with its state.
+#[derive(Debug, Clone)]
+enum OverlayState {
+    /// The detail as a sheet on narrow terminals (#10).
+    DetailSheet,
+    /// The launch sheet (#11).
+    Launch(Box<launch::Sheet>),
+}
 
 pub struct App {
     config: Result<Config, ConfigError>,
@@ -51,7 +63,12 @@ pub struct App {
     /// The terminal's size, as last reported (`Event::Resized`).
     size: TerminalSize,
     /// The sheet drawn over the screen, if any.
-    overlay: Option<Overlay>,
+    overlay: Option<OverlayState>,
+    /// The prompts file's templates, or why it is unusable.
+    prompts: Result<Prompts, PromptsError>,
+    /// Where to search for Main Clones when the config sets no `main_clone_root`.
+    default_clone_root: Option<PathBuf>,
+    next_launch: u64,
 }
 
 impl App {
@@ -70,7 +87,22 @@ impl App {
             now: None,
             size: TerminalSize::DESIGN,
             overlay: None,
+            prompts: Ok(Prompts::default()),
+            default_clone_root: None,
+            next_launch: 0,
         }
+    }
+
+    /// Sets the launch settings that don't come from the config: the prompts
+    /// file (or why it is unusable) and the default Main Clone search root.
+    pub fn with_launch_settings(
+        mut self,
+        prompts: Result<Prompts, PromptsError>,
+        default_clone_root: Option<PathBuf>,
+    ) -> Self {
+        self.prompts = prompts;
+        self.default_clone_root = default_clone_root;
+        self
     }
 
     pub fn handle(&mut self, event: Event) -> (ViewModel, Vec<Effect>) {
@@ -91,6 +123,8 @@ impl App {
             }
             Event::CacheLoaded { outcome } => self.cache_loaded(outcome),
             Event::CacheStored { outcome } => cache_stored(outcome),
+            Event::LaunchInspected { id, view } => self.launch_inspected(id, view),
+            Event::LaunchFinished { id, report } => self.launch_finished(id, report),
         };
         (self.view(), effects)
     }
@@ -150,6 +184,12 @@ impl App {
     }
 
     fn key(&mut self, key: Key) -> Vec<Effect> {
+        // The launch sheet claims every key.
+        if let Some(OverlayState::Launch(_)) = &self.overlay
+            && let Some(OverlayState::Launch(sheet)) = self.overlay.take()
+        {
+            return self.launch_key(sheet, key);
+        }
         // An open sheet claims its keys before anything else.
         if self.overlay.is_some()
             && let Some(effects) = self.overlay_key(key)
@@ -181,7 +221,17 @@ impl App {
                 Vec::new()
             }
             Key::Char('r') => self.refresh(),
-            Key::Enter | Key::Esc | Key::Char(_) | Key::Left | Key::Right | Key::Tab => Vec::new(),
+            Key::Char('c') => self.open_launch_sheet(),
+            Key::Enter
+            | Key::Esc
+            | Key::Char(_)
+            | Key::Left
+            | Key::Right
+            | Key::Tab
+            | Key::Backspace
+            | Key::Delete
+            | Key::Home
+            | Key::End => Vec::new(),
         }
     }
 

@@ -46,6 +46,12 @@ pub enum LineStyle {
     Caution,
     Muted,
     Plain,
+    /// Checked and fine (success colour); the text carries a glyph too.
+    Good,
+    /// An input field's text.
+    Input,
+    /// An input field that has the keyboard.
+    InputActive,
 }
 
 pub fn line_context(text: &str, style: LineStyle) -> TemplateContext {
@@ -55,7 +61,10 @@ pub fn line_context(text: &str, style: LineStyle) -> TemplateContext {
         .set("is_strong", style == LineStyle::Strong)
         .set("is_step", style == LineStyle::Step)
         .set("is_caution", style == LineStyle::Caution)
-        .set("is_muted", style == LineStyle::Muted);
+        .set("is_muted", style == LineStyle::Muted)
+        .set("is_good", style == LineStyle::Good)
+        .set("is_input", style == LineStyle::Input)
+        .set("is_input_active", style == LineStyle::InputActive);
     ctx
 }
 

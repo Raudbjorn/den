@@ -5,8 +5,8 @@
 //!
 //! ```toml
 //! owners = ["Raudbjorn", "massif-network"]
-//! # main_clone_root = "/home/me/dev"            (Job handoff, #12)
-//! # [main_clones]                                (Job handoff, #12)
+//! # main_clone_root = "/home/me/dev"   where to look for Main Clones (default ~/dev)
+//! # [main_clones]                      per-Repo Main Clone overrides
 //! # "Raudbjorn/den" = "/home/me/dev/den"
 //! ```
 
@@ -26,9 +26,9 @@ const MAX_LOGIN_CHARS: usize = 39;
 pub struct Config {
     /// Watched Owners, in the order written, without duplicates.
     pub owners: Vec<String>,
-    /// Where to search for Main Clones. Read by the Job handoff ticket.
+    /// Where to search for Main Clones. Read by the launch handoff (#11).
     pub main_clone_root: Option<PathBuf>,
-    /// Per-Repo Main Clone overrides keyed by `owner/name`. Read by the Job handoff ticket.
+    /// Per-Repo Main Clone overrides keyed by `owner/name`. Read by the launch handoff (#11).
     pub main_clones: BTreeMap<String, PathBuf>,
 }
 
@@ -140,7 +140,7 @@ fn is_valid_login(login: &str) -> bool {
         && !login.ends_with('-')
 }
 
-fn location_of(text: &str, offset: usize) -> Location {
+pub(crate) fn location_of(text: &str, offset: usize) -> Location {
     let before = text.get(..offset).unwrap_or(text);
     let line = before.matches('\n').count() + 1;
     let column = before

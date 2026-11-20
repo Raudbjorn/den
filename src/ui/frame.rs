@@ -10,7 +10,7 @@
 use super::{
     Theme, UiError,
     bear::{BearArt, EMPTY_BEAR_MAX_ROWS, EMPTY_BEAR_MIN_ROWS, Placement, SPLASH_BEAR_MAX_ROWS},
-    detail, footer, glyphs, header, list, sidebar, templates,
+    detail, footer, glyphs, header, launch, list, sidebar, templates,
 };
 use crate::{
     app::{ViewModel, view_model::Overlay},
@@ -36,6 +36,10 @@ pub const SUTURE_COLS: u16 = 1;
 pub const DETAIL_SHEET_MAX_COLS: u16 = 60;
 /// Columns of the screen left uncovered beside the detail sheet, at least.
 const DETAIL_SHEET_MIN_UNCOVERED_COLS: u16 = 4;
+/// The launch sheet's width at most, in columns.
+pub const LAUNCH_SHEET_MAX_COLS: u16 = 110;
+/// Columns left uncovered on each side of the launch sheet, at least.
+const LAUNCH_SHEET_MARGIN_COLS: u16 = 2;
 /// Size of the chamfer on the detail plate's top-left corner, in cells.
 const CHAMFER_CELLS: u16 = 1;
 /// Columns between the header plate's left edge and the bear.
@@ -103,7 +107,15 @@ pub fn overlay_area(view: &ViewModel, area: Rect) -> Option<Rect> {
     let body = regions(area, &view.layout).body;
     view.overlay.as_ref().map(|overlay| match overlay {
         Overlay::DetailSheet => detail_sheet_area(body),
+        Overlay::LaunchSheet(_) => launch_sheet_area(area),
     })
+}
+
+/// The launch sheet: centred over the header and body (the footer shows its keys).
+fn launch_sheet_area(area: Rect) -> Rect {
+    let cols = LAUNCH_SHEET_MAX_COLS.min(area.width.saturating_sub(2 * LAUNCH_SHEET_MARGIN_COLS));
+    let rows = area.height.saturating_sub(FOOTER_ROWS);
+    Rect::new(area.x + (area.width - cols) / 2, area.y, cols, rows)
 }
 
 /// The detail sheet: right-aligned over the body, full body height.
@@ -209,6 +221,7 @@ pub fn draw(
     if let Some(overlay) = &view.overlay {
         match overlay {
             Overlay::DetailSheet => draw_detail_sheet(frame, theme, view, r.body)?,
+            Overlay::LaunchSheet(sheet) => draw_launch_sheet(frame, theme, sheet, area)?,
         }
     }
     Ok(())
@@ -293,6 +306,27 @@ fn draw_detail_sheet(
         Split::horizontal([Constraint::Length(SUTURE_COLS), Constraint::Fill(1)]).areas(sheet);
     draw_suture(frame, theme, suture)?;
     detail::draw(frame, theme, &view.detail, plate)?;
+    draw_chamfer(frame, theme, plate)
+}
+
+/// The launch sheet: a plate between two sutures, with the chamfer.
+fn draw_launch_sheet(
+    frame: &mut Frame,
+    theme: &Theme,
+    sheet: &crate::app::view_model::LaunchSheet,
+    area: Rect,
+) -> Result<(), UiError> {
+    let sheet_area = launch_sheet_area(area);
+    frame.render_widget(Clear, sheet_area);
+    let [left, plate, right] = Split::horizontal([
+        Constraint::Length(SUTURE_COLS),
+        Constraint::Fill(1),
+        Constraint::Length(SUTURE_COLS),
+    ])
+    .areas(sheet_area);
+    draw_suture(frame, theme, left)?;
+    draw_suture(frame, theme, right)?;
+    launch::draw(frame, theme, sheet, plate)?;
     draw_chamfer(frame, theme, plate)
 }
 

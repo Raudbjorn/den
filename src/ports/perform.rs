@@ -2,7 +2,10 @@
 //! worker and the seam-2 test harness, so tests exercise the same wiring.
 
 use super::Ports;
-use crate::app::{Effect, Event};
+use crate::{
+    app::{Effect, Event},
+    handoff,
+};
 
 /// Performs `effect` and returns the events it produced (none for effects the
 /// caller handles itself, such as Quit and Log).
@@ -21,6 +24,25 @@ pub fn perform(effect: &Effect, ports: &Ports) -> Vec<Event> {
         }],
         Effect::StoreCache { cached } => vec![Event::CacheStored {
             outcome: ports.cache.store(cached),
+        }],
+        Effect::InspectLaunch { id, request } => vec![Event::LaunchInspected {
+            id: *id,
+            view: Box::new(handoff::inspect(
+                request,
+                ports.workspace.as_ref(),
+                ports.launcher.as_ref(),
+                ports.jobs.as_ref(),
+            )),
+        }],
+        Effect::Launch { id, plan } => vec![Event::LaunchFinished {
+            id: *id,
+            report: Box::new(handoff::execute(
+                plan,
+                ports.workspace.as_ref(),
+                ports.launcher.as_ref(),
+                ports.jobs.as_ref(),
+                ports.clock.now(),
+            )),
         }],
         Effect::Quit | Effect::Log(_) => Vec::new(),
     }

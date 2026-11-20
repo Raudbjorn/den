@@ -1,7 +1,7 @@
 //! Ports: den's I/O behind traits, so the App and its tests never touch the
 //! network, git, kitty or the clock directly. Real adapters live in
-//! `crate::github` (and later `crate::workspace`, `crate::launcher`); fakes live
-//! with the tests (`tests/support/fakes.rs`).
+//! `crate::github`, `crate::cache`, `crate::workspace`, `crate::launcher` and
+//! `crate::jobs`; fakes live with the tests (`tests/support/fakes.rs`).
 
 mod perform;
 
@@ -10,9 +10,14 @@ pub use perform::perform;
 use crate::{
     cache::{CacheError, CachedObservation},
     domain::Observation,
+    handoff::{PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode},
+    jobs::{JobRecord, JobStoreError},
 };
 use jiff::Timestamp;
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 /// What to survey.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,13 +78,85 @@ pub trait ObservationCache: Send + Sync {
     fn store(&self, cached: &CachedObservation) -> Result<(), CacheError>;
 }
 
-/// git and the filesystem: Main Clones, worktrees, refs. Methods arrive with the
-/// launch sheet and Job handoff tickets (#11, #12).
-pub trait Workspace: Send + Sync {}
+/// git and the filesystem: Main Clones, worktrees, refs (spec, "Workspace").
+/// Every git call has a timeout. Nothing here deletes anything.
+pub trait Workspace: Send + Sync {
+    /// Git clones under `root` that could be Main Clones: folders whose `.git`
+    /// is a directory (not worktrees), at most a few levels deep, not hidden.
+    fn find_clones(&self, root: &Path) -> Result<Vec<PathBuf>, WorkspaceError>;
+    /// The clone's remotes, with their fetch URLs.
+    fn remotes(&self, clone: &Path) -> Result<Vec<Remote>, WorkspaceError>;
+    /// Whether `path` exists, and whether den may write in it.
+    fn path_state(&self, path: &Path) -> PathState;
+    /// The commit `reference` (a full ref name such as `refs/heads/x`) points
+    /// at in the clone; `Ok(None)` when it doesn't exist.
+    fn resolve(&self, clone: &Path, reference: &str) -> Result<Option<String>, WorkspaceError>;
+    /// The commit `branch` points at on `remote` right now (asks the remote,
+    /// changes nothing locally); `Ok(None)` when the remote has no such branch.
+    fn remote_branch_head(
+        &self,
+        clone: &Path,
+        remote: &str,
+        branch: &str,
+    ) -> Result<Option<String>, WorkspaceError>;
+    /// The worktrees git has registered for the clone, its own checkout first.
+    fn worktrees(&self, clone: &Path) -> Result<Vec<RegisteredWorktree>, WorkspaceError>;
+    /// Fetches `refspec` from `remote`.
+    fn fetch(&self, clone: &Path, remote: &str, refspec: &str) -> Result<(), WorkspaceError>;
+    /// Adds a worktree to the clone.
+    fn add_worktree(&self, clone: &Path, add: &WorktreeAdd) -> Result<(), WorkspaceError>;
+    // #12 adds `clone_repo` (into a folder that doesn't exist yet).
+}
 
-/// Opening a kitty window, or the clipboard fallback. Methods arrive with the
-/// Job handoff ticket (#12).
-pub trait Launcher: Send + Sync {}
+/// A worktree to add: where, on which branch, starting how.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeAdd {
+    pub path: PathBuf,
+    pub branch: String,
+    pub start: WorktreeStart,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorktreeStart {
+    /// Create `branch` at `start` (a remote-tracking ref), tracking it.
+    NewBranchTracking { start: String },
+    /// Check out the existing local `branch`.
+    ExistingBranch,
+}
+
+/// A Workspace operation that failed: what den tried, and what went wrong.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{operation}: {detail}")]
+pub struct WorkspaceError {
+    pub operation: String,
+    pub detail: String,
+}
+
+/// Opening a kitty window, or the clipboard fallback (spec, "Launcher").
+pub trait Launcher: Send + Sync {
+    /// Whether a window can open (den runs in kitty) or the clipboard is used.
+    fn window_mode(&self) -> WindowMode;
+    /// Claude Code (`claude`) is on PATH.
+    fn claude_available(&self) -> bool;
+    /// Opens a kitty OS window in `window.directory` running Claude Code.
+    fn open_window(&self, window: &WindowCommand) -> Result<(), LaunchError>;
+    /// Puts `text` on the clipboard.
+    fn copy_to_clipboard(&self, text: &str) -> Result<(), LaunchError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{operation}: {detail}")]
+pub struct LaunchError {
+    pub operation: String,
+    pub detail: String,
+}
+
+/// den's own record of the Jobs it launched (`crate::jobs`).
+pub trait JobStore: Send + Sync {
+    fn load(&self) -> Result<Vec<JobRecord>, JobStoreError>;
+    /// Adds one record; never removes any.
+    fn record(&self, job: &JobRecord) -> Result<(), JobStoreError>;
+}
 
 /// The current time, for events that report when something finished.
 pub trait Clock: Send + Sync {
@@ -95,12 +172,6 @@ impl Clock for SystemClock {
     }
 }
 
-/// The placeholder Workspace and Launcher until their tickets give them methods.
-pub struct Unimplemented;
-
-impl Workspace for Unimplemented {}
-impl Launcher for Unimplemented {}
-
 /// Every port, as the effect runner needs them.
 #[derive(Clone)]
 pub struct Ports {
@@ -108,5 +179,6 @@ pub struct Ports {
     pub cache: Arc<dyn ObservationCache>,
     pub workspace: Arc<dyn Workspace>,
     pub launcher: Arc<dyn Launcher>,
+    pub jobs: Arc<dyn JobStore>,
     pub clock: Arc<dyn Clock>,
 }

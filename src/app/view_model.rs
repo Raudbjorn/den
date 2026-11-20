@@ -165,13 +165,87 @@ pub struct DetailContent {
     pub observed: String,
 }
 
-/// Sheets drawn over the screen; at most one at a time. The launch sheet (#11)
-/// adds a variant.
+/// Sheets drawn over the screen; at most one at a time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Overlay {
     /// The selected Work Item's detail (`ViewModel::detail`) as a sheet, for
     /// terminals too narrow for the detail pane (`Enter` opens it, `Esc` closes).
     DetailSheet,
+    /// The launch sheet (`c`): what launching a Job will do, then what it did.
+    LaunchSheet(Box<LaunchSheet>),
+}
+
+/// The launch sheet. Every colour-coded meaning (`Tone`) is also in the text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchSheet {
+    pub label: String,
+    /// `owner/name #12`.
+    pub reference: String,
+    pub title: String,
+    /// The Next Step being handed off.
+    pub next_step: String,
+    pub status: LaunchStatus,
+    /// Where the sheet stands, in words, e.g. "Ready to launch".
+    pub headline: String,
+    /// Target, Main Clone, remote, base, branch, worktree, session, window.
+    pub fields: Vec<SheetField>,
+    /// The prompt, editable in place; `None` until there is a plan.
+    pub prompt: Option<PromptField>,
+    /// The exact command; `None` until there is a plan.
+    pub command: Option<String>,
+    /// Refusal reasons, what a launch did, notices.
+    pub messages: Vec<SheetMessage>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchStatus {
+    /// Looking at the workspace.
+    Inspecting,
+    /// `Enter` launches.
+    Ready,
+    /// The PR head moved since the sheet opened; `Enter` launches on the new one.
+    HeadMoved,
+    Refused,
+    Launching,
+    Launched,
+    /// A step failed; what ran before it is listed.
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SheetField {
+    /// "MAIN CLONE".
+    pub label: String,
+    pub value: String,
+    /// More about the value, e.g. "exists, writable".
+    pub note: Option<String>,
+    pub tone: Tone,
+}
+
+/// How a line is coloured; the text always says the same thing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Plain,
+    /// Checked and fine.
+    Good,
+    /// Needs attention: a refusal, a failure, a moved head.
+    Caution,
+    Muted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptField {
+    pub text: String,
+    /// The cursor, as a character index into `text`.
+    pub cursor: usize,
+    /// Keys are going into the field.
+    pub editing: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SheetMessage {
+    pub text: String,
+    pub tone: Tone,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -2,7 +2,7 @@
 //! narrow for the detail pane, `Enter` opens the detail as a sheet and `Esc` (or
 //! `Enter` again) closes it.
 
-use super::{App, Effect, Key, view_model::Overlay};
+use super::{App, Effect, Key, OverlayState};
 use crate::layout::{Layout, TerminalSize};
 
 impl App {
@@ -11,12 +11,12 @@ impl App {
     /// the detail sheet follows the selection.
     pub(super) fn overlay_key(&mut self, key: Key) -> Option<Vec<Effect>> {
         match (&self.overlay, key) {
-            (Some(Overlay::DetailSheet), Key::Esc | Key::Enter) => {
+            (Some(OverlayState::DetailSheet), Key::Esc | Key::Enter) => {
                 self.overlay = None;
                 Some(Vec::new())
             }
             (None, Key::Enter) if self.detail_needs_sheet() => {
-                self.overlay = Some(Overlay::DetailSheet);
+                self.overlay = Some(OverlayState::DetailSheet);
                 Some(Vec::new())
             }
             _ => None,
@@ -26,7 +26,9 @@ impl App {
     pub(super) fn resized(&mut self, size: TerminalSize) -> Vec<Effect> {
         self.size = size;
         // Wide enough again: the detail pane shows what the sheet showed.
-        if self.overlay == Some(Overlay::DetailSheet) && Layout::for_size(size).has_detail_pane() {
+        if matches!(self.overlay, Some(OverlayState::DetailSheet))
+            && Layout::for_size(size).has_detail_pane()
+        {
             self.overlay = None;
         }
         Vec::new()

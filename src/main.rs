@@ -7,6 +7,11 @@
 //! `den --dump COLSxROWS` runs one survey and prints the frame as plain text
 //! instead (a debugging aid).
 //!
+//! `den --launch OWNER/REPO#N [--prompt TEXT] [--yes]` drives the launch sheet
+//! without the TUI (for manual runs): it surveys, selects that PR, presses `c`,
+//! optionally replaces the prompt by typing it into the sheet's field, and
+//! prints the sheet. Only with `--yes` does it press `Enter` and launch.
+//!
 //! The bear is drawn with the kitty graphics protocol when the terminal answers
 //! to it, half-blocks otherwise; `DEN_GRAPHICS=kitty|halfblocks|off` overrides
 //! the detection.
@@ -16,13 +21,18 @@
 
 use crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use den::{
+    app::view_model::{LaunchStatus, Overlay},
     app::{App, Effect, Event, Key, ViewModel},
     cache::FileCache,
     config,
+    domain::{RepoId, WorkItemId},
     github::{GhSource, graphql::GhCli},
+    handoff::prompts,
+    jobs::FileJobStore,
+    launcher::{KittyLauncher, LaunchEnvironment},
     logging::{self, LoggingError},
     paths::{Paths, PathsError},
-    ports::{Ports, SystemClock, Unimplemented},
+    ports::{Ports, SystemClock},
     runtime::{self, Worker},
     terminal::TerminalSession,
     ui::{
@@ -30,6 +40,7 @@ use den::{
         bear::{BearArt, BearError, GRAPHICS_ENV, Graphics},
         frame,
     },
+    workspace::GitWorkspace,
 };
 use jiff::Timestamp;
 use raudbjorn_tui::profile::{ProfileError, TerminalProfile};
@@ -42,7 +53,9 @@ use std::{
 
 const EXIT_FAILURE: u8 = 1;
 const EXIT_USAGE: u8 = 2;
-const USAGE: &str = "usage: den [--dump COLSxROWS]";
+const USAGE: &str = "usage: den [--dump COLSxROWS | --launch OWNER/REPO#N [--prompt TEXT] [--yes]]";
+/// The terminal size `--launch` lays the sheet out for, in cells.
+const LAUNCH_DUMP_SIZE: (u16, u16) = (160, 45);
 /// How long to wait for a key before checking for finished work, in milliseconds.
 const INPUT_POLL_MS: u64 = 100;
 /// How often ages in the view are refreshed, in seconds.
@@ -64,11 +77,21 @@ enum DenError {
     Logging(#[from] LoggingError),
     #[error(transparent)]
     Graphics(#[from] BearError),
+    #[error("launch: {0}")]
+    Launch(String),
 }
 
 enum Mode {
     Interactive,
-    Dump { cols: u16, rows: u16 },
+    Dump {
+        cols: u16,
+        rows: u16,
+    },
+    Launch {
+        item: WorkItemId,
+        prompt: Option<String>,
+        confirm: bool,
+    },
 }
 
 fn parse_args(args: &[String]) -> Result<Mode, DenError> {
@@ -86,8 +109,46 @@ fn parse_args(args: &[String]) -> Result<Mode, DenError> {
                 ))),
             }
         }
+        [flag, item, rest @ ..] if flag == "--launch" => parse_launch(item, rest),
         other => Err(DenError::Usage(format!("unexpected arguments: {other:?}"))),
     }
+}
+
+fn parse_launch(item: &str, rest: &[String]) -> Result<Mode, DenError> {
+    let item = item
+        .split_once('#')
+        .and_then(|(repo, number)| {
+            let (owner, name) = repo.split_once('/')?;
+            Some(WorkItemId::PullRequest {
+                repo: RepoId::new(owner, name),
+                number: number.parse().ok()?,
+            })
+        })
+        .ok_or_else(|| {
+            DenError::Usage(format!(
+                "--launch expects OWNER/REPO#N such as Raudbjorn/den#12, got {item:?}"
+            ))
+        })?;
+    let mut prompt = None;
+    let mut confirm = false;
+    let mut args = rest.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--prompt" => match args.next() {
+                Some(text) => prompt = Some(text.clone()),
+                None => return Err(DenError::Usage("--prompt needs the prompt text".to_owned())),
+            },
+            "--yes" => confirm = true,
+            other => {
+                return Err(DenError::Usage(format!("unexpected argument {other:?}")));
+            }
+        }
+    }
+    Ok(Mode::Launch {
+        item,
+        prompt,
+        confirm,
+    })
 }
 
 fn translate_key(key: &KeyEvent) -> Option<Key> {
@@ -105,6 +166,10 @@ fn translate_key(key: &KeyEvent) -> Option<Key> {
         KeyCode::Tab => Some(Key::Tab),
         KeyCode::Enter => Some(Key::Enter),
         KeyCode::Esc => Some(Key::Esc),
+        KeyCode::Backspace => Some(Key::Backspace),
+        KeyCode::Delete => Some(Key::Delete),
+        KeyCode::Home => Some(Key::Home),
+        KeyCode::End => Some(Key::End),
         KeyCode::Char(c) => Some(Key::Char(c)),
         _ => None,
     }
@@ -224,12 +289,19 @@ fn run(args: &[String]) -> Result<(), DenError> {
     if let Err(error) = &config {
         tracing::error!(%error, "config");
     }
-    let mut app = App::new(config);
+    let prompts = prompts::load(&paths.prompts_file);
+    if let Err(error) = &prompts {
+        tracing::error!(%error, "prompts");
+    }
+    let mut app = App::new(config).with_launch_settings(prompts, paths.default_clone_root.clone());
     let ports = Ports {
         github: Arc::new(GhSource::new(GhCli::new())),
         cache: Arc::new(FileCache::in_state_dir(&paths.state_dir)),
-        workspace: Arc::new(Unimplemented),
-        launcher: Arc::new(Unimplemented),
+        workspace: Arc::new(GitWorkspace::new()),
+        launcher: Arc::new(KittyLauncher::new(LaunchEnvironment::from_env(|name| {
+            std::env::var_os(name)
+        }))),
+        jobs: Arc::new(FileJobStore::in_state_dir(&paths.state_dir)),
         clock: Arc::new(SystemClock),
     };
     match mode {
@@ -244,7 +316,120 @@ fn run(args: &[String]) -> Result<(), DenError> {
             println!("{}", frame::buffer_text(&buffer));
             Ok(())
         }
+        Mode::Launch {
+            item,
+            prompt,
+            confirm,
+        } => run_launch(&theme, app, &ports, &item, prompt.as_deref(), confirm),
     }
+}
+
+/// `--launch`: the same keys a user would press, through the same App and
+/// ports, without the TUI.
+fn run_launch(
+    theme: &Theme,
+    mut app: App,
+    ports: &Ports,
+    item: &WorkItemId,
+    prompt: Option<&str>,
+    confirm: bool,
+) -> Result<(), DenError> {
+    let (cols, rows) = LAUNCH_DUMP_SIZE;
+    app.handle(Event::Resized { cols, rows });
+    let started = Event::Started {
+        now: Timestamp::now(),
+    };
+    let (mut view, _) = runtime::settle(&mut app, started, ports);
+    // Select the PR the way a user would: ↓ until it is the selected row.
+    for _ in 0..view.list.rows.len() {
+        let selected = view.list.selected.and_then(|i| view.list.rows.get(i));
+        if selected.is_some_and(|row| &row.id == item) {
+            break;
+        }
+        view = app.handle(Event::Key(Key::Down)).0;
+    }
+    let selected = view.list.selected.and_then(|i| view.list.rows.get(i));
+    if selected.is_none_or(|row| &row.id != item) {
+        let why = view
+            .list
+            .empty
+            .as_ref()
+            .map(|e| format!(" ({}: {})", e.title, e.detail))
+            .unwrap_or_default();
+        return Err(DenError::Launch(format!(
+            "{item} is not among the Work Items den surveyed{why}"
+        )));
+    }
+    view = runtime::settle(&mut app, Event::Key(Key::Char('c')), ports).0;
+    if let Some(prompt) = prompt {
+        view = type_prompt(&mut app, &view, prompt);
+    }
+    print_sheet(theme, &view)?;
+    if !confirm {
+        println!("\n(dry run: add --yes to launch)");
+        return sheet_status(&view, LaunchStatus::Ready);
+    }
+    if sheet_status(&view, LaunchStatus::Ready).is_err() {
+        return Err(DenError::Launch(
+            "the sheet is not ready to launch".to_owned(),
+        ));
+    }
+    view = runtime::settle(&mut app, Event::Key(Key::Enter), ports).0;
+    println!();
+    print_sheet(theme, &view)?;
+    sheet_status(&view, LaunchStatus::Launched)
+}
+
+/// Replaces the sheet's prompt by typing into its field: `e`, delete what is
+/// there, type `prompt`, `Esc`.
+fn type_prompt(app: &mut App, view: &ViewModel, prompt: &str) -> ViewModel {
+    let current = match &view.overlay {
+        Some(Overlay::LaunchSheet(sheet)) if sheet.status == LaunchStatus::Ready => {
+            sheet.prompt.as_ref().map_or(0, |p| p.text.chars().count())
+        }
+        // Nothing to edit: leave the sheet as it is.
+        _ => return view.clone(),
+    };
+    let keys = [Key::Char('e'), Key::End]
+        .into_iter()
+        .chain(std::iter::repeat_n(Key::Backspace, current))
+        .chain(prompt.chars().map(Key::Char))
+        .chain([Key::Esc]);
+    let mut view = view.clone();
+    for key in keys {
+        view = app.handle(Event::Key(key)).0;
+    }
+    view
+}
+
+fn sheet_status(view: &ViewModel, wanted: LaunchStatus) -> Result<(), DenError> {
+    match &view.overlay {
+        Some(Overlay::LaunchSheet(sheet)) if sheet.status == wanted => Ok(()),
+        Some(Overlay::LaunchSheet(sheet)) => Err(DenError::Launch(format!(
+            "the launch sheet says: {}",
+            sheet.headline
+        ))),
+        _ => Err(DenError::Launch("the launch sheet did not open".to_owned())),
+    }
+}
+
+/// The frame as text, then the sheet's command and messages unwrapped.
+fn print_sheet(theme: &Theme, view: &ViewModel) -> Result<(), DenError> {
+    let (cols, rows) = LAUNCH_DUMP_SIZE;
+    let buffer = frame::render(theme, view, cols, rows)?;
+    println!("{}", frame::buffer_text(&buffer));
+    if let Some(Overlay::LaunchSheet(sheet)) = &view.overlay {
+        if let Some(prompt) = &sheet.prompt {
+            println!("\nprompt:  {}", prompt.text);
+        }
+        if let Some(command) = &sheet.command {
+            println!("command: {command}");
+        }
+        for message in &sheet.messages {
+            println!("- {}", message.text);
+        }
+    }
+    Ok(())
 }
 
 /// The bear's graphics mode from `DEN_GRAPHICS`, when set (unset or empty: detect).

@@ -1,19 +1,23 @@
 //! Fake ports for seam-2 tests, and a scripted GraphQL transport for the GitHub
-//! adapter tests. Later tickets add methods to `FakeWorkspace` / `FakeLauncher`
-//! as the port traits grow.
+//! adapter tests. `FakeWorkspace` behaves like git just enough for the launch
+//! executor (fetch fills tracking refs, adding a worktree makes its path exist);
+//! `FakeLauncher` and `FakeJobs` record what they were asked to do.
 
 use den::{
     cache::{CacheError, CachedObservation},
     domain::Observation,
     github::graphql::{GraphQl, GraphQlRequest, GraphQlResponse, TransportError},
+    handoff::{PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode, Writability},
+    jobs::{JobRecord, JobStoreError},
     ports::{
-        Clock, GitHubSource, Launcher, ObservationCache, Ports, SurveyFailure, SurveyRequest,
-        Workspace,
+        Clock, GitHubSource, JobStore, LaunchError, Launcher, ObservationCache, Ports,
+        SurveyFailure, SurveyRequest, Workspace, WorkspaceError, WorktreeAdd, WorktreeStart,
     },
 };
 use jiff::Timestamp;
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -58,13 +62,371 @@ impl GitHubSource for FakeGitHub {
     }
 }
 
-#[derive(Default)]
-pub struct FakeWorkspace;
-impl Workspace for FakeWorkspace {}
+/// One fake clone: its remotes, local refs (`refs/heads/…`, `refs/remotes/…`),
+/// and what its remotes' branches point at right now.
+#[derive(Debug, Clone, Default)]
+pub struct FakeClone {
+    pub remotes: Vec<Remote>,
+    pub refs: BTreeMap<String, String>,
+    /// `(remote, branch)` → commit, as `git ls-remote` would answer.
+    pub remote_heads: BTreeMap<(String, String), String>,
+    pub not_writable: bool,
+    /// Worktrees registered for the clone (besides its own checkout).
+    pub worktrees: Vec<RegisteredWorktree>,
+}
+
+/// What the Workspace was asked to change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceCall {
+    Fetch {
+        clone: PathBuf,
+        remote: String,
+        refspec: String,
+    },
+    AddWorktree {
+        clone: PathBuf,
+        add: WorktreeAdd,
+    },
+}
 
 #[derive(Default)]
-pub struct FakeLauncher;
-impl Launcher for FakeLauncher {}
+struct WorkspaceState {
+    clones: BTreeMap<PathBuf, FakeClone>,
+    /// Other paths that exist (worktrees added, folders in the way).
+    existing: BTreeSet<PathBuf>,
+    /// Operation name ("fetch", "add_worktree", "ls-remote") → error.
+    failures: BTreeMap<String, String>,
+    calls: Vec<WorkspaceCall>,
+}
+
+/// An in-memory workspace.
+#[derive(Default)]
+pub struct FakeWorkspace {
+    state: Mutex<WorkspaceState>,
+}
+
+impl FakeWorkspace {
+    /// Adds a clone at `path` with `(name, url)` remotes.
+    pub fn add_clone(&self, path: &str, remotes: &[(&str, &str)]) {
+        let clone = FakeClone {
+            remotes: remotes
+                .iter()
+                .map(|(name, url)| Remote {
+                    name: (*name).to_owned(),
+                    url: (*url).to_owned(),
+                })
+                .collect(),
+            ..FakeClone::default()
+        };
+        self.state
+            .lock()
+            .expect("lock")
+            .clones
+            .insert(path.into(), clone);
+    }
+
+    fn with_clone(&self, path: &str, change: impl FnOnce(&mut FakeClone)) {
+        let mut state = self.state.lock().expect("lock");
+        change(
+            state
+                .clones
+                .get_mut(Path::new(path))
+                .expect("a fake clone at that path"),
+        );
+    }
+
+    /// `branch` on `remote` points at `commit` (what `ls-remote` answers and `fetch` brings).
+    pub fn set_remote_head(&self, clone: &str, remote: &str, branch: &str, commit: &str) {
+        self.with_clone(clone, |c| {
+            c.remote_heads
+                .insert((remote.to_owned(), branch.to_owned()), commit.to_owned());
+        });
+    }
+
+    /// A local branch `branch` at `commit`.
+    pub fn set_local_branch(&self, clone: &str, branch: &str, commit: &str) {
+        self.with_clone(clone, |c| {
+            c.refs
+                .insert(format!("refs/heads/{branch}"), commit.to_owned());
+        });
+    }
+
+    /// `branch` is checked out in a worktree at `path` (registered with git).
+    pub fn register_worktree(&self, clone: &str, path: &str, branch: Option<&str>) {
+        self.with_clone(clone, |c| {
+            c.worktrees.push(RegisteredWorktree {
+                path: path.into(),
+                branch: branch.map(str::to_owned),
+                locked: false,
+                prunable: false,
+            });
+        });
+    }
+
+    pub fn make_unwritable(&self, clone: &str) {
+        self.with_clone(clone, |c| c.not_writable = true);
+    }
+
+    /// Something already exists at `path`.
+    pub fn add_existing(&self, path: &str) {
+        self.state
+            .lock()
+            .expect("lock")
+            .existing
+            .insert(path.into());
+    }
+
+    /// The next `operation` ("fetch", "add_worktree", "ls-remote") fails.
+    pub fn fail(&self, operation: &str, error: &str) {
+        self.state
+            .lock()
+            .expect("lock")
+            .failures
+            .insert(operation.to_owned(), error.to_owned());
+    }
+
+    /// Every change the Workspace was asked for, in order.
+    pub fn calls(&self) -> Vec<WorkspaceCall> {
+        self.state.lock().expect("lock").calls.clone()
+    }
+
+    fn failure(state: &WorkspaceState, operation: &str) -> Result<(), WorkspaceError> {
+        match state.failures.get(operation) {
+            Some(detail) => Err(WorkspaceError {
+                operation: operation.to_owned(),
+                detail: detail.clone(),
+            }),
+            None => Ok(()),
+        }
+    }
+}
+
+fn no_clone(path: &Path) -> WorkspaceError {
+    WorkspaceError {
+        operation: format!("open {}", path.display()),
+        detail: "not a git repository".to_owned(),
+    }
+}
+
+impl Workspace for FakeWorkspace {
+    fn find_clones(&self, root: &Path) -> Result<Vec<PathBuf>, WorkspaceError> {
+        let state = self.state.lock().expect("lock");
+        Ok(state
+            .clones
+            .keys()
+            .filter(|p| p.starts_with(root))
+            .cloned()
+            .collect())
+    }
+
+    fn remotes(&self, clone: &Path) -> Result<Vec<Remote>, WorkspaceError> {
+        let state = self.state.lock().expect("lock");
+        state
+            .clones
+            .get(clone)
+            .map(|c| c.remotes.clone())
+            .ok_or_else(|| no_clone(clone))
+    }
+
+    fn path_state(&self, path: &Path) -> PathState {
+        let state = self.state.lock().expect("lock");
+        match state.clones.get(path) {
+            Some(clone) => PathState::Exists {
+                writable: if clone.not_writable {
+                    Writability::NotWritable
+                } else {
+                    Writability::Writable
+                },
+            },
+            None if state.existing.contains(path) => PathState::Exists {
+                writable: Writability::Writable,
+            },
+            None => PathState::Missing,
+        }
+    }
+
+    fn resolve(&self, clone: &Path, reference: &str) -> Result<Option<String>, WorkspaceError> {
+        let state = self.state.lock().expect("lock");
+        let clone = state.clones.get(clone).ok_or_else(|| no_clone(clone))?;
+        Ok(clone.refs.get(reference).cloned())
+    }
+
+    fn remote_branch_head(
+        &self,
+        clone: &Path,
+        remote: &str,
+        branch: &str,
+    ) -> Result<Option<String>, WorkspaceError> {
+        let state = self.state.lock().expect("lock");
+        Self::failure(&state, "ls-remote")?;
+        let clone = state.clones.get(clone).ok_or_else(|| no_clone(clone))?;
+        Ok(clone
+            .remote_heads
+            .get(&(remote.to_owned(), branch.to_owned()))
+            .cloned())
+    }
+
+    fn worktrees(&self, clone: &Path) -> Result<Vec<RegisteredWorktree>, WorkspaceError> {
+        let state = self.state.lock().expect("lock");
+        let fake = state.clones.get(clone).ok_or_else(|| no_clone(clone))?;
+        Ok(fake.worktrees.clone())
+    }
+
+    fn fetch(&self, clone: &Path, remote: &str, refspec: &str) -> Result<(), WorkspaceError> {
+        let mut state = self.state.lock().expect("lock");
+        state.calls.push(WorkspaceCall::Fetch {
+            clone: clone.to_owned(),
+            remote: remote.to_owned(),
+            refspec: refspec.to_owned(),
+        });
+        Self::failure(&state, "fetch")?;
+        let fake = state.clones.get_mut(clone).ok_or_else(|| no_clone(clone))?;
+        // `+refs/heads/<b>:refs/remotes/<r>/<b>`
+        let (source, destination) = refspec
+            .trim_start_matches('+')
+            .split_once(':')
+            .expect("an explicit refspec");
+        let branch = source.trim_start_matches("refs/heads/");
+        if let Some(commit) = fake
+            .remote_heads
+            .get(&(remote.to_owned(), branch.to_owned()))
+            .cloned()
+        {
+            fake.refs.insert(destination.to_owned(), commit);
+        }
+        Ok(())
+    }
+
+    fn add_worktree(&self, clone: &Path, add: &WorktreeAdd) -> Result<(), WorkspaceError> {
+        let mut state = self.state.lock().expect("lock");
+        state.calls.push(WorkspaceCall::AddWorktree {
+            clone: clone.to_owned(),
+            add: add.clone(),
+        });
+        Self::failure(&state, "add_worktree")?;
+        let fake = state.clones.get_mut(clone).ok_or_else(|| no_clone(clone))?;
+        if let WorktreeStart::NewBranchTracking { start } = &add.start {
+            let commit = fake.refs.get(start).cloned().expect("the start ref exists");
+            fake.refs
+                .insert(format!("refs/heads/{}", add.branch), commit);
+        }
+        fake.worktrees.push(RegisteredWorktree {
+            path: add.path.clone(),
+            branch: Some(add.branch.clone()),
+            locked: false,
+            prunable: false,
+        });
+        state.existing.insert(add.path.clone());
+        Ok(())
+    }
+}
+
+/// A launcher that records what it would open or copy.
+pub struct FakeLauncher {
+    mode: Mutex<WindowMode>,
+    claude: Mutex<bool>,
+    windows: Mutex<Vec<WindowCommand>>,
+    clipboard: Mutex<Vec<String>>,
+    window_error: Mutex<Option<String>>,
+}
+
+impl Default for FakeLauncher {
+    /// In kitty, with Claude Code on PATH.
+    fn default() -> Self {
+        Self {
+            mode: Mutex::new(WindowMode::Kitty),
+            claude: Mutex::new(true),
+            windows: Mutex::default(),
+            clipboard: Mutex::default(),
+            window_error: Mutex::default(),
+        }
+    }
+}
+
+impl FakeLauncher {
+    pub fn outside_kitty(&self) {
+        *self.mode.lock().expect("lock") = WindowMode::Clipboard {
+            why: "den is not running in kitty".to_owned(),
+        };
+    }
+
+    pub fn without_claude(&self) {
+        *self.claude.lock().expect("lock") = false;
+    }
+
+    pub fn fail_window(&self, error: &str) {
+        *self.window_error.lock().expect("lock") = Some(error.to_owned());
+    }
+
+    pub fn windows(&self) -> Vec<WindowCommand> {
+        self.windows.lock().expect("lock").clone()
+    }
+
+    pub fn clipboard(&self) -> Vec<String> {
+        self.clipboard.lock().expect("lock").clone()
+    }
+}
+
+impl Launcher for FakeLauncher {
+    fn window_mode(&self) -> WindowMode {
+        self.mode.lock().expect("lock").clone()
+    }
+
+    fn claude_available(&self) -> bool {
+        *self.claude.lock().expect("lock")
+    }
+
+    fn open_window(&self, window: &WindowCommand) -> Result<(), LaunchError> {
+        if let Some(detail) = self.window_error.lock().expect("lock").clone() {
+            return Err(LaunchError {
+                operation: "open a kitty window".to_owned(),
+                detail,
+            });
+        }
+        self.windows.lock().expect("lock").push(window.clone());
+        Ok(())
+    }
+
+    fn copy_to_clipboard(&self, text: &str) -> Result<(), LaunchError> {
+        self.clipboard.lock().expect("lock").push(text.to_owned());
+        Ok(())
+    }
+}
+
+/// In-memory Job records.
+#[derive(Default)]
+pub struct FakeJobs {
+    records: Mutex<Vec<JobRecord>>,
+    load_error: Mutex<Option<JobStoreError>>,
+}
+
+impl FakeJobs {
+    pub fn records(&self) -> Vec<JobRecord> {
+        self.records.lock().expect("lock").clone()
+    }
+
+    pub fn holding(&self, job: JobRecord) {
+        self.records.lock().expect("lock").push(job);
+    }
+
+    pub fn fail_load(&self, error: JobStoreError) {
+        *self.load_error.lock().expect("lock") = Some(error);
+    }
+}
+
+impl JobStore for FakeJobs {
+    fn load(&self) -> Result<Vec<JobRecord>, JobStoreError> {
+        match self.load_error.lock().expect("lock").clone() {
+            Some(error) => Err(error),
+            None => Ok(self.records()),
+        }
+    }
+
+    fn record(&self, job: &JobRecord) -> Result<(), JobStoreError> {
+        self.records.lock().expect("lock").push(job.clone());
+        Ok(())
+    }
+}
 
 /// A clock that always says the same time.
 pub struct FixedClock(pub Timestamp);
@@ -126,8 +488,9 @@ pub fn ports_with_cache(github: Arc<FakeGitHub>, cache: Arc<FakeCache>, now: Tim
     Ports {
         github,
         cache,
-        workspace: Arc::new(FakeWorkspace),
-        launcher: Arc::new(FakeLauncher),
+        workspace: Arc::new(FakeWorkspace::default()),
+        launcher: Arc::new(FakeLauncher::default()),
+        jobs: Arc::new(FakeJobs::default()),
         clock: Arc::new(FixedClock(now)),
     }
 }

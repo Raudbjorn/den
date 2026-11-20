@@ -5,10 +5,12 @@ mod detail;
 mod footer;
 mod format;
 mod header;
+mod launch;
 mod list;
 mod scope;
 mod sidebar;
 
+use super::OverlayState;
 use super::scope::ScopeState;
 use super::view_model::{Overlay, ViewModel};
 use crate::{
@@ -44,7 +46,7 @@ pub struct State<'a> {
     pub selected: Option<usize>,
     pub now: Option<Timestamp>,
     pub layout: Layout,
-    pub overlay: Option<&'a Overlay>,
+    pub overlay: Option<&'a OverlayState>,
 }
 
 pub fn build(state: &State<'_>) -> ViewModel {
@@ -53,7 +55,10 @@ pub fn build(state: &State<'_>) -> ViewModel {
         sidebar: sidebar::build(state),
         list: list::build(state),
         detail: detail::build(state),
-        overlay: state.overlay.cloned(),
+        overlay: state.overlay.map(|overlay| match overlay {
+            OverlayState::DetailSheet => Overlay::DetailSheet,
+            OverlayState::Launch(sheet) => Overlay::LaunchSheet(Box::new(launch::build(sheet))),
+        }),
         footer: footer::build(state),
         layout: state.layout,
         splash: splash(state),

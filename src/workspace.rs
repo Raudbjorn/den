@@ -1,0 +1,353 @@
+//! The real Workspace: git (with a timeout on every call) and the filesystem.
+//!
+//! git runs with `GIT_TERMINAL_PROMPT=0`, so a remote that wants credentials
+//! fails instead of prompting into den's screen. Nothing here deletes anything.
+
+use crate::{
+    handoff::{PathState, RegisteredWorktree, Remote, Writability},
+    ports::{Workspace, WorkspaceError, WorktreeAdd, WorktreeStart},
+    process::{self, Invocation, Output},
+};
+use std::{
+    ffi::OsString,
+    fs, io,
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
+/// The most a local git call (remotes, rev-parse, worktree add) may take, in seconds.
+pub const GIT_TIMEOUT_SECS: u64 = 30;
+/// The most a git call that talks to a remote (fetch, ls-remote) may take, in seconds.
+pub const GIT_NETWORK_TIMEOUT_SECS: u64 = 120;
+/// How deep under the search root Main Clones are looked for, in folder levels
+/// (`~/dev/den` is 1, `~/dev/wrk/den` is 2).
+pub const MAIN_CLONE_SEARCH_DEPTH: usize = 2;
+/// The most folders one search looks at before giving up.
+pub const MAX_FOLDERS_SEARCHED: usize = 10_000;
+const GIT_PROGRAM: &str = "git";
+/// Owner and other write bits of a Unix mode.
+#[cfg(unix)]
+const OWNER_WRITE: u32 = 0o200;
+#[cfg(unix)]
+const GROUP_WRITE: u32 = 0o020;
+#[cfg(unix)]
+const OTHER_WRITE: u32 = 0o002;
+
+/// The git adapter.
+#[derive(Debug, Clone)]
+pub struct GitWorkspace {
+    git: OsString,
+}
+
+impl Default for GitWorkspace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GitWorkspace {
+    pub fn new() -> Self {
+        Self {
+            git: GIT_PROGRAM.into(),
+        }
+    }
+
+    /// `git -C <clone> …` with den's environment for git.
+    fn git(&self, clone: &Path) -> Invocation {
+        Invocation::new(self.git.clone())
+            .arg("-C")
+            .arg(clone)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            // Stable messages, whatever the user's locale.
+            .env("LC_ALL", "C")
+    }
+
+    fn run(
+        &self,
+        invocation: &Invocation,
+        operation: impl Fn() -> String,
+        timeout_secs: u64,
+    ) -> Result<Output, WorkspaceError> {
+        process::run_invocation(invocation, &[], Duration::from_secs(timeout_secs)).map_err(|e| {
+            WorkspaceError {
+                operation: operation(),
+                detail: e.to_string(),
+            }
+        })
+    }
+
+    /// Runs a git command that must succeed.
+    fn run_ok(
+        &self,
+        invocation: &Invocation,
+        operation: impl Fn() -> String,
+        timeout_secs: u64,
+    ) -> Result<Output, WorkspaceError> {
+        let output = self.run(invocation, &operation, timeout_secs)?;
+        if output.status.success() {
+            Ok(output)
+        } else {
+            Err(WorkspaceError {
+                operation: operation(),
+                detail: failure_detail(&output),
+            })
+        }
+    }
+}
+
+fn failure_detail(output: &Output) -> String {
+    let stderr = output.stderr_text();
+    if stderr.is_empty() {
+        format!("git exited with {}", output.status)
+    } else {
+        stderr
+    }
+}
+
+/// Remote names come from the clone's own config; one that looks like an option
+/// is refused rather than passed to git.
+fn checked_remote(remote: &str, operation: impl Fn() -> String) -> Result<&str, WorkspaceError> {
+    if remote.is_empty() || remote.starts_with('-') {
+        return Err(WorkspaceError {
+            operation: operation(),
+            detail: format!("{remote:?} is not a usable remote name"),
+        });
+    }
+    Ok(remote)
+}
+
+impl Workspace for GitWorkspace {
+    fn find_clones(&self, root: &Path) -> Result<Vec<PathBuf>, WorkspaceError> {
+        let operation = || format!("search {} for clones", root.display());
+        let mut clones = Vec::new();
+        let mut folders = vec![(root.to_path_buf(), 0_usize)];
+        let mut searched = 0_usize;
+        while let Some((folder, depth)) = folders.pop() {
+            searched += 1;
+            if searched > MAX_FOLDERS_SEARCHED {
+                return Err(WorkspaceError {
+                    operation: operation(),
+                    detail: format!(
+                        "more than {MAX_FOLDERS_SEARCHED} folders; set main_clone_root nearer your clones, or the Repo under [main_clones]"
+                    ),
+                });
+            }
+            let entries = match fs::read_dir(&folder) {
+                Ok(entries) => entries,
+                // The root itself must be readable; unreadable subfolders are skipped.
+                Err(e) if depth == 0 => {
+                    return Err(WorkspaceError {
+                        operation: operation(),
+                        detail: e.to_string(),
+                    });
+                }
+                Err(e) => {
+                    tracing::debug!(folder = %folder.display(), error = %e, "skipped an unreadable folder");
+                    continue;
+                }
+            };
+            for entry in entries.flatten() {
+                // Symlinks are not followed, so the search can't loop.
+                let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+                let hidden = entry.file_name().to_string_lossy().starts_with('.');
+                if !is_dir || hidden {
+                    continue;
+                }
+                let path = entry.path();
+                // A Main Clone has a `.git` folder; a worktree has a `.git` file.
+                if path.join(".git").is_dir() {
+                    clones.push(path);
+                } else if depth + 1 < MAIN_CLONE_SEARCH_DEPTH {
+                    folders.push((path, depth + 1));
+                }
+            }
+        }
+        clones.sort();
+        Ok(clones)
+    }
+
+    fn remotes(&self, clone: &Path) -> Result<Vec<Remote>, WorkspaceError> {
+        let invocation = self.git(clone).args(["remote", "-v"]);
+        let output = self.run_ok(
+            &invocation,
+            || format!("read the remotes of {}", clone.display()),
+            GIT_TIMEOUT_SECS,
+        )?;
+        Ok(parse_remotes(&output.stdout_text()))
+    }
+
+    fn path_state(&self, path: &Path) -> PathState {
+        match fs::metadata(path) {
+            Ok(metadata) => PathState::Exists {
+                writable: writability(&metadata),
+            },
+            Err(e) if e.kind() == io::ErrorKind::NotFound => PathState::Missing,
+            Err(e) => PathState::Unknown(e.to_string()),
+        }
+    }
+
+    fn resolve(&self, clone: &Path, reference: &str) -> Result<Option<String>, WorkspaceError> {
+        let invocation = self
+            .git(clone)
+            .args(["rev-parse", "--verify", "--quiet", "--end-of-options"])
+            .arg(format!("{reference}^{{commit}}"));
+        let operation = || format!("resolve {reference} in {}", clone.display());
+        let output = self.run(&invocation, operation, GIT_TIMEOUT_SECS)?;
+        if output.status.success() {
+            return Ok(Some(output.stdout_text()));
+        }
+        // `--verify --quiet` exits 1 without a message when the ref doesn't exist.
+        if output.status.code() == Some(1) && output.stderr_text().is_empty() {
+            return Ok(None);
+        }
+        Err(WorkspaceError {
+            operation: operation(),
+            detail: failure_detail(&output),
+        })
+    }
+
+    fn remote_branch_head(
+        &self,
+        clone: &Path,
+        remote: &str,
+        branch: &str,
+    ) -> Result<Option<String>, WorkspaceError> {
+        let operation = || format!("ask {remote} for {branch} (from {})", clone.display());
+        let remote = checked_remote(remote, operation)?;
+        let wanted = format!("refs/heads/{branch}");
+        let invocation = self
+            .git(clone)
+            .args(["ls-remote", "--heads", remote])
+            .arg(&wanted);
+        let output = self.run_ok(&invocation, operation, GIT_NETWORK_TIMEOUT_SECS)?;
+        Ok(output.stdout_text().lines().find_map(|line| {
+            let (commit, name) = line.split_once('\t')?;
+            (name.trim() == wanted).then(|| commit.trim().to_owned())
+        }))
+    }
+
+    fn worktrees(&self, clone: &Path) -> Result<Vec<RegisteredWorktree>, WorkspaceError> {
+        let invocation = self.git(clone).args(["worktree", "list", "--porcelain"]);
+        let output = self.run_ok(
+            &invocation,
+            || format!("list the worktrees of {}", clone.display()),
+            GIT_TIMEOUT_SECS,
+        )?;
+        Ok(parse_worktrees(&output.stdout_text()))
+    }
+
+    fn fetch(&self, clone: &Path, remote: &str, refspec: &str) -> Result<(), WorkspaceError> {
+        let operation = || format!("git fetch {remote} {refspec} in {}", clone.display());
+        let remote = checked_remote(remote, operation)?;
+        let invocation = self
+            .git(clone)
+            .args(["fetch", "--no-tags", remote, refspec]);
+        self.run_ok(&invocation, operation, GIT_NETWORK_TIMEOUT_SECS)
+            .map(|_| ())
+    }
+
+    fn add_worktree(&self, clone: &Path, add: &WorktreeAdd) -> Result<(), WorkspaceError> {
+        let operation = || {
+            format!(
+                "git worktree add {} ({}) in {}",
+                add.path.display(),
+                add.branch,
+                clone.display()
+            )
+        };
+        let invocation = match &add.start {
+            WorktreeStart::NewBranchTracking { start } => self
+                .git(clone)
+                .args(["worktree", "add", "--track", "-b", add.branch.as_str()])
+                .arg(&add.path)
+                .arg(start),
+            WorktreeStart::ExistingBranch => self
+                .git(clone)
+                .args(["worktree", "add"])
+                .arg(&add.path)
+                .arg(&add.branch),
+        };
+        self.run_ok(&invocation, operation, GIT_TIMEOUT_SECS)
+            .map(|_| ())
+    }
+}
+
+/// `git worktree list --porcelain`: blank-line separated records of
+/// `worktree <path>`, then `branch refs/heads/<name>`, `detached`, `locked …`,
+/// `prunable …` lines.
+fn parse_worktrees(text: &str) -> Vec<RegisteredWorktree> {
+    let mut worktrees: Vec<RegisteredWorktree> = Vec::new();
+    for line in text.lines() {
+        let (key, value) = line.split_once(' ').unwrap_or((line, ""));
+        match (key, worktrees.last_mut()) {
+            ("worktree", _) => worktrees.push(RegisteredWorktree {
+                path: PathBuf::from(value),
+                branch: None,
+                locked: false,
+                prunable: false,
+            }),
+            ("branch", Some(current)) => {
+                current.branch = Some(
+                    value
+                        .strip_prefix("refs/heads/")
+                        .unwrap_or(value)
+                        .to_owned(),
+                );
+            }
+            ("locked", Some(current)) => current.locked = true,
+            ("prunable", Some(current)) => current.prunable = true,
+            _ => {}
+        }
+    }
+    worktrees
+}
+
+/// `git remote -v` lines: `name<TAB>url (fetch)`; only fetch URLs are kept.
+fn parse_remotes(text: &str) -> Vec<Remote> {
+    text.lines()
+        .filter_map(|line| {
+            let (name, rest) = line.split_once('\t')?;
+            let url = rest.strip_suffix(" (fetch)")?;
+            Some(Remote {
+                name: name.trim().to_owned(),
+                url: url.trim().to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// Whether this process may write in a folder, from its mode bits: den is
+/// the owner (the owner of `/proc/self` is this process's effective user) and
+/// the owner may write, or anyone may. Group-only write access is unknown.
+#[cfg(unix)]
+fn writability(metadata: &fs::Metadata) -> Writability {
+    use std::os::unix::fs::MetadataExt;
+    let mode = metadata.mode();
+    if mode & OTHER_WRITE != 0 {
+        return Writability::Writable;
+    }
+    let me = match fs::metadata("/proc/self") {
+        Ok(proc_self) => proc_self.uid(),
+        Err(e) => return Writability::Unknown(format!("can't tell who den runs as: {e}")),
+    };
+    if metadata.uid() == me {
+        return if mode & OWNER_WRITE != 0 {
+            Writability::Writable
+        } else {
+            Writability::NotWritable
+        };
+    }
+    if mode & GROUP_WRITE != 0 {
+        return Writability::Unknown("writable by its group only".to_owned());
+    }
+    Writability::NotWritable
+}
+
+#[cfg(not(unix))]
+fn writability(metadata: &fs::Metadata) -> Writability {
+    if metadata.permissions().readonly() {
+        Writability::NotWritable
+    } else {
+        Writability::Writable
+    }
+}
