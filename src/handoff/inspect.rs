@@ -11,7 +11,7 @@ use super::{
     cloning::{self, NewCloneView},
     live::{self, JOB_CHECK_BUDGET_SECS, JobCheck},
     names,
-    workflows::{REPO_CLAUDE_DIR, WorkflowDirs},
+    workflows::{PluginsRead, REPO_CLAUDE_DIR, WorkflowDirs},
     worktree_path,
 };
 use crate::{
@@ -227,12 +227,17 @@ pub fn inspect(
         }
         Err(_) => Vec::new(),
     };
+    let no_home = || "den doesn't know your home directory".to_owned();
     let workflows = WorkflowDirs {
+        plugins: request.claude_dir.as_ref().map_or_else(
+            || PluginsRead::NotChecked(no_home()),
+            |dir| workspace.installed_plugins(dir),
+        ),
         user: request
             .claude_dir
             .as_ref()
             .map(|dir| workspace.claude_dir(dir))
-            .ok_or_else(|| "den doesn't know your home directory".to_owned()),
+            .ok_or_else(no_home),
         repo: match (&chosen, &new_clone) {
             (Some(clone), _) => Ok(workspace.claude_dir(&clone.path.join(REPO_CLAUDE_DIR))),
             (None, Some(_)) => Err("the Main Clone isn't cloned yet".to_owned()),

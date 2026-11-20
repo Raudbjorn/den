@@ -1,27 +1,33 @@
 //! The workflow availability check (#41, spec 0002, "Workflow availability
 //! check"): for each slash command a Job's prompt invokes, whether den found
 //! a definition in the user's or the target Repo's Claude command and skill
-//! directories. Pure: `inspect` reads the directories through the Workspace
-//! port ([`crate::ports::Workspace::claude_dir`]) into [`WorkflowDirs`], and
+//! directories, or in an installed plugin. Pure: `inspect` reads the
+//! directories and the installed plugins through the Workspace port
+//! ([`crate::ports::Workspace::claude_dir`],
+//! [`crate::ports::Workspace::installed_plugins`]) into [`WorkflowDirs`], and
 //! the sheet checks whatever prompt it shows, edited or not, against them.
 //!
 //! den never claims a workflow exists that it didn't find, and never claims
-//! one doesn't exist: a command can also come from a plugin, managed
-//! settings, claude.ai, or Claude Code itself, which den doesn't look at. So
-//! "not found" always says where den looked.
+//! one doesn't exist: a command can also be built into Claude Code, come from
+//! managed settings or be synced from claude.ai, which den doesn't look at.
+//! So "not found" always says where den looked.
 //!
 //! Where a name is defined, as Claude Code names them
 //! (code.claude.com/docs/en/skills, "How a skill gets its command name"):
 //! - `skills/<name>/SKILL.md` gives `/<name>` (the folder name; a frontmatter
 //!   `name` is not read, so a skill renamed that way reads as not found);
-//! - `commands/<name>.md` gives `/<name>`, and `commands/a/b.md` gives `/a:b`.
+//! - `commands/<name>.md` gives `/<name>`, and `commands/a/b.md` gives `/a:b`;
+//! - in a plugin `<plugin>`, a command file or a skill folder (found up to
+//!   [`MAX_PLUGIN_SKILL_DEPTH`] folders down, named by its own folder) gives
+//!   `/<plugin>:<name>`; den also counts the bare `/<name>` as found there.
+//!   An installed plugin counts, whether or not it is enabled.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-/// The folder of command files inside a Claude directory.
+/// The folder of command files inside a Claude directory or a plugin.
 pub const COMMANDS_DIR: &str = "commands";
-/// The folder of skill folders inside a Claude directory.
+/// The folder of skill folders inside a Claude directory or a plugin.
 pub const SKILLS_DIR: &str = "skills";
 /// The file that makes a folder under `skills/` a skill.
 pub const SKILL_FILE: &str = "SKILL.md";
@@ -29,11 +35,15 @@ pub const SKILL_FILE: &str = "SKILL.md";
 pub const COMMAND_EXTENSION: &str = "md";
 /// A Repo's Claude directory, inside its Main Clone.
 pub const REPO_CLAUDE_DIR: &str = ".claude";
+/// Claude Code's list of installed plugins, inside the user's Claude directory.
+pub const INSTALLED_PLUGINS_FILE: [&str; 2] = ["plugins", "installed_plugins.json"];
+/// How many folders under a plugin's `skills/` den looks for skill folders
+/// (`skills/engineering/implement/SKILL.md` is 2).
+pub const MAX_PLUGIN_SKILL_DEPTH: usize = 3;
 /// The longest slash command name den looks up, in characters.
 pub const MAX_COMMAND_NAME_CHARS: usize = 100;
-/// What den doesn't look at, said with every "not found".
-pub const NOT_CHECKED: &str =
-    "den doesn't look at plugins, managed settings or Claude Code's own commands";
+/// What den never looks at, said with every "not found".
+pub const NOT_CHECKED: &str = "den doesn't look at Claude Code's built-in commands, managed settings or skills synced from claude.ai";
 
 /// What den read in one Claude directory (`~/.claude`, or a Main Clone's
 /// `.claude`). A folder that isn't there reads as empty; one den couldn't
@@ -59,23 +69,63 @@ impl ClaudeDir {
     }
 }
 
-/// The Claude directories a sheet's prompt is checked against, or why den
-/// didn't look at one.
+/// The plugins Claude Code lists as installed, or why den didn't check them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PluginsRead {
+    /// From `file`, one entry per install (a plugin installed in two scopes
+    /// has two).
+    Read {
+        file: PathBuf,
+        plugins: Vec<PluginDir>,
+    },
+    /// The list is missing or den couldn't read or parse it: plugins were
+    /// not checked. Never an error for the sheet.
+    NotChecked(String),
+}
+
+/// One installed plugin's commands and skills.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginDir {
+    /// The plugin's name: `code-review` of `code-review@marketplace`.
+    pub name: String,
+    /// Its `installPath`.
+    pub path: PathBuf,
+    /// The Markdown files under `commands/`, relative to it.
+    pub commands: Result<Vec<PathBuf>, String>,
+    /// The folders under `skills/` holding a `SKILL.md`, relative to it
+    /// (`engineering/implement`).
+    pub skills: Result<Vec<PathBuf>, String>,
+}
+
+/// The Claude directories and plugins a sheet's prompt is checked against,
+/// or why den didn't look at one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowDirs {
     /// The user's (`$CLAUDE_CONFIG_DIR`, else `~/.claude`).
     pub user: Result<ClaudeDir, String>,
     /// The target Repo's, in its Main Clone.
     pub repo: Result<ClaudeDir, String>,
+    /// The plugins listed in the user's Claude directory.
+    pub plugins: PluginsRead,
 }
 
 impl Default for WorkflowDirs {
     fn default() -> Self {
+        let not_asked = || "den wasn't asked to look".to_owned();
         Self {
-            user: Err("den wasn't asked to look".to_owned()),
-            repo: Err("den wasn't asked to look".to_owned()),
+            user: Err(not_asked()),
+            repo: Err(not_asked()),
+            plugins: PluginsRead::NotChecked(not_asked()),
         }
     }
+}
+
+/// One definition den found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Definition {
+    pub path: PathBuf,
+    /// The plugin that installed it, if one did.
+    pub plugin: Option<String>,
 }
 
 /// Where den found one slash command, or where it looked.
@@ -83,11 +133,11 @@ impl Default for WorkflowDirs {
 pub struct WorkflowCheck {
     /// The command as invoked, with its `/`.
     pub command: String,
-    /// The definitions den found, in the order Claude Code prefers them
-    /// (the user's before the Repo's, a skill before a command file).
-    pub found: Vec<PathBuf>,
-    /// The folders den looked in.
-    pub looked_in: Vec<PathBuf>,
+    /// The definitions den found: the user's, the Repo's (a skill before a
+    /// command file, as Claude Code prefers), then plugins'.
+    pub found: Vec<Definition>,
+    /// Where den looked, in words.
+    pub looked_in: Vec<String>,
     /// What den couldn't look at, and why.
     pub unread: Vec<String>,
 }
@@ -97,24 +147,26 @@ impl WorkflowCheck {
         !self.found.is_empty()
     }
 
-    /// "found: <path>" or "not found in <folders>; <unread>; <not checked>".
+    /// "<path>" or "installed by plugin <name>: <path>" per definition; or
+    /// "not found in <places>; <unread>; <never checked>".
     pub fn explanation(&self) -> String {
         if self.is_found() {
             return self
                 .found
                 .iter()
-                .map(|p| p.display().to_string())
+                .map(|found| match &found.plugin {
+                    Some(plugin) => {
+                        format!("installed by plugin {plugin}: {}", found.path.display())
+                    }
+                    None => found.path.display().to_string(),
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
         }
         let looked = if self.looked_in.is_empty() {
             "nowhere".to_owned()
         } else {
-            self.looked_in
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
+            self.looked_in.join(", ")
         };
         std::iter::once(format!("not found in {looked}"))
             .chain(self.unread.iter().cloned())
@@ -185,6 +237,17 @@ fn check_one(name: &str, dirs: &WorkflowDirs) -> WorkflowCheck {
             )),
         }
     }
+    match &dirs.plugins {
+        PluginsRead::Read { file, plugins } => {
+            for plugin in plugins {
+                look_in_plugin(name, plugin, &mut check);
+            }
+            check
+                .looked_in
+                .push(format!("the plugins listed in {}", file.display()));
+        }
+        PluginsRead::NotChecked(why) => check.unread.push(format!("plugins not checked: {why}")),
+    }
     check
 }
 
@@ -195,27 +258,81 @@ fn look_in(name: &str, dir: &ClaudeDir, check: &mut WorkflowCheck) {
     match &dir.skills {
         Ok(found) => {
             if !name.contains(':') && found.iter().any(|skill| skill == name) {
-                check.found.push(skills.join(name).join(SKILL_FILE));
+                check.found.push(Definition {
+                    path: skills.join(name).join(SKILL_FILE),
+                    plugin: None,
+                });
             }
         }
         Err(why) => check
             .unread
             .push(format!("couldn't read {}: {why}", skills.display())),
     }
-    check.looked_in.push(skills);
+    check.looked_in.push(skills.display().to_string());
     let commands = dir.path.join(COMMANDS_DIR);
     match &dir.commands {
         Ok(files) => {
             let wanted = command_file(name);
             if files.iter().any(|file| file == &wanted) {
-                check.found.push(commands.join(wanted));
+                check.found.push(Definition {
+                    path: commands.join(wanted),
+                    plugin: None,
+                });
             }
         }
         Err(why) => check
             .unread
             .push(format!("couldn't read {}: {why}", commands.display())),
     }
-    check.looked_in.push(commands);
+    check.looked_in.push(commands.display().to_string());
+}
+
+/// Looks for `name` in one plugin, as `/<plugin>:<rest>` or as the bare
+/// `/<rest>`: its skills (by their own folder's name), then its command files.
+fn look_in_plugin(name: &str, plugin: &PluginDir, check: &mut WorkflowCheck) {
+    let prefix = format!("{}:", plugin.name);
+    let rest = name.strip_prefix(&prefix);
+    let found = |path: PathBuf| Definition {
+        path,
+        plugin: Some(plugin.name.clone()),
+    };
+    let skills = plugin.path.join(SKILLS_DIR);
+    match &plugin.skills {
+        Ok(folders) => {
+            let leaf = rest.unwrap_or(name);
+            if !leaf.contains(':') {
+                check.found.extend(
+                    folders
+                        .iter()
+                        .filter(|folder| folder.file_name().is_some_and(|f| f == leaf))
+                        .map(|folder| found(skills.join(folder).join(SKILL_FILE))),
+                );
+            }
+        }
+        Err(why) => check.unread.push(format!(
+            "couldn't read plugin {}'s {}: {why}",
+            plugin.name,
+            skills.display()
+        )),
+    }
+    let commands = plugin.path.join(COMMANDS_DIR);
+    match &plugin.commands {
+        Ok(files) => {
+            let wanted: Vec<PathBuf> = rest
+                .into_iter()
+                .chain(std::iter::once(name))
+                .map(command_file)
+                .collect();
+            if let Some(file) = files.iter().find(|file| wanted.contains(file)) {
+                check.found.push(found(commands.join(file)));
+            }
+        }
+        Err(why) => check.unread.push(format!(
+            "couldn't read plugin {}'s {}: {why}",
+            plugin.name,
+            commands.display()
+        )),
+    }
 }
 
 /// The command file that defines `name`, relative to `commands/`:
@@ -224,4 +341,16 @@ fn command_file(name: &str) -> PathBuf {
     let mut file: PathBuf = name.split(':').collect();
     file.set_extension(COMMAND_EXTENSION);
     file
+}
+
+/// The plugin name in an `installed_plugins.json` key, `<name>@<marketplace>`.
+pub fn plugin_name(key: &str) -> &str {
+    key.split_once('@').map_or(key, |(name, _)| name)
+}
+
+/// `installed_plugins.json` in the Claude directory `claude_dir`.
+pub fn installed_plugins_file(claude_dir: &Path) -> PathBuf {
+    INSTALLED_PLUGINS_FILE
+        .iter()
+        .fold(claude_dir.to_path_buf(), |path, part| path.join(part))
 }

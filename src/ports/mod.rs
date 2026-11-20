@@ -15,7 +15,8 @@ use crate::{
         facts::{MemberPullRequestState, PullRequestRef},
     },
     handoff::{
-        PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode, workflows::ClaudeDir,
+        PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode,
+        workflows::{ClaudeDir, PluginsRead},
     },
     jobs::{JobRecord, JobStoreError},
     upstreams::UpstreamStoreError,
@@ -196,6 +197,12 @@ pub trait Workspace: Send + Sync {
     /// Reads only. A folder that isn't there reads as empty; one that can't
     /// be read fully is an error for that folder.
     fn claude_dir(&self, dir: &Path) -> ClaudeDir;
+    /// The plugins Claude Code lists as installed in the user's Claude
+    /// directory `claude_dir` (`plugins/installed_plugins.json`, #41), each
+    /// with its `commands/` files and the skill folders under its `skills/`.
+    /// Reads only. A missing or unparseable list is
+    /// [`PluginsRead::NotChecked`], never an error.
+    fn installed_plugins(&self, claude_dir: &Path) -> PluginsRead;
 }
 
 /// A worktree to add: where, on which branch, starting how.

@@ -916,3 +916,73 @@ fn the_git_workspace_reads_a_claude_directorys_commands_and_skills() {
     assert_eq!(missing.commands, Ok(Vec::new()));
     assert_eq!(missing.skills, Ok(Vec::new()));
 }
+
+/// The real adapter reads the plugins listed in `installed_plugins.json`:
+/// each install's `commands/` and its skill folders, nested up to the depth
+/// bound. A missing or malformed list is "not checked", never an error.
+#[test]
+fn the_git_workspace_reads_installed_plugins_and_tolerates_a_bad_list() {
+    use den::handoff::workflows::{PluginDir, PluginsRead};
+    let temp = tempfile::tempdir().unwrap();
+    let claude = temp.path().join(".claude");
+    let matt = claude.join("plugins/cache/market/mattpocock-skills/1.2.3");
+    let review = claude.join("plugins/cache/market/code-review/1.0.0");
+    let write = |path: PathBuf| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "x").unwrap();
+    };
+    write(matt.join("skills/engineering/implement/SKILL.md"));
+    write(matt.join("skills/engineering/implement/nested/SKILL.md"));
+    write(matt.join("skills/a/b/c/too-deep/SKILL.md"));
+    write(matt.join("skills/top/SKILL.md"));
+    write(review.join("commands/code-review.md"));
+    let file = claude.join("plugins/installed_plugins.json");
+    let list = serde_json::json!({
+        "version": 2,
+        "plugins": {
+            "mattpocock-skills@market": [{"scope": "user", "installPath": matt, "version": "1.2.3"}],
+            "code-review@market": [{"scope": "user", "installPath": review}],
+            "odd@market": [{"scope": "project", "installPath": "relative/path"}],
+        }
+    });
+    std::fs::write(&file, serde_json::to_vec(&list).unwrap()).unwrap();
+    let workspace = GitWorkspace::new();
+    let PluginsRead::Read {
+        file: read_file,
+        plugins,
+    } = workspace.installed_plugins(&claude)
+    else {
+        panic!("the list should read");
+    };
+    assert_eq!(read_file, file);
+    let by_name = |name: &str| plugins.iter().find(|p| p.name == name).unwrap().clone();
+    assert_eq!(
+        by_name("mattpocock-skills"),
+        PluginDir {
+            name: "mattpocock-skills".to_owned(),
+            path: matt.clone(),
+            commands: Ok(Vec::new()),
+            skills: Ok(vec![
+                PathBuf::from("engineering/implement"),
+                PathBuf::from("top")
+            ]),
+        },
+        "a skill folder isn't searched further, and nothing below the depth bound"
+    );
+    assert_eq!(
+        by_name("code-review").commands,
+        Ok(vec![PathBuf::from("code-review.md")])
+    );
+    assert!(by_name("odd").commands.is_err());
+
+    std::fs::write(&file, b"{ not json").unwrap();
+    assert!(matches!(
+        workspace.installed_plugins(&claude),
+        PluginsRead::NotChecked(why) if why.contains("couldn't understand")
+    ));
+    std::fs::remove_file(&file).unwrap();
+    assert!(matches!(
+        workspace.installed_plugins(&claude),
+        PluginsRead::NotChecked(why) if why.contains("isn't there")
+    ));
+}

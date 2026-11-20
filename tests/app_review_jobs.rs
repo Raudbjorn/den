@@ -40,6 +40,10 @@ use support::{
 const ROOT: &str = "/home/me/dev";
 /// The user's Claude directory, as `main` would find it.
 const CLAUDE: &str = "/home/me/.claude";
+/// Claude Code's list of installed plugins in [`CLAUDE`].
+const PLUGINS_FILE: &str = "/home/me/.claude/plugins/installed_plugins.json";
+const MATT: &str = "/home/me/.claude/plugins/cache/market/mattpocock-skills/1.2.3";
+const CODE_REVIEW_PLUGIN: &str = "/home/me/.claude/plugins/cache/market/code-review/1.0.0";
 const API: &str = "/home/me/dev/api";
 const API_CLAUDE: &str = "/home/me/dev/api/.claude";
 const WEB: &str = "/home/me/dev/web";
@@ -375,7 +379,7 @@ fn an_unfound_slash_command_shows_not_found_in_amber_and_where_den_looked() {
     assert_eq!(
         note,
         format!(
-            "not found in {CLAUDE}/skills, {CLAUDE}/commands, {API_CLAUDE}/skills, {API_CLAUDE}/commands; {NOT_CHECKED}"
+            "not found in {CLAUDE}/skills, {CLAUDE}/commands, {API_CLAUDE}/skills, {API_CLAUDE}/commands, the plugins listed in {PLUGINS_FILE}; {NOT_CHECKED}"
         ),
         "never claims the command doesn't exist"
     );
@@ -460,7 +464,95 @@ fn a_directory_den_could_not_read_or_did_not_look_at_is_said() {
         format!(
             "not found in {API_CLAUDE}/skills, {API_CLAUDE}/commands; \
              den didn't look in your Claude directory: den doesn't know your home directory; \
-             couldn't read {API_CLAUDE}/skills: permission denied; {NOT_CHECKED}"
+             couldn't read {API_CLAUDE}/skills: permission denied; \
+             plugins not checked: den doesn't know your home directory; {NOT_CHECKED}"
+        )
+    );
+}
+
+/// Installed plugins count (#41): a skill nested a level down in a plugin's
+/// `skills/` is found as the bare `/name` and as `/plugin:name`, a plugin's
+/// command file as `/plugin:name`, and each found line names its plugin.
+#[test]
+fn a_plugins_nested_skill_and_command_are_found_and_name_their_plugin() {
+    let mut harness = started_with(Some(CLAUDE), |harness| {
+        harness.workspace.add_plugin(
+            CLAUDE,
+            "mattpocock-skills",
+            MATT,
+            &[],
+            &["engineering/code-review", "engineering/implement"],
+        );
+        harness.workspace.add_plugin(
+            CLAUDE,
+            "code-review",
+            CODE_REVIEW_PLUGIN,
+            &["code-review.md"],
+            &[],
+        );
+    });
+    let ready = open_sheet(&mut harness, "acme/api", "#6");
+    let fields = workflow_fields(&ready);
+    assert_eq!(fields.len(), 1, "{fields:#?}");
+    assert_eq!(fields[0].value, "/code-review found");
+    assert_eq!(fields[0].tone, Tone::Good);
+    assert_eq!(
+        fields[0].note.as_deref().unwrap(),
+        format!(
+            "installed by plugin mattpocock-skills: {MATT}/skills/engineering/code-review/SKILL.md, \
+             installed by plugin code-review: {CODE_REVIEW_PLUGIN}/commands/code-review.md"
+        )
+    );
+
+    press(&mut harness, Key::Char('e'));
+    press(&mut harness, Key::Home);
+    type_text(
+        &mut harness,
+        "/code-review:code-review /mattpocock-skills:implement /code-review:implement ",
+    );
+    press(&mut harness, Key::Esc);
+    let edited = sheet(&harness).clone();
+    let checks: Vec<(&str, Option<&str>)> = workflow_fields(&edited)
+        .iter()
+        .map(|f| (f.value.as_str(), f.note.as_deref()))
+        .collect();
+    let command =
+        format!("installed by plugin code-review: {CODE_REVIEW_PLUGIN}/commands/code-review.md");
+    let skill = format!(
+        "installed by plugin mattpocock-skills: {MATT}/skills/engineering/implement/SKILL.md"
+    );
+    assert_eq!(
+        checks[0],
+        ("/code-review:code-review found", Some(command.as_str()))
+    );
+    assert_eq!(
+        checks[1],
+        ("/mattpocock-skills:implement found", Some(skill.as_str()))
+    );
+    // The prefix names the plugin: code-review has no `implement`.
+    assert_eq!(checks[2].0, "/code-review:implement not found");
+    assert_eq!(checks.len(), 4, "{checks:#?}");
+}
+
+/// A plugin list den can't use (missing, unreadable, not JSON den
+/// understands) is said in the note; the sheet is still ready.
+#[test]
+fn a_plugin_list_den_could_not_use_still_gives_a_sheet() {
+    let mut harness = started_with(Some(CLAUDE), |harness| {
+        harness.workspace.plugins_not_checked(&format!(
+            "couldn't understand {PLUGINS_FILE}: expected value at line 1 column 1"
+        ));
+    });
+    let ready = open_sheet(&mut harness, "acme/api", "#6");
+    let fields = workflow_fields(&ready);
+    assert_eq!(fields.len(), 1, "{fields:#?}");
+    assert_eq!(fields[0].value, "/code-review not found");
+    assert_eq!(fields[0].tone, Tone::Caution);
+    assert_eq!(
+        fields[0].note.as_deref().unwrap(),
+        format!(
+            "not found in {CLAUDE}/skills, {CLAUDE}/commands, {API_CLAUDE}/skills, {API_CLAUDE}/commands; \
+             plugins not checked: couldn't understand {PLUGINS_FILE}: expected value at line 1 column 1; {NOT_CHECKED}"
         )
     );
 }

@@ -9,7 +9,7 @@ use den::{
     github::graphql::{GraphQl, GraphQlRequest, GraphQlResponse, TransportError},
     handoff::{
         PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode, Writability,
-        workflows::ClaudeDir,
+        workflows::{ClaudeDir, PluginDir, PluginsRead, installed_plugins_file},
     },
     jobs::{JobRecord, JobStoreError},
     linear::{HttpReply, LinearRequest, LinearTransport, TransportError as LinearTransportError},
@@ -227,6 +227,8 @@ struct WorkspaceState {
     /// Claude directories (#41): path → what defines slash commands there.
     /// Any other directory reads as empty.
     claude_dirs: BTreeMap<PathBuf, ClaudeDir>,
+    /// The installed plugins (#41); `None`: none installed, the list read.
+    plugins: Option<PluginsRead>,
     calls: Vec<WorkspaceCall>,
 }
 
@@ -265,6 +267,40 @@ impl FakeWorkspace {
                 .expect("readable skills")
                 .push(name.to_owned());
         });
+    }
+
+    /// Installs plugin `name` at `path` with these `commands/` files and
+    /// `skills/` folders (relative paths), listed in `claude_dir`'s
+    /// `installed_plugins.json`.
+    pub fn add_plugin(
+        &self,
+        claude_dir: &str,
+        name: &str,
+        path: &str,
+        commands: &[&str],
+        skills: &[&str],
+    ) {
+        let mut state = self.state.lock().expect("lock");
+        let plugin = PluginDir {
+            name: name.to_owned(),
+            path: PathBuf::from(path),
+            commands: Ok(commands.iter().map(PathBuf::from).collect()),
+            skills: Ok(skills.iter().map(PathBuf::from).collect()),
+        };
+        match &mut state.plugins {
+            Some(PluginsRead::Read { plugins, .. }) => plugins.push(plugin),
+            _ => {
+                state.plugins = Some(PluginsRead::Read {
+                    file: installed_plugins_file(Path::new(claude_dir)),
+                    plugins: vec![plugin],
+                });
+            }
+        }
+    }
+
+    /// The installed plugins' list can't be used: `why`.
+    pub fn plugins_not_checked(&self, why: &str) {
+        self.state.lock().expect("lock").plugins = Some(PluginsRead::NotChecked(why.to_owned()));
     }
 
     /// Adds a clone at `path` with `(name, url)` remotes.
@@ -661,6 +697,14 @@ impl Workspace for FakeWorkspace {
             .get(dir)
             .cloned()
             .unwrap_or_else(|| ClaudeDir::empty(dir.to_path_buf()))
+    }
+
+    fn installed_plugins(&self, claude_dir: &Path) -> PluginsRead {
+        let state = self.state.lock().expect("lock");
+        state.plugins.clone().unwrap_or_else(|| PluginsRead::Read {
+            file: installed_plugins_file(claude_dir),
+            plugins: Vec::new(),
+        })
     }
 }
 
