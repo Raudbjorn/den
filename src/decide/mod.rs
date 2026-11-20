@@ -16,7 +16,7 @@ mod attribution;
 mod branch;
 pub mod correlation;
 mod issue;
-mod linear_issue;
+pub mod linear_issue;
 mod pull_request;
 mod run;
 

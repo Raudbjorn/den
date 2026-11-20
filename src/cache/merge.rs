@@ -78,8 +78,10 @@ pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> Git
             afresh: true,
         };
     };
-    let reading = Reading::of(fresh.owners.clone(), &fresh.coverage);
-    let mut carried = carried_sources(&previous, &fresh, &reading);
+    let mut merged = fresh;
+    // Borrows the refresh's coverage; the merge below only moves other fields.
+    let reading = Reading::of(merged.owners.clone(), &merged.coverage);
+    let mut carried = carried_sources(&previous, &merged, &reading);
     carried.extend(
         previous
             .carried
@@ -87,7 +89,6 @@ pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> Git
             .filter(|c| c.source.is_linear())
             .cloned(),
     );
-    let mut merged = fresh;
     let previous_observation = previous.observation;
 
     let mut repos = std::mem::take(&mut merged.repos);
@@ -141,6 +142,13 @@ pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> Git
     merged.issues = issues;
     merged.branches = branches;
     merged.runs = runs;
+    if !reading.viewer_read {
+        for team in previous_observation.viewer.teams {
+            if !merged.viewer.belongs_to(&team) {
+                merged.viewer.teams.push(team);
+            }
+        }
+    }
     // Linear stays as the previous Observation had it: its part, its coverage
     // (carried above, its ages).
     merged.linear = previous_observation.linear;
@@ -149,13 +157,6 @@ pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> Git
             merged
                 .coverage
                 .record(entry.source.clone(), entry.state.clone());
-        }
-    }
-    if !reading.viewer_read {
-        for team in previous_observation.viewer.teams {
-            if !merged.viewer.belongs_to(&team) {
-                merged.viewer.teams.push(team);
-            }
         }
     }
     GitHubMerge {
@@ -314,19 +315,19 @@ fn linear_owners(coverage: &Coverage) -> Vec<String> {
 }
 
 /// What the refresh read completely.
-struct Reading {
+struct Reading<'f> {
     owners: Vec<String>,
     /// The refresh's coverage.
-    coverage: Coverage,
+    coverage: &'f Coverage,
     viewer_read: bool,
 }
 
-impl Reading {
+impl<'f> Reading<'f> {
     /// What a refresh of `owners` that recorded `coverage` read.
-    fn of(owners: Vec<String>, coverage: &Coverage) -> Self {
+    fn of(owners: Vec<String>, coverage: &'f Coverage) -> Self {
         Self {
             owners,
-            coverage: coverage.clone(),
+            coverage,
             viewer_read: coverage.get(&Source::Viewer) == Some(&SourceState::Complete),
         }
     }
@@ -384,7 +385,7 @@ impl Reading {
 /// Appends to `fresh` the `previous` facts it lacks whose source the refresh
 /// could not read completely (`keeps` says which, from the fact's own source).
 fn keep_unread<T, K: Eq + Hash>(
-    reading: &Reading,
+    reading: &Reading<'_>,
     fresh: &mut Vec<T>,
     previous: Vec<T>,
     keeps: impl Fn(&Reading, &T) -> bool,
@@ -422,7 +423,7 @@ fn keep_unread<T, K: Eq + Hash>(
 fn carried_sources(
     previous: &CachedObservation,
     fresh: &Observation,
-    reading: &Reading,
+    reading: &Reading<'_>,
 ) -> Vec<Carried> {
     let mut carried: Vec<Carried> = fresh
         .coverage
