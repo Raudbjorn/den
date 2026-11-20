@@ -233,6 +233,102 @@ fn data_kept_twice_keeps_its_original_age() {
 }
 
 #[test]
+fn an_owner_whose_casing_changed_is_still_the_same_owner() {
+    let mut harness = after_earlier_survey();
+    // The config now says "Alpha": the survey's facts carry that casing.
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("Alpha")
+        .fully_read_owner("beta")
+        .repo("Alpha/App")
+        .repo("beta/lib")
+        .pull_request(pr("Alpha/App", 1).title("Still open"))
+        .pull_request(pr("beta/lib", 2).title("Old beta PR"))
+        .build()));
+    refresh(&mut harness);
+    assert_eq!(
+        references(&harness.view),
+        ["Alpha/App#1", "beta/lib#2"],
+        "a still-open PR is not doubled by its old casing"
+    );
+
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("ALPHA")
+        .fully_read_owner("beta")
+        .repo("ALPHA/app")
+        .repo("beta/lib")
+        .pull_request(pr("beta/lib", 2).title("Old beta PR"))
+        .build()));
+    refresh(&mut harness);
+    assert_eq!(
+        references(&harness.view),
+        ["beta/lib#2"],
+        "a complete read of the Owner drops its closed PR, whatever the casing"
+    );
+    assert!(harness.view.header.coverage_complete);
+}
+
+#[test]
+fn a_repo_kept_from_an_older_survey_keeps_its_age_when_its_owner_later_fails() {
+    let mut harness = after_earlier_survey();
+    // 11:00: alpha's PRs were read, but alpha/app's later pages were lost, so #1
+    // (from 10:00) is kept for alpha/app.
+    harness.answer(Ok(ObservationBuilder::new()
+        .observed_at("2026-11-19T11:00:00Z")
+        .fully_read_owner("alpha")
+        .fully_read_owner("beta")
+        .repo_coverage("alpha/app", SourceKind::PullRequests, failed("page 2 lost"))
+        .repo("alpha/app")
+        .repo("beta/lib")
+        .pull_request(pr("beta/lib", 2).title("Old beta PR"))
+        .build()));
+    refresh(&mut harness);
+    // 11:30: alpha's PR query fails outright; nothing is recorded for alpha/app.
+    harness.answer(Ok(ObservationBuilder::new()
+        .observed_at("2026-11-19T11:30:00Z")
+        .fully_read_owner("alpha")
+        .fully_read_owner("beta")
+        .owner_coverage("alpha", SourceKind::PullRequests, failed("gh timed out"))
+        .repo("alpha/app")
+        .repo("beta/lib")
+        .pull_request(pr("beta/lib", 2).title("Old beta PR"))
+        .build()));
+    let follow_ups = refresh(&mut harness);
+
+    let Effect::StoreCache { cached } =
+        effect_named(&follow_ups, |e| matches!(e, Effect::StoreCache { .. }))
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        cached.carried_since(&den::domain::Source::Repo {
+            repo: support::build::repo_id("alpha/app"),
+            kind: SourceKind::PullRequests,
+        }),
+        Some(ts(EARLIER)),
+        "alpha/app's PRs are still the 10:00 ones: {:?}",
+        cached.carried
+    );
+
+    let rows = harness.view.list.rows.len();
+    for _ in 0..rows {
+        let selected = harness.view.detail.content.clone().expect("selected");
+        if selected.reference == "alpha/app#1" {
+            assert!(
+                selected
+                    .coverage
+                    .iter()
+                    .any(|c| c.contains("gh timed out") && c.contains("10:00 UTC")),
+                "{:?}",
+                selected.coverage
+            );
+            return;
+        }
+        harness.key(Key::Down);
+    }
+    panic!("alpha/app#1 was not kept: {:?}", references(&harness.view));
+}
+
+#[test]
 fn a_rate_limited_refresh_keeps_the_old_data_and_shows_the_reset_time() {
     // Rate limited before den knew who you are: no Observation at all.
     let mut harness = after_earlier_survey();
