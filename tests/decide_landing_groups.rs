@@ -556,3 +556,36 @@ fn an_issue_with_only_links_attached_is_implement() {
     assert!(issue.explanation.unknowns.is_empty(), "{issue:?}");
     assert!(issue.landing.members.is_empty());
 }
+
+/// Two spellings of one Repo are one Repo, as GitHub names are. When the
+/// refresh read it completely under one spelling, every open Pull Request of
+/// it is there, whatever another spelling's entry says: a member missing
+/// from it is merged or closed. This is the rule the cache merge had before
+/// `Coverage::read_completely` (any complete entry of the folded source), so
+/// the merge and the Landing Groups still drop what a complete read proves
+/// is gone.
+#[test]
+fn a_repo_read_completely_under_one_spelling_is_read_completely() {
+    let observation = two_owners()
+        .repo_coverage("ACME/api", SourceKind::PullRequests, SourceState::Complete)
+        .repo_coverage(
+            "acme/api",
+            SourceKind::PullRequests,
+            SourceState::Partial(Incompleteness::PaginationStopped {
+                pages_read: 1,
+                reason: "rate limited".to_owned(),
+            }),
+        )
+        .linear_issue(linear_issue("acme", "id-1", "TEAM-1").attached("acme/api", 4))
+        .build();
+    assert!(
+        observation
+            .coverage
+            .read_completely(&RepoId::new("acme", "api"), SourceKind::PullRequests)
+    );
+    let decisions = decide_all(&observation);
+    assert_eq!(
+        linear(&decisions, "TEAM-1").landing.members[0].status,
+        MemberStatus::NotOpen
+    );
+}
