@@ -114,6 +114,16 @@ impl LinearIssueBuilder {
         self
     }
 
+    pub fn created(mut self, at: &str) -> Self {
+        self.issue.created_at = ts(at);
+        self
+    }
+
+    /// Unassigned and in the unstarted state `Todo`: what Start offers (#33).
+    pub fn up_for_grabs(self) -> Self {
+        self.unassigned().state("Todo", LinearStateKind::Unstarted)
+    }
+
     pub fn updated(mut self, at: &str) -> Self {
         self.issue.updated_at = ts(at);
         self

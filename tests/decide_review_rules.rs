@@ -41,6 +41,7 @@ fn workflow(switches: Switches, reviewers: Vec<Reviewer>, held: &[&str]) -> Line
             reviewers,
         }),
         held_repos: held.iter().map(|r| repo_id(r)).collect(),
+        ..LinearWorkflowPolicy::default()
     }
 }
 
