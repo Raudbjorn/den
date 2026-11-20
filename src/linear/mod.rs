@@ -481,12 +481,8 @@ fn attachments(raw: Option<RawAttachments>, page_complete: bool) -> Attachments 
     let mut unreadable = 0_usize;
     for node in &raw.nodes {
         match node.get("url").and_then(Value::as_str) {
-            Some(url) => {
-                let attachment = Attachment::from_url(url);
-                if !links.contains(&attachment) {
-                    links.push(attachment);
-                }
-            }
+            // The constructors below drop repeats.
+            Some(url) => links.push(Attachment::from_url(url)),
             None => unreadable += 1,
         }
     }

@@ -18,7 +18,8 @@ use den::{
     config::Config,
     domain::{
         Coverage, LinearPart, LinearSourceKind, NextStep, RepoId, Source, SourceKind, SourceState,
-        WorkItemId, WorkItemKind, facts::ReviewVerdict,
+        WorkItemId, WorkItemKind,
+        facts::{LinearIssue, ReviewVerdict},
     },
     jobs::{JobRecord, JobSubject},
     ordering::Scope,
@@ -53,6 +54,11 @@ fn pr_id(repo: &str, number: u64) -> WorkItemId {
 /// - TEAM-2 shares app #7 with TEAM-1, so #7 is ambiguous;
 /// - api #9's branch `team-3-cache` only hints at TEAM-3.
 fn harness() -> Harness {
+    harness_with(Vec::new())
+}
+
+/// [`harness`], with `extra` Linear Issues read beside TEAM-1 to TEAM-3.
+fn harness_with(extra: Vec<LinearIssue>) -> Harness {
     let config = Config {
         owners: vec!["octo".to_owned()],
         main_clone_root: Some(PathBuf::from(ROOT)),
@@ -117,7 +123,10 @@ fn harness() -> Harness {
                     .attached("octo/app", 7)
                     .build(),
                 linear_issue("octo", "id-3", "TEAM-3").build(),
-            ],
+            ]
+            .into_iter()
+            .chain(extra)
+            .collect(),
             ..LinearPart::default()
         },
         coverage,
@@ -245,6 +254,54 @@ fn a_hinted_linear_issue_detail_says_possibly_for_and_not_a_member() {
         .map(|l| l.text)
         .collect();
     assert!(lines[0].starts_with("possibly for TEAM-3"), "{lines:?}");
+}
+
+/// Attachments den didn't read completely (Linear returned none, errors
+/// alongside the page, or more than den reads) never read as "no Pull
+/// Request attached": with no member read, the section says den can't tell;
+/// with some, it says more may be attached. Either way it agrees with the
+/// Explanation ("couldn't establish whether a PR exists") and is a caution.
+#[test]
+fn a_linear_issue_detail_never_says_no_pr_when_attachments_are_incomplete() {
+    let mut harness = harness_with(vec![
+        linear_issue("octo", "id-4", "TEAM-4")
+            .attachments_incomplete("Linear didn't return them")
+            .build(),
+        linear_issue("octo", "id-5", "TEAM-5")
+            .attached("octo/api", 8)
+            .attachments_incomplete("more than 50 attachments")
+            .build(),
+    ]);
+
+    let none_read = detail_of(&mut harness, "TEAM-4");
+    assert!(
+        none_read
+            .why
+            .contains("couldn't establish whether a PR exists"),
+        "{}",
+        none_read.why
+    );
+    let landing = none_read.landing.expect("a Landing Group section");
+    let texts: Vec<&str> = landing.lines.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            "den couldn't read all of its attachments in Linear (Linear didn't return them): it can't tell whether a Pull Request is attached"
+        ]
+    );
+    assert!(landing.lines[0].caution, "unknown is a caution");
+
+    let some_read = detail_of(&mut harness, "TEAM-5");
+    let landing = some_read.landing.expect("a Landing Group section");
+    let texts: Vec<&str> = landing.lines.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            "octo/api #8 · draft · Next Step Finish draft · ambiguous, also attached to TEAM-1",
+            "den couldn't read all of its attachments in Linear (more than 50 attachments): more Pull Requests may be attached",
+        ]
+    );
+    assert!(landing.lines[1].caution, "unknown is a caution");
 }
 
 /// "Ordering and Scope": a Repo Scope shows the Linear Issues with a member

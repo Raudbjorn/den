@@ -6,7 +6,7 @@
 
 use crate::domain::{
     coverage::LinearSourceKind,
-    ids::{LinearIssueId, RepoId, WorkItemId},
+    ids::{LinearIssueId, RepoId, WorkItemId, is_valid_login, is_valid_repo_name},
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -177,7 +177,8 @@ impl LinearCycle {
 /// A Linear Issue's attachments, as den read them (#35).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attachments {
-    /// In Linear's order, without repeats.
+    /// In Linear's order, without repeats ([`Attachment::same`]; the
+    /// constructors and [`Attachments::push`] drop them).
     pub links: Vec<Attachment>,
     /// Whether `links` is every attachment the issue has.
     pub read: AttachmentsRead,
@@ -186,17 +187,29 @@ pub struct Attachments {
 impl Attachments {
     /// Every attachment was read: `links` is all of them.
     pub fn complete(links: Vec<Attachment>) -> Self {
-        Self {
-            links,
-            read: AttachmentsRead::Complete,
-        }
+        Self::read_as(links, AttachmentsRead::Complete)
     }
 
     /// Some or all attachments are missing, for `why`.
     pub fn incomplete(links: Vec<Attachment>, why: impl Into<String>) -> Self {
-        Self {
-            links,
-            read: AttachmentsRead::Incomplete { why: why.into() },
+        Self::read_as(links, AttachmentsRead::Incomplete { why: why.into() })
+    }
+
+    fn read_as(links: Vec<Attachment>, read: AttachmentsRead) -> Self {
+        let mut attachments = Self {
+            links: Vec::with_capacity(links.len()),
+            read,
+        };
+        for link in links {
+            attachments.push(link);
+        }
+        attachments
+    }
+
+    /// Adds `attachment` after the others, unless it repeats one of them.
+    pub fn push(&mut self, attachment: Attachment) {
+        if !self.links.iter().any(|seen| seen.same(&attachment)) {
+            self.links.push(attachment);
         }
     }
 
@@ -233,6 +246,17 @@ pub enum Attachment {
 }
 
 impl Attachment {
+    /// The same attachment: two Pull Requests compared as GitHub compares
+    /// them (Owner and Repo case-insensitively, see [`PullRequestRef::is`]),
+    /// two links exactly.
+    pub fn same(&self, other: &Attachment) -> bool {
+        match (self, other) {
+            (Self::PullRequest(a), Self::PullRequest(b)) => a.is(&b.repo, b.number),
+            (Self::Link { url: a }, Self::Link { url: b }) => a == b,
+            _ => false,
+        }
+    }
+
     /// A Pull Request when `url` parses as one, otherwise a link.
     pub fn from_url(url: &str) -> Self {
         PullRequestRef::from_url(url).map_or_else(
@@ -252,10 +276,6 @@ pub struct PullRequestRef {
     pub number: u64,
 }
 
-/// GitHub's bound on a login, in characters.
-const MAX_LOGIN_CHARS: usize = 39;
-/// GitHub's bound on a Repo name, in characters.
-const MAX_REPO_NAME_CHARS: usize = 100;
 /// GitHub's web host; Pull Request URLs on any other host are links.
 const GITHUB_HOSTS: [&str; 2] = ["github.com", "www.github.com"];
 
@@ -278,8 +298,10 @@ impl PullRequestRef {
     }
 
     /// `https://github.com/<owner>/<repo>/pull/<number>`, optionally followed
-    /// by a sub-page (`/files`), a query or a fragment. Anything else, or any
-    /// part that isn't a valid GitHub login, Repo name or Pull Request
+    /// by a sub-page (`/files`), a query or a fragment. Lenient about form on
+    /// purpose, as people paste links: `http://` and `www.github.com` too,
+    /// in any casing. Strict about names: anything else, or any part that
+    /// isn't a valid GitHub login, Repo name or canonical Pull Request
     /// number, is `None`: den never guesses a membership from a URL it
     /// doesn't fully understand.
     pub fn from_url(url: &str) -> Option<Self> {
@@ -300,7 +322,7 @@ impl PullRequestRef {
         let canonical_number = !number.is_empty()
             && number.chars().all(|c| c.is_ascii_digit())
             && !number.starts_with('0');
-        if !(canonical_number && is_login(owner) && is_repo_name(repo)) {
+        if !(canonical_number && is_valid_login(owner) && is_valid_repo_name(repo)) {
             return None;
         }
         let number = number.parse::<u64>().ok()?;
@@ -313,20 +335,4 @@ fn strip_prefix_ignoring_case<'u>(text: &'u str, prefix: &str) -> Option<&'u str
     head.eq_ignore_ascii_case(prefix)
         .then(|| text.get(prefix.len()..))
         .flatten()
-}
-
-fn is_login(login: &str) -> bool {
-    (1..=MAX_LOGIN_CHARS).contains(&login.chars().count())
-        && login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-        && !login.starts_with('-')
-        && !login.ends_with('-')
-}
-
-fn is_repo_name(name: &str) -> bool {
-    (1..=MAX_REPO_NAME_CHARS).contains(&name.chars().count())
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-        && name != "."
-        && name != ".."
 }

@@ -22,11 +22,12 @@
 //! keeps its group.
 
 use crate::domain::{
-    CoverageEntry, LinearIssueId, Observation, RepoId, Source, SourceKind, WorkItemId,
+    LinearIssueId, Observation, RepoId, SourceKind, WorkItemId,
     facts::{LinearIssue, PullRequest, PullRequestRef},
     ids::same_login,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Where one Work Item stands in Landing Groups, carried on its Decision. A
 /// Linear Issue fills `members` and `hints`; a Pull Request fills `groups`
@@ -87,6 +88,20 @@ pub struct Member {
 impl Member {
     pub fn ambiguous(&self) -> bool {
         !self.also_attached_to.is_empty()
+    }
+
+    /// "ambiguous, also attached to TEAM-2, TEAM-3" when it is ambiguous: the
+    /// one wording for the Explanation and the detail.
+    pub fn ambiguity(&self) -> Option<String> {
+        if !self.ambiguous() {
+            return None;
+        }
+        let others: Vec<&str> = self
+            .also_attached_to
+            .iter()
+            .map(|g| g.identifier.as_str())
+            .collect();
+        Some(format!("ambiguous, also attached to {}", others.join(", ")))
     }
 
     /// `acme/api #4`.
@@ -173,30 +188,47 @@ pub fn pull_request_reference(pr: &PullRequestRef) -> String {
     format!("{} #{}", pr.repo, pr.number)
 }
 
-/// The Landing Groups of one Observation, looked up per Work Item.
+/// The Landing Groups of one Observation, looked up per Work Item by
+/// identity: a Linear Issue by workspace and permanent ID, a Pull Request by
+/// its folded Owner, Repo and number.
 #[derive(Debug, Clone, Default)]
 pub struct Correlation {
-    issues: Vec<(LinearIssueId, Landing)>,
-    pull_requests: Vec<(PullRequestRef, Landing)>,
+    issues: HashMap<LinearIssueId, Landing>,
+    pull_requests: HashMap<PullRequestKey, Landing>,
 }
 
 impl Correlation {
     /// A Linear Issue's group: its members and hints.
     pub fn for_issue(&self, issue: &LinearIssueId) -> Landing {
-        self.issues
-            .iter()
-            .find(|(id, _)| id == issue)
-            .map(|(_, landing)| landing.clone())
-            .unwrap_or_default()
+        self.issues.get(issue).cloned().unwrap_or_default()
     }
 
     /// A Pull Request's groups and hints.
     pub fn for_pull_request(&self, repo: &RepoId, number: u64) -> Landing {
         self.pull_requests
-            .iter()
-            .find(|(pr, _)| pr.is(repo, number))
-            .map(|(_, landing)| landing.clone())
+            .get(&PullRequestKey::of(repo, number))
+            .cloned()
             .unwrap_or_default()
+    }
+}
+
+/// A Pull Request's identity as GitHub compares it: Owner and Repo folded
+/// (case-insensitive), and its number. A map key, so a lookup by Pull
+/// Request needn't scan.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PullRequestKey {
+    owner: String,
+    repo: String,
+    number: u64,
+}
+
+impl PullRequestKey {
+    pub fn of(repo: &RepoId, number: u64) -> Self {
+        Self {
+            owner: repo.owner.to_ascii_lowercase(),
+            repo: repo.name.to_ascii_lowercase(),
+            number,
+        }
     }
 }
 
@@ -207,38 +239,57 @@ pub fn correlate(observation: &Observation) -> Correlation {
         .iter()
         .map(|issue| (*issue, attached_pull_requests(issue)))
         .collect();
-    let attachers = |pr: &PullRequestRef| -> Vec<GroupRef> {
-        attached
-            .iter()
-            .filter(|(_, prs)| prs.iter().any(|p| p.is(&pr.repo, pr.number)))
-            .map(|(issue, _)| group_ref(issue))
-            .collect()
-    };
+
+    // Which Linear Issues each Pull Request is attached to.
+    let mut attachers: HashMap<PullRequestKey, Vec<GroupRef>> = HashMap::new();
+    for (issue, prs) in &attached {
+        for pr in prs {
+            attachers
+                .entry(PullRequestKey::of(&pr.repo, pr.number))
+                .or_default()
+                .push(group_ref(issue));
+        }
+    }
+
+    // Every hint, found once and given to both sides: the issue's `hints`
+    // and the Pull Request's `possibly_for`.
+    let mut issue_hints: Vec<Vec<Hint>> = vec![Vec::new(); attached.len()];
+    let mut pull_request_hints: Vec<Vec<GroupRef>> =
+        vec![Vec::new(); observation.pull_requests.len()];
+    for (i, (issue, prs)) in attached.iter().enumerate() {
+        for (p, pr) in observation.pull_requests.iter().enumerate() {
+            if !is_hint(issue, prs, pr) {
+                continue;
+            }
+            if let Some(hints) = issue_hints.get_mut(i) {
+                hints.push(Hint {
+                    pr: reference_of(pr),
+                    branch: pr.head_ref.clone(),
+                });
+            }
+            if let Some(possibly_for) = pull_request_hints.get_mut(p) {
+                possibly_for.push(group_ref(issue));
+            }
+        }
+    }
 
     let issue_groups = attached
         .iter()
-        .map(|(issue, prs)| {
+        .zip(issue_hints)
+        .map(|((issue, prs), hints)| {
             let this = issue.work_item_id();
             let members = prs
                 .iter()
                 .map(|pr| Member {
                     pr: pr.clone(),
                     status: status(observation, &issue.owner, pr),
-                    also_attached_to: attachers(pr)
+                    also_attached_to: attachers
+                        .get(&PullRequestKey::of(&pr.repo, pr.number))
                         .into_iter()
+                        .flatten()
                         .filter(|g| g.issue != this)
+                        .cloned()
                         .collect(),
-                })
-                .collect();
-            let hints = observation
-                .pull_requests
-                .iter()
-                .filter(|pr| same_login(&pr.repo.owner, &issue.owner))
-                .filter(|pr| !prs.iter().any(|p| p.is(&pr.repo, pr.number)))
-                .filter(|pr| names_identifier(&pr.head_ref, &issue.identifier))
-                .map(|pr| Hint {
-                    pr: reference_of(pr),
-                    branch: pr.head_ref.clone(),
                 })
                 .collect();
             (
@@ -252,37 +303,33 @@ pub fn correlate(observation: &Observation) -> Correlation {
         })
         .collect();
 
-    let pull_request_groups = observation
-        .pull_requests
-        .iter()
-        .map(|pr| {
-            let this = reference_of(pr);
-            let groups = attachers(&this);
-            let possibly_for = attached
-                .iter()
-                .filter(|(issue, prs)| {
-                    same_login(&pr.repo.owner, &issue.owner)
-                        && !prs.iter().any(|p| p.is(&pr.repo, pr.number))
-                        && names_identifier(&pr.head_ref, &issue.identifier)
-                })
-                .map(|(issue, _)| group_ref(issue))
-                .collect();
-            (
-                this,
-                Landing {
-                    groups,
-                    possibly_for,
-                    ..Landing::default()
-                },
-            )
-        })
-        .filter(|(_, landing)| !landing.is_empty())
-        .collect();
+    let mut pull_request_groups: HashMap<PullRequestKey, Landing> = HashMap::new();
+    for (pr, possibly_for) in observation.pull_requests.iter().zip(pull_request_hints) {
+        let key = PullRequestKey::of(&pr.repo, pr.number);
+        let landing = Landing {
+            groups: attachers.get(&key).cloned().unwrap_or_default(),
+            possibly_for,
+            ..Landing::default()
+        };
+        if !landing.is_empty() {
+            // The first one read wins, as for Linear Issues.
+            pull_request_groups.entry(key).or_insert(landing);
+        }
+    }
 
     Correlation {
         issues: issue_groups,
         pull_requests: pull_request_groups,
     }
+}
+
+/// The hint rule, in one place: `pr` is an open Pull Request of `issue`'s
+/// Owner, not attached to it (`attached`), whose head branch names the
+/// issue's identifier.
+fn is_hint(issue: &LinearIssue, attached: &[PullRequestRef], pr: &PullRequest) -> bool {
+    same_login(&pr.repo.owner, &issue.owner)
+        && !attached.iter().any(|p| p.is(&pr.repo, pr.number))
+        && names_identifier(&pr.head_ref, &issue.identifier)
 }
 
 /// Each Linear Issue once, by identity (the first one read wins).
@@ -296,15 +343,10 @@ fn distinct_issues(issues: &[LinearIssue]) -> Vec<&LinearIssue> {
     distinct
 }
 
-/// The Pull Requests attached to `issue`, each once.
+/// The Pull Requests attached to `issue`, each once (`Attachments` holds
+/// no repeats).
 fn attached_pull_requests(issue: &LinearIssue) -> Vec<PullRequestRef> {
-    let mut prs: Vec<PullRequestRef> = Vec::new();
-    for pr in issue.attachments.pull_requests() {
-        if !prs.iter().any(|p| p.is(&pr.repo, pr.number)) {
-            prs.push(pr.clone());
-        }
-    }
-    prs
+    issue.attachments.pull_requests().cloned().collect()
 }
 
 fn group_ref(issue: &LinearIssue) -> GroupRef {
@@ -335,37 +377,16 @@ fn status(observation: &Observation, owner: &str, pr: &PullRequestRef) -> Member
     if !observation.repos.iter().any(|r| r.id.same(&pr.repo)) {
         return MemberStatus::NotSurveyed(NotSurveyed::RepoNotSurveyed);
     }
-    if open_pull_requests_read_completely(observation.coverage.entries(), &pr.repo) {
+    // The cache merge's rule: a member missing from a Repo read completely
+    // is gone from its open Pull Requests.
+    if observation
+        .coverage
+        .read_completely(&pr.repo, SourceKind::PullRequests)
+    {
         MemberStatus::NotOpen
     } else {
         MemberStatus::NotSurveyed(NotSurveyed::PullRequestsIncomplete)
     }
-}
-
-/// Whether den read every open Pull Request of `repo`: its Owner's Pull
-/// Request list was recorded complete, and so was the Repo's own, if it had
-/// one.
-fn open_pull_requests_read_completely(entries: &[CoverageEntry], repo: &RepoId) -> bool {
-    let mut owner_complete = false;
-    for entry in entries {
-        match &entry.source {
-            Source::Owner {
-                owner,
-                kind: SourceKind::PullRequests,
-            } if same_login(owner, &repo.owner) => {
-                if !entry.state.is_complete() {
-                    return false;
-                }
-                owner_complete = true;
-            }
-            Source::Repo {
-                repo: r,
-                kind: SourceKind::PullRequests,
-            } if r.same(repo) && !entry.state.is_complete() => return false,
-            _ => {}
-        }
-    }
-    owner_complete
 }
 
 /// Whether `branch` contains `identifier` on word boundaries, ignoring case:

@@ -49,16 +49,25 @@ impl Scope {
     /// attached Pull Request, never a hint) in that Repo (spec 0002,
     /// "Ordering and Scope"; #35). The Decision was made on the whole
     /// Observation, so narrowing never changes it.
+    ///
+    /// Only a Repo of the issue's own Owner counts: a Landing Group's Pull
+    /// Requests are its Owner's (CONTEXT.md), and one attached in another
+    /// Owner's Repo is "not surveyed". So a Repo Scope never shows what its
+    /// Owner's Scope hides, and a Repo's sidebar count never exceeds its
+    /// Owner's.
     pub fn contains_decision(&self, decision: &Decision) -> bool {
         if self.contains(&decision.item.id) {
             return true;
         }
         match self {
-            Self::Repo(scoped) => decision
-                .landing
-                .members
-                .iter()
-                .any(|member| same_repo(scoped, &member.pr.repo)),
+            Self::Repo(scoped) => {
+                same_login(&scoped.owner, decision.item.id.owner())
+                    && decision
+                        .landing
+                        .members
+                        .iter()
+                        .any(|member| same_repo(scoped, &member.pr.repo))
+            }
             Self::AllOwners | Self::Owner(_) => false,
         }
     }
@@ -76,15 +85,14 @@ impl Scope {
     /// Linear sources bear on its coverage (a Linear source den could not
     /// read may hide work only where Linear Issues can appear).
     ///
-    /// The Owner and All Owners Scopes hold them. A Repo Scope holds none
-    /// until Landing Groups (#35) put the Linear Issues with a member PR
-    /// there into it; whatever makes a Repo Scope hold them must turn this
-    /// on with it, for every Repo of the Owner (which Repo a Linear Issue's
-    /// member is in can't be known from a Linear source den couldn't read).
+    /// Every Scope does. The Owner and All Owners Scopes hold the Owner's
+    /// Linear Issues, and since Landing Groups (#35) a Repo Scope holds those
+    /// with a member PR in it ([`Scope::contains_decision`]). Which Repo a
+    /// Linear Issue's member is in can't be known from a Linear source den
+    /// couldn't read, so every Repo of the Owner counts it.
     pub fn holds_linear_issues(&self) -> bool {
         match self {
-            Self::AllOwners | Self::Owner(_) => true,
-            Self::Repo(_) => false,
+            Self::AllOwners | Self::Owner(_) | Self::Repo(_) => true,
         }
     }
 

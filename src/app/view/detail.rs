@@ -91,7 +91,7 @@ fn reference(decision: &Decision) -> String {
     }
 }
 
-fn linear_issue<'s>(state: &State<'s>, id: &WorkItemId) -> Option<&'s LinearIssue> {
+pub(super) fn linear_issue<'s>(state: &State<'s>, id: &WorkItemId) -> Option<&'s LinearIssue> {
     let issue = id.linear_issue()?;
     state
         .observation?

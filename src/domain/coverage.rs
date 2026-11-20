@@ -447,6 +447,32 @@ impl Coverage {
         self.entries.retain(keep);
     }
 
+    /// Whether den read every `kind` fact of `repo`: the one rule for "is a
+    /// fact of this Repo that den didn't see really gone?", shared by the
+    /// cache merge and the Landing Groups' "merged or closed".
+    ///
+    /// A Repo with a source of its own is judged by that source alone: read
+    /// completely, its facts are all there even if a later page of its
+    /// Owner's list was lost. A Repo without one was read (or not) as part of
+    /// its Owner's list, so only a complete Owner source says it is all
+    /// there. Matched case-insensitively, as GitHub names are.
+    pub fn read_completely(&self, repo: &RepoId, kind: SourceKind) -> bool {
+        let mut own = self.entries.iter().filter(|e| match &e.source {
+            Source::Repo { repo: r, kind: k } => *k == kind && r.same(repo),
+            _ => false,
+        });
+        if let Some(first) = own.next() {
+            return first.state.is_complete() && own.all(|e| e.state.is_complete());
+        }
+        let mut owner = self.entries.iter().filter(|e| match &e.source {
+            Source::Owner { owner, kind: k } => *k == kind && same_login(owner, &repo.owner),
+            _ => false,
+        });
+        owner
+            .next()
+            .is_some_and(|first| first.state.is_complete() && owner.all(|e| e.state.is_complete()))
+    }
+
     /// The sources whose completeness bears on one Work Item: the viewer (for
     /// Waiting On), its kind across its Owner, and its kind for its own Repo.
     /// Matched case-insensitively, as GitHub names are: a fact kept from an

@@ -18,8 +18,8 @@ use den::{
         decide,
     },
     domain::{
-        LinearWorkflowPolicy, NextStep, Observation, Policies, RepoId, SourceKind, SourceState,
-        StartPolicy, Viewers, WaitingOn, WorkItemId, facts::PullRequestRef,
+        Incompleteness, LinearWorkflowPolicy, NextStep, Observation, Policies, RepoId, SourceKind,
+        SourceState, StartPolicy, Viewers, WaitingOn, WorkItemId, facts::PullRequestRef,
     },
     ordering::{Scope, in_scope, same_work_item},
 };
@@ -353,6 +353,70 @@ fn a_member_missing_from_a_fully_read_repo_is_merged_or_closed() {
             .is_some_and(|r| r.contains("merged or closed")),
         "{issue:?}"
     );
+}
+
+/// A Repo with its own Pull Request source is judged by that source alone,
+/// as the cache merge judges it (`cache/merge.rs`, `Reading`): read
+/// completely, a member missing from it is merged or closed even when a
+/// later page of its Owner's Repo list was lost. A Repo without a source of
+/// its own was read as part of its Owner's list, so the Owner's partial
+/// list leaves its members not surveyed.
+#[test]
+fn a_repo_read_completely_on_its_own_decides_its_members_whatever_its_owner() {
+    let observation = two_owners()
+        .owner_coverage(
+            "acme",
+            SourceKind::PullRequests,
+            SourceState::Partial(Incompleteness::PaginationStopped {
+                pages_read: 2,
+                reason: "rate limited".to_owned(),
+            }),
+        )
+        .repo_coverage("acme/api", SourceKind::PullRequests, SourceState::Complete)
+        .linear_issue(linear_issue("acme", "id-1", "TEAM-1").attached("acme/api", 4))
+        .linear_issue(linear_issue("acme", "id-2", "TEAM-2").attached("acme/app", 5))
+        .build();
+    let decisions = decide_all(&observation);
+    assert_eq!(
+        linear(&decisions, "TEAM-1").landing.members[0].status,
+        MemberStatus::NotOpen
+    );
+    assert_eq!(
+        linear(&decisions, "TEAM-2").landing.members[0].status,
+        MemberStatus::NotSurveyed(NotSurveyed::PullRequestsIncomplete)
+    );
+}
+
+/// A Repo Scope is part of its Owner's Scope, so whatever a Repo Scope
+/// shows, its Owner's shows too. A Linear Issue's group holds its own
+/// Owner's Pull Requests only (CONTEXT.md, "Landing Group"): an attachment
+/// in another Owner's Repo is "not surveyed" and doesn't put the issue in
+/// that Repo's Scope.
+#[test]
+fn a_repo_scope_never_shows_what_its_owner_scope_hides() {
+    let observation = two_owners()
+        .pull_request(pr("acme/app", 1).author(ME))
+        .pull_request(pr("octo/app", 1).author(ME))
+        .linear_issue(linear_issue("acme", "id-1", "TEAM-1").attached("octo/app", 1))
+        .linear_issue(linear_issue("acme", "id-2", "TEAM-2").attached("acme/app", 1))
+        .build();
+    let decisions = decide_all(&observation);
+    let repos: Vec<RepoId> = observation.repos.iter().map(|r| r.id.clone()).collect();
+    for repo in &repos {
+        let repo_scope = Scope::Repo(repo.clone());
+        let owner_scope = Scope::Owner(repo.owner.clone());
+        for decision in &decisions {
+            assert!(
+                !repo_scope.contains_decision(decision) || owner_scope.contains_decision(decision),
+                "{repo_scope} shows {} but {owner_scope} doesn't",
+                decision.item.reference()
+            );
+        }
+    }
+    let other_owners = Scope::Repo(RepoId::new("octo", "app"));
+    assert!(!other_owners.contains_decision(linear(&decisions, "TEAM-1")));
+    let own = Scope::Repo(RepoId::new("acme", "app"));
+    assert!(own.contains_decision(linear(&decisions, "TEAM-2")));
 }
 
 /// Story 16 with a group: the issue moves to another team (new

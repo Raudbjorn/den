@@ -293,25 +293,17 @@ fn linear_owners(coverage: &Coverage) -> Vec<String> {
 /// What the refresh read completely.
 struct Reading {
     owners: Vec<String>,
-    /// Sources the refresh read completely (folded).
-    complete: HashSet<Source>,
-    /// Sources the refresh recorded, in any state (folded).
-    recorded: HashSet<Source>,
+    /// The refresh's coverage.
+    coverage: Coverage,
     viewer_read: bool,
 }
 
 impl Reading {
     /// What a refresh of `owners` that recorded `coverage` read.
     fn of(owners: Vec<String>, coverage: &Coverage) -> Self {
-        let entries = coverage.entries();
         Self {
             owners,
-            complete: entries
-                .iter()
-                .filter(|e| e.state.is_complete())
-                .map(|e| fold_source(&e.source))
-                .collect(),
-            recorded: entries.iter().map(|e| fold_source(&e.source)).collect(),
+            coverage: coverage.clone(),
             viewer_read: coverage.get(&Source::Viewer) == Some(&SourceState::Complete),
         }
     }
@@ -328,26 +320,14 @@ impl Reading {
     /// refresh, be kept? Yes unless the refresh read its source completely, or
     /// no longer watches its Owner.
     ///
-    /// A Repo the refresh recorded a source for is judged by that source alone:
-    /// read completely, its facts are all there even if a later page of its
-    /// Owner's list was lost. A Repo with no source of its own was read (or not)
-    /// as part of its Owner's list, so only a complete Owner says it is all there.
+    /// "Read completely" is [`Coverage::read_completely`]: a Repo the refresh
+    /// recorded a source for is judged by that source alone, any other by its
+    /// Owner's. The Landing Groups' "merged or closed" uses the same rule.
     fn keeps_repo_fact(&self, repo: &RepoId, kind: SourceKind) -> bool {
         if !self.owners.iter().any(|o| same_login(o, &repo.owner)) {
             return false;
         }
-        let repo = repo.folded();
-        let owner_source = Source::Owner {
-            owner: repo.owner.clone(),
-            kind,
-        };
-        let repo_source = Source::Repo { repo, kind };
-        let read_completely = if self.recorded.contains(&repo_source) {
-            self.complete.contains(&repo_source)
-        } else {
-            self.complete.contains(&owner_source)
-        };
-        !read_completely
+        !self.coverage.read_completely(repo, kind)
     }
 
     /// Should an earlier fact read for `owner` by its `kind` source (a Linear
@@ -357,10 +337,22 @@ impl Reading {
         if self.owner_as_watched(owner).is_none() {
             return false;
         }
-        !self.complete.contains(&Source::Owner {
-            owner: owner.to_ascii_lowercase(),
-            kind,
-        })
+        self.owner_source(owner, kind)
+            .is_none_or(|state| !state.is_complete())
+    }
+
+    /// How the refresh read `owner`'s `kind` source, if it recorded it.
+    /// Matched case-insensitively, as the config may spell an Owner either way.
+    fn owner_source(&self, owner: &str, kind: SourceKind) -> Option<&SourceState> {
+        self.coverage
+            .entries()
+            .iter()
+            .find_map(|e| match &e.source {
+                Source::Owner { owner: o, kind: k } if *k == kind && same_login(o, owner) => {
+                    Some(&e.state)
+                }
+                _ => None,
+            })
     }
 }
 
