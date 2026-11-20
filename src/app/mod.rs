@@ -412,7 +412,7 @@ impl App {
         )
     }
 
-    /// Re-filters the list to the Scope, keeping the selection when it is still in it.
+    /// Narrows the list to the Scope, keeping the selection when it is still in it.
     fn apply_scope(&mut self) {
         self.decisions = ordering::in_scope(&self.ordered, &self.scope.scope)
             .cloned()
@@ -422,7 +422,9 @@ impl App {
 
     fn selected_index(&self) -> Option<usize> {
         let selected = self.selected.as_ref()?;
-        self.decisions.iter().position(|d| &d.item.id == selected)
+        self.decisions
+            .iter()
+            .position(|d| ordering::same_work_item(&d.item.id, selected))
     }
 
     /// Keeps the selection on the same Work Item if it still exists, else the first.

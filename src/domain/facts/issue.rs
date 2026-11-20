@@ -11,7 +11,13 @@ pub struct Issue {
     pub title: String,
     pub url: String,
     pub labels: Vec<String>,
+    /// False when GitHub left the labels out or some were unreadable, so the
+    /// Issue may be labelled although `labels` is empty.
+    pub labels_complete: bool,
     pub assignees: Vec<String>,
+    /// False when GitHub left the assignees out or some were unreadable, so the
+    /// Issue may be assigned although `assignees` is empty.
+    pub assignees_complete: bool,
     pub updated_at: Timestamp,
     /// PRs linked by a closing reference or a manual link, in any Repo, open or
     /// not. Mentions in a title, body or branch name are not links.

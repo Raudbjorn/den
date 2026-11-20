@@ -57,7 +57,7 @@ fn row(state: &State<'_>, scope: &Scope) -> SidebarRow {
                     .map_or_else(|| "(not visible)".to_owned(), |u| u.id.to_string())
             }),
         archived: repo.is_some_and(|r| r.is_archived),
-        current: &state.scope.scope == scope,
+        current: state.scope.scope.same(scope),
         // No Observation yet is not "incomplete coverage": nothing was read.
         incomplete: state
             .observation

@@ -19,6 +19,8 @@ const ASSIGNEE_ROLE: &str = "the assignee";
 const ASSIGNEES_ROLE: &str = "the assignees";
 const LINKS_INCOMPLETE: &str =
     "GitHub reported more linked PRs than den read, so an open linked PR may be missing";
+const LABELS_UNREAD: &str = "den could not read all of the Issue's labels";
+const ASSIGNEES_UNREAD: &str = "den could not read all of the Issue's assignees";
 
 pub fn decide_all(ctx: &Context<'_>) -> Vec<Decision> {
     ctx.observation
@@ -43,11 +45,7 @@ fn decide(ctx: &Context<'_>, issue: &Issue) -> Decision {
         updated_at: issue.updated_at,
     };
     let linked = linked_prs(issue);
-    let unknowns = if issue.linked_prs_complete {
-        Vec::new()
-    } else {
-        vec![LINKS_INCOMPLETE.to_owned()]
-    };
+    let unknowns = unknowns(issue);
     let own = own_step(ctx, issue);
     let open: Vec<&LinkedPr> = linked.iter().filter(|pr| pr.is_open()).collect();
 
@@ -96,6 +94,20 @@ fn decide(ctx: &Context<'_>, issue: &Issue) -> Decision {
             ..Explanation::default()
         },
     )
+}
+
+/// The Issue facts den could not read in full. The rules still run on what was
+/// read; these say which of their inputs may be missing.
+fn unknowns(issue: &Issue) -> Vec<String> {
+    [
+        (issue.linked_prs_complete, LINKS_INCOMPLETE),
+        (issue.labels_complete, LABELS_UNREAD),
+        (issue.assignees_complete, ASSIGNEES_UNREAD),
+    ]
+    .into_iter()
+    .filter(|(complete, _)| !complete)
+    .map(|(_, unknown)| unknown.to_owned())
+    .collect()
 }
 
 fn own_step(ctx: &Context<'_>, issue: &Issue) -> OwnStep {

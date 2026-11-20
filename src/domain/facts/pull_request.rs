@@ -1,6 +1,7 @@
 //! Pull Request facts: what GitHub said about an open PR, nothing decided.
 //!
-//! The cheap facts (draft, mergeability, review decision, merge queue) come with
+//! The cheap facts (draft, mergeability, merge state, review decision, merge
+//! queue) come with
 //! the PR list; checks, review threads, review requests and latest reviews come
 //! from a follow-up query and live in [`PrDetails`], which is `None` when that
 //! query could not be read (coverage then says why).
@@ -30,9 +31,10 @@ pub struct PullRequest {
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub mergeability: Mergeability,
-    /// GitHub's own review decision. `None` when the base branch requires no
-    /// review (GitHub then reports none even if someone reviewed).
-    pub review_decision: Option<ReviewDecision>,
+    /// GitHub's own verdict on whether the PR can merge now.
+    pub merge_state: MergeState,
+    /// GitHub's own review decision.
+    pub review_decision: ReviewDecision,
     pub in_merge_queue: bool,
     /// Checks and reviews; `None` when den could not read them.
     pub details: Option<PrDetails>,
@@ -56,11 +58,40 @@ pub enum Mergeability {
     Unknown,
 }
 
+/// GitHub's `mergeStateStatus`: whether the PR can merge right now, judged
+/// against every rule of the base branch, including those den does not read
+/// (a required check that never reported, a second required approval, a
+/// required code-owner review).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MergeState {
+    /// Mergeable, every commit status passing.
+    Clean,
+    /// Mergeable, statuses passing, pre-receive hooks to run.
+    HasHooks,
+    /// Mergeable, but a commit status is not passing.
+    Unstable,
+    /// A base-branch rule blocks merging.
+    Blocked,
+    /// The head branch must be brought up to date with the base first.
+    Behind,
+    /// A merge commit cannot be cleanly created.
+    Dirty,
+    Draft,
+    /// GitHub has not computed it yet, or den does not recognise the value.
+    Unknown,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReviewDecision {
     Approved,
     ChangesRequested,
     ReviewRequired,
+    /// GitHub reported no decision: the base branch requires no review (GitHub
+    /// then reports none even if someone reviewed).
+    NotRequired,
+    /// den could not tell: the decision came back null in a response that
+    /// carried errors (which can null a field), or in a form den does not know.
+    Unknown,
 }
 
 /// The facts read by the follow-up query. The default is "read completely,

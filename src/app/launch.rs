@@ -29,6 +29,8 @@ pub(super) struct Sheet {
     pub id: LaunchId,
     pub item: WorkItemId,
     pub title: String,
+    /// The Next Step when the sheet opened; once there is a plan, the sheet
+    /// shows the plan's instead.
     pub next_step: Option<NextStep>,
     pub state: SheetState,
     pub prompt: PromptEditor,

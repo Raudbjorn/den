@@ -75,6 +75,9 @@ pub fn build(sheet: &Sheet) -> LaunchSheet {
 }
 
 fn fill_plan(view: &mut LaunchSheet, sheet: &Sheet, plan: &LaunchPlan, moved_from: Option<&str>) {
+    // The plan's Next Step, not the one seen when the sheet opened: a survey
+    // that finished in between may have changed it, and the plan is what runs.
+    view.next_step = plan.next_step.label().to_owned();
     view.fields = fields(sheet, plan, moved_from);
     let prompt = sheet.prompt.text();
     view.command = Some(command::display(

@@ -346,6 +346,33 @@ fn a_pr_head_that_moved_between_sheet_and_launch_asks_again_then_launches_on_the
 }
 
 #[test]
+fn a_survey_that_finishes_before_the_inspection_shows_the_next_step_that_will_run() {
+    let mut harness = started(launch_config(&[]), observation().build());
+    with_upstream_clone(&harness);
+    // A refresh is running when the sheet opens: the sheet sees Address review.
+    let survey = harness.key(Key::Char('r'));
+    harness.answer(Ok(ObservationBuilder::new()
+        .owner("octo")
+        .owner("other")
+        .repo("octo/app")
+        .pull_request(pr("octo/app", 7).author(ME).failing_required("build"))
+        .build()));
+    let opened = harness.key(Key::Char('c'));
+    assert_eq!(sheet(&harness).next_step, "Address review");
+
+    // The survey finishes first (the worker queues the inspection behind it).
+    for effect in survey.iter().chain(opened.iter()) {
+        harness.perform(effect);
+    }
+
+    let ready = sheet(&harness).clone();
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    assert_eq!(ready.next_step, "Fix CI");
+    let prompt = ready.prompt.expect("a ready sheet has a prompt").text;
+    assert!(prompt.starts_with("/diagnosing-bugs"), "{prompt}");
+}
+
+#[test]
 fn an_archived_repo_refuses_without_looking_at_the_workspace() {
     let mut harness = started(
         launch_config(&[]),

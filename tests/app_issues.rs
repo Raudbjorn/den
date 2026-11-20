@@ -11,7 +11,9 @@ use den::{
         NextStep, WaitingOn,
         facts::{LinkKind, LinkedPrState},
     },
+    ui::{Theme, frame},
 };
+use raudbjorn_tui::profile::{ColorProfile, GlyphProfile, TerminalProfile};
 use support::{
     build::{ME, ObservationBuilder, issue},
     harness::Harness,
@@ -87,4 +89,43 @@ fn issues_are_listed_and_a_suppressed_one_names_its_linked_prs_in_the_detail_pan
             detail.also
         );
     }
+}
+
+/// Room for the list and the detail plate (the frame's design size).
+const FRAME_SIZE: (u16, u16) = (160, 45);
+
+#[test]
+fn control_characters_in_issue_text_never_reach_the_terminal() {
+    // Anyone who can edit an Issue controls its title and label names. ESC, BEL
+    // and friends there could drive the user's terminal (clear it, set the
+    // clipboard via OSC 52) if they were written out.
+    let hostile = "Fix \u{1b}[2J\u{1b}]52;c;cm0gLXJmIH4=\u{7}it\u{9b}31m now";
+    let mut harness = Harness::with_owners(&["alpha"]);
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("alpha")
+        .issue(issue("alpha/app", 1).title(hostile).label(hostile))
+        .build()));
+    let view = harness.start().clone();
+    assert!(view.detail.content.is_some(), "the Issue is selected");
+
+    let theme = Theme::new(TerminalProfile::new(
+        ColorProfile::TrueColor,
+        GlyphProfile::Unicode,
+    ))
+    .expect("theme");
+    let (cols, rows) = FRAME_SIZE;
+    let buffer = frame::render(&theme, &view, cols, rows).expect("renders");
+    let control: Vec<String> = buffer
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .filter(|symbol| symbol.chars().any(char::is_control))
+        .map(|symbol| format!("{symbol:?}"))
+        .collect();
+    assert!(
+        control.is_empty(),
+        "control characters in cells: {control:?}"
+    );
+    // The printable rest of the title is still shown.
+    assert!(frame::buffer_text(&buffer).contains("Fix"));
 }

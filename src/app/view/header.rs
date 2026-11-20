@@ -2,7 +2,7 @@
 
 use super::{State, coverage, format, scope};
 use crate::{
-    app::view_model::Header,
+    app::view_model::{ELLIPSIS, Header, SEPARATOR},
     cache,
     domain::{Source, SourceState},
     ports::SurveyFailure,
@@ -34,7 +34,7 @@ fn status(state: &State<'_>) -> String {
     let Some(observation) = state.observation else {
         return match state.failure {
             Some(failure) => failure_text(failure),
-            None if state.surveying => "Surveying…".to_owned(),
+            None if state.surveying => format!("Surveying{ELLIPSIS}"),
             None => "Not surveyed yet".to_owned(),
         };
     };
@@ -54,9 +54,9 @@ fn status(state: &State<'_>) -> String {
         parts.push(note.clone());
     }
     if state.surveying {
-        parts.push("refreshing…".to_owned());
+        parts.push(format!("refreshing{ELLIPSIS}"));
     }
-    parts.join(" · ")
+    parts.join(&format!(" {SEPARATOR} "))
 }
 
 /// The failure's headline; a rate limit also says when it resets.
@@ -111,5 +111,5 @@ pub fn summarise(state: &State<'_>) -> String {
         // Every recorded source was complete, but not every Owner was read.
         parts.push("Incomplete: not every watched Owner has been surveyed".to_owned());
     }
-    parts.join(" · ")
+    parts.join(&format!(" {SEPARATOR} "))
 }
