@@ -13,12 +13,12 @@
 //! insert Issue or PR body text, so text written by others can't steer a Job.
 //!
 //! `request_review` alone also has `{reviewers}` (the logins and `org/team`s
-//! chosen on the sheet, comma-separated) and `{announcement}` (#39). With a
-//! Slack channel in the Owner's Linear Workflow, `{announcement}` is the
-//! best-effort announcement step with the separate-outcomes and no-blind-resend
-//! rules; without one, it only asks for the request's outcome, so the prompt
-//! has no announcement step. den never touches Slack: the channel is an opaque
-//! string in the prompt.
+//! chosen on the sheet, comma-separated), which it must use, and
+//! `{announcement}` (#39). With a Slack channel in the Owner's Linear Workflow,
+//! `{announcement}` is the best-effort announcement step with the
+//! separate-outcomes and no-blind-resend rules; without one, it only asks for
+//! the request's outcome, so the prompt has no announcement step. den never
+//! touches Slack: the channel is an opaque string in the prompt.
 
 use crate::config::{Location, location_of};
 use crate::domain::NextStep;
@@ -213,12 +213,20 @@ pub fn parse(path: &Path, text: &str) -> Result<Prompts, PromptsError> {
     Ok(prompts)
 }
 
-/// Checks every `{…}` in `step`'s `template` is a placeholder it has.
+/// Checks every `{…}` in `step`'s `template` is a placeholder it has, and
+/// that it uses every placeholder `step` needs ([`required_placeholders`]).
 fn check(template: &str, step: NextStep) -> Result<(), String> {
-    let known = |name: &str| {
-        PLACEHOLDERS.contains(&name)
-            || (step == NextStep::RequestReview && REQUEST_REVIEW_PLACEHOLDERS.contains(&name))
+    let only_request_review: &[&str] = if step == NextStep::RequestReview {
+        &REQUEST_REVIEW_PLACEHOLDERS
+    } else {
+        &[]
     };
+    let usable: Vec<&str> = PLACEHOLDERS
+        .iter()
+        .chain(only_request_review)
+        .copied()
+        .collect();
+    let mut used: Vec<String> = Vec::new();
     let mut chars = template.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
@@ -230,32 +238,51 @@ fn check(template: &str, step: NextStep) -> Result<(), String> {
             }
             '{' => {
                 let name: String = chars.by_ref().take_while(|&c| c != '}').collect();
-                if !known(&name) {
-                    let mut usable: Vec<&str> = PLACEHOLDERS.to_vec();
-                    if step == NextStep::RequestReview {
-                        usable.extend(REQUEST_REVIEW_PLACEHOLDERS);
-                    }
-                    let only_request_review = REQUEST_REVIEW_PLACEHOLDERS.contains(&name.as_str());
+                if !usable.contains(&name.as_str()) {
+                    let kind = if REQUEST_REVIEW_PLACEHOLDERS.contains(&name.as_str()) {
+                        "the request_review-only"
+                    } else {
+                        "unknown"
+                    };
                     return Err(format!(
-                        "{} placeholder {{{name}}}; use {}",
-                        if only_request_review {
-                            "the request_review-only"
-                        } else {
-                            "unknown"
-                        },
-                        usable
-                            .iter()
-                            .map(|p| format!("{{{p}}}"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
+                        "{kind} placeholder {{{name}}}; use {}",
+                        spelled(&usable)
                     ));
                 }
+                used.push(name);
             }
             '}' => return Err("a lone `}`: write `}}` for a literal brace".to_owned()),
             _ => {}
         }
     }
-    Ok(())
+    match required_placeholders(step)
+        .iter()
+        .find(|needed| !used.iter().any(|u| u == *needed))
+    {
+        Some(missing) => Err(format!(
+            "`{}` must use {{{missing}}}, or the Job never gets what the sheet chose",
+            step_key(step)
+        )),
+        None => Ok(()),
+    }
+}
+
+/// The placeholders `step`'s template must use: a Request review Job learns
+/// whom to ask only from `{reviewers}`, the list chosen on the sheet.
+fn required_placeholders(step: NextStep) -> &'static [&'static str] {
+    match step {
+        NextStep::RequestReview => &["reviewers"],
+        _ => &[],
+    }
+}
+
+/// `{a}, {b}, …`.
+fn spelled(placeholders: &[&str]) -> String {
+    placeholders
+        .iter()
+        .map(|p| format!("{{{p}}}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn fill(template: &str, fields: &PromptFields) -> String {
