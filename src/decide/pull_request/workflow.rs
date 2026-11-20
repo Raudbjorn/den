@@ -27,7 +27,7 @@
 
 use super::{Approval, Finding, approval as github_approval, unresolved_threads};
 use crate::domain::{
-    ReviewPolicy, TeamRef,
+    ReviewPolicy,
     facts::{ActorKind, PrDetails, PullRequest, Review, ReviewVerdict, Reviewer},
     ids::same_login,
 };
@@ -487,11 +487,7 @@ fn requested(details: &PrDetails, reviewer: &Reviewer) -> bool {
 fn same_reviewer(a: &Reviewer, b: &Reviewer) -> bool {
     match (a, b) {
         (Reviewer::User(a), Reviewer::User(b)) => same_login(a, b),
-        (Reviewer::Team(a), Reviewer::Team(b)) => same_team(a, b),
+        (Reviewer::Team(a), Reviewer::Team(b)) => a.same(b),
         _ => false,
     }
-}
-
-fn same_team(a: &TeamRef, b: &TeamRef) -> bool {
-    same_login(&a.org, &b.org) && a.slug.eq_ignore_ascii_case(&b.slug)
 }
