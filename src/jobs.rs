@@ -17,9 +17,9 @@
 //! older den would drop, bumps [`JOBS_FORMAT`].
 
 use crate::{
-    domain::{NextStep, RepoId, WorkItemId},
+    domain::{LinearWorkflowPolicy, NextStep, RepoId, WorkItemId},
     files::{self, BoundedReadError},
-    handoff::{PermissionMode, coordination_mode},
+    handoff::{PermissionMode, job_permission_mode},
     ports::JobStore,
 };
 use jiff::Timestamp;
@@ -45,6 +45,9 @@ pub const JOBS_FILE: &str = "jobs.json";
 /// 3: a record may carry its `permission_mode` (#39). A den of format 2 would
 ///    read the file, ignore the mode and drop it on its next append; at 3 it
 ///    refuses the file instead.
+///
+/// #41 records a Review Job's mode in the same field, with the same value, so
+/// it needs no new format: every den that reads format 3 keeps the field.
 pub const JOBS_FORMAT: u32 = 3;
 /// Milestone 1's format, still read and converted on load.
 const JOBS_FORMAT_GITHUB_ONLY: u32 = 1;
@@ -128,13 +131,27 @@ pub struct JobRecord {
 
 impl JobRecord {
     /// The permission mode reopening the Job passes: the recorded one, else
-    /// the mode a Job for its Next Step launches in ([`coordination_mode`]).
+    /// the mode a Job for its Next Step launches in for its Owner's Linear
+    /// Workflow `policy` ([`job_permission_mode`]; the empty policy for an
+    /// Owner without one).
+    ///
     /// A den from before #39 also reads format 2, ignores `permission_mode`
     /// and drops it when it rewrites the file, so the record alone could
     /// reopen a coordination Job with no mode at all: this fails safe instead.
-    pub fn reopen_mode(&self) -> Option<PermissionMode> {
+    /// A Review Job launched before #41 has no recorded mode either; in a
+    /// Linear Workflow it reopens approval-required, as it would launch now.
+    /// Since format 3, every den that reads the file keeps the field, so a
+    /// recorded mode is never lost to an older den's rewrite.
+    pub fn reopen_mode(&self, policy: &LinearWorkflowPolicy) -> Option<PermissionMode> {
         self.permission_mode
-            .or_else(|| coordination_mode(self.next_step))
+            .or_else(|| job_permission_mode(self.next_step, policy))
+    }
+
+    /// The Owner of the Work Item the Job was launched for.
+    pub fn owner(&self) -> &str {
+        match &self.subject {
+            JobSubject::GitHub(item) => item.owner(),
+        }
     }
 }
 

@@ -1,5 +1,7 @@
 //! Looking at the local workspace for a launch, through the ports only. It
-//! reads; it changes nothing (no fetch). The one network call is asking a
+//! reads; it changes nothing (no fetch). It also reads the user's and the
+//! target Repo's Claude command and skill directories for the workflow
+//! availability check (#41, [`super::workflows`]). The one network call is asking a
 //! remote where a base branch is (`ls-remote`) when GitHub's facts don't say:
 //! for Issues, Branches and Runs, not PRs.
 
@@ -8,7 +10,9 @@ use super::{
     clone::{self, Candidate, Remote},
     cloning::{self, NewCloneView},
     live::{self, JOB_CHECK_BUDGET_SECS, JobCheck},
-    names, worktree_path,
+    names,
+    workflows::{REPO_CLAUDE_DIR, WorkflowDirs},
+    worktree_path,
 };
 use crate::{
     domain::{Observation, RepoId, WorkItemId},
@@ -41,6 +45,10 @@ pub struct InspectRequest {
     /// when that name clashes in the Main Clone (`pr-<n>-<head>`); den looks
     /// at it too.
     pub clash_branch: Option<String>,
+    /// The user's Claude directory (`$CLAUDE_CONFIG_DIR`, else `~/.claude`),
+    /// read for the workflow availability check (#41); `None` when den
+    /// doesn't know it.
+    pub claude_dir: Option<PathBuf>,
 }
 
 impl InspectRequest {
@@ -89,6 +97,8 @@ impl InspectRequest {
             new_branch: false,
             clash_branch: None,
             base_branch: None,
+            // Reopening resumes a session: there is no prompt to check.
+            claude_dir: None,
         })
     }
 }
@@ -147,6 +157,9 @@ pub struct WorkspaceView {
     /// This Work Item's recorded Jobs and their worktrees' states, newest
     /// first (#14); empty when the records couldn't be read.
     pub job_checks: Vec<JobCheck>,
+    /// The user's and the target Repo's Claude directories, as read for the
+    /// workflow availability check (#41).
+    pub workflows: WorkflowDirs,
 }
 
 /// Gathers the WorkspaceView for `request`.
@@ -214,7 +227,20 @@ pub fn inspect(
         }
         Err(_) => Vec::new(),
     };
+    let workflows = WorkflowDirs {
+        user: request
+            .claude_dir
+            .as_ref()
+            .map(|dir| workspace.claude_dir(dir))
+            .ok_or_else(|| "den doesn't know your home directory".to_owned()),
+        repo: match (&chosen, &new_clone) {
+            (Some(clone), _) => Ok(workspace.claude_dir(&clone.path.join(REPO_CLAUDE_DIR))),
+            (None, Some(_)) => Err("the Main Clone isn't cloned yet".to_owned()),
+            (None, None) => Err("den found no Main Clone".to_owned()),
+        },
+    };
     WorkspaceView {
+        workflows,
         clones,
         chosen,
         window: launcher.window_mode(),

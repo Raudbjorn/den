@@ -79,6 +79,9 @@ pub struct App {
     prompts: Result<Prompts, PromptsError>,
     /// Where to search for Main Clones when the config sets no `main_clone_root`.
     default_clone_root: Option<PathBuf>,
+    /// The user's Claude directory (`$CLAUDE_CONFIG_DIR`, else `~/.claude`),
+    /// read by each launch sheet's workflow availability check (#41).
+    claude_dir: Option<PathBuf>,
     next_launch: u64,
     /// The recorded Jobs' worktree states (#14), newest first; refreshed at
     /// start, on `r`, after a launch, and per Work Item by a sheet's inspection.
@@ -129,6 +132,7 @@ impl App {
             overlay: None,
             prompts: Ok(Prompts::default()),
             default_clone_root: None,
+            claude_dir: None,
             next_launch: 0,
             job_checks: Vec::new(),
             upstreams: UpstreamTargets::default(),
@@ -151,6 +155,15 @@ impl App {
     ) -> Self {
         self.prompts = prompts;
         self.default_clone_root = default_clone_root;
+        self
+    }
+
+    /// Sets the user's Claude directory, whose commands and skills each launch
+    /// sheet checks its prompt's slash commands against (#41); `None`: den
+    /// doesn't know it, and the sheet says so.
+    #[must_use]
+    pub fn with_claude_dir(mut self, claude_dir: Option<PathBuf>) -> Self {
+        self.claude_dir = claude_dir;
         self
     }
 

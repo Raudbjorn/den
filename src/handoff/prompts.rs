@@ -19,9 +19,16 @@
 //! separate-outcomes and no-blind-resend rules; without one, it only asks for
 //! the request's outcome, so the prompt has no announcement step. den never
 //! touches Slack: the channel is an opaque string in the prompt.
+//!
+//! `review_linear` (#41) is the Review Job's template in an Owner with a
+//! Linear Workflow, beside `review` for every other Owner. It alone has
+//! `{linear_context}` (for a Pull Request in a Landing Group, its Linear
+//! Issues' identifiers and URLs; nothing otherwise) and `{verdict_only}`
+//! (the instruction to return a verdict without editing, committing,
+//! approving, requesting changes or posting), and it must use both.
 
 use crate::config::{Location, location_of};
-use crate::domain::NextStep;
+use crate::domain::{LinearWorkflowPolicy, NextStep};
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
@@ -37,10 +44,94 @@ pub const MAX_TEMPLATE_CHARS: usize = 4_000;
 const PLACEHOLDERS: [&str; 5] = ["repo", "number", "url", "title", "branch"];
 /// Placeholders only the Request review template has (#39).
 const REQUEST_REVIEW_PLACEHOLDERS: [&str; 2] = ["reviewers", "announcement"];
+/// Placeholders only the Review (Linear) template has (#41).
+const REVIEW_LINEAR_PLACEHOLDERS: [&str; 2] = ["linear_context", "verdict_only"];
+/// The prompts-file key of the Review (Linear) template.
+pub const REVIEW_LINEAR_KEY: &str = "review_linear";
 
 /// The file's key for a Next Step kind: "Address review" → `address_review`.
 pub fn step_key(step: NextStep) -> String {
     step.label().to_ascii_lowercase().replace(' ', "_")
+}
+
+/// Which template a Job's prompt comes from: its Next Step's, or, for a
+/// Review Job in a Linear Workflow, Review (Linear)'s (#41).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PromptKind {
+    Step(NextStep),
+    /// A Review Job for a Pull Request of an Owner with a Linear Workflow:
+    /// verdict only, with the Linear context.
+    ReviewLinear,
+}
+
+impl From<NextStep> for PromptKind {
+    fn from(step: NextStep) -> Self {
+        Self::Step(step)
+    }
+}
+
+impl PromptKind {
+    /// Every kind, in the prompts file's order.
+    pub fn all() -> impl Iterator<Item = Self> {
+        NextStep::ALL
+            .into_iter()
+            .map(Self::Step)
+            .chain(std::iter::once(Self::ReviewLinear))
+    }
+
+    /// The template a Job for `step` uses, given its Owner's Linear Workflow
+    /// `policy` (the empty one without a workflow).
+    pub fn for_job(step: NextStep, policy: &LinearWorkflowPolicy) -> Self {
+        match step {
+            NextStep::Review if policy.reviews_verdict_only() => Self::ReviewLinear,
+            step => Self::Step(step),
+        }
+    }
+
+    /// The prompts file's key: `address_review`, `review_linear`.
+    pub fn key(self) -> String {
+        match self {
+            Self::Step(step) => step_key(step),
+            Self::ReviewLinear => REVIEW_LINEAR_KEY.to_owned(),
+        }
+    }
+
+    /// The placeholders only this kind has.
+    fn own_placeholders(self) -> &'static [&'static str] {
+        match self {
+            Self::Step(NextStep::RequestReview) => &REQUEST_REVIEW_PLACEHOLDERS,
+            Self::ReviewLinear => &REVIEW_LINEAR_PLACEHOLDERS,
+            Self::Step(_) => &[],
+        }
+    }
+
+    /// The placeholders this kind's template must use, each with what the
+    /// Job would lose without it: a Request review Job learns whom to ask
+    /// only from `{reviewers}`, a verdict-only Review Job its Linear Issue and
+    /// its limits only from `{linear_context}` and `{verdict_only}`.
+    fn required_placeholders(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            Self::Step(NextStep::RequestReview) => {
+                &[("reviewers", "or the Job never gets what the sheet chose")]
+            }
+            Self::ReviewLinear => &[
+                (
+                    "linear_context",
+                    "or the Job never learns which Linear Issue the Pull Request is for",
+                ),
+                (
+                    "verdict_only",
+                    "or the Job is never told to return a verdict only",
+                ),
+            ],
+            Self::Step(_) => &[],
+        }
+    }
+
+    /// The kind that owns `placeholder`, when only one kind has it.
+    fn owner_of(placeholder: &str) -> Option<Self> {
+        Self::all().find(|kind| kind.own_placeholders().contains(&placeholder))
+    }
 }
 
 /// The default template for each kind (spec, "Launch handoff").
@@ -100,6 +191,31 @@ If you aren't sure an announcement went out, don't send it again: report it as u
 const NO_ANNOUNCEMENT: &str =
     " Then report whether the review request was made, with the error if it failed.";
 
+/// The default Review (Linear) template (spec 0002, "Prompts").
+const REVIEW_LINEAR_TEMPLATE: &str = "/code-review {url}{linear_context}{verdict_only}";
+
+/// What `{verdict_only}` is (spec 0002, story 70).
+const VERDICT_ONLY: &str = " Return your verdict to me only. Don't edit files, commit, push, approve, request changes, comment or post anywhere: I decide what gets published.";
+
+/// What `{linear_context}` is for a Pull Request attached to `issues`
+/// (identifier, URL): nothing when it is attached to none.
+fn linear_context(issues: &[(String, String)]) -> String {
+    let named: Vec<String> = issues
+        .iter()
+        .map(|(identifier, url)| format!("{identifier} ({url})"))
+        .collect();
+    match named.as_slice() {
+        [] => String::new(),
+        [one] => format!(
+            " It is attached to Linear Issue {one}: review it against what that issue asks for."
+        ),
+        many => format!(
+            " It is attached to the Linear Issues {}: review it against what they ask for.",
+            many.join(", ")
+        ),
+    }
+}
+
 /// The values a template's placeholders take for one Work Item.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PromptFields {
@@ -112,36 +228,47 @@ pub struct PromptFields {
     pub reviewers: Vec<String>,
     /// Request review only: the Owner's Slack channel, opaque.
     pub slack_channel: Option<String>,
+    /// Review (Linear) only: the Linear Issues the Pull Request is attached
+    /// to, as (identifier, URL).
+    pub linear_issues: Vec<(String, String)>,
 }
 
-/// A template per Next Step kind.
+/// The default template of any kind.
+pub fn default_template_of(kind: PromptKind) -> &'static str {
+    match kind {
+        PromptKind::Step(step) => default_template(step),
+        PromptKind::ReviewLinear => REVIEW_LINEAR_TEMPLATE,
+    }
+}
+
+/// A template per kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prompts {
-    templates: BTreeMap<NextStep, String>,
+    templates: BTreeMap<PromptKind, String>,
 }
 
 impl Default for Prompts {
     fn default() -> Self {
         Self {
-            templates: NextStep::ALL
-                .iter()
-                .map(|&step| (step, default_template(step).to_owned()))
+            templates: PromptKind::all()
+                .map(|kind| (kind, default_template_of(kind).to_owned()))
                 .collect(),
         }
     }
 }
 
 impl Prompts {
-    pub fn template(&self, step: NextStep) -> &str {
+    pub fn template(&self, kind: impl Into<PromptKind>) -> &str {
+        let kind = kind.into();
         self.templates
-            .get(&step)
-            .map_or_else(|| default_template(step), String::as_str)
+            .get(&kind)
+            .map_or_else(|| default_template_of(kind), String::as_str)
     }
 
-    /// The prompt for `step` with `fields` filled in.
-    pub fn render(&self, step: NextStep, fields: &PromptFields) -> String {
+    /// The prompt of `kind` with `fields` filled in.
+    pub fn render(&self, kind: impl Into<PromptKind>, fields: &PromptFields) -> String {
         // Templates are validated when loaded, so every placeholder is known.
-        fill(self.template(step), fields)
+        fill(self.template(kind), fields)
     }
 }
 
@@ -185,8 +312,8 @@ pub fn parse(path: &Path, text: &str) -> Result<Prompts, PromptsError> {
     let mut prompts = Prompts::default();
     for (key, value) in raw {
         let span = value.span();
-        let Some(step) = NextStep::ALL.into_iter().find(|&s| step_key(s) == key) else {
-            let known: Vec<String> = NextStep::ALL.into_iter().map(step_key).collect();
+        let Some(kind) = PromptKind::all().find(|k| k.key() == key) else {
+            let known: Vec<String> = PromptKind::all().map(PromptKind::key).collect();
             return Err(malformed(
                 Some(span),
                 format!(
@@ -205,25 +332,20 @@ pub fn parse(path: &Path, text: &str) -> Result<Prompts, PromptsError> {
                 format!("`{key}` is longer than {MAX_TEMPLATE_CHARS} characters"),
             ));
         }
-        if let Err(problem) = check(&template, step) {
+        if let Err(problem) = check(&template, kind) {
             return Err(malformed(Some(span), format!("`{key}`: {problem}")));
         }
-        prompts.templates.insert(step, template);
+        prompts.templates.insert(kind, template);
     }
     Ok(prompts)
 }
 
-/// Checks every `{…}` in `step`'s `template` is a placeholder it has, and
-/// that it uses every placeholder `step` needs ([`required_placeholders`]).
-fn check(template: &str, step: NextStep) -> Result<(), String> {
-    let only_request_review: &[&str] = if step == NextStep::RequestReview {
-        &REQUEST_REVIEW_PLACEHOLDERS
-    } else {
-        &[]
-    };
+/// Checks every `{…}` in `kind`'s `template` is a placeholder it has, and
+/// that it uses every placeholder `kind` needs.
+fn check(template: &str, kind: PromptKind) -> Result<(), String> {
     let usable: Vec<&str> = PLACEHOLDERS
         .iter()
-        .chain(only_request_review)
+        .chain(kind.own_placeholders())
         .copied()
         .collect();
     let mut used: Vec<String> = Vec::new();
@@ -239,13 +361,12 @@ fn check(template: &str, step: NextStep) -> Result<(), String> {
             '{' => {
                 let name: String = chars.by_ref().take_while(|&c| c != '}').collect();
                 if !usable.contains(&name.as_str()) {
-                    let kind = if REQUEST_REVIEW_PLACEHOLDERS.contains(&name.as_str()) {
-                        "the request_review-only"
-                    } else {
-                        "unknown"
+                    let what = match PromptKind::owner_of(&name) {
+                        Some(owner) => format!("the {}-only", owner.key()),
+                        None => "unknown".to_owned(),
                     };
                     return Err(format!(
-                        "{kind} placeholder {{{name}}}; use {}",
+                        "{what} placeholder {{{name}}}; use {}",
                         spelled(&usable)
                     ));
                 }
@@ -255,24 +376,13 @@ fn check(template: &str, step: NextStep) -> Result<(), String> {
             _ => {}
         }
     }
-    match required_placeholders(step)
+    match kind
+        .required_placeholders()
         .iter()
-        .find(|needed| !used.iter().any(|u| u == *needed))
+        .find(|(needed, _)| !used.iter().any(|u| u == needed))
     {
-        Some(missing) => Err(format!(
-            "`{}` must use {{{missing}}}, or the Job never gets what the sheet chose",
-            step_key(step)
-        )),
+        Some((missing, why)) => Err(format!("`{}` must use {{{missing}}}, {why}", kind.key())),
         None => Ok(()),
-    }
-}
-
-/// The placeholders `step`'s template must use: a Request review Job learns
-/// whom to ask only from `{reviewers}`, the list chosen on the sheet.
-fn required_placeholders(step: NextStep) -> &'static [&'static str] {
-    match step {
-        NextStep::RequestReview => &["reviewers"],
-        _ => &[],
     }
 }
 
@@ -313,6 +423,8 @@ fn fill(template: &str, fields: &PromptFields) -> String {
                         Some(channel) => out.push_str(&announcement_step(channel)),
                         None => out.push_str(NO_ANNOUNCEMENT),
                     },
+                    "linear_context" => out.push_str(&linear_context(&fields.linear_issues)),
+                    "verdict_only" => out.push_str(VERDICT_ONLY),
                     _ => {}
                 }
             }
