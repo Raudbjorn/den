@@ -55,14 +55,16 @@ fn empty_state(state: &State<'_>) -> EmptyState {
             detail: error.to_string(),
         };
     }
-    if let Some(narrowed) = scope::empty_in_scope(state) {
-        return narrowed;
-    }
+    // A failed refresh comes first: its details say how to recover, and the
+    // header already names the Scope.
     if let Some(failure) = state.failure {
         return EmptyState {
             title: failure.headline().to_owned(),
             detail: failure.to_string(),
         };
+    }
+    if let Some(narrowed) = scope::empty_in_scope(state) {
+        return narrowed;
     }
     match state.observation {
         None if state.surveying => EmptyState {

@@ -434,3 +434,47 @@ fn a_refresh_that_changes_a_repos_casing_keeps_the_scope_cursor_and_selection() 
         "the same Pull Request stays selected"
     );
 }
+
+#[test]
+fn a_failed_refresh_shows_its_details_in_an_empty_narrowed_scope() {
+    let mut harness = started(two_owners());
+    harness.key(Key::Left); // Owner beta: no Work Items.
+    assert_eq!(harness.view.header.scope, "Owner · beta");
+    harness.answer(Err(den::ports::SurveyFailure::NotLoggedIn {
+        detail: "token expired".to_owned(),
+    }));
+    harness.settle(Event::Started { now: now() });
+
+    let empty = harness.view.list.empty.clone().expect("an empty state");
+    assert_eq!(empty.title, "gh is not logged in");
+    assert!(
+        empty.detail.contains("gh auth login") && empty.detail.contains("token expired"),
+        "the recovery details are shown: {empty:?}"
+    );
+}
+
+#[test]
+fn an_empty_narrowed_scope_does_not_rule_out_other_scopes_when_coverage_is_incomplete() {
+    // Nothing anywhere, and beta's Pull Requests failed to load.
+    let mut harness = started(
+        ObservationBuilder::new()
+            .owner("octo")
+            .owner("beta")
+            .repo("octo/app")
+            .owner_coverage(
+                "beta",
+                SourceKind::PullRequests,
+                SourceState::Failed {
+                    error: "timeout".to_owned(),
+                },
+            )
+            .build(),
+    );
+    harness.key(Key::Right); // Owner octo.
+    let empty = harness.view.list.empty.clone().expect("an empty state");
+    assert!(
+        !empty.detail.contains("Nothing in any other Scope"),
+        "zero known Work Items elsewhere is not nothing elsewhere: {empty:?}"
+    );
+    assert!(empty.detail.contains("incomplete"), "{empty:?}");
+}
