@@ -32,7 +32,10 @@ use crate::{
     },
     layout::{Layout, TerminalSize},
     ordering,
-    ports::{LinearSurvey, LinearSurveyRequest, SurveyFailure, SurveyRequest},
+    ports::{
+        LinearSurvey, LinearSurveyRequest, MemberStatesRead, MemberStatesRequest, SurveyFailure,
+        SurveyRequest,
+    },
 };
 use jiff::Timestamp;
 use scope::ScopeState;
@@ -96,6 +99,9 @@ pub struct App {
     /// is shown when it arrives, and again into a GitHub survey that starts
     /// afresh (no earlier Observation of its viewer to merge into).
     linear: Option<LinearSurvey>,
+    /// The read of Landing Group members' states in flight, if any (#37),
+    /// by the survey round it follows.
+    member_states_running: Option<SurveyId>,
 }
 
 impl App {
@@ -124,6 +130,7 @@ impl App {
             policies,
             linear_running: None,
             linear: None,
+            member_states_running: None,
             upstreams_unreadable: None,
             upstream_problem: None,
         }
@@ -162,6 +169,10 @@ impl App {
             Event::LinearSurveyFinished { id, survey, now } => {
                 self.now = Some(now);
                 self.linear_survey_finished(id, *survey, now)
+            }
+            Event::MemberStatesRead { id, read, now } => {
+                self.now = Some(now);
+                self.member_states_read(id, *read, now)
             }
             Event::CacheLoaded { outcome } => self.cache_loaded(outcome),
             Event::CacheStored { outcome } => cache_stored(outcome),
@@ -250,6 +261,12 @@ impl App {
                     self.linear_running = None;
                 }
                 "Linear survey"
+            }
+            Effect::ReadMemberStates { id, .. } => {
+                if self.member_states_running == Some(id) {
+                    self.member_states_running = None;
+                }
+                "read Landing Group members' states"
             }
             Effect::LoadCache => "read cache",
             Effect::StoreCache { .. } => "save cache",
@@ -407,6 +424,7 @@ impl App {
                 effects.push(Effect::StoreCache {
                     cached: Box::new(merged),
                 });
+                effects.extend(self.read_member_states(id));
                 effects
             }
             Err(failure) => {
@@ -662,6 +680,86 @@ impl App {
         effects.push(Effect::StoreCache {
             cached: Box::new(merged),
         });
+        effects.extend(self.read_member_states(id));
+        effects
+    }
+
+    /// Once both surveys of round `id` have answered: asks for the states of
+    /// the Landing Group members that weren't among the open Pull Requests
+    /// and aren't known merged (#37), if there are any. Merged is final, so
+    /// a member read merged is never asked about again; one read closed is,
+    /// in case it was reopened and merged since.
+    fn read_member_states(&mut self, id: SurveyId) -> Vec<Effect> {
+        if self.running.is_some() || self.linear_running.is_some() {
+            return Vec::new();
+        }
+        let Some(shown) = &self.shown else {
+            return Vec::new();
+        };
+        let pull_requests = members_to_read(&shown.observation);
+        if pull_requests.is_empty() {
+            return Vec::new();
+        }
+        self.member_states_running = Some(id);
+        vec![
+            Effect::log(
+                LogLevel::Info,
+                format!(
+                    "reading the states of {} Landing Group member(s) not among the open Pull Requests",
+                    pull_requests.len()
+                ),
+            ),
+            Effect::ReadMemberStates {
+                id,
+                request: MemberStatesRequest { pull_requests },
+            },
+        ]
+    }
+
+    /// Landing Group members' states arrived: merged into what is shown,
+    /// decided again and cached. An answer for an older round is ignored.
+    fn member_states_read(
+        &mut self,
+        id: SurveyId,
+        read: MemberStatesRead,
+        now: Timestamp,
+    ) -> Vec<Effect> {
+        if self.member_states_running != Some(id) {
+            return vec![Effect::log(
+                LogLevel::Warn,
+                format!(
+                    "ignored the members' states read after survey {}, which is no longer current",
+                    id.0
+                ),
+            )];
+        }
+        self.member_states_running = None;
+        let incomplete: Vec<String> = read
+            .coverage
+            .incomplete()
+            .map(|e| format!("{} {}", e.source.label(), e.state.describe()))
+            .collect();
+        let mut effects = vec![Effect::log(
+            if incomplete.is_empty() {
+                LogLevel::Info
+            } else {
+                LogLevel::Warn
+            },
+            format!(
+                "read {} Landing Group member state(s) after survey {}; incomplete: [{}]",
+                read.states.len(),
+                id.0,
+                incomplete.join("; ")
+            ),
+        )];
+        let Some(shown) = self.shown.take() else {
+            return effects;
+        };
+        let merged = cache::merge_member_states(shown, read);
+        self.show(merged.clone(), now);
+        effects.push(Effect::StoreCache {
+            cached: Box::new(merged),
+        });
         effects
     }
 
@@ -684,6 +782,28 @@ impl App {
             }
         }
     }
+}
+
+/// The Landing Group members whose state den should read: attached to a
+/// Linear Issue, not among their Repo's open Pull Requests (which den read
+/// completely), and not known merged. Each once.
+fn members_to_read(observation: &Observation) -> Vec<crate::domain::facts::PullRequestRef> {
+    use decide::correlation::MemberStatus;
+    let correlation = decide::correlate(observation);
+    let mut wanted: Vec<crate::domain::facts::PullRequestRef> = Vec::new();
+    for issue in &observation.linear.issues {
+        for member in correlation.for_issue(&issue.id).members {
+            let unsettled = matches!(member.status, MemberStatus::NotOpen | MemberStatus::Closed);
+            if unsettled
+                && !wanted
+                    .iter()
+                    .any(|p| p.is(&member.pr.repo, member.pr.number))
+            {
+                wanted.push(member.pr);
+            }
+        }
+    }
+    wanted
 }
 
 fn linear_log(id: SurveyId, survey: &LinearSurvey) -> Effect {

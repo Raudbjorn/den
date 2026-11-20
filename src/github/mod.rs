@@ -4,11 +4,14 @@
 //! One fetcher per Work Item kind (`pull_requests`, `issues`, `branches`, `runs`),
 //! each with its queries in `queries/`. [`survey`] runs the viewer, then for each
 //! Owner its Repos and every kind, and collects facts and coverage into one
-//! Observation. A kind ticket edits only its own fetcher.
+//! Observation. A kind ticket edits only its own fetcher. `member_states`
+//! reads, after the survey, the states of Landing Group members that weren't
+//! among the open Pull Requests (#37).
 
 pub mod branches;
 pub mod graphql;
 pub mod issues;
+pub mod member_states;
 pub mod pull_requests;
 pub mod repos;
 pub mod rest;
@@ -21,7 +24,7 @@ use crate::{
         Comparison, CoverageEntry, Observation, Repo, UpstreamTargets, comparison_for,
         facts::{Branch, ComparisonBranch, Issue, PullRequest, Run},
     },
-    ports::{GitHubSource, SurveyFailure, SurveyRequest},
+    ports::{GitHubSource, MemberStatesRead, MemberStatesRequest, SurveyFailure, SurveyRequest},
 };
 use graphql::GraphQl;
 use jiff::Timestamp;
@@ -163,5 +166,9 @@ impl<G: GraphQl> GitHubSource for GhSource<G> {
             &request.upstreams,
             Timestamp::now(),
         )
+    }
+
+    fn member_states(&self, request: &MemberStatesRequest) -> MemberStatesRead {
+        member_states::read(&self.gql, request)
     }
 }

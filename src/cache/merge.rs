@@ -7,7 +7,10 @@
 //! source still reads as failed or partial: den never presents old data as new.
 //!
 //! GitHub and Linear are surveyed apart, so each refresh speaks for its own
-//! sources only. [`merge`] takes a GitHub survey and leaves the Linear part, its
+//! sources only. The Landing Group members' states (#37), read by number
+//! after both surveys, are a third: a GitHub survey keeps them and their
+//! coverage as they were, and [`merge_member_states`] replaces each member's
+//! state it read. [`merge`] takes a GitHub survey and leaves the Linear part, its
 //! coverage and its ages as they were; [`merge_linear`] takes a Linear survey
 //! and leaves GitHub's alone. Both apply the one rule above ([`Reading`],
 //! [`keep_unread`]): a fact names its source, a GitHub fact by its kind and
@@ -31,7 +34,7 @@ use crate::{
         Coverage, LinearPart, LinearSourceKind, Observation, RepoId, Source, SourceKind,
         SourceState, WorkItemId, ids::same_login,
     },
-    ports::LinearSurvey,
+    ports::{LinearSurvey, MemberStatesRead},
 };
 use jiff::Timestamp;
 use std::{collections::HashSet, hash::Hash};
@@ -42,7 +45,10 @@ use std::{collections::HashSet, hash::Hash};
 /// nothing about Linear.
 pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> CachedObservation {
     fresh.linear = LinearPart::default();
-    fresh.coverage.retain(|e| !e.source.is_linear());
+    fresh.member_states.clear();
+    fresh
+        .coverage
+        .retain(|e| !e.source.is_linear() && !e.source.is_member_states());
     let Some(previous) = previous.filter(|p| p.observation.viewer.is(&fresh.viewer.login)) else {
         return CachedObservation::fresh(fresh);
     };
@@ -112,8 +118,10 @@ pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> Cac
     // Linear stays as the previous Observation had it: its part, its coverage
     // (carried above, its ages).
     merged.linear = previous_observation.linear;
+    // The members' states too: they are read after the survey, not by it.
+    merged.member_states = previous_observation.member_states;
     for entry in previous_observation.coverage.entries() {
-        if entry.source.is_linear() {
+        if entry.source.is_linear() || entry.source.is_member_states() {
             merged
                 .coverage
                 .record(entry.source.clone(), entry.state.clone());
@@ -130,6 +138,42 @@ pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> Cac
         observation: merged,
         carried,
     }
+}
+
+/// Merges a read of Landing Group members' states (#37) into `previous`: each
+/// member it read a state for replaces that member's earlier state, any other
+/// keeps its earlier one, and the read's coverage replaces the earlier
+/// coverage of the same Owners' member states. A member den asked about and
+/// got no state for keeps the one it had, if any (the coverage says the read
+/// was incomplete): a failed read never invents a state, and never erases a
+/// merge, which is final on GitHub.
+pub fn merge_member_states(
+    mut previous: CachedObservation,
+    read: MemberStatesRead,
+) -> CachedObservation {
+    let observation = &mut previous.observation;
+    observation.member_states.retain(|kept| {
+        !read
+            .states
+            .iter()
+            .any(|s| s.pr.is(&kept.pr.repo, kept.pr.number))
+    });
+    observation.member_states.extend(read.states);
+    let answered: Vec<Source> = read
+        .coverage
+        .entries()
+        .iter()
+        .map(|e| e.source.clone())
+        .collect();
+    observation
+        .coverage
+        .retain(|e| !answered.iter().any(|a| a.same(&e.source)));
+    for entry in read.coverage.entries() {
+        observation
+            .coverage
+            .record(entry.source.clone(), entry.state.clone());
+    }
+    previous
 }
 
 /// Merges a Linear survey into `previous`, Linear source by Linear source;

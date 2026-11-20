@@ -10,7 +10,10 @@ pub use perform::perform;
 use crate::{
     cache::{CacheError, CachedObservation},
     config::LinearWorkflow,
-    domain::{Coverage, LinearPart, Observation, UpstreamTargets},
+    domain::{
+        Coverage, LinearPart, Observation, UpstreamTargets,
+        facts::{MemberPullRequestState, PullRequestRef},
+    },
     handoff::{PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode},
     jobs::{JobRecord, JobStoreError},
     upstreams::UpstreamStoreError,
@@ -72,6 +75,27 @@ impl SurveyFailure {
 /// Reads GitHub. Read-only by construction (ADR-0002): there is no write method.
 pub trait GitHubSource: Send + Sync {
     fn survey(&self, request: &SurveyRequest) -> Result<Observation, SurveyFailure>;
+    /// Reads the states of Landing Group members den didn't find among the
+    /// open Pull Requests (#37), by Owner, Repo and number. Never fails: what
+    /// it couldn't read is coverage (`SourceKind::MemberStates` per Owner).
+    fn member_states(&self, request: &MemberStatesRequest) -> MemberStatesRead;
+}
+
+/// Which Landing Group members' states to read (#37): Pull Requests attached
+/// to a Linear Issue that weren't among their Repo's open Pull Requests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberStatesRequest {
+    pub pull_requests: Vec<PullRequestRef>,
+}
+
+/// What a read of members' states found, and its coverage: one
+/// `Source::Owner { kind: SourceKind::MemberStates }` entry per Owner asked
+/// about. A member without a state here wasn't read; its Owner's entry says
+/// why.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MemberStatesRead {
+    pub states: Vec<MemberPullRequestState>,
+    pub coverage: Coverage,
 }
 
 /// What to survey in Linear: the Linear Workflows, one per Owner that has one.
