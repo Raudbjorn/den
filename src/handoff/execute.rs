@@ -9,7 +9,7 @@ use super::{
     RefusalReason, WindowMode, check_prompt, clone, command, short_commit,
 };
 use crate::{
-    domain::WorkItemKind,
+    domain::{NextStep, WorkItemKind},
     jobs::JobRecord,
     ports::{JobStore, Launcher, Workspace, WorktreeAdd, WorktreeStart},
 };
@@ -343,7 +343,9 @@ fn verify(plan: &LaunchPlan, workspace: &dyn Workspace) -> Result<(), Verificati
             branch: plan.branch.name.clone(),
         }));
     }
+    // Land creates its own untracked coordination branch, even on a PR head.
     if matches!(plan.branch.start, BranchStart::Existing)
+        && plan.next_step != NextStep::Land
         && let BaseRef::HeadBranch(branch) = &plan.base.reference
     {
         workspace
