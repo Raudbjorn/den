@@ -199,8 +199,9 @@ impl ComponentRenderer {
     ///
     /// den patch: a template can no longer be overridden at render time through
     /// `ctx.virtual_files` (upstream re-parsed it on every render and silently
-    /// fell back to the store on a parse error). Extra virtual files in `ctx`
-    /// remain visible to `include`. A caller-provided `base_dir` is ignored.
+    /// fell back to the store on a parse error), neither as the rendered section
+    /// nor as the target of an `include`. Extra virtual files in `ctx` at other
+    /// paths remain visible to `include`. A caller-provided `base_dir` is ignored.
     pub fn render(
         &self,
         template: TemplateRef,
@@ -216,10 +217,12 @@ impl ComponentRenderer {
         }
 
         let mut render_ctx = ctx.clone();
-        let mut virtual_files = (*self.store.virtual_files()).clone();
+        // Registered files go in last, so they win over a caller file at the same
+        // path: an `include` of a registered template gets the registered source.
+        let mut virtual_files = (*render_ctx.virtual_files).clone();
         virtual_files.extend(
-            render_ctx
-                .virtual_files
+            self.store
+                .virtual_files()
                 .iter()
                 .map(|(path, content)| (path.clone(), content.clone())),
         );

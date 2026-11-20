@@ -16,13 +16,13 @@ use den::{
     paths::{Paths, PathsError},
     ports::{Ports, SystemClock, Unimplemented},
     runtime::{self, Worker},
-    terminal::TerminalSession,
+    terminal::{SIGNAL_EXIT_STATUS_BASE, TerminalSession},
     ui::{Theme, UiError, frame},
 };
 use jiff::Timestamp;
 use raudbjorn_tui::profile::{ProfileError, TerminalProfile};
 use std::{
-    io,
+    io::{self, Write as _},
     process::ExitCode,
     sync::Arc,
     time::{Duration, Instant},
@@ -31,7 +31,11 @@ use std::{
 const EXIT_FAILURE: u8 = 1;
 const EXIT_USAGE: u8 = 2;
 const USAGE: &str = "usage: den [--dump COLSxROWS]";
-/// How long to wait for a key before checking for finished work, in milliseconds.
+/// The largest `--dump` width or height, in cells. The dump buffer holds
+/// cols x rows cells, so unbounded sizes could exhaust memory.
+const MAX_DUMP_SIDE_CELLS: u16 = 1000;
+/// How long to wait for a key before checking for finished work and for a
+/// termination signal, in milliseconds.
 const INPUT_POLL_MS: u64 = 100;
 /// How often ages in the view are refreshed, in seconds.
 const TICK_SECS: u64 = 30;
@@ -50,6 +54,16 @@ enum DenError {
     Paths(#[from] PathsError),
     #[error(transparent)]
     Logging(#[from] LoggingError),
+    #[error("writing the dump: {0}")]
+    Output(io::Error),
+    #[error("stopped by signal {0}")]
+    Signalled(i32),
+    /// The session failed and then restoring the terminal failed as well.
+    #[error("{outcome}; restoring the terminal also failed: {restore}")]
+    RestoreAfter {
+        outcome: Box<DenError>,
+        restore: io::Error,
+    },
 }
 
 enum Mode {
@@ -64,11 +78,15 @@ fn parse_args(args: &[String]) -> Result<Mode, DenError> {
             let parsed = size
                 .split_once('x')
                 .and_then(|(c, r)| Some((c.parse::<u16>().ok()?, r.parse::<u16>().ok()?)))
-                .filter(|&(cols, rows)| cols > 0 && rows > 0);
+                .filter(|&(cols, rows)| {
+                    (1..=MAX_DUMP_SIDE_CELLS).contains(&cols)
+                        && (1..=MAX_DUMP_SIDE_CELLS).contains(&rows)
+                });
             match parsed {
                 Some((cols, rows)) => Ok(Mode::Dump { cols, rows }),
                 None => Err(DenError::Usage(format!(
-                    "--dump expects COLSxROWS such as 160x45, got {size:?}"
+                    "--dump expects COLSxROWS such as 160x45, each from 1 to \
+                     {MAX_DUMP_SIDE_CELLS}, got {size:?}"
                 ))),
             }
         }
@@ -124,9 +142,15 @@ fn run_interactive(theme: &Theme, mut app: App, ports: Ports) -> Result<(), DenE
     let mut session = TerminalSession::start()?;
     let outcome = event_loop(&mut session, theme, &mut app, &worker);
     let restored = session.finish();
-    outcome?;
-    restored?;
-    Ok(())
+    match (outcome, restored) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(restore)) => Err(DenError::Terminal(restore)),
+        (Err(error), Err(restore)) => Err(DenError::RestoreAfter {
+            outcome: Box::new(error),
+            restore,
+        }),
+    }
 }
 
 fn event_loop(
@@ -147,6 +171,10 @@ fn event_loop(
         if dirty {
             draw(session, theme, &view)?;
             dirty = false;
+        }
+        // A termination signal ends the loop so the terminal gets restored.
+        if let Some(signal) = session.termination_signal() {
+            return Err(DenError::Signalled(signal));
         }
         let mut incoming: Vec<Event> = worker.finished().collect();
         if last_tick.elapsed() >= Duration::from_secs(TICK_SECS) {
@@ -206,8 +234,9 @@ fn run(args: &[String]) -> Result<(), DenError> {
             };
             let (view, _) = runtime::settle(&mut app, started, &ports);
             let buffer = frame::render(&theme, &view, cols, rows)?;
-            println!("{}", frame::buffer_text(&buffer));
-            Ok(())
+            // Not `println!`, which panics when stdout is closed (`den --dump .. | head`).
+            writeln!(io::stdout().lock(), "{}", frame::buffer_text(&buffer))
+                .map_err(DenError::Output)
         }
     }
 }
@@ -217,11 +246,32 @@ fn main() -> ExitCode {
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("den: {error}");
-            match error {
-                DenError::Usage(_) => ExitCode::from(EXIT_USAGE),
-                _ => ExitCode::from(EXIT_FAILURE),
-            }
+            eprintln!("den: {}", escape_controls(&error.to_string()));
+            exit_code(&error)
         }
+    }
+}
+
+/// Escapes control characters other than newline, so an error that quotes
+/// untrusted text (an environment value, a path) cannot drive the terminal.
+fn escape_controls(message: &str) -> String {
+    let mut escaped = String::with_capacity(message.len());
+    for c in message.chars() {
+        if c.is_control() && c != '\n' {
+            escaped.extend(c.escape_debug());
+        } else {
+            escaped.push(c);
+        }
+    }
+    escaped
+}
+
+fn exit_code(error: &DenError) -> ExitCode {
+    match error {
+        DenError::Usage(_) => ExitCode::from(EXIT_USAGE),
+        DenError::Signalled(signal) => u8::try_from(SIGNAL_EXIT_STATUS_BASE + signal)
+            .map_or(ExitCode::from(EXIT_FAILURE), ExitCode::from),
+        DenError::RestoreAfter { outcome, .. } => exit_code(outcome),
+        _ => ExitCode::from(EXIT_FAILURE),
     }
 }
