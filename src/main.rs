@@ -87,7 +87,8 @@ enum DenError {
     Graphics(#[from] BearError),
     #[error("launch: {0}")]
     Launch(String),
-    #[error("writing the dump: {0}")]
+    /// Writing to stdout failed, e.g. it was closed (`den --dump .. | head`).
+    #[error("writing to stdout: {0}")]
     Output(io::Error),
     #[error("stopped by signal {0}")]
     Signalled(i32),
@@ -431,9 +432,7 @@ fn run(args: &[String]) -> Result<(), DenError> {
             };
             let (view, _) = runtime::settle(&mut app, started, &ports);
             let buffer = frame::render(&theme, &view, cols, rows)?;
-            // Not `println!`, which panics when stdout is closed (`den --dump .. | head`).
-            writeln!(io::stdout().lock(), "{}", frame::buffer_text(&buffer))
-                .map_err(DenError::Output)
+            write_out(format_args!("{}\n", frame::buffer_text(&buffer)))
         }
         Mode::Launch {
             item,
@@ -511,7 +510,7 @@ fn run_launch(
     }
     print_sheet(theme, &view)?;
     if !confirm {
-        println!("\n(dry run: add --yes to launch)");
+        write_out(format_args!("\n(dry run: add --yes to launch)\n"))?;
         return sheet_status(&view, LaunchStatus::Ready);
     }
     if sheet_status(&view, LaunchStatus::Ready).is_err() {
@@ -520,7 +519,7 @@ fn run_launch(
         ));
     }
     view = runtime::settle(&mut app, Event::Key(Key::Enter), ports).0;
-    println!();
+    write_out(format_args!("\n"))?;
     print_sheet(theme, &view)?;
     sheet_status(&view, LaunchStatus::Launched)
 }
@@ -562,19 +561,29 @@ fn sheet_status(view: &ViewModel, wanted: LaunchStatus) -> Result<(), DenError> 
 fn print_sheet(theme: &Theme, view: &ViewModel) -> Result<(), DenError> {
     let (cols, rows) = LAUNCH_DUMP_SIZE;
     let buffer = frame::render(theme, view, cols, rows)?;
-    println!("{}", frame::buffer_text(&buffer));
+    write_out(format_args!("{}\n", frame::buffer_text(&buffer)))?;
     if let Some(Overlay::LaunchSheet(sheet)) = &view.overlay {
         if let Some(prompt) = &sheet.prompt {
-            println!("\nprompt:  {}", prompt.text);
+            write_out(format_args!("\nprompt:  {}\n", prompt.text))?;
         }
         if let Some(command) = &sheet.command {
-            println!("command: {command}");
+            write_out(format_args!("command: {command}\n"))?;
         }
         for message in &sheet.messages {
-            println!("- {}", message.text);
+            write_out(format_args!("- {}\n", message.text))?;
         }
     }
     Ok(())
+}
+
+/// Writes to stdout as a value: never `print!`/`println!`, which panic when
+/// stdout is closed (`den --dump .. | head -1`). The error reaches `main`,
+/// which reports it through `escape_controls` like any other.
+fn write_out(text: std::fmt::Arguments<'_>) -> Result<(), DenError> {
+    io::stdout()
+        .lock()
+        .write_fmt(text)
+        .map_err(DenError::Output)
 }
 
 /// The bear's graphics mode from `DEN_GRAPHICS`, when set (unset or empty: detect).
