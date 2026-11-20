@@ -41,13 +41,18 @@ pub const CACHE_SUBDIR: &str = "cache";
 /// attachments and whether they were all read (#35) and the Linear source
 /// that listed it (#34); the Linear part holds each Linear team's workflow
 /// states (#33) and its own survey time (#34).
-/// 9: feat/37-land-decisions' Landing Group member states (#37); a cache it
+/// 9: an Observation holds the states of Landing Group members den didn't find
+/// among the open Pull Requests (merged, closed, open again), read by number
+/// after the survey, and coverage has their source kind (#37).
+/// 10: integrate/m2-wave3's shape after the second review round (a PR's
+/// details carry the head they were read at, #36; Linear's errors alongside
+/// data count those not kept, #32), without #37's member states; a cache it
 /// wrote is refused here.
-/// 10: the shape after the second review round: a PR's details carry the
-/// head they were read at (#36, `PrDetails::head_commit`), and Linear's
-/// errors alongside data keep the first few messages and count the rest
-/// (#32, `LinearErrorsAlongsideData::more`).
-pub const CACHE_FORMAT: u32 = 10;
+/// 11: 10 with #37's member states: the second review round's merged shape
+/// plus Land and Mark for release.
+/// 12: an Observation records the members den asked about and got no state
+/// for, with when it last asked (#37), so a bounded read rotates past them.
+pub const CACHE_FORMAT: u32 = 12;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// Names the viewer whose cache startup shows.

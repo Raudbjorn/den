@@ -4,7 +4,9 @@
 //! - [`CachedObservation`]: the Observation den shows, plus the age of any data it
 //!   carried over from an earlier survey because the latest one could not read
 //!   that source.
-//! - [`merge`] (a GitHub survey) and [`merge_linear`] (a Linear survey): pure. A
+//! - [`merge`] (a GitHub survey), [`merge_linear`] (a Linear survey),
+//!   [`merge_member_states`] (Landing Group members' states, #37) and
+//!   [`settle_member_states`] (those states against the groups shown): pure. A
 //!   source the refresh read completely is replaced; a source it could not read
 //!   (failed, partial, not fetched) keeps the earlier data, marked with that
 //!   data's own age. One error never wipes the list, and a refresh of one service
@@ -20,7 +22,7 @@ mod file;
 mod merge;
 
 pub use file::{CACHE_FORMAT, CACHE_SUBDIR, FileCache, MAX_CACHE_BYTES};
-pub use merge::{LinearMerge, merge, merge_linear};
+pub use merge::{LinearMerge, merge, merge_linear, merge_member_states, settle_member_states};
 
 use crate::domain::{
     LinearSourceKind, Observation, Source, SourceKind, SourceState, ids::same_login,
@@ -90,6 +92,12 @@ impl CachedObservation {
         observation.linear.issues.retain(|i| watched(&i.owner));
         observation.linear.viewers.retain(|v| watched(&v.owner));
         observation.linear.team_states.retain(|t| watched(&t.owner));
+        observation
+            .member_states
+            .retain(|m| watched(&m.pr.repo.owner));
+        observation
+            .member_attempts
+            .retain(|a| watched(&a.pr.repo.owner));
         let mut coverage = crate::domain::Coverage::default();
         for entry in observation.coverage.entries() {
             if source_owner(&entry.source).is_none_or(watched) {
