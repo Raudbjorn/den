@@ -203,7 +203,7 @@ pub enum LaunchStatus {
     Inspecting,
     /// `Enter` launches.
     Ready,
-    /// The PR head moved since the sheet opened; `Enter` launches on the new one.
+    /// The base (a PR head, a Branch, the default branch) moved since the sheet opened; `Enter` launches on the new one.
     HeadMoved,
     Refused,
     Launching,

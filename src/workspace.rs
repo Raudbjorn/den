@@ -19,6 +19,8 @@ use std::{
 pub const GIT_TIMEOUT_SECS: u64 = 30;
 /// The most a git call that talks to a remote (fetch, ls-remote) may take, in seconds.
 pub const GIT_NETWORK_TIMEOUT_SECS: u64 = 120;
+/// The most `git clone` may take, in seconds: a whole Repo comes over the network.
+pub const GIT_CLONE_TIMEOUT_SECS: u64 = 900;
 /// How deep under the search root Main Clones are looked for, in folder levels
 /// (`~/dev/den` is 1, `~/dev/wrk/den` is 2).
 pub const MAIN_CLONE_SEARCH_DEPTH: usize = 2;
@@ -102,6 +104,17 @@ fn failure_detail(output: &Output) -> String {
     } else {
         stderr
     }
+}
+
+/// A URL to clone or ask must not look like an option to git.
+fn checked_url(url: &str, operation: impl Fn() -> String) -> Result<&str, WorkspaceError> {
+    if url.trim().is_empty() || url.starts_with('-') {
+        return Err(WorkspaceError {
+            operation: operation(),
+            detail: format!("{url:?} is not a usable Repo URL"),
+        });
+    }
+    Ok(url)
 }
 
 /// Remote names come from the clone's own config; one that looks like an option
@@ -266,8 +279,59 @@ impl Workspace for GitWorkspace {
                 .args(["worktree", "add"])
                 .arg(&add.path)
                 .arg(&add.branch),
+            WorktreeStart::NewBranch { start } => self
+                .git(clone)
+                .args(["worktree", "add", "--no-track", "-b", add.branch.as_str()])
+                .arg(&add.path)
+                .arg(start),
         };
         self.run_ok(&invocation, operation, GIT_TIMEOUT_SECS)
+            .map(|_| ())
+    }
+
+    fn url_branch_head(&self, url: &str, branch: &str) -> Result<Option<String>, WorkspaceError> {
+        let operation = || format!("ask {url} for {branch}");
+        let url = checked_url(url, operation)?;
+        let wanted = format!("refs/heads/{branch}");
+        // Outside any clone, so no clone's own config applies.
+        let invocation = self
+            .git(&std::env::temp_dir())
+            .args(["ls-remote", "--heads", "--", url])
+            .arg(&wanted);
+        let output = self.run_ok(&invocation, operation, GIT_NETWORK_TIMEOUT_SECS)?;
+        Ok(output.stdout_text().lines().find_map(|line| {
+            let (commit, name) = line.split_once('\t')?;
+            (name.trim() == wanted).then(|| commit.trim().to_owned())
+        }))
+    }
+
+    fn clone_repo(&self, url: &str, into: &Path) -> Result<(), WorkspaceError> {
+        let operation = || format!("git clone {url} {}", into.display());
+        let url = checked_url(url, operation)?;
+        // git would clone into an empty folder that exists; den never does.
+        match fs::symlink_metadata(into) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Ok(_) => {
+                return Err(WorkspaceError {
+                    operation: operation(),
+                    detail: "something already exists there".to_owned(),
+                });
+            }
+            Err(e) => {
+                return Err(WorkspaceError {
+                    operation: operation(),
+                    detail: e.to_string(),
+                });
+            }
+        }
+        let Some(parent) = into.parent() else {
+            return Err(WorkspaceError {
+                operation: operation(),
+                detail: "it has no parent folder".to_owned(),
+            });
+        };
+        let invocation = self.git(parent).args(["clone", "--", url]).arg(into);
+        self.run_ok(&invocation, operation, GIT_CLONE_TIMEOUT_SECS)
             .map(|_| ())
     }
 }
