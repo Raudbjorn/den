@@ -102,6 +102,20 @@ fn the_git_adapter_asks_a_url_for_a_branch_without_a_clone() {
 }
 
 #[test]
+fn the_git_adapter_asks_a_url_for_a_pr_ref_without_a_clone() {
+    // A cross-Repo PR head in a Repo den is about to clone (#12 with #13).
+    let (_temp, _root, url, tip) = hosted_repo();
+    git(Path::new(&url), &["update-ref", "refs/pull/7/head", &tip]);
+    let workspace = GitWorkspace::new();
+    assert_eq!(
+        workspace.url_pull_head(&url, 7).expect("ls-remote"),
+        Some(tip)
+    );
+    assert_eq!(workspace.url_pull_head(&url, 8).expect("ls-remote"), None);
+    assert!(workspace.url_pull_head("--upload-pack=x", 7).is_err());
+}
+
+#[test]
 fn the_git_adapter_clones_only_into_a_folder_that_does_not_exist() {
     let (_temp, root, url, tip) = hosted_repo();
     let workspace = GitWorkspace::new();

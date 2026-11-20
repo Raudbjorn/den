@@ -433,6 +433,54 @@ fn a_cross_repo_pr_head_is_fetched_by_its_pr_ref_from_the_target_repos_remote() 
 }
 
 #[test]
+fn a_cross_repo_pr_head_with_no_main_clone_is_cloned_then_fetched_by_its_pr_ref() {
+    // #12's clone step with #13's PR ref: verified against the URL before
+    // anything is cloned, then fetched from the new clone's `origin`.
+    let store = Arc::new(FakeUpstreams::default());
+    let observation = ObservationBuilder::new()
+        .owner("octo")
+        .repo("octo/app")
+        .pull_request(
+            pr("octo/app", 7)
+                .author(ME)
+                .changes_requested()
+                .head_from("someone/app"),
+        )
+        .build();
+    let mut harness = started_with(&store, observation);
+    harness
+        .workspace
+        .add_existing("/home/me/dev/other/notes.txt");
+    harness
+        .workspace
+        .host_pull_head("https://github.com/octo/app", 7, HEAD_7);
+
+    press(&mut harness, Key::Char('c'));
+    let ready = sheet(&harness).clone();
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    let base = ready.fields.iter().find(|f| f.label == "BASE").unwrap();
+    assert_eq!(base.value, "PR ref refs/pull/7/head @ 0000000");
+    press(&mut harness, Key::Enter);
+
+    let calls = harness.workspace.calls();
+    assert_eq!(
+        calls[..2],
+        [
+            WorkspaceCall::Clone {
+                url: "https://github.com/octo/app".to_owned(),
+                into: CLONE.into(),
+            },
+            WorkspaceCall::Fetch {
+                clone: CLONE.into(),
+                remote: "origin".to_owned(),
+                refspec: "+refs/pull/7/head:refs/remotes/origin/pr/7".to_owned(),
+            },
+        ]
+    );
+    assert_eq!(sheet(&harness).status, LaunchStatus::Launched);
+}
+
+#[test]
 fn a_cross_repo_pr_ref_missing_from_the_target_remote_refuses_at_launch_doing_nothing() {
     let store = Arc::new(FakeUpstreams::default());
     let observation = ObservationBuilder::new()
