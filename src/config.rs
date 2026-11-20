@@ -19,7 +19,7 @@ pub mod linear;
 
 pub use linear::{LinearWorkflow, Reviewer};
 
-use crate::domain::{LinearWorkflowPolicy, Policies, ReviewPolicy, facts};
+use crate::domain::{LinearWorkflowPolicy, Policies, ReviewPolicy};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -96,14 +96,7 @@ fn policy_of(workflow: &LinearWorkflow) -> LinearWorkflowPolicy {
         review: Some(ReviewPolicy {
             exact_head_approval: workflow.exact_head_approval,
             comment_reviews_need_rereview: workflow.comment_reviews_need_rereview,
-            reviewers: workflow
-                .reviewers
-                .iter()
-                .map(|reviewer| match reviewer {
-                    Reviewer::User(login) => facts::Reviewer::User(login.clone()),
-                    Reviewer::Team(team) => facts::Reviewer::Team(team.clone()),
-                })
-                .collect(),
+            reviewers: workflow.reviewers.clone(),
         }),
         held_repos: workflow.held_repos.clone(),
     }
