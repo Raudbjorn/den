@@ -156,6 +156,13 @@ impl Prompts {
             .map_or_else(|| default_template(step), String::as_str)
     }
 
+    /// `step`'s template uses `{placeholder}`.
+    pub fn uses(&self, step: NextStep, placeholder: &str) -> bool {
+        // Templates are validated when loaded (defaults included), so this
+        // check only lists what they use.
+        check(self.template(step), step).is_ok_and(|used| used.iter().any(|u| u == placeholder))
+    }
+
     /// The prompt for `step` with `fields` filled in.
     pub fn render(&self, step: NextStep, fields: &PromptFields) -> String {
         // Templates are validated when loaded, so every placeholder is known.

@@ -333,6 +333,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             <[Reviewer]>::to_vec,
         ),
         slack_channel: input.slack_channel.map(str::to_owned),
+        announces: prompts.uses(NextStep::RequestReview, "announcement"),
     });
     let prompt = prompts.render(
         facts.step,

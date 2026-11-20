@@ -312,6 +312,7 @@ fn c_then_enter_on_request_review_launches_a_coordination_job_on_the_pr_head_in_
         Some(ReviewRequest {
             reviewers: vec![user("alice"), team("acme", "backend")],
             slack_channel: None,
+            announces: true,
         })
     );
     let windows = harness.launcher.windows();
@@ -506,6 +507,38 @@ If you aren't sure an announcement went out, don't send it again: report it as u
             .as_ref()
             .and_then(|r| r.slack_channel.as_deref()),
         Some("#team-dev")
+    );
+}
+
+/// Review on #50: `{announcement}` is optional in a custom template. Without
+/// it, ANNOUNCE never claims the Job posts to the configured channel.
+#[test]
+fn a_template_without_the_announcement_never_says_the_job_announces() {
+    let prompts = prompts::parse(
+        std::path::Path::new("prompts.toml"),
+        "request_review = \"Request {reviewers} on {url}.\"\n",
+    );
+    let mut harness =
+        started_with_prompts(config(Some("#team-dev")), surveyed(pr_2(), pr_4()), prompts);
+    let ready = open_sheet(&mut harness, "#2");
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    assert_eq!(
+        prompt(&ready),
+        format!("Request alice, acme/backend on {URL_2}.")
+    );
+    let (value, note) = field(&ready, "ANNOUNCE").expect("an ANNOUNCE field");
+    assert_eq!(value, "nowhere");
+    assert!(
+        note.is_some_and(|n| n.contains("has no {announcement}") && n.contains("#team-dev")),
+        "{note:?}"
+    );
+    let fields = &ready.fields;
+    assert!(
+        !fields.iter().any(|f| f
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("the Job posts it"))),
+        "{fields:?}"
     );
 }
 
