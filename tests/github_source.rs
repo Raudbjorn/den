@@ -114,6 +114,9 @@ fn paginated_octo(request: &GraphQlRequest) -> Result<GraphQlResponse, Transport
         ("RepoPullRequests", Some("b3")) => Ok(data(json!({ "repository": { "pullRequests": {
             "pageInfo": page_info(None), "nodes": [pr_node(4, true)]
         }}}))),
+        ("OwnerIssueCounts", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
+            "pageInfo": page_info(None), "nodes": []
+        }}}))),
         other => panic!("unexpected request {other:?}: {request:?}"),
     }
 }
@@ -178,7 +181,11 @@ fn open_prs_are_paginated_to_completion_and_qualified_by_owner_and_repo() {
             "{source:?}"
         );
     }
-    for kind in [SourceKind::Issues, SourceKind::Branches, SourceKind::Runs] {
+    assert_eq!(
+        state(&observation, owner_source(SourceKind::Issues)),
+        SourceState::Complete
+    );
+    for kind in [SourceKind::Branches, SourceKind::Runs] {
         assert_eq!(
             state(&observation, owner_source(kind)),
             SourceState::NotYetFetched
@@ -201,6 +208,9 @@ fn octo_prs_answer(
                 "pageInfo": page_info(None), "nodes": [repo_node("app")]
             }}}))),
             "OwnerPullRequests" => answer(),
+            "OwnerIssueCounts" => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": []
+            }}}))),
             other => panic!("unexpected {other}"),
         }
     })
@@ -279,6 +289,86 @@ fn a_rate_limit_is_partial_with_the_reset_time_github_reported() {
     );
 }
 
+/// A script where the Owner's PR list has two pages: the first carries data
+/// and an error alongside it, the second answers with `second`.
+fn octo_two_pr_pages(
+    second: impl Fn() -> Result<GraphQlResponse, TransportError> + Send + Sync + 'static,
+) -> ScriptedGraphQl {
+    ScriptedGraphQl::new(move |request| {
+        if let Some(viewer) = viewer_answers(request) {
+            return viewer;
+        }
+        match (operation(request).as_str(), after(request).as_deref()) {
+            ("OwnerRepos", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": [repo_node("app")]
+            }}}))),
+            ("OwnerPullRequests", None) => Ok(GraphQlResponse {
+                data: Some(json!({ "repositoryOwner": { "repositories": {
+                    "pageInfo": page_info(Some("p2")),
+                    "nodes": [ { "name": "app", "pullRequests": { "pageInfo": page_info(None), "nodes": [pr_node(1, false)] } } ]
+                }}})),
+                errors: vec![GraphQlError {
+                    message: "first page error".to_owned(),
+                    kind: None,
+                }],
+            }),
+            ("OwnerPullRequests", Some("p2")) => second(),
+            ("OwnerIssueCounts", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": []
+            }}}))),
+            other => panic!("unexpected {other:?}"),
+        }
+    })
+}
+
+#[test]
+fn a_rate_limit_after_errors_alongside_data_keeps_the_rate_limit_and_reset_time() {
+    let gql = octo_two_pr_pages(|| {
+        Ok(GraphQlResponse {
+            data: Some(Value::Null),
+            errors: vec![GraphQlError {
+                message: "API rate limit exceeded for user ID 1.".to_owned(),
+                kind: Some("RATE_LIMITED".to_owned()),
+            }],
+        })
+    });
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    assert_eq!(observation.pull_requests.len(), 1);
+    // Pagination stopped because of the rate limit, so that is what coverage
+    // reports (with when it resets), not the earlier page's error.
+    assert_eq!(
+        state(&observation, owner_source(SourceKind::PullRequests)),
+        SourceState::Partial(Incompleteness::RateLimited {
+            resets_at: Some(RESET_AT.parse().expect("timestamp"))
+        })
+    );
+}
+
+#[test]
+fn errors_alongside_data_on_several_pages_are_all_kept() {
+    let gql = octo_two_pr_pages(|| {
+        Ok(GraphQlResponse {
+            data: Some(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": []
+            }}})),
+            errors: vec![GraphQlError {
+                message: "second page error".to_owned(),
+                kind: None,
+            }],
+        })
+    });
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    assert_eq!(
+        state(&observation, owner_source(SourceKind::PullRequests)),
+        SourceState::Partial(Incompleteness::ErrorsAlongsideData {
+            errors: vec![
+                "first page error".to_owned(),
+                "second page error".to_owned()
+            ]
+        })
+    );
+}
+
 #[test]
 fn a_page_lost_mid_pagination_makes_the_list_partial() {
     let gql = ScriptedGraphQl::new(|request| {
@@ -296,6 +386,9 @@ fn a_page_lost_mid_pagination_makes_the_list_partial() {
             ("OwnerPullRequests", Some("p2")) => Err(TransportError::TimedOut {
                 after: Duration::from_secs(30),
             }),
+            ("OwnerIssueCounts", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": []
+            }}}))),
             other => panic!("unexpected {other:?}"),
         }
     });

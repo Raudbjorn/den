@@ -38,7 +38,8 @@ See `git log -p -- vendor/raudbjorn-tui` for the exact diff against the verbatim
    rewritten any den section that happened to be called `Table`, `Tabs` and so on.
    `ComponentRenderer::render` no longer lets `ctx.virtual_files` override a
    registered template (upstream re-parsed it on every render and silently fell back
-   to the store on a parse error).
+   to the store on a parse error). That holds for `include` too: registered files take
+   precedence over a caller file at the same path.
 3. **IRONMAW palette slots** (`theme/mod.rs`, `profile.rs`). `TerminalPalette` gains
    `selected`, `mark_bg`, `border_strong` and `action_hover`, with sentinels
    `#aa0017`..`#aa001a`. They are substituted in the same pass as the other roles,
