@@ -22,18 +22,19 @@
 //!
 //! For an Owner with a Linear Workflow, the policy's review rules
 //! ([`workflow`]) change approval and Address review, and add **Request
-//! review** between Review and Merge (Waiting On the author). A PR that would
-//! Merge then passes [`held_back`], the one place "would Merge" becomes Merge:
-//! in a Held Repo it has no Next Step and is held for release. The empty
-//! policy (no Linear Workflow) changes none of this module's Decisions.
+//! review** between Review and Merge (Waiting On the author). Which review
+//! rules apply is settled once, in [`ReviewFindings::assess`]; the rules
+//! below read its findings and never ask which policy produced them. A PR
+//! that would Merge then passes [`held_back`], the one place "would Merge"
+//! becomes Merge: in a Held Repo it has no Next Step and is held for release.
+//! The empty policy (no Linear Workflow) changes none of this module's
+//! Decisions.
 
 mod workflow;
 
-use workflow::WorkflowReview;
-
 use super::{Attribution, Context, Decision, Explanation, HeldBack, WorkItem};
 use crate::domain::{
-    LinearWorkflowPolicy, NextStep, Source, SourceState, Viewer,
+    LinearWorkflowPolicy, NextStep, ReviewPolicy, Source, SourceState, Viewer,
     facts::{
         Check, CheckOutcome, MergeState, Mergeability, PrDetails, PullRequest, ReviewDecision,
         ReviewVerdict, Reviewer,
@@ -75,6 +76,59 @@ enum Approval {
     Unknown,
 }
 
+/// What a PR's review rules found: milestone 1's, or those of its Owner's
+/// Linear Workflow. Everything a review policy changes about a PR's Decision
+/// is here, so the rules in [`decide`] apply whichever policy without
+/// branching on it.
+struct ReviewFindings {
+    approval: Approval,
+    /// Address review's finding.
+    address_review: Finding,
+    /// Request review's finding; `None` where there is no such step (an
+    /// Owner without a Linear Workflow).
+    request_review: Option<Finding>,
+    /// How approval reads in a note, when Merge holds behind an earlier rule.
+    approved: String,
+    /// The review half of Merge's winning rule.
+    merge: String,
+    /// What else stops Merge on review grounds, beyond approval.
+    merge_blockers: Vec<String>,
+    /// Context that is no rule of its own.
+    notes: Vec<String>,
+    /// Who to ask on Request review ([`Decision::suggested_reviewers`]).
+    suggested_reviewers: Option<Vec<Reviewer>>,
+}
+
+impl ReviewFindings {
+    /// The one place a PR's review policy is chosen: the Linear Workflow's
+    /// review rules when its Owner has them, milestone 1's otherwise.
+    fn assess(pr: &PullRequest, policy: Option<&ReviewPolicy>) -> Self {
+        match policy {
+            Some(policy) => workflow::assess(pr, policy),
+            None => Self::milestone_1(pr),
+        }
+    }
+
+    /// Milestone 1's review rules: GitHub's review decision.
+    fn milestone_1(pr: &PullRequest) -> Self {
+        let approval = approval(pr);
+        let merge = match approval {
+            Approval::NoReviewRequired => "no review required and no changes requested",
+            _ => "approved",
+        };
+        Self {
+            address_review: address_review(pr),
+            approved: "approved".to_owned(),
+            merge: merge.to_owned(),
+            approval,
+            request_review: None,
+            merge_blockers: Vec::new(),
+            notes: Vec::new(),
+            suggested_reviewers: None,
+        }
+    }
+}
+
 fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
     let item = WorkItem {
         id: pr.id(),
@@ -84,42 +138,29 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         updated_at: pr.updated_at,
     };
     let policy = ctx.policy(&pr.repo.owner);
-    let workflow = policy
-        .review
-        .as_ref()
-        .map(|rules| WorkflowReview::assess(pr, rules));
-    let approval = match &workflow {
-        Some(workflow) => workflow.approval(pr),
-        None => approval(pr),
-    };
-    let merge_blockers = merge_blockers(pr, &approval, workflow.as_ref());
+    let ReviewFindings {
+        approval,
+        address_review,
+        request_review,
+        approved,
+        merge: merge_review,
+        merge_blockers: review_blockers,
+        notes: review_notes,
+        suggested_reviewers,
+    } = ReviewFindings::assess(pr, policy.review.as_ref());
+    let merge_blockers = merge_blockers(pr, &approval, review_blockers);
     let mut rules = vec![
         (NextStep::FinishDraft, draft(pr)),
         (NextStep::ResolveConflicts, conflicts(pr)),
         (NextStep::FixCi, fix_ci(pr.details.as_ref())),
-        (
-            NextStep::AddressReview,
-            match &workflow {
-                Some(workflow) => workflow.address_review(pr),
-                None => address_review(pr),
-            },
-        ),
+        (NextStep::AddressReview, address_review),
         (
             NextStep::Review,
             review(pr.details.as_ref(), &ctx.viewers.github),
         ),
     ];
-    if let Some(workflow) = &workflow {
-        rules.push((
-            NextStep::RequestReview,
-            workflow.request_review(pr, &approval),
-        ));
-    }
-    rules.push((
-        NextStep::Merge,
-        merge(pr, &approval, &merge_blockers, workflow.as_ref()),
-    ));
-    let suggested_reviewers = workflow.as_ref().map(WorkflowReview::suggested_reviewers);
+    rules.extend(request_review.map(|finding| (NextStep::RequestReview, finding)));
+    rules.push((NextStep::Merge, merge(pr, &merge_review, &merge_blockers)));
     let winner = rules
         .iter()
         .enumerate()
@@ -142,10 +183,11 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
     other_conditions.extend(notes(
         pr,
         &approval,
+        &approved,
         &merge_blockers,
         winner_step,
-        workflow.as_ref(),
     ));
+    other_conditions.extend(review_notes);
 
     let mut unknowns: Vec<String> = rules
         .iter()
@@ -385,22 +427,11 @@ fn review(details: Option<&PrDetails>, viewer: &Viewer) -> Finding {
     Finding::Holds(format!("review requested from {}", names.join(", ")))
 }
 
-fn merge(
-    pr: &PullRequest,
-    approval: &Approval,
-    blockers: &[String],
-    workflow: Option<&WorkflowReview>,
-) -> Finding {
+/// `review` is the review half of the rule ("approved").
+fn merge(pr: &PullRequest, review: &str, blockers: &[String]) -> Finding {
     if !blockers.is_empty() {
         return Finding::No;
     }
-    let review = match (workflow, approval) {
-        (Some(workflow), _) => workflow.merge_text(approval),
-        (None, Approval::NoReviewRequired) => {
-            "no review required and no changes requested".to_owned()
-        }
-        (None, _) => "approved".to_owned(),
-    };
     Finding::Holds(format!(
         "{review}, checks passing and mergeable into {}",
         pr.base_ref
@@ -411,12 +442,12 @@ fn merge(
 /// review required), no unresolved review threads and all threads read, every
 /// review request read, every check (required or advisory) passing and all
 /// read, known mergeable, not a draft, not in a merge queue, and GitHub's own
-/// merge state agreeing. Under a Linear Workflow, also nobody awaiting
-/// re-review (and approval is the workflow's).
+/// merge state agreeing. `review_blockers` are what the review rules add
+/// (under a Linear Workflow, someone awaiting re-review, say).
 fn merge_blockers(
     pr: &PullRequest,
     approval: &Approval,
-    workflow: Option<&WorkflowReview>,
+    review_blockers: Vec<String>,
 ) -> Vec<String> {
     let mut blockers = Vec::new();
     if pr.is_draft {
@@ -427,9 +458,7 @@ fn merge_blockers(
         Approval::NotApproved(why) => blockers.push(why.clone()),
         Approval::Unknown => blockers.push("approval could not be established".to_owned()),
     }
-    if let Some(workflow) = workflow {
-        blockers.extend(workflow.merge_blockers());
-    }
+    blockers.extend(review_blockers);
     match &pr.details {
         None => blockers.push("checks could not be read".to_owned()),
         Some(details) => {
@@ -509,13 +538,14 @@ fn merge_state_blocker(pr: &PullRequest) -> Option<String> {
 }
 
 /// Context that is not itself a rule: checks still running, merge queue,
-/// approval. Skipped where the winning rule already says it.
+/// approval (as `approved` reads). Skipped where the winning rule already
+/// says it.
 fn notes(
     pr: &PullRequest,
     approval: &Approval,
+    approved: &str,
     merge_blockers: &[String],
     winner: Option<NextStep>,
-    workflow: Option<&WorkflowReview>,
 ) -> Vec<String> {
     let mut notes = Vec::new();
     if let Some(details) = &pr.details {
@@ -534,10 +564,7 @@ fn notes(
     }
     // When Merge holds (behind an earlier rule), its own condition says "approved".
     if matches!(approval, Approval::Approved) && winner.is_some() && !merge_blockers.is_empty() {
-        notes.push(workflow.map_or_else(|| "approved".to_owned(), |w| w.approved_text(approval)));
-    }
-    if let Some(workflow) = workflow {
-        notes.extend(workflow.notes());
+        notes.push(approved.to_owned());
     }
     notes
 }
