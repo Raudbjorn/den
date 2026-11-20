@@ -330,20 +330,29 @@ fn fetch_repo(
             break;
         }
     }
-    if !links_cut_short.is_empty() {
-        // Linked PRs are read one page per Issue and never paginated further,
-        // so a cut-short list is a stopped pagination of that nested list.
-        pager.note(SourceState::Partial(Incompleteness::PaginationStopped {
+    let enumeration = pager.finish(Source::Repo {
+        repo: repo.clone(),
+        kind: SourceKind::Issues,
+    });
+    // Truncated nested links must not keep absent (closed) Issues in the cache.
+    let details = if links_cut_short.is_empty() {
+        enumeration.state.clone()
+    } else {
+        SourceState::Partial(Incompleteness::PaginationStopped {
             pages_read: LINK_PAGES_READ,
             reason: format!(
                 "more linked PRs than den reads on {}",
                 links_cut_short.join(", ")
             ),
-        }));
-    }
-    out.coverage.push(pager.finish(Source::Repo {
-        repo: repo.clone(),
-        kind: SourceKind::Issues,
-    }));
+        })
+    };
+    out.coverage.push(enumeration);
+    out.coverage.push(CoverageEntry {
+        source: Source::Repo {
+            repo: repo.clone(),
+            kind: SourceKind::IssueDetails,
+        },
+        state: details,
+    });
     Ok(read)
 }
