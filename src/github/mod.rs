@@ -18,7 +18,7 @@ pub mod viewer;
 
 use crate::{
     domain::{
-        CoverageEntry, Observation, Repo,
+        CoverageEntry, Observation, Repo, SourceState,
         facts::{Branch, Issue, PullRequest, Run},
     },
     ports::{GitHubSource, SurveyFailure, SurveyRequest},
@@ -89,7 +89,13 @@ fn survey_owner(session: &Session<'_>, owner: &str) -> Result<OwnerSurvey, Surve
     let pull_requests = pull_requests::fetch(session, owner)?;
     let issues = issues::fetch(session, owner, &repos.items)?;
     let branches = branches::fetch(session, owner, &repos.items)?;
-    let runs = runs::fetch(session, owner, &repos.items)?;
+    let repo_list = repos
+        .coverage
+        .iter()
+        .fold(SourceState::Complete, |state, entry| {
+            state.worst(entry.state.clone())
+        });
+    let runs = runs::fetch(session, owner, &repos.items, &repo_list)?;
     let coverage = [
         repos.coverage,
         pull_requests.coverage,
