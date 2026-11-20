@@ -9,7 +9,7 @@ mod support;
 
 use den::{
     domain::{
-        Observation, Source, SourceKind, SourceState,
+        Incompleteness, Observation, Source, SourceKind, SourceState,
         facts::{Issue, IssueLink, LinkKind, LinkedPrState},
     },
     github::{
@@ -276,6 +276,26 @@ fn the_query_reads_both_link_kinds_in_every_state_and_no_mentions() {
 }
 
 #[test]
+fn issue_pages_are_ordered_by_a_key_that_cannot_change_mid_read() {
+    let gql = ScriptedGraphQl::new(octo);
+    survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    let requests = gql.requests();
+    let query = &requests
+        .iter()
+        .find(|r| operation(r) == "RepoIssues")
+        .expect("a RepoIssues request")
+        .query;
+    // Cursors are positions in the sort order. Creation time never changes, so an
+    // Issue can't move ahead of the cursor mid-read and be skipped, as it could
+    // under UPDATED_AT.
+    assert!(
+        query.contains("orderBy: {field: CREATED_AT, direction: DESC}"),
+        "{query}"
+    );
+    assert!(!query.contains("UPDATED_AT"), "{query}");
+}
+
+#[test]
 fn more_links_than_read_or_unreadable_links_mark_the_links_incomplete() {
     let gql = ScriptedGraphQl::new(|request| {
         if let Some(answer) = non_issue_answers(request) {
@@ -314,6 +334,49 @@ fn more_links_than_read_or_unreadable_links_mark_the_links_incomplete() {
 }
 
 #[test]
+fn unreadable_labels_or_assignees_are_marked_unread_not_read_as_none() {
+    let gql = ScriptedGraphQl::new(|request| {
+        if let Some(answer) = non_issue_answers(request) {
+            return answer;
+        }
+        let with = |number: u64, field: &str, value: Value| {
+            let mut node = plain_issue(number);
+            node[field] = value;
+            node
+        };
+        match operation(request).as_str() {
+            "OwnerIssueCounts" => counts(vec![("app", 4)], None),
+            "RepoIssues" => Ok(GraphQlResponse {
+                data: Some(json!({ "repository": { "issues": {
+                    "pageInfo": page_info(None),
+                    "nodes": [
+                        plain_issue(1),
+                        with(2, "labels", Value::Null),
+                        with(3, "assignees", json!({ "nodes": [{ "login": "me" }, Value::Null] })),
+                        with(4, "labels", json!({ "nodes": [Value::Null] })),
+                    ]
+                }}})),
+                errors: vec![den::github::graphql::GraphQlError {
+                    message: "Resource not accessible by integration".to_owned(),
+                    kind: Some("FORBIDDEN".to_owned()),
+                }],
+            }),
+            other => panic!("unexpected {other}"),
+        }
+    });
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    let read = |number| {
+        let issue = find(&observation, "octo/app", number);
+        (issue.labels_complete, issue.assignees_complete)
+    };
+    assert_eq!(read(1), (true, true));
+    assert_eq!(read(2), (false, true));
+    assert_eq!(read(3), (true, false));
+    assert_eq!(read(4), (false, true));
+    assert_eq!(find(&observation, "octo/app", 3).assignees, ["me"]);
+}
+
+#[test]
 fn a_repo_whose_issues_cannot_be_read_fails_alone() {
     let gql = ScriptedGraphQl::new(|request| {
         if let Some(answer) = non_issue_answers(request) {
@@ -348,6 +411,77 @@ fn a_repo_whose_issues_cannot_be_read_fails_alone() {
         ),
         SourceState::Complete
     );
+}
+
+#[test]
+fn an_outage_stops_the_issue_reads_instead_of_timing_out_once_per_repo() {
+    // Two Repos in a row unreachable (each a whole `gh` timeout in real life):
+    // the rest are not asked about, and their coverage says why.
+    let gql = ScriptedGraphQl::new(|request| {
+        if let Some(answer) = non_issue_answers(request) {
+            return answer;
+        }
+        match (operation(request).as_str(), repo_name(request).as_str()) {
+            ("OwnerIssueCounts", _) => {
+                counts(vec![("a", 1), ("b", 1), ("c", 1), ("d", 1), ("e", 1)], None)
+            }
+            ("RepoIssues", "a" | "c" | "d") => Err(TransportError::TimedOut {
+                after: Duration::from_secs(30),
+            }),
+            ("RepoIssues", "b") => issues_page(vec![plain_issue(1)], None),
+            other => panic!("unexpected {other:?}"),
+        }
+    });
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+
+    // "a" alone is not an outage: "b" is still read, and resets the count.
+    let repos_read: Vec<String> = gql
+        .requests()
+        .iter()
+        .filter(|r| operation(r) == "RepoIssues")
+        .map(repo_name)
+        .collect();
+    assert_eq!(repos_read, ["a", "b", "c", "d"]);
+    assert_eq!(
+        state(&observation, issues_of("octo/b")),
+        SourceState::Complete
+    );
+    let skipped = state(&observation, issues_of("octo/e"));
+    assert!(
+        matches!(&skipped, SourceState::Failed { error } if error.contains("not read") && error.contains("did not answer")),
+        "{skipped:?}"
+    );
+}
+
+#[test]
+fn once_rate_limited_the_remaining_repos_are_rate_limited_not_asked() {
+    let gql = ScriptedGraphQl::new(|request| {
+        if let Some(answer) = non_issue_answers(request) {
+            return answer;
+        }
+        match operation(request).as_str() {
+            "OwnerIssueCounts" => counts(vec![("a", 1), ("b", 1), ("c", 1)], None),
+            "RepoIssues" => Err(TransportError::RateLimited {
+                detail: "API rate limit exceeded".to_owned(),
+            }),
+            other => panic!("unexpected {other}"),
+        }
+    });
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    let asked = gql
+        .requests()
+        .iter()
+        .filter(|r| operation(r) == "RepoIssues")
+        .count();
+    // Only the first Repo is asked: once one request is rate limited, the
+    // survey's shared rate-limit memo (#19) records every later request as rate
+    // limited without sending it, before #17's own stop after two unreachable
+    // Repos would come into play.
+    assert_eq!(asked, 1);
+    assert!(matches!(
+        state(&observation, issues_of("octo/c")),
+        SourceState::Partial(Incompleteness::RateLimited { .. })
+    ));
 }
 
 #[test]

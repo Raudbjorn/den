@@ -502,10 +502,9 @@ fn a_kind_not_fetched_yet_marks_every_repo_incomplete() {
     harness.start();
     let app = &harness.view.header.repos[0];
     assert!(!app.complete);
-    assert_eq!(
-        app.summary,
-        "incomplete: not fetched yet: Issues, Branches, Runs"
-    );
+    // ObservationBuilder::owner reads Issues completely since #17 (as the real
+    // source does); Branches and Runs are still left unfetched by it.
+    assert_eq!(app.summary, "incomplete: not fetched yet: Branches, Runs");
 }
 
 #[test]
