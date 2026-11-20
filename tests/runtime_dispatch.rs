@@ -32,7 +32,8 @@ struct HeldSurvey {
 
 impl GitHubSource for HeldSurvey {
     fn survey(&self, _: &SurveyRequest) -> Result<Observation, SurveyFailure> {
-        self.started.lock().unwrap().send(()).unwrap();
+        // Surveys still queued when a test ends find nobody listening: fine.
+        let _ = self.started.lock().unwrap().send(());
         self.release.lock().unwrap().recv().ok();
         Err(SurveyFailure::NotLoggedIn {
             detail: "released".to_owned(),
@@ -103,4 +104,52 @@ fn quit_is_reported_and_nothing_else_is_performed_at_once() {
     assert!(dispatched.quit);
     assert!(dispatched.events.is_empty());
     assert!(upstreams.stored().is_empty());
+}
+
+/// An Effect the worker cannot accept (its queue is full behind a running
+/// survey) is handed back as its rejection Event, for the App to recover from,
+/// never dropped.
+#[test]
+fn an_effect_the_busy_worker_rejects_comes_back_as_its_rejection_event() {
+    /// More than the worker's queue holds; any bound past it will do.
+    const MORE_THAN_THE_QUEUE: usize = 1024;
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let ports = Ports {
+        github: Arc::new(HeldSurvey {
+            started: Mutex::new(started_tx),
+            release: Mutex::new(release_rx),
+        }),
+        ..ports(Arc::new(FakeGitHub::answering([])), now())
+    };
+    let worker = Worker::start(ports.clone());
+    let survey = |id| Effect::Survey {
+        id: SurveyId(id),
+        request: SurveyRequest {
+            owners: vec!["octo".to_owned()],
+            upstreams: UpstreamTargets::default(),
+        },
+    };
+    dispatch(vec![survey(0)], &worker, &ports);
+    started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the survey started on the worker");
+
+    let rejected = (1..=MORE_THAN_THE_QUEUE as u64)
+        .find_map(|id| {
+            let dispatched = dispatch(vec![survey(id)], &worker, &ports);
+            assert!(!dispatched.quit);
+            dispatched.events.into_iter().next()
+        })
+        .expect("the full queue rejects an Effect");
+
+    assert!(
+        matches!(
+            &rejected,
+            Event::EffectRejected { effect, reason }
+                if matches!(**effect, Effect::Survey { .. }) && reason.contains("still busy")
+        ),
+        "{rejected:?}"
+    );
+    release_tx.send(()).unwrap();
 }

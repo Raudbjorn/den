@@ -1096,3 +1096,88 @@ fn starting_fresh_beside_a_live_job_keeps_the_sheets_upstream_target() {
     assert_ne!(plans[1].worktree, plans[0].worktree);
     assert_ne!(plans[1].branch.name, plans[0].branch.name);
 }
+
+#[test]
+fn an_upstream_job_remains_reopenable_when_only_the_forks_owner_is_watched() {
+    use den::domain::facts::{LinkKind, LinkedPrState};
+    let observed = |linked| {
+        let issue = issue(FORK, 9).assignee(ME).label("feature");
+        let issue = if linked {
+            issue.linked(
+                LinkKind::ClosingReference,
+                UPSTREAM,
+                12,
+                LinkedPrState::Open,
+            )
+        } else {
+            issue
+        };
+        ObservationBuilder::new()
+            .owner("octo")
+            .fork(FORK, Some(UPSTREAM))
+            .issue(issue)
+            .build()
+    };
+    let store = Arc::new(FakeUpstreams::holding(targets(&[FORK])));
+    let mut harness = started_with(&store, observed(false));
+    fork_clone(&harness);
+    open_sheet(&mut harness, ISSUE_9);
+    press(&mut harness, Key::Enter);
+    assert_eq!(sheet(&harness).status, LaunchStatus::Launched);
+    let job = harness.jobs.records()[0].clone();
+    assert_eq!(job.target, repo_id(UPSTREAM));
+    press(&mut harness, Key::Esc);
+    let updated = observed(true);
+    assert!(updated.repo(&repo_id(UPSTREAM)).is_none());
+    harness.answer(Ok(updated));
+    press(&mut harness, Key::Char('r'));
+    open_sheet(&mut harness, ISSUE_9);
+    assert_eq!(sheet(&harness).next_step, "none");
+    assert_eq!(
+        sheet(&harness).status,
+        LaunchStatus::LiveJob,
+        "{}",
+        messages(sheet(&harness))
+    );
+    press(&mut harness, Key::Char('o'));
+    press(&mut harness, Key::Enter);
+    assert_eq!(sheet(&harness).status, LaunchStatus::Reopened);
+    assert_eq!(harness.launcher.windows()[1].session, job.session);
+    assert_eq!(harness.jobs.records(), [job]);
+}
+
+#[test]
+fn rejected_upstream_saves_are_visible_and_rejected_surveys_can_be_retried() {
+    let store = Arc::new(FakeUpstreams::default());
+    let mut harness = started_with(&store, forked());
+    sidebar_cursor_on(&mut harness, &repo_scope(FORK));
+    let effects = harness.send(Event::Key(Key::Char('u')));
+    let save = effects
+        .into_iter()
+        .find(|e| matches!(e, Effect::StoreUpstreams { .. }))
+        .unwrap();
+    harness.send(Event::EffectRejected {
+        effect: Box::new(save),
+        reason: "worker busy".into(),
+    });
+    assert!(
+        harness
+            .view
+            .header
+            .status
+            .contains("Upstream choice not saved")
+    );
+    assert!(harness.view.header.status.contains("worker busy"));
+    assert!(store.stored().is_empty());
+    let effects = harness.send(Event::Key(Key::Char('r')));
+    let survey = effects
+        .into_iter()
+        .find(|e| matches!(e, Effect::Survey { .. }))
+        .unwrap();
+    harness.send(Event::EffectRejected {
+        effect: Box::new(survey),
+        reason: "worker busy".into(),
+    });
+    let retry = harness.send(Event::Key(Key::Char('r')));
+    assert!(retry.iter().any(|e| matches!(e, Effect::Survey { .. })));
+}

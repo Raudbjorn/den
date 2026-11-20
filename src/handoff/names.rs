@@ -6,6 +6,7 @@ use super::worktree_path;
 use crate::{
     domain::{NextStep, RepoId, WorkItemId},
     jobs::JobRecord,
+    ordering::same_work_item,
 };
 use std::path::Path;
 
@@ -217,7 +218,7 @@ pub fn free_worktree_name(
     free_name(wanted, |name| {
         let path = worktree_path(clone, name);
         jobs.iter()
-            .filter(|job| &job.work_item != item)
+            .filter(|job| !same_work_item(&job.work_item, item))
             .filter(|job| {
                 job.worktree == path
                     || (new_branch && job.main_clone.as_path() == clone && job.branch == name)

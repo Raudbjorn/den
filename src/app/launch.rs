@@ -33,6 +33,7 @@ use crate::{
         PlanInput, Refusal, RefusalReason, ReopenPlan, TargetChoice, WorkspaceView, WorktreeState,
         check_prompt, live, names, short_commit,
     },
+    ordering::same_work_item,
 };
 
 /// One open launch sheet.
@@ -597,9 +598,18 @@ impl App {
         effects
     }
 
+    pub(super) fn launch_not_queued(&mut self, id: LaunchId, error: String) {
+        if let Some(mut sheet) = self.current_sheet(id) {
+            sheet.state =
+                SheetState::Refused(Refusal::one(RefusalReason::RequestNotQueued { error }));
+            self.overlay = Some(OverlayState::Launch(sheet));
+        }
+    }
+
     /// Keeps the fresher checks of `item`'s Jobs from a sheet's inspection.
     fn remember_checks(&mut self, item: &WorkItemId, checks: &[JobCheck]) {
-        self.job_checks.retain(|c| &c.job.work_item != item);
+        self.job_checks
+            .retain(|c| !same_work_item(&c.job.work_item, item));
         self.job_checks.extend(checks.iter().cloned());
     }
 
