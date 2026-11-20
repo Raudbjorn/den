@@ -88,6 +88,7 @@ impl Decision {
         explanation: Explanation,
     ) -> Self {
         let coverage = ctx.observation.coverage.applicable_to(&item.id);
+        let observed_at = ctx.observation.observed_at_of(&item.id);
         Self {
             item,
             next_step,
@@ -96,7 +97,7 @@ impl Decision {
             unattributed: attribution.unattributed,
             explanation,
             coverage,
-            observed_at: ctx.observation.observed_at,
+            observed_at,
         }
     }
 }
