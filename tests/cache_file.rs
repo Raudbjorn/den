@@ -155,13 +155,16 @@ fn another_format_version_is_refused() {
     cache.store(&cached("me", 1)).unwrap();
     let file = cache.file_for("me").unwrap();
     let mut body: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
-    body["format"] = serde_json::json!(CACHE_FORMAT + 1);
-    fs::write(&file, serde_json::to_vec(&body).unwrap()).unwrap();
-    assert!(matches!(
-        cache.load(),
-        Err(CacheError::Format { found, expected, .. })
-            if found == CACHE_FORMAT + 1 && expected == CACHE_FORMAT
-    ));
+    // The preceding format has a different schema too, even after stacked PRs merge.
+    for format in [CACHE_FORMAT - 1, CACHE_FORMAT + 1] {
+        body["format"] = serde_json::json!(format);
+        fs::write(&file, serde_json::to_vec(&body).unwrap()).unwrap();
+        assert!(matches!(
+            cache.load(),
+            Err(CacheError::Format { found, expected, .. })
+                if found == format && expected == CACHE_FORMAT
+        ));
+    }
 }
 
 /// A temp state directory holding the cache milestone 1 wrote (format 4).

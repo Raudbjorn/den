@@ -20,7 +20,8 @@ pub use attribution::Attribution;
 
 use crate::domain::{
     CoverageEntry, LinearWorkflowPolicy, NextStep, Observation, Policies, UpstreamTargets, Viewers,
-    WaitingOn, WorkItemId, facts::Reviewer,
+    WaitingOn, WorkItemId,
+    facts::{LinearPriority, Reviewer},
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -76,6 +77,10 @@ pub struct Decision {
     pub coverage: Vec<CoverageEntry>,
     /// When the facts behind this Decision were observed.
     pub observed_at: Timestamp,
+    /// Where a Start falls among Starts (#33); `None` for every other Next
+    /// Step, which order by update time alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_order: Option<StartOrder>,
     /// Set when the Work Item would Merge but is held back, so it has no Next
     /// Step (#36). `None` otherwise, and always for Owners without a Linear
     /// Workflow.
@@ -83,7 +88,7 @@ pub struct Decision {
     pub held_back: Option<HeldBack>,
     /// For a PR of an Owner with a Linear Workflow: who to ask on Request
     /// review (#36). The configured reviewers plus those awaiting re-review,
-    /// minus fresh approvers, pending requests and the author. `None` for
+    /// minus approvers at the current head, pending requests and the author. `None` for
     /// every other Work Item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_reviewers: Option<Vec<Reviewer>>,
@@ -112,6 +117,35 @@ impl HeldBack {
     }
 }
 
+/// Where a **Start** falls among Starts (spec 0002, "Ordering": priority, then
+/// active cycle, then oldest first). Lower comes first: the fields compare in
+/// declaration order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct StartOrder {
+    /// Linear's priority as urgency: urgent 0, high 1, medium 2, low 3, a
+    /// number den doesn't know 4, no priority 5 (see [`StartOrder::urgency`]).
+    pub urgency: u8,
+    /// `false` when the issue is in its team's active cycle, so those come first.
+    pub outside_active_cycle: bool,
+    /// When the issue was created: the oldest comes first.
+    pub created_at: Timestamp,
+}
+
+impl StartOrder {
+    /// Linear's priority as an urgency rank (lower is more urgent). Linear's
+    /// own number puts "no priority" (0) first; den puts it last.
+    pub fn urgency(priority: LinearPriority) -> u8 {
+        match priority {
+            LinearPriority::Urgent => 0,
+            LinearPriority::High => 1,
+            LinearPriority::Medium => 2,
+            LinearPriority::Low => 3,
+            LinearPriority::Other(_) => 4,
+            LinearPriority::None => 5,
+        }
+    }
+}
+
 impl Decision {
     /// Builds a Decision, attaching the coverage that applies to the item.
     pub fn new(
@@ -131,6 +165,7 @@ impl Decision {
             explanation,
             coverage,
             observed_at: ctx.observation.observed_at,
+            start_order: None,
             held_back: None,
             suggested_reviewers: None,
             suggested_reviewers_unread: None,

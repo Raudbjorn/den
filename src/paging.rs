@@ -51,9 +51,14 @@ impl<S: PagedService> Pager<S> {
         }
         self.note(SourceState::Partial(Incompleteness::PaginationStopped {
             pages_read: self.pages_read,
-            reason: format!("den reads at most {} pages per {}", S::MAX_PAGES, S::LIST),
+            reason: Self::bound_reason(),
         }));
         false
+    }
+
+    /// Why a list stopped at the page bound, as its partial reason reads.
+    pub fn bound_reason() -> String {
+        format!("den reads at most {} pages per {}", S::MAX_PAGES, S::LIST)
     }
 
     pub fn pages_read(&self) -> u32 {
