@@ -95,6 +95,10 @@ pub struct MemberStatesRequest {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MemberStatesRead {
     pub states: Vec<MemberPullRequestState>,
+    /// The members den sent to GitHub (all of them, unless the read was
+    /// bounded or stopped): the ones of these without a state were asked
+    /// about and not answered.
+    pub asked: Vec<PullRequestRef>,
     pub coverage: Coverage,
 }
 

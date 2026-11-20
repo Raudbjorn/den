@@ -2,7 +2,7 @@
 
 use super::{
     coverage::Coverage,
-    facts::{Branch, Issue, MemberPullRequestState, PullRequest, Run},
+    facts::{Branch, Issue, MemberPullRequestState, MemberStateAttempt, PullRequest, Run},
     ids::{RepoId, WorkItemId, same_login},
     linear::{LinearPart, LinearViewer},
 };
@@ -108,6 +108,10 @@ pub struct Observation {
     /// again. Read by number, with their own coverage
     /// (`SourceKind::MemberStates`, per Owner).
     pub member_states: Vec<MemberPullRequestState>,
+    /// The members den asked about and got no state for, with when it last
+    /// asked (#37): they order the next bounded read, oldest first, after
+    /// the members never asked about.
+    pub member_attempts: Vec<MemberStateAttempt>,
     pub coverage: Coverage,
 }
 
@@ -132,6 +136,7 @@ impl Observation {
             runs: Vec::new(),
             linear: LinearPart::default(),
             member_states: Vec::new(),
+            member_attempts: Vec::new(),
             coverage: Coverage::default(),
         }
     }

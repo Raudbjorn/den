@@ -177,6 +177,8 @@ fn merged_api_1() -> MemberStatesRead {
             pr: PullRequestRef::new(RepoId::new("acme", "api"), 1),
             state: PullRequestState::Merged { merged_at: None },
         }],
+        // The fake fills in every member asked.
+        asked: Vec::new(),
         coverage,
     }
 }
@@ -927,4 +929,59 @@ fn print_the_linear_sheets() {
     for size in [(160, 45), (80, 24)] {
         println!("{}\n", drawn(&mut harness, size));
     }
+}
+
+/// Round 4 of #52: an unassigned issue outside the start teams is still shown
+/// when its Landing Group decides (here, an open member). It isn't offered to
+/// Start, so it never gets Start, and `c` on it neither plans a Job nor
+/// emits any Linear Effect.
+#[test]
+fn an_issue_shown_only_for_its_group_is_never_started() {
+    let mut harness = Harness::new(Ok(config(workflow(false))));
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("acme")
+        .repo("acme/api")
+        .pull_request(support::build::pr("acme/api", 2).author(ME))
+        .fully_read_owner("octo")
+        .build()));
+    let mut answer = linear_answer();
+    answer.part.issues = vec![
+        linear_issue("acme", "id-5", "OPS-5")
+            .up_for_grabs()
+            .attached("acme/api", 2)
+            .build(),
+    ];
+    harness.linear.push_answer(answer);
+    harness
+        .workspace
+        .add_clone(API_CLONE, &[("origin", "git@github.com:acme/api.git")]);
+    harness.start();
+    let row = harness
+        .view
+        .list
+        .rows
+        .iter()
+        .find(|r| r.reference == "OPS-5")
+        .unwrap_or_else(|| panic!("OPS-5 shown for its group: {:?}", harness.rows()))
+        .clone();
+    assert_ne!(row.next_step, Some(NextStep::Start), "{row:?}");
+
+    open(&mut harness, "OPS-5");
+    let refused = sheet(&harness);
+    assert_eq!(
+        refused.status,
+        LaunchStatus::Refused,
+        "{}",
+        messages(refused)
+    );
+    assert!(refused.linear_writes.is_empty());
+    assert!(
+        !harness
+            .effects
+            .iter()
+            .any(|e| is_linear(e) || matches!(e, Effect::InspectLaunch { .. }))
+    );
+    let effects = enter(&mut harness);
+    assert!(acts(&effects).is_empty());
+    assert!(harness.linear_writer.calls().is_empty());
 }

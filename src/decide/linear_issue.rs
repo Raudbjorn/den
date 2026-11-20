@@ -3,7 +3,10 @@
 //! one has none in the Observation.
 //!
 //! First, an unassigned Linear Issue the Owner's Linear Workflow doesn't offer
-//! to Start is not den's to show, so it gets no Decision at all. The Linear
+//! to Start is not den's to show, so it gets no Decision at all, unless its
+//! Landing Group decides: it has open members (whose Merge "lands with" it,
+//! so only it can coordinate them) or its group gives Land or Mark for
+//! release. Start eligibility never withholds a group decision. The Linear
 //! source asks only for Start offers; this keeps the list right for facts
 //! kept from an earlier survey or read under another config (#33).
 //!
@@ -17,7 +20,8 @@
 //!    outside a Held Repo would Merge (its own Decision "lands with" this
 //!    issue; one open again has no Decision yet, so it blocks), none is
 //!    ambiguous, no member is unseen ("not surveyed"), none is in a merge
-//!    queue, and den read every attachment and every such member's facts
+//!    queue, no attachment is a link that may be a Pull Request den can't
+//!    read, and den read every attachment and every such member's facts
 //!    completely → **Land**, Waiting On the Linear assignee. Otherwise no
 //!    Next Step: its Pull Requests carry the work, and the Explanation names
 //!    each blocking member with its own Next Step or reason, and each held
@@ -94,8 +98,10 @@ pub fn decide_all(ctx: &Context<'_>, pull_requests: &[Decision]) -> Vec<Decision
 }
 
 fn decide(ctx: &Context<'_>, issue: &LinearIssue, pull_requests: &[Decision]) -> Option<Decision> {
-    let start = &ctx.policy(&issue.owner).start;
-    if issue.assignee.is_none() && !start.offers(issue) {
+    let offered = issue.assignee.is_some() || ctx.policy(&issue.owner).start.offers(issue);
+    let landing = ctx.correlation.for_issue(&issue.id);
+    let group = group_rules(ctx, issue, &landing, pull_requests);
+    if !offered && !decides_for_its_group(&group, &landing) {
         return None;
     }
     let item = WorkItem {
@@ -105,16 +111,21 @@ fn decide(ctx: &Context<'_>, issue: &LinearIssue, pull_requests: &[Decision]) ->
         url: issue.url.clone(),
         updated_at: issue.updated_at,
     };
-    let landing = ctx.correlation.for_issue(&issue.id);
     let mut other_conditions = vec![format!(
         "state {} ({}), team {}",
         issue.state.name,
         issue.state.kind.label(),
         issue.team.key
     )];
+    if !offered {
+        other_conditions.push(
+            "unassigned and not offered to Start by this Linear Workflow; shown because its Landing Group decides"
+                .to_owned(),
+        );
+    }
     other_conditions.extend(group_conditions(issue, &landing));
     let mut unknowns = unknowns(issue, &landing);
-    let mut decision = match group_rules(ctx, issue, &landing, pull_requests) {
+    let mut decision = match group {
         Group::Step {
             step,
             rule,
@@ -171,6 +182,14 @@ fn decide(ctx: &Context<'_>, issue: &LinearIssue, pull_requests: &[Decision]) ->
     }
     decision.landing = landing;
     Some(decision)
+}
+
+/// Whether an issue the workflow doesn't offer to Start is still shown: when
+/// its group gives Land or Mark for release, or it has open members, whose
+/// own Merge "lands with" it and so is decided only here. Start eligibility
+/// never withholds a group decision.
+fn decides_for_its_group(group: &Group, landing: &Landing) -> bool {
+    matches!(group, Group::Step { .. }) || landing.members.iter().any(|m| m.status.is_open())
 }
 
 /// What the Landing Group decides for its Linear Issue.
@@ -295,6 +314,13 @@ fn land(
             "den couldn't read all of the Linear Issue's attachments ({why}), so it can't tell every member"
         ));
     }
+    // A link that may be a Pull Request den can't read may be a member it
+    // can't judge: the group is possibly incomplete, so never ready.
+    blocking.extend(pull_request_like_links(issue).into_iter().map(|url| {
+        format!(
+            "attached {url} looks like a Pull Request den can't read, so it can't tell every member"
+        )
+    }));
     for member in &landing.members {
         let own = own_decision(pull_requests, &member.pr.id());
         let reasons = blocking_reasons(ctx, member, held(member), own, &issue.identifier);
