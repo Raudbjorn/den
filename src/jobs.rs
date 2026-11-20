@@ -6,8 +6,10 @@
 //!
 //! Format 2 (milestone 2) names a Job's [`JobSubject`] instead of a GitHub
 //! Work Item. A format-1 file (milestone 1) still loads: each of its records
-//! becomes a [`JobSubject::GitHub`] record. The next append writes the whole
-//! file as format 2, keeping every earlier record.
+//! becomes a [`JobSubject::GitHub`] record. Format 3 (#39) adds a record's
+//! optional `permission_mode`; a format-2 file loads as is, its records
+//! without one. The next append writes the whole file in the current format,
+//! keeping every earlier record.
 
 use crate::{
     domain::{NextStep, RepoId, WorkItemId},
@@ -30,9 +32,15 @@ pub const JOBS_FILE: &str = "jobs.json";
 ///
 /// 1: milestone 1, a record's subject is a GitHub Work Item (`work_item`).
 /// 2: a record's subject is a [`JobSubject`] (`subject`).
-pub const JOBS_FORMAT: u32 = 2;
+/// 3: a record may carry its `permission_mode` (#39). A den of format 2 would
+///    read the file, ignore the mode and drop it on its next append; at 3 it
+///    refuses the file instead.
+pub const JOBS_FORMAT: u32 = 3;
 /// Milestone 1's format, still read and converted on load.
 const JOBS_FORMAT_GITHUB_ONLY: u32 = 1;
+/// Format 2: the current record without `permission_mode`, which decodes as
+/// absent, so it is read as the current format is.
+const JOBS_FORMAT_NO_PERMISSION_MODE: u32 = 2;
 /// The largest Job records file den will read or write, in bytes.
 pub const MAX_JOBS_BYTES: u64 = 8 * 1024 * 1024;
 /// The lock file held while a record is appended, beside the records file.
@@ -252,9 +260,11 @@ impl JobStore for FileJobStore {
             .map_err(|e| self.read_error(e))?
             .format;
         match format {
-            JOBS_FORMAT => serde_json::from_slice::<Envelope>(&bytes)
-                .map(|e| e.jobs)
-                .map_err(|e| self.read_error(e)),
+            JOBS_FORMAT | JOBS_FORMAT_NO_PERMISSION_MODE => {
+                serde_json::from_slice::<Envelope>(&bytes)
+                    .map(|e| e.jobs)
+                    .map_err(|e| self.read_error(e))
+            }
             JOBS_FORMAT_GITHUB_ONLY => serde_json::from_slice::<GitHubOnlyEnvelope>(&bytes)
                 .map(|e| e.jobs.into_iter().map(JobRecord::from).collect())
                 .map_err(|e| self.read_error(e)),
