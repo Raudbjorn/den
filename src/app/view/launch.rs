@@ -76,8 +76,11 @@ pub fn build(sheet: &Sheet) -> LaunchSheet {
         }
         SheetState::LiveJob { check, .. } => {
             view.status = LaunchStatus::LiveJob;
-            view.headline =
-                "This Work Item has a Live Job: open existing or start fresh?".to_owned();
+            view.headline = match &sheet.launch_refused {
+                None => "This Work Item has a Live Job: open existing or start fresh?",
+                Some(_) => "This Work Item has a Live Job: open existing?",
+            }
+            .to_owned();
             view.fields = job_fields(check);
             view.messages.push(message(
                 &format!(
@@ -86,10 +89,16 @@ pub fn build(sheet: &Sheet) -> LaunchSheet {
                 ),
                 Tone::Plain,
             ));
-            view.messages.push(message(
-                "f start fresh: a new worktree with a distinct name; this one is left as it is",
-                Tone::Plain,
-            ));
+            view.messages.push(match &sheet.launch_refused {
+                None => message(
+                    "f start fresh: a new worktree with a distinct name; this one is left as it is",
+                    Tone::Plain,
+                ),
+                Some(refusal) => message(
+                    &format!("Starting fresh isn't possible: {refusal}"),
+                    Tone::Muted,
+                ),
+            });
         }
         SheetState::JobUnknown { check, .. } => {
             view.status = LaunchStatus::JobUnknown;

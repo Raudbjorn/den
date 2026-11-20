@@ -12,6 +12,9 @@
 //! a window resuming the Job's session (`Enter` opens it); start fresh inspects
 //! again for suffixed names and continues as a normal launch. A Job whose
 //! worktree state is unknown is explained; only an explicit `f` launches.
+//! A Live Job stays reopenable when a fresh launch is refused (for example,
+//! the PR has no Next Step while its checks run): the sheet then inspects the
+//! Job's own worktree and offers only `o`.
 
 use super::{
     App, Effect, Key, LogLevel, OverlayState,
@@ -19,10 +22,10 @@ use super::{
     event::LaunchId,
 };
 use crate::{
-    domain::{NextStep, WorkItemId},
+    domain::{NextStep, Observation, WorkItemId},
     handoff::{
-        self, JobCheck, LaunchOutcome, LaunchPlan, LaunchReport, LaunchSettings, PlanInput,
-        Refusal, RefusalReason, ReopenPlan, TargetChoice, WorkspaceView, WorktreeState,
+        self, InspectRequest, JobCheck, LaunchOutcome, LaunchPlan, LaunchReport, LaunchSettings,
+        PlanInput, Refusal, RefusalReason, ReopenPlan, TargetChoice, WorkspaceView, WorktreeState,
         check_prompt, live, short_commit,
     },
 };
@@ -44,6 +47,9 @@ pub(super) struct Sheet {
     /// Start fresh (#14): the suffix for the new worktree, branch and session,
     /// and the Job it starts beside.
     pub fresh: Option<(u32, Box<JobCheck>)>,
+    /// Why a fresh launch can't happen, when the sheet was opened only to
+    /// reopen the Work Item's Live Job (#14). `f` is not offered then.
+    pub launch_refused: Option<Refusal>,
 }
 
 #[derive(Debug, Clone)]
@@ -107,23 +113,37 @@ impl App {
             notice: None,
             accepted_head: None,
             fresh: None,
+            launch_refused: None,
         };
         let Some(observation) = self.shown.as_ref().map(|s| &s.observation) else {
             return Vec::new();
         };
         let settings =
             LaunchSettings::from_config(self.config.as_ref().ok(), self.default_clone_root.clone());
-        let effects = match handoff::inspect_request(
-            decision,
-            observation,
-            TargetChoice::default(),
-            &settings,
-        ) {
-            Ok(request) => vec![
-                Effect::log(
-                    LogLevel::Info,
-                    format!("launch sheet {} opened for {}", id.0, sheet.item),
-                ),
+        let launch =
+            handoff::inspect_request(decision, observation, TargetChoice::default(), &settings);
+        let request = match launch {
+            Ok(request) => Ok((
+                request,
+                format!("launch sheet {} opened for {}", id.0, sheet.item),
+            )),
+            // A fresh launch is refused, but a Live Job stays reopenable: the
+            // sheet inspects the Job's own worktree and offers only `o`.
+            Err(refusal) => match live_job_request(&self.job_checks, &sheet.item, observation) {
+                Some(request) => {
+                    let log = format!(
+                        "launch sheet {} opened for {} to reopen its Live Job; a fresh launch is refused: {refusal}",
+                        id.0, sheet.item
+                    );
+                    sheet.launch_refused = Some(refusal);
+                    Ok((request, log))
+                }
+                None => Err(refusal),
+            },
+        };
+        let effects = match request {
+            Ok((request, log)) => vec![
+                Effect::log(LogLevel::Info, log),
                 Effect::InspectLaunch {
                     id,
                     request: Box::new(request),
@@ -176,10 +196,14 @@ impl App {
             (
                 Key::Char('f'),
                 SheetState::LiveJob { check, view } | SheetState::JobUnknown { check, view },
-            ) => {
-                let (check, view) = (check.clone(), view.clone());
-                effects = self.start_fresh(&mut sheet, check, &view);
-            }
+            ) => match &sheet.launch_refused {
+                // Opened only to reopen: say why, and keep the question open.
+                Some(refusal) => sheet.notice = Some(format!("can't start fresh: {refusal}")),
+                None => {
+                    let (check, view) = (check.clone(), view.clone());
+                    effects = self.start_fresh(&mut sheet, check, &view);
+                }
+            },
             (Key::Enter, SheetState::ReopenReady { plan }) => {
                 let plan = plan.clone();
                 effects = vec![
@@ -359,9 +383,9 @@ impl App {
         let existing = live::most_telling(&view.job_checks, &sheet.item)
             .filter(|_| sheet.fresh.is_none())
             .cloned();
-        let effects = match existing {
+        let effects = match (existing, sheet.launch_refused.clone()) {
             // A Live Job: ask, never launch a second one silently.
-            Some(check) if check.is_live() => {
+            (Some(check), _) if check.is_live() => {
                 let log = asking_log(id, &sheet.item, "a Live Job", &check);
                 sheet.state = SheetState::LiveJob {
                     check: Box::new(check),
@@ -369,8 +393,15 @@ impl App {
                 };
                 vec![log]
             }
+            // Opened only to reopen, and the Job is no longer live: the fresh
+            // launch's refusal stands.
+            (_, Some(refusal)) => {
+                let log = refused_log(id, &sheet.item, &refusal);
+                sheet.state = SheetState::Refused(refusal);
+                vec![log]
+            }
             // Unknown: explain; never treated as gone, never relaunched silently.
-            Some(check) if matches!(check.state, WorktreeState::Unknown(_)) => {
+            (Some(check), None) if matches!(check.state, WorktreeState::Unknown(_)) => {
                 let log = asking_log(
                     id,
                     &sheet.item,
@@ -462,6 +493,17 @@ impl App {
             }
         }
     }
+}
+
+/// The inspection for reopening `item`'s Live Job alone, when den last saw
+/// one (`checks`); `None` when it has none to reopen.
+fn live_job_request(
+    checks: &[JobCheck],
+    item: &WorkItemId,
+    observation: &Observation,
+) -> Option<InspectRequest> {
+    let check = live::most_telling(checks, item).filter(|c| c.is_live())?;
+    InspectRequest::for_job(&check.job, observation)
 }
 
 /// `o` on a Live Job: plans the reopen, or refuses (never in the Main Clone).

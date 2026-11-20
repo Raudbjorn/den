@@ -68,6 +68,9 @@ fn launch_hints(sheet: &Sheet) -> Vec<KeyHint> {
             hint("e", "edit"),
             hint("esc", "cancel"),
         ],
+        SheetState::LiveJob { .. } if sheet.launch_refused.is_some() => {
+            vec![hint("o", "open existing"), hint("esc", "cancel")]
+        }
         SheetState::LiveJob { .. } => vec![
             hint("o", "open existing"),
             hint("f", "start fresh"),
