@@ -100,7 +100,7 @@ impl FileCache {
         }
     }
 
-    /// A shorter wait for another den's lock (tests).
+    /// Overrides the wait for another den's lock (tests).
     pub fn with_lock_wait(mut self, wait: Duration) -> Self {
         self.lock_wait = wait;
         self

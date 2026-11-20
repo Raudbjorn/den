@@ -21,6 +21,8 @@
 //! This file only wires things together: paths, log, config, ports, and the
 //! terminal loop that feeds the App events and performs its Effects.
 
+mod doctor;
+
 use crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use den::{
     app::view_model::{LaunchStatus, Overlay},
@@ -56,7 +58,7 @@ use std::{
 
 const EXIT_FAILURE: u8 = 1;
 const EXIT_USAGE: u8 = 2;
-const USAGE: &str = "usage: den [--dump COLSxROWS | --launch OWNER/REPO#N|OWNER/REPO:BRANCH|OWNER/REPO@WORKFLOW [--switch-target] [--prompt TEXT] [--yes]]";
+const USAGE: &str = "usage: den [--help | --version | --doctor | --dump COLSxROWS | --launch OWNER/REPO#N|OWNER/REPO:BRANCH|OWNER/REPO@WORKFLOW [--switch-target] [--prompt TEXT] [--yes]]";
 /// The terminal size `--launch` lays the sheet out for, in cells.
 const LAUNCH_DUMP_SIZE: (u16, u16) = (160, 45);
 /// The largest `--dump` width or height, in cells. The dump buffer holds
@@ -84,9 +86,11 @@ enum DenError {
     Logging(#[from] LoggingError),
     #[error(transparent)]
     Graphics(#[from] BearError),
+    #[error("local prerequisite checks failed; see the report above")]
+    Doctor,
     #[error("launch: {0}")]
     Launch(String),
-    #[error("writing the dump: {0}")]
+    #[error("writing output: {0}")]
     Output(io::Error),
     #[error("stopped by signal {0}")]
     Signalled(i32),
@@ -373,6 +377,38 @@ fn draw(
 }
 
 fn run(args: &[String]) -> Result<(), DenError> {
+    match args {
+        [flag] if flag == "--help" => {
+            return writeln!(
+                io::stdout().lock(),
+                "{USAGE}\n\n\
+                With no arguments, open the interactive workspace.\n\
+                --help       Show this help without loading configuration.\n\
+                --version    Print the package version.\n\
+                --doctor     Check local survey and launch prerequisites (no network or writes).\n\
+                --dump       Survey GitHub and print a frame of COLSxROWS cells.\n\
+                --launch     Survey and preview a Job; --yes confirms the launch.\n\n\
+                See README.md for setup, keyboard controls and diagnostic limits."
+            )
+            .map_err(DenError::Output);
+        }
+        [flag] if flag == "--version" => {
+            return writeln!(io::stdout().lock(), "den {}", env!("CARGO_PKG_VERSION"))
+                .map_err(DenError::Output);
+        }
+        [flag] if flag == "--doctor" => {
+            let paths = Paths::from_env(|name| std::env::var_os(name))?;
+            let environment = LaunchEnvironment::from_env(|name| std::env::var_os(name));
+            return if doctor::run(&paths, &environment, &mut io::stdout().lock())
+                .map_err(DenError::Output)?
+            {
+                Ok(())
+            } else {
+                Err(DenError::Doctor)
+            };
+        }
+        _ => {}
+    }
     let mode = parse_args(args)?;
     let paths = Paths::from_env(|name| std::env::var_os(name))?;
     logging::init(&paths.log_file())?;
