@@ -16,6 +16,7 @@ use den::{
     ui::{Theme, frame},
 };
 use ratatui::{buffer::Buffer, layout::Rect};
+use unicode_width::UnicodeWidthStr;
 use raudbjorn_tui::profile::{ColorProfile, GlyphProfile, TerminalProfile};
 use support::{
     build::{ME, ObservationBuilder, pr},
@@ -939,6 +940,91 @@ fn a_long_workflow_path_and_title_are_cut_with_an_ellipsis_clear_of_the_next_col
                         problems.push(format!("{context}: no blank before Waiting On: {bottom:?}"));
                     }
                     if !(bottom.contains(&title) || bottom.contains(mark)) {
+                        problems.push(format!(
+                            "{context}: the title neither whole nor cut with {mark:?}: {bottom:?}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert_no_problems(&problems);
+}
+
+/// An emoji presentation sequence: U+2B06 U+FE0F, one cell by its scalars'
+/// widths but two as drawn, the way Dependabot and gitmoji PR titles start.
+const WIDE_EMOJI: &str = "\u{2b06}\u{fe0f}";
+
+/// `WIDE_EMOJI` as drawn in each glyph profile: the ASCII engine draws a
+/// non-ASCII grapheme as `?` and keeps its two cells, the second blank.
+fn drawn_emoji(glyphs: GlyphProfile) -> &'static str {
+    match glyphs {
+        GlyphProfile::Unicode => WIDE_EMOJI,
+        GlyphProfile::Ascii => "? ",
+    }
+}
+
+/// The text inside `area`, one line per row and trimmed, as a reader sees it:
+/// the cell a wide symbol hides is skipped rather than read as a blank.
+fn drawn_lines(buffer: &Buffer, area: Rect) -> Vec<String> {
+    (area.top()..area.bottom())
+        .map(|y| {
+            let mut line = String::new();
+            let mut x = area.left();
+            while x < area.right() {
+                let symbol = buffer.cell((x, y)).map_or(" ", |cell| cell.symbol());
+                line.push_str(symbol);
+                let cells = u16::try_from(symbol.width()).unwrap_or(1).max(1);
+                x = x.saturating_add(cells);
+            }
+            line.trim().to_owned()
+        })
+        .collect()
+}
+
+/// A title of wide emoji is measured as drawn: whole when it fits, otherwise
+/// cut with the profile's ellipsis inside its column, never wider than it and
+/// never cut without a sign. Swept over every count of emoji up to the plate's
+/// width, after an even and an odd number of narrow cells, so both the exact
+/// fit and an emoji straddling the edge are hit.
+#[test]
+fn a_title_of_wide_emoji_is_cut_by_drawn_width_with_an_ellipsis() {
+    let mut problems = Vec::new();
+    for size in [MINIMUM_SIZE, DESIGN_SIZE] {
+        let harness = surveyed_harness(size);
+        let (cols, rows) = size;
+        for glyphs in [GlyphProfile::Unicode, GlyphProfile::Ascii] {
+            let theme =
+                Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
+            let mark = ellipsis(glyphs);
+            let width = frame::regions(Rect::new(0, 0, cols, rows), &harness.view.layout)
+                .list
+                .width;
+            for (lead, count) in ["", "x"]
+                .into_iter()
+                .flat_map(|lead| (1..=usize::from(width)).map(move |count| (lead, count)))
+            {
+                let mut view = harness.view.clone();
+                let title = format!("{lead}{}", WIDE_EMOJI.repeat(count));
+                for row in &mut view.list.rows {
+                    row.title.clone_from(&title);
+                }
+                let buffer = frame::render(&theme, &view, cols, rows).expect("renders");
+                let lines = drawn_lines(&buffer, frame::regions(buffer.area, &view.layout).list);
+                let text = lines.join("\n");
+                let context = format!("{glyphs:?} {cols}x{rows}, {lead:?} and {count} emoji");
+                let whole = format!("{lead}{}", drawn_emoji(glyphs).repeat(count));
+                let whole = whole.trim_end();
+                for row in &view.list.rows {
+                    let first = lines
+                        .iter()
+                        .position(|l| l.contains(&row.repo))
+                        .unwrap_or_else(|| panic!("{context}: no row for {}\n{text}", row.repo));
+                    let bottom = &lines[first + 1];
+                    if !bottom.ends_with(&format!(" {}", row.waiting_label)) {
+                        problems.push(format!("{context}: no blank before Waiting On: {bottom:?}"));
+                    }
+                    if !(bottom.contains(whole) || bottom.contains(mark)) {
                         problems.push(format!(
                             "{context}: the title neither whole nor cut with {mark:?}: {bottom:?}"
                         ));
