@@ -287,6 +287,13 @@ impl PrBuilder {
         self
     }
 
+    /// GitHub listed more latest reviews of any kind (`latestReviews`) than
+    /// den read; the standing verdicts were read in full.
+    pub fn latest_reviews_truncated(mut self) -> Self {
+        self.details().latest_reviews_with_comments.complete = false;
+        self
+    }
+
     fn details(&mut self) -> &mut PrDetails {
         let head = self.pr.head_commit.clone();
         self.pr.details.get_or_insert_with(|| PrDetails {

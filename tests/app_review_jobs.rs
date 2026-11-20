@@ -71,8 +71,16 @@ fn config() -> Config {
 /// no Landing Group), and on octo/web #7; the user's Claude directory is
 /// [`CLAUDE`] unless `claude_dir` says otherwise.
 fn started_with(claude_dir: Option<&str>, prepare: impl FnOnce(&Harness)) -> Harness {
+    started_with_app(
+        App::new(Ok(config())).with_claude_dir(claude_dir.map(PathBuf::from)),
+        prepare,
+    )
+}
+
+/// [`started_with`], with `app` (its prompts, its Claude directory).
+fn started_with_app(app: App, prepare: impl FnOnce(&Harness)) -> Harness {
     let mut harness = Harness::new(Ok(config()));
-    harness.app = App::new(Ok(config())).with_claude_dir(claude_dir.map(PathBuf::from));
+    harness.app = app;
     harness
         .workspace
         .add_clone(API, &[("origin", "git@github.com:acme/api.git")]);
@@ -615,6 +623,44 @@ fn print_the_review_sheet() {
 
 // ---- the prompts file ----
 
+/// An unusable `review_linear` refuses a Review in a Linear Workflow, naming
+/// the file's problem, and touches nothing; a Review outside a workflow,
+/// whose template is `review`, still launches (#41 with #50's unusable kinds).
+#[test]
+fn an_unusable_review_linear_refuses_only_reviews_in_a_linear_workflow() {
+    let path = std::path::Path::new("prompts.toml");
+    let prompts = prompts::parse(
+        path,
+        "review_linear = \"/my-review {url}{linear_context}\"\n",
+    );
+    let app = App::new(Ok(config()))
+        .with_launch_settings(prompts, None)
+        .with_claude_dir(Some(PathBuf::from(CLAUDE)));
+    let mut harness = started_with_app(app, |_| {});
+    let index = harness
+        .view
+        .list
+        .rows
+        .iter()
+        .position(|r| r.repo == "acme/api" && r.reference == "#6")
+        .unwrap();
+    for _ in 0..index.abs_diff(harness.view.list.selected.unwrap_or(0)) {
+        harness.key(Key::Down);
+    }
+    press(&mut harness, Key::Char('c'));
+    let refused = sheet(&harness).clone();
+    assert_eq!(refused.status, LaunchStatus::Refused);
+    assert!(
+        messages(&refused).contains("`review_linear` must use {verdict_only}"),
+        "{}",
+        messages(&refused)
+    );
+    press(&mut harness, Key::Esc);
+    open_sheet(&mut harness, "octo/web", "#7");
+    press(&mut harness, Key::Enter);
+    assert_eq!(launch_plans(&harness).len(), 1);
+}
+
 #[test]
 fn review_linear_is_editable_and_must_keep_its_linear_context_and_verdict() {
     let path = std::path::Path::new("prompts.toml");
@@ -640,17 +686,24 @@ fn review_linear_is_editable_and_must_keep_its_linear_context_and_verdict() {
         "review stays milestone 1's"
     );
 
+    // As for request_review since #50's review: a template without a required
+    // placeholder makes only its own kind unusable, never the whole file, so a
+    // Review in a Linear Workflow is refused and every other kind still launches.
     let without = prompts::parse(
         path,
         "review_linear = \"/my-review {url}{linear_context}\"\n",
     )
-    .expect_err("review_linear must keep the verdict-only instruction");
+    .expect("one kind's missing placeholder leaves the other kinds usable");
+    let unusable = without
+        .unusable(PromptKind::ReviewLinear)
+        .expect("review_linear must keep the verdict-only instruction")
+        .to_string();
     assert!(
-        without
-            .to_string()
-            .contains("`review_linear` must use {verdict_only}"),
-        "{without}"
+        unusable.contains("prompts.toml, line 1")
+            && unusable.contains("`review_linear` must use {verdict_only}"),
+        "{unusable}"
     );
+    assert_eq!(without.unusable(NextStep::Review), None);
     let misplaced = prompts::parse(path, "review = \"/code-review {url}{verdict_only}\"\n")
         .expect_err("another kind may not use {verdict_only}");
     assert!(

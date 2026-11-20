@@ -345,6 +345,11 @@ pub struct ReviewRequest {
     pub reviewers: Vec<Reviewer>,
     /// The Owner's Slack channel, opaque; `None`: no announcement step.
     pub slack_channel: Option<String>,
+    /// The prompt carries `{announcement}`: the announcement step with a
+    /// channel, the outcome report without. A custom `request_review`
+    /// template may leave it out; then the prompt neither announces nor asks
+    /// for the outcome, whatever `slack_channel` says.
+    pub announces: bool,
 }
 
 /// A worktree name (and, for a new branch, the branch name) that got a

@@ -18,7 +18,9 @@ use den::{
     config::Config,
     domain::{
         Coverage, LinearPart, LinearSourceKind, RepoId, Source, SourceKind, SourceState,
-        facts::{MemberPullRequestState, PullRequestRef, PullRequestState, ReviewVerdict},
+        facts::{
+            LinearIssue, MemberPullRequestState, PullRequestRef, PullRequestState, ReviewVerdict,
+        },
     },
     ports::{LinearSurvey, MemberStatesRead, MemberStatesRequest},
 };
@@ -53,6 +55,21 @@ fn harness() -> Harness {
 
 /// One survey round's answers: GitHub's, then Linear's.
 fn queue_round(harness: &Harness) {
+    queue_round_with(
+        harness,
+        vec![
+            linear_issue("acme", "id-1", "TEAM-1")
+                .attached("acme/api", 1)
+                .build(),
+            linear_issue("acme", "id-2", "TEAM-2")
+                .attached("acme/app", 2)
+                .build(),
+        ],
+    );
+}
+
+/// One survey round's answers, with these Linear Issues.
+fn queue_round_with(harness: &Harness, issues: Vec<LinearIssue>) {
     harness.answer(Ok(ObservationBuilder::new()
         .fully_read_owner("acme")
         .repo("acme/api")
@@ -78,14 +95,7 @@ fn queue_round(harness: &Harness) {
     harness.linear.push_answer(LinearSurvey {
         part: LinearPart {
             viewers: vec![linear_viewer("acme", "acme")],
-            issues: vec![
-                linear_issue("acme", "id-1", "TEAM-1")
-                    .attached("acme/api", 1)
-                    .build(),
-                linear_issue("acme", "id-2", "TEAM-2")
-                    .attached("acme/app", 2)
-                    .build(),
-            ],
+            issues,
             ..LinearPart::default()
         },
         coverage,
@@ -172,7 +182,8 @@ fn a_member_read_merged_after_the_surveys_gives_mark_for_release() {
         detail
             .also
             .iter()
-            .any(|l| l == "evidence: merged acme/api #1"),
+            // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+            .any(|l| l == "evidence: merged acme/api#1"),
         "{:?}",
         detail.also
     );
@@ -181,7 +192,8 @@ fn a_member_read_merged_after_the_surveys_gives_mark_for_release() {
         landing
             .lines
             .iter()
-            .any(|l| l.text.contains("acme/api #1") && l.text.contains("merged")),
+            // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+            .any(|l| l.text.contains("acme/api#1") && l.text.contains("merged")),
         "{:?}",
         landing.lines
     );
@@ -218,7 +230,8 @@ fn a_ready_member_reads_lands_with_and_its_issue_land() {
         landing
             .lines
             .iter()
-            .any(|l| l.text.contains("acme/app #2") && l.text.contains("lands with TEAM-2")),
+            // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+            .any(|l| l.text.contains("acme/app#2") && l.text.contains("lands with TEAM-2")),
         "{:?}",
         landing.lines
     );
@@ -238,7 +251,8 @@ fn a_failed_member_read_withholds_mark_for_release_and_says_so() {
         detail
             .unknowns
             .iter()
-            .any(|u| u.contains("whether acme/api #1 merged or was closed without merging")),
+            // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+            .any(|u| u.contains("whether acme/api#1 merged or was closed without merging")),
         "{:?}",
         detail.unknowns
     );
@@ -272,7 +286,7 @@ fn owners_without_a_linear_workflow_never_read_member_states() {
 }
 
 /// Integration (#37 + #39): Land is a coordination step (#39's
-/// `coordination_mode` gives it the approval-required mode), but a Land
+/// `job_permission_mode` gives it the approval-required mode), but a Land
 /// Decision is a Linear Issue's, and `c` on a Linear Issue still refuses
 /// before reading the workspace (until #40's Land Job), naming the Linear
 /// Issue.
@@ -299,5 +313,115 @@ fn c_on_a_land_linear_issue_refuses_without_touching_the_workspace() {
             .any(|m| m.text.contains("Linear Issue")),
         "{:?}",
         sheet.messages
+    );
+}
+
+fn member_states_coverage(harness: &Harness) -> Vec<SourceState> {
+    let stored = harness.cache.stored();
+    let last = stored.last().expect("cached");
+    last.observation
+        .coverage
+        .entries()
+        .iter()
+        .filter(|e| e.source.is_member_states())
+        .map(|e| e.state.clone())
+        .collect()
+}
+
+/// A failed read leaves the Owner's member-state coverage failed. Once no
+/// member needs reading (here api #1 is no longer attached), no read will
+/// replace it, so den drops it: an old failure never leaves the picture
+/// incomplete for good. And the state of a Pull Request that is no longer a
+/// member is dropped too, so the kept states never outgrow the groups.
+#[test]
+fn member_state_facts_and_coverage_follow_the_groups_den_shows() {
+    let mut harness = harness();
+    // Round 1: the read fails (no queued answer).
+    harness.start();
+    assert!(
+        member_states_coverage(&harness)
+            .iter()
+            .any(|s| !s.is_complete()),
+        "the failure is recorded"
+    );
+
+    // Round 2: api #1 is read merged.
+    queue_round(&harness);
+    harness
+        .github
+        .push_member_states(member_states_answer(PullRequestState::Merged {
+            merged_at: None,
+        }));
+    harness.settle(Event::Key(Key::Char('r')));
+    let stored = harness.cache.stored();
+    assert_eq!(stored.last().unwrap().observation.member_states.len(), 1);
+
+    // Round 3: api #1 is detached from TEAM-1 in Linear.
+    queue_round_with(
+        &harness,
+        vec![
+            linear_issue("acme", "id-1", "TEAM-1").build(),
+            linear_issue("acme", "id-2", "TEAM-2")
+                .attached("acme/app", 2)
+                .build(),
+        ],
+    );
+    harness.settle(Event::Key(Key::Char('r')));
+    assert_eq!(harness.github.member_requests().len(), 2, "nothing to read");
+    let stored = harness.cache.stored();
+    let last = stored.last().unwrap();
+    assert!(
+        last.observation.member_states.is_empty(),
+        "{:?}",
+        last.observation.member_states
+    );
+    assert!(member_states_coverage(&harness).is_empty());
+}
+
+/// An Owner's failed read is dropped once none of its members needs
+/// reading, even when the members never got a state.
+#[test]
+fn a_failed_read_is_dropped_once_no_member_needs_reading() {
+    let mut harness = harness();
+    harness.start();
+    assert_eq!(member_states_coverage(&harness).len(), 1);
+
+    queue_round_with(
+        &harness,
+        vec![
+            linear_issue("acme", "id-2", "TEAM-2")
+                .attached("acme/app", 2)
+                .build(),
+        ],
+    );
+    harness.settle(Event::Key(Key::Char('r')));
+    assert_eq!(harness.github.member_requests().len(), 1);
+    assert!(member_states_coverage(&harness).is_empty());
+}
+
+/// Members den re-reads every round (read closed) come after members it
+/// has never read, so the bounded read can't keep starving a new one.
+#[test]
+fn never_read_members_are_asked_for_before_closed_ones() {
+    let mut harness = harness();
+    harness
+        .github
+        .push_member_states(member_states_answer(PullRequestState::Closed));
+    harness.start();
+
+    queue_round_with(
+        &harness,
+        vec![
+            linear_issue("acme", "id-1", "TEAM-1")
+                .attached("acme/api", 1)
+                .attached("acme/api", 5)
+                .build(),
+        ],
+    );
+    harness.settle(Event::Key(Key::Char('r')));
+    let requests = harness.github.member_requests();
+    assert_eq!(
+        requests.last().unwrap().pull_requests,
+        [PullRequestRef::new(RepoId::new("acme", "api"), 5), api_1()]
     );
 }

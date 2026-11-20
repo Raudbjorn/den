@@ -39,6 +39,31 @@ pub struct LinearPart {
     pub observed_at: Option<Timestamp>,
 }
 
+impl LinearPart {
+    /// Each Owner this part holds Linear data for, with the workspace a fact
+    /// of it was read in: its Linear viewers', its Linear Issues' and its
+    /// teams' states (#33). Linear data is kept only for the workspace it was
+    /// read in, so both the cache load
+    /// (`CachedObservation::restricted_to_linear`) and a Linear refresh
+    /// (`cache::merge_linear`) judge "read elsewhere" from this one list; a
+    /// new Linear fact list joins it here.
+    pub fn workspaces(&self) -> impl Iterator<Item = (&str, &str)> {
+        let viewers = self
+            .viewers
+            .iter()
+            .map(|v| (v.owner.as_str(), v.workspace.as_str()));
+        let issues = self
+            .issues
+            .iter()
+            .map(|i| (i.owner.as_str(), i.id.workspace.as_str()));
+        let team_states = self
+            .team_states
+            .iter()
+            .map(|t| (t.owner.as_str(), t.workspace.as_str()));
+        viewers.chain(issues).chain(team_states)
+    }
+}
+
 /// One Linear team and its workflow states, as one Linear Workflow read them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LinearTeamStates {

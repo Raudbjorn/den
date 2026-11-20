@@ -1,6 +1,10 @@
 //! The prompts file (`$XDG_CONFIG_HOME/den/prompts.toml`): one template per Next
 //! Step kind. A missing file, or a kind it doesn't mention, uses the default; a
-//! malformed file is an error with the file and line, never ignored.
+//! malformed file is an error with the file and line, never ignored. A template
+//! that is well formed but lacks a placeholder its kind requires (a
+//! `request_review` without `{reviewers}`, valid before #39) makes only its own
+//! kind unusable ([`Prompts::unusable`]): den refuses that kind with the file
+//! and line, and every other kind launches as before.
 //!
 //! ```toml
 //! address_review = "/gh-resolve {url}"
@@ -245,6 +249,9 @@ pub fn default_template_of(kind: PromptKind) -> &'static str {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prompts {
     templates: BTreeMap<PromptKind, String>,
+    /// Kinds whose template in the file den can't use, and why; den refuses
+    /// to launch them rather than run another prompt than the file's.
+    unusable: BTreeMap<PromptKind, PromptsError>,
 }
 
 impl Default for Prompts {
@@ -253,16 +260,35 @@ impl Default for Prompts {
             templates: PromptKind::all()
                 .map(|kind| (kind, default_template_of(kind).to_owned()))
                 .collect(),
+            unusable: BTreeMap::new(),
         }
     }
 }
 
 impl Prompts {
+    /// Why the file's template for `kind` can't be used, if it can't.
+    pub fn unusable(&self, kind: impl Into<PromptKind>) -> Option<&PromptsError> {
+        self.unusable.get(&kind.into())
+    }
+
+    /// Every unusable template's problem, in kind order.
+    pub fn problems(&self) -> impl Iterator<Item = &PromptsError> {
+        self.unusable.values()
+    }
+
     pub fn template(&self, kind: impl Into<PromptKind>) -> &str {
         let kind = kind.into();
         self.templates
             .get(&kind)
             .map_or_else(|| default_template_of(kind), String::as_str)
+    }
+
+    /// `kind`'s template uses `{placeholder}`.
+    pub fn uses(&self, kind: impl Into<PromptKind>, placeholder: &str) -> bool {
+        let kind = kind.into();
+        // Templates are validated when loaded (defaults included), so this
+        // check only lists what they use.
+        check(self.template(kind), kind).is_ok_and(|used| used.iter().any(|u| u == placeholder))
     }
 
     /// The prompt of `kind` with `fields` filled in.
@@ -332,17 +358,22 @@ pub fn parse(path: &Path, text: &str) -> Result<Prompts, PromptsError> {
                 format!("`{key}` is longer than {MAX_TEMPLATE_CHARS} characters"),
             ));
         }
-        if let Err(problem) = check(&template, kind) {
-            return Err(malformed(Some(span), format!("`{key}`: {problem}")));
+        let used = check(&template, kind)
+            .map_err(|problem| malformed(Some(span.clone()), format!("`{key}`: {problem}")))?;
+        if let Some(missing) = missing_required(kind, &used) {
+            prompts
+                .unusable
+                .insert(kind, malformed(Some(span), missing));
+            continue;
         }
         prompts.templates.insert(kind, template);
     }
     Ok(prompts)
 }
 
-/// Checks every `{…}` in `kind`'s `template` is a placeholder it has, and
-/// that it uses every placeholder `kind` needs.
-fn check(template: &str, kind: PromptKind) -> Result<(), String> {
+/// Checks every `{…}` in `kind`'s `template` is a placeholder it has; returns
+/// the placeholders it uses.
+fn check(template: &str, kind: PromptKind) -> Result<Vec<String>, String> {
     let usable: Vec<&str> = PLACEHOLDERS
         .iter()
         .chain(kind.own_placeholders())
@@ -376,14 +407,17 @@ fn check(template: &str, kind: PromptKind) -> Result<(), String> {
             _ => {}
         }
     }
-    match kind
+    Ok(used)
+}
+
+/// Why a template of `kind` that uses `used` lacks a placeholder `kind`
+/// needs ([`PromptKind::required_placeholders`]), if it does.
+fn missing_required(kind: PromptKind, used: &[String]) -> Option<String> {
+    let (missing, why) = kind
         .required_placeholders()
         .iter()
-        .find(|(needed, _)| !used.iter().any(|u| u == needed))
-    {
-        Some((missing, why)) => Err(format!("`{}` must use {{{missing}}}, {why}", kind.key())),
-        None => Ok(()),
-    }
+        .find(|(needed, _)| !used.iter().any(|u| u == needed))?;
+    Some(format!("`{}` must use {{{missing}}}, {why}", kind.key()))
 }
 
 /// `{a}, {b}, …`.

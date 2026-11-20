@@ -194,9 +194,21 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     let item = &input.decision.item.id;
     let view = input.view;
     let mut reasons = Vec::new();
+    // The template this Job's prompt comes from (#41: Review (Linear) for a
+    // Review in a Linear Workflow).
+    let kind = PromptKind::for_job(facts.step, input.policy);
 
     let prompts = match input.prompts {
-        Ok(prompts) => Some(prompts),
+        // The file is usable, but not its template for this kind.
+        Ok(prompts) => match prompts.unusable(kind) {
+            Some(error) => {
+                reasons.push(RefusalReason::TemplateUnusable {
+                    error: error.to_string(),
+                });
+                None
+            }
+            None => Some(prompts),
+        },
         Err(error) => {
             reasons.push(RefusalReason::PromptsUnusable {
                 error: error.to_string(),
@@ -338,8 +350,8 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             <[Reviewer]>::to_vec,
         ),
         slack_channel: input.slack_channel.map(str::to_owned),
+        announces: prompts.uses(NextStep::RequestReview, "announcement"),
     });
-    let kind = PromptKind::for_job(facts.step, input.policy);
     let prompt = prompts.render(
         kind,
         &PromptFields {

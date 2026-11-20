@@ -63,6 +63,8 @@ pub fn read(gql: &dyn GraphQl, request: &MemberStatesRequest) -> MemberStatesRea
     let bound = request.pull_requests.len().min(MAX_MEMBER_STATES);
     let (asked, beyond) = request.pull_requests.split_at(bound);
     let mut batches = asked.chunks(MEMBERS_PER_QUERY);
+    // Set when gh failed: why every batch not yet sent goes unread.
+    let mut stopped: Option<SourceState> = None;
     for batch in batches.by_ref() {
         match session.run::<Map<String, Value>>(&batch_query(batch.len()), variables(batch)) {
             Err(failure) => {
@@ -73,6 +75,7 @@ pub fn read(gql: &dyn GraphQl, request: &MemberStatesRequest) -> MemberStatesRea
                 for pr in batch {
                     owners.note(&pr.repo.owner, failed.clone());
                 }
+                stopped = Some(failed);
                 break;
             }
             Ok(Fetched::Lost(state)) => {
@@ -103,9 +106,14 @@ pub fn read(gql: &dyn GraphQl, request: &MemberStatesRequest) -> MemberStatesRea
             }
         }
     }
-    // Batches never sent (after gh failed) and members beyond the bound.
-    let unsent: Vec<&PullRequestRef> = batches.flatten().chain(beyond).collect();
-    for pr in &unsent {
+    // Batches never sent fail as gh did; members beyond the bound weren't
+    // asked about at all.
+    if let Some(failed) = &stopped {
+        for pr in batches.flatten() {
+            owners.note(&pr.repo.owner, failed.clone());
+        }
+    }
+    for pr in beyond {
         owners.note(
             &pr.repo.owner,
             SourceState::Partial(Incompleteness::FollowUpTruncated {

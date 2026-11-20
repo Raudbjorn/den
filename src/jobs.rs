@@ -34,17 +34,20 @@ pub const JOBS_FILE: &str = "jobs.json";
 /// The Job records file format. Keep reading the older formats. Bump it when a
 /// den of this format could not read, or would drop part of, a file the new
 /// den writes:
-/// - a new [`JobSubject`] variant (serde would fail on the unknown variant,
-///   and the older den could not say the file is from a newer den);
+/// - a new [`JobSubject`] or [`PermissionMode`] variant (serde would fail on
+///   the unknown variant, and the older den could not say the file is from a
+///   newer den);
 /// - a new [`JobRecord`] field an older den must not lose when it rewrites
 ///   the file on its next append (serde drops unknown fields);
 /// - any change to the stored shape of an existing variant or field.
 ///
 /// 1: milestone 1, a record's subject is a GitHub Work Item (`work_item`).
 /// 2: a record's subject is a [`JobSubject`] (`subject`).
-/// 3: a record may carry its `permission_mode` (#39). A den of format 2 would
-///    read the file, ignore the mode and drop it on its next append; at 3 it
-///    refuses the file instead.
+/// 3: a record may carry its `permission_mode` (#39), stored as
+///    `"approval_required"`. A den of format 2 would read the file, ignore the
+///    mode and drop it on its next append; at 3 it refuses the file instead.
+///    Every append writes format 3, a coding Job's too, so once this den has
+///    appended, a format-2 den refuses the file as a newer den's.
 ///
 /// #41 records a Review Job's mode in the same field, with the same value, so
 /// it needs no new format: every den that reads format 3 keeps the field.
@@ -135,13 +138,13 @@ impl JobRecord {
     /// Workflow `policy` ([`job_permission_mode`]; the empty policy for an
     /// Owner without one).
     ///
-    /// A den from before #39 also reads format 2, ignores `permission_mode`
-    /// and drops it when it rewrites the file, so the record alone could
-    /// reopen a coordination Job with no mode at all: this fails safe instead.
-    /// A Review Job launched before #41 has no recorded mode either; in a
-    /// Linear Workflow it reopens approval-required, as it would launch now.
-    /// Since format 3, every den that reads the file keeps the field, so a
-    /// recorded mode is never lost to an older den's rewrite.
+    /// A record can lack the mode its Job ran in: a coordination Job recorded
+    /// in format 2 by a build of #39 from before format 3, whose file a den
+    /// from before #39 then rewrote (it ignores `permission_mode` and drops
+    /// it). Format 3 stops that for new files; this fails safe for old ones,
+    /// rather than reopen a coordination Job with no mode at all. A Review Job
+    /// launched before #41 has no recorded mode either; in a Linear Workflow
+    /// it reopens approval-required, as it would launch now.
     pub fn reopen_mode(&self, policy: &LinearWorkflowPolicy) -> Option<PermissionMode> {
         self.permission_mode
             .or_else(|| job_permission_mode(self.next_step, policy))
