@@ -13,7 +13,6 @@ use super::{
 use crate::{
     domain::{Observation, RepoId, WorkItemId},
     jobs::JobRecord,
-    ordering::same_work_item,
     ports::{JobStore, Launcher, Workspace},
 };
 use std::{path::PathBuf, time::Duration};
@@ -72,7 +71,7 @@ impl InspectRequest {
             .find(|repo| repo.id.same(&job.target))?;
         let worktree_name = job.worktree.file_name()?.to_string_lossy().into_owned();
         Some(Self {
-            item: job.work_item.clone(),
+            item: job.subject.github_item()?.clone(),
             target: job.target.clone(),
             target_url: target.url.clone(),
             configured_clone: Some(job.main_clone.clone()),
@@ -202,7 +201,7 @@ pub fn inspect(
         Ok(records) => {
             let mine: Vec<JobRecord> = records
                 .iter()
-                .filter(|job| same_work_item(&job.work_item, &request.item))
+                .filter(|job| job.subject.covers(&request.item))
                 .cloned()
                 .collect();
             live::check_jobs(&mine, workspace, Duration::from_secs(JOB_CHECK_BUDGET_SECS)).checks

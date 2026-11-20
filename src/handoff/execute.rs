@@ -10,7 +10,7 @@ use super::{
 };
 use crate::{
     domain::WorkItemKind,
-    jobs::JobRecord,
+    jobs::{JobRecord, JobSubject},
     ports::{JobStore, Launcher, Workspace, WorktreeAdd, WorktreeStart},
 };
 use jiff::Timestamp;
@@ -203,7 +203,7 @@ fn run(
 
     // 6. Record the Job.
     let job = JobRecord {
-        work_item: plan.work_item.clone(),
+        subject: JobSubject::GitHub(plan.work_item.clone()),
         next_step: plan.next_step,
         target: plan.target.repo.clone(),
         main_clone: clone_path.clone(),

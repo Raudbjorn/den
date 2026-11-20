@@ -16,7 +16,7 @@ use den::{
     config::Config,
     domain::{NextStep, RepoId, WorkItemId},
     handoff::{BranchStart, LaunchPlan, SessionStart, WindowCommand},
-    jobs::JobRecord,
+    jobs::{JobRecord, JobSubject},
     palette::OXIDE_TRUECOLOR,
     ui::{Theme, frame},
 };
@@ -48,7 +48,7 @@ fn item(n: u64) -> WorkItemId {
 
 fn job(n: u64) -> JobRecord {
     JobRecord {
-        work_item: item(n),
+        subject: JobSubject::GitHub(item(n)),
         next_step: NextStep::AddressReview,
         target: RepoId::new("octo", "app"),
         main_clone: CLONE.into(),
@@ -103,6 +103,12 @@ fn harness_observing(observed: ObservationBuilder, arrange: impl FnOnce(&Harness
 /// its branch (which the Job made and committed to).
 fn live_job(harness: &Harness, n: u64) {
     harness.jobs.holding(job(n));
+    worktree_in_use(harness, n);
+}
+
+/// PR `n`'s Job worktree: its folder there, registered with git on its branch
+/// (which the Job made and committed to).
+fn worktree_in_use(harness: &Harness, n: u64) {
     harness.workspace.add_existing(&worktree(n));
     harness
         .workspace
@@ -904,10 +910,10 @@ fn rejected_inspections_launches_and_reopens_leave_the_pending_state() {
 fn repo_casing_does_not_create_a_collision_but_branch_casing_still_does() {
     use den::handoff::{JobCheck, WorktreeState, live, names};
     let mut recorded = job(7);
-    recorded.work_item = WorkItemId::Branch {
+    recorded.subject = JobSubject::GitHub(WorkItemId::Branch {
         repo: RepoId::new("octo", "app"),
         name: "Feature".into(),
-    };
+    });
     let checks = [JobCheck {
         job: recorded.clone(),
         state: WorktreeState::Present,
@@ -935,10 +941,10 @@ fn casing_changes_keep_only_the_latest_record_for_each_job_worktree() {
     let harness = harness_with(|h| live_job(h, 7));
     let old = job(7);
     let mut latest = old.clone();
-    latest.work_item = WorkItemId::PullRequest {
+    latest.subject = JobSubject::GitHub(WorkItemId::PullRequest {
         repo: RepoId::new("OCTO", "App"),
         number: 7,
-    };
+    });
     latest.session = "newer-session".into();
     let checked = den::handoff::live::check_jobs(
         &[old, latest.clone()],
@@ -947,4 +953,37 @@ fn casing_changes_keep_only_the_latest_record_for_each_job_worktree() {
     );
     assert_eq!(checked.checks.len(), 1);
     assert_eq!(checked.checks[0].job, latest);
+}
+
+/// The Job records milestone 1 wrote (`tests/fixtures/milestone-1/jobs.json`,
+/// format 1), as today's store loads them.
+fn milestone_1_records() -> Vec<JobRecord> {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join(den::jobs::JOBS_FILE);
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/milestone-1/jobs.json"),
+        &path,
+    )
+    .unwrap();
+    den::ports::JobStore::load(&den::jobs::FileJobStore::new(path)).unwrap()
+}
+
+#[test]
+fn a_job_milestone_1_recorded_is_still_recognised_as_a_live_job() {
+    let records = milestone_1_records();
+    // The fixture's PR Job was recorded with exactly `job(7)`'s values.
+    assert_eq!(records[0], job(7));
+    let mut harness = harness_with(|h| {
+        for record in records {
+            h.jobs.holding(record);
+        }
+        worktree_in_use(h, 7);
+    });
+    assert_eq!(marker(&harness.view, 7), Some(JobMarker::Live));
+    assert_eq!(marker(&harness.view, 8), None);
+
+    select(&mut harness, 7);
+    press(&mut harness, Key::Char('c'));
+    let asked = sheet(&harness);
+    assert_eq!(asked.status, LaunchStatus::LiveJob, "{}", messages(asked));
 }

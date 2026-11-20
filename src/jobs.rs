@@ -3,23 +3,35 @@
 //! size-bounded, written atomically, readable only by the user. den only ever
 //! appends a record; it never deletes one. Appending holds `jobs.json.lock`, so
 //! two dens launching at once can't drop each other's record.
+//!
+//! Format 2 (milestone 2) names a Job's [`JobSubject`] instead of a GitHub
+//! Work Item. A format-1 file (milestone 1) still loads: each of its records
+//! becomes a [`JobSubject::GitHub`] record. The next append writes the whole
+//! file as format 2, keeping every earlier record.
 
 use crate::{
     domain::{NextStep, RepoId, WorkItemId},
     files::{self, BoundedReadError},
+    ordering::same_work_item,
     ports::JobStore,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::{
+    fmt,
     path::{Path, PathBuf},
     time::Duration,
 };
 
 pub const JOBS_FILE: &str = "jobs.json";
 /// The Job records file format. Bump it when a change to [`JobRecord`] would
-/// make older files decode wrongly.
-pub const JOBS_FORMAT: u32 = 1;
+/// make older files decode wrongly, and keep reading the older formats.
+///
+/// 1: milestone 1, a record's subject is a GitHub Work Item (`work_item`).
+/// 2: a record's subject is a [`JobSubject`] (`subject`).
+pub const JOBS_FORMAT: u32 = 2;
+/// Milestone 1's format, still read and converted on load.
+const JOBS_FORMAT_GITHUB_ONLY: u32 = 1;
 /// The largest Job records file den will read or write, in bytes.
 pub const MAX_JOBS_BYTES: u64 = 8 * 1024 * 1024;
 /// The lock file held while a record is appended, beside the records file.
@@ -27,10 +39,70 @@ pub const JOBS_LOCK_FILE_SUFFIX: &str = ".lock";
 /// The most an append waits for another den's append to finish, in seconds.
 pub const JOBS_LOCK_WAIT_SECS: u64 = 10;
 
+/// What a Job was launched for: a Work Item identity (spec 0002, "Handoff").
+///
+/// Variants to come: a Linear Issue, keyed by workspace and permanent ID (#38),
+/// and a Landing Group, the Linear Issue plus the fixed list of member PRs and
+/// their head commits a Land Job covers (#40). Code that asks whether a Job is
+/// a Work Item's asks [`JobSubject::covers`], so a Landing Group's members are
+/// recognised wherever its Linear Issue is.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum JobSubject {
+    /// A GitHub Work Item: an Issue, a Pull Request, a Branch or a Run (every
+    /// milestone-1 Job).
+    GitHub(WorkItemId),
+}
+
+impl JobSubject {
+    /// Whether this Job is `item`'s: launched for it (or, from #40, covering
+    /// it). Repos compare case-insensitively, as on GitHub.
+    pub fn covers(&self, item: &WorkItemId) -> bool {
+        match self {
+            Self::GitHub(own) => same_work_item(own, item),
+        }
+    }
+
+    /// The GitHub Work Item the Job was launched for, when it was launched for
+    /// one; reopening and re-inspecting a Job start from it.
+    pub fn github_item(&self) -> Option<&WorkItemId> {
+        match self {
+            Self::GitHub(item) => Some(item),
+        }
+    }
+
+    /// The subject with its Owner and Repo names lowercased, so one Job
+    /// recorded under two casings is one subject. Branch and workflow names
+    /// keep their case: git's are case-sensitive.
+    pub fn folded(&self) -> Self {
+        match self {
+            Self::GitHub(item) => {
+                let mut item = item.clone();
+                let repo = match &mut item {
+                    WorkItemId::Issue { repo, .. }
+                    | WorkItemId::PullRequest { repo, .. }
+                    | WorkItemId::Branch { repo, .. }
+                    | WorkItemId::Run { repo, .. } => repo,
+                };
+                repo.owner.make_ascii_lowercase();
+                repo.name.make_ascii_lowercase();
+                Self::GitHub(item)
+            }
+        }
+    }
+}
+
+impl fmt::Display for JobSubject {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::GitHub(item) => item.fmt(f),
+        }
+    }
+}
+
 /// One launched Job.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobRecord {
-    pub work_item: WorkItemId,
+    pub subject: JobSubject,
     pub next_step: NextStep,
     /// The Repo the work goes to.
     pub target: RepoId,
@@ -68,6 +140,41 @@ struct Envelope {
 #[derive(Deserialize)]
 struct FormatOnly {
     format: u32,
+}
+
+/// A format-1 (milestone 1) file. Frozen: never change it, it is what users
+/// already have on disk.
+#[derive(Deserialize)]
+struct GitHubOnlyEnvelope {
+    jobs: Vec<GitHubOnlyRecord>,
+}
+
+/// A format-1 record: [`JobRecord`] with a GitHub Work Item as its subject.
+#[derive(Deserialize)]
+struct GitHubOnlyRecord {
+    work_item: WorkItemId,
+    next_step: NextStep,
+    target: RepoId,
+    main_clone: PathBuf,
+    worktree: PathBuf,
+    branch: String,
+    session: String,
+    launched_at: Timestamp,
+}
+
+impl From<GitHubOnlyRecord> for JobRecord {
+    fn from(old: GitHubOnlyRecord) -> Self {
+        Self {
+            subject: JobSubject::GitHub(old.work_item),
+            next_step: old.next_step,
+            target: old.target,
+            main_clone: old.main_clone,
+            worktree: old.worktree,
+            branch: old.branch,
+            session: old.session,
+            launched_at: old.launched_at,
+        }
+    }
 }
 
 /// The real store: `<state_dir>/jobs.json`.
@@ -122,16 +229,19 @@ impl JobStore for FileJobStore {
         let format = serde_json::from_slice::<FormatOnly>(&bytes)
             .map_err(|e| self.read_error(e))?
             .format;
-        if format != JOBS_FORMAT {
-            return Err(JobStoreError::Format {
+        match format {
+            JOBS_FORMAT => serde_json::from_slice::<Envelope>(&bytes)
+                .map(|e| e.jobs)
+                .map_err(|e| self.read_error(e)),
+            JOBS_FORMAT_GITHUB_ONLY => serde_json::from_slice::<GitHubOnlyEnvelope>(&bytes)
+                .map(|e| e.jobs.into_iter().map(JobRecord::from).collect())
+                .map_err(|e| self.read_error(e)),
+            found => Err(JobStoreError::Format {
                 path: self.path.clone(),
-                found: format,
+                found,
                 expected: JOBS_FORMAT,
-            });
+            }),
         }
-        serde_json::from_slice::<Envelope>(&bytes)
-            .map(|e| e.jobs)
-            .map_err(|e| self.read_error(e))
     }
 
     /// Appends `job`. Refuses (rather than overwrite) when the existing file

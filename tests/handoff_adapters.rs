@@ -15,7 +15,7 @@ use den::{
         clone::{RepoUrl, has_numeric_suffix, same_repo},
         command, names,
     },
-    jobs::{FileJobStore, JobRecord},
+    jobs::{FileJobStore, JobRecord, JobSubject},
     launcher::{LaunchEnvironment, clipboard_invocation, window_mode},
     ports::{JobStore, LaunchError, Launcher, Workspace, WorktreeAdd, WorktreeStart},
     process::{Invocation, OutputMode},
@@ -528,10 +528,10 @@ fn job_records_are_appended_and_an_unreadable_file_is_never_overwritten() {
     let store = FileJobStore::new(path.clone());
     assert_eq!(store.load().expect("no file yet"), []);
     let job = |n: u64| JobRecord {
-        work_item: WorkItemId::PullRequest {
+        subject: JobSubject::GitHub(WorkItemId::PullRequest {
             repo: RepoId::new("octo", "app"),
             number: n,
-        },
+        }),
         next_step: NextStep::Review,
         target: RepoId::new("octo", "app"),
         main_clone: "/c".into(),
@@ -623,10 +623,10 @@ fn dens_appending_job_records_at_once_keep_every_record() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("state").join("jobs.json");
     let job = |n: u64| JobRecord {
-        work_item: WorkItemId::PullRequest {
+        subject: JobSubject::GitHub(WorkItemId::PullRequest {
             repo: RepoId::new("octo", "app"),
             number: n,
-        },
+        }),
         next_step: NextStep::Review,
         target: RepoId::new("octo", "app"),
         main_clone: "/c".into(),
@@ -651,8 +651,8 @@ fn dens_appending_job_records_at_once_keep_every_record() {
         .load()
         .unwrap()
         .iter()
-        .map(|r| match &r.work_item {
-            WorkItemId::PullRequest { number, .. } => *number,
+        .map(|r| match &r.subject {
+            JobSubject::GitHub(WorkItemId::PullRequest { number, .. }) => *number,
             other => panic!("unexpected {other:?}"),
         })
         .collect();
@@ -707,10 +707,10 @@ fn a_record_that_exceeds_the_read_limit_keeps_the_existing_history_readable() {
     let temp = tempfile::tempdir().unwrap();
     let store = FileJobStore::new(temp.path().join("jobs.json"));
     let mut job = JobRecord {
-        work_item: WorkItemId::PullRequest {
+        subject: JobSubject::GitHub(WorkItemId::PullRequest {
             repo: RepoId::new("octo", "app"),
             number: 7,
-        },
+        }),
         next_step: NextStep::Review,
         target: RepoId::new("octo", "app"),
         main_clone: "/c".into(),
