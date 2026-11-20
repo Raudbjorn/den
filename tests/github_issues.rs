@@ -276,6 +276,26 @@ fn the_query_reads_both_link_kinds_in_every_state_and_no_mentions() {
 }
 
 #[test]
+fn issue_pages_are_ordered_by_a_key_that_cannot_change_mid_read() {
+    let gql = ScriptedGraphQl::new(octo);
+    survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    let requests = gql.requests();
+    let query = &requests
+        .iter()
+        .find(|r| operation(r) == "RepoIssues")
+        .expect("a RepoIssues request")
+        .query;
+    // Cursors are positions in the sort order. Creation time never changes, so an
+    // Issue can't move ahead of the cursor mid-read and be skipped, as it could
+    // under UPDATED_AT.
+    assert!(
+        query.contains("orderBy: {field: CREATED_AT, direction: DESC}"),
+        "{query}"
+    );
+    assert!(!query.contains("UPDATED_AT"), "{query}");
+}
+
+#[test]
 fn more_links_than_read_or_unreadable_links_mark_the_links_incomplete() {
     let gql = ScriptedGraphQl::new(|request| {
         if let Some(answer) = non_issue_answers(request) {
