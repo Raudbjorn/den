@@ -121,6 +121,10 @@ _Avoid_: Run, task, session (alone)
 A Job that coordinates rather than codes: it asks for review (Request review) or lands a Landing Group (Land). It still gets a worktree on a PR head, but Claude Code runs it in a permission mode that asks before acting, shown on the sheet; Jobs that change code keep their usual command.
 _Avoid_: Ops job, admin job, meta job
 
+**Verdict-only Review Job**:
+A Review Job for a Pull Request of an Owner with a Linear Workflow. It is told to return a verdict only (no edits, commits, approvals, change requests or posts; the user decides what to publish), gets the Linear Issue's identifier and URL when the Pull Request is in a Landing Group, and runs in the same ask-first permission mode as a Coordination Job.
+_Avoid_: Read-only review, dry-run review
+
 **Live Job**:
 A Job whose worktree still exists. A Work Item with a Live Job is not launched again without asking.
 _Avoid_: Active job, running job

@@ -882,3 +882,37 @@ fn reusing_a_branch_requires_the_selected_remote_and_branch_before_any_launch_ch
         "upstream/feature/x"
     );
 }
+
+// ---- the Claude command and skill directories (#41) ----
+
+/// The real adapter reads `commands/` (with subfolders, Markdown only) and
+/// `skills/` (folders holding a SKILL.md); a missing directory reads as empty.
+#[test]
+fn the_git_workspace_reads_a_claude_directorys_commands_and_skills() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join(".claude");
+    let write = |relative: &str| {
+        let path = dir.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "---\ndescription: x\n---\n").unwrap();
+    };
+    write("commands/deploy.md");
+    write("commands/frontend/component.md");
+    write("commands/notes.txt");
+    write("skills/code-review/SKILL.md");
+    write("skills/half-made/README.md");
+    let read = GitWorkspace::new().claude_dir(&dir);
+    assert_eq!(read.path, dir);
+    assert_eq!(
+        read.commands,
+        Ok(vec![
+            PathBuf::from("deploy.md"),
+            PathBuf::from("frontend/component.md")
+        ])
+    );
+    assert_eq!(read.skills, Ok(vec!["code-review".to_owned()]));
+
+    let missing = GitWorkspace::new().claude_dir(&temp.path().join("nowhere"));
+    assert_eq!(missing.commands, Ok(Vec::new()));
+    assert_eq!(missing.skills, Ok(Vec::new()));
+}
