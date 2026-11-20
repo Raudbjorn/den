@@ -57,6 +57,16 @@ impl LinearWorkflowPolicy {
         self.held_repos.iter().any(|held| held.same(repo))
     }
 
+    /// Whether a Review Job for this Owner's Pull Requests returns a verdict
+    /// only and runs in the approval-required permission mode (#41): it does
+    /// when the Owner has a Linear Workflow, whose review rules every Review
+    /// Job follows. Every configured Linear Workflow has review rules
+    /// (`LinearWorkflow::policy`); the empty policy has none, so an Owner
+    /// without a Linear Workflow keeps milestone 1's Review Job.
+    pub fn reviews_verdict_only(&self) -> bool {
+        self.review.is_some()
+    }
+
     /// Whether `state_name` is this workflow's release state.
     pub fn is_release_state(&self, state_name: &str) -> bool {
         self.release_state

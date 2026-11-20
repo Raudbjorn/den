@@ -22,7 +22,7 @@ use den::{
         NextStep, Observation, RepoId, TeamRef, WorkItemId, facts::ReviewVerdict, facts::Reviewer,
     },
     handoff::{
-        LaunchPlan, PermissionMode, ReviewRequest, SessionStart, coordination_mode,
+        LaunchPlan, PermissionMode, ReviewRequest, SessionStart, job_permission_mode,
         prompts::{self, PromptFields, Prompts},
     },
     jobs::{JobRecord, JobSubject},
@@ -58,6 +58,11 @@ fn config(slack: Option<&str>) -> Config {
     ];
     workflow.slack_channel = slack.map(str::to_owned);
     config
+}
+
+/// `acme`'s Linear Workflow policy, as the config maps it.
+fn harness_policy() -> den::domain::LinearWorkflowPolicy {
+    config(None).policies().for_owner("acme").clone()
 }
 
 /// acme/api: #2 approved only at an older head (Request review), #3 with an
@@ -419,11 +424,26 @@ fn coding_plans_carry_no_permission_mode_and_keep_milestone_1s_command() {
             .iter()
             .all(|j| j.permission_mode.is_none())
     );
-    // Only the coordination kinds ever get a mode.
+    // Only the coordination kinds ever get a mode, and (#41) a Review in a
+    // Linear Workflow. #41 widened the function with the Owner's policy: the
+    // empty policy keeps #39's expectation exactly; a workflow's policy adds
+    // Review and nothing else, so every coding kind still gets none.
+    let workflow = harness_policy();
     for step in NextStep::ALL {
-        let expected = matches!(step, NextStep::RequestReview | NextStep::Land)
-            .then_some(PermissionMode::ApprovalRequired);
-        assert_eq!(coordination_mode(step), expected, "{step:?}");
+        let coordination = matches!(step, NextStep::RequestReview | NextStep::Land);
+        let expected = coordination.then_some(PermissionMode::ApprovalRequired);
+        assert_eq!(
+            job_permission_mode(step, &den::domain::LinearWorkflowPolicy::default()),
+            expected,
+            "{step:?}"
+        );
+        let in_workflow =
+            (coordination || step == NextStep::Review).then_some(PermissionMode::ApprovalRequired);
+        assert_eq!(
+            job_permission_mode(step, &workflow),
+            in_workflow,
+            "{step:?}"
+        );
     }
 }
 

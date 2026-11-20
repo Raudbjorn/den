@@ -220,7 +220,10 @@ fn a_format_2_file_loads_and_the_next_append_writes_the_current_format() {
     fs::write(store.path(), serde_json::to_vec(&body).unwrap()).unwrap();
     assert_eq!(store.load().unwrap(), std::slice::from_ref(&earlier));
     assert_eq!(
-        earlier.reopen_mode(),
+        // #41 widened `reopen_mode` with the Owner's policy. A Request
+        // review's mode doesn't depend on it, so the empty policy keeps this
+        // assertion what it was.
+        earlier.reopen_mode(&den::domain::LinearWorkflowPolicy::default()),
         Some(PermissionMode::ApprovalRequired),
         "a record from before the field reopens in its Next Step's mode"
     );

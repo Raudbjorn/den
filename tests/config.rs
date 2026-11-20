@@ -166,6 +166,33 @@ fn paths_follow_xdg_and_fall_back_to_home() {
     ));
 }
 
+/// The user's Claude directory (#41) is Claude Code's: `$CLAUDE_CONFIG_DIR`
+/// when it is absolute, else `~/.claude`.
+#[test]
+fn the_claude_directory_follows_claude_config_dir_then_home() {
+    let set = Paths::from_env(env(&[
+        ("HOME", "/home/me"),
+        ("CLAUDE_CONFIG_DIR", "/home/me/.claude-work"),
+    ]))
+    .expect("paths");
+    assert_eq!(
+        set.claude_dir.as_deref(),
+        Some(Path::new("/home/me/.claude-work"))
+    );
+    let relative = Paths::from_env(env(&[("HOME", "/home/me"), ("CLAUDE_CONFIG_DIR", "work")]))
+        .expect("paths");
+    assert_eq!(
+        relative.claude_dir.as_deref(),
+        Some(Path::new("/home/me/.claude"))
+    );
+    let no_home = Paths::from_env(env(&[
+        ("XDG_CONFIG_HOME", "/cfg"),
+        ("XDG_STATE_HOME", "/state"),
+    ]))
+    .expect("paths");
+    assert_eq!(no_home.claude_dir, None);
+}
+
 // Linear Workflows (#32).
 
 const FULL_WORKFLOW: &str = r##"owners = ["acme", "octo"]

@@ -45,10 +45,18 @@
 //! Coordination Jobs (#39): a Request review (and, with #40, a Land) Job acts
 //! on GitHub rather than on code. It still gets a worktree on the PR head, as
 //! a PR Job does, but runs in the approval-required permission mode
-//! ([`coordination_mode`], [`LaunchPlan::permission_mode`]), recorded with
+//! ([`job_permission_mode`], [`LaunchPlan::permission_mode`]), recorded with
 //! the Job so reopening it asks again; a record without the mode falls back
-//! to its Next Step's ([`crate::jobs::JobRecord::reopen_mode`]). Its prompt
-//! gets no push line. A Request review plan also carries the reviewers chosen
+//! to its Next Step's and Owner's ([`crate::jobs::JobRecord::reopen_mode`]).
+//! Its prompt gets no push line.
+//!
+//! Review Jobs in a Linear Workflow (#41) run in the same mode, from the
+//! Owner's policy rather than the Next Step alone. Their prompt is the
+//! `review_linear` template ([`prompts::PromptKind`]): the verdict-only
+//! instruction and, for a Pull Request in a Landing Group, the Linear
+//! Issue's identifier and URL. Every sheet lists the slash commands its
+//! prompt invokes as found or not found ([`workflows`]), from the Claude
+//! command and skill directories `inspect` read. A Request review plan also carries the reviewers chosen
 //! on the sheet ([`PlanInput::reviewers`], [`reviewers`]) and the Owner's
 //! Slack channel, both only in its prompt.
 //!
@@ -74,6 +82,7 @@ mod plan;
 pub mod prompts;
 mod refusal;
 pub mod reviewers;
+pub mod workflows;
 
 pub use clone::Remote;
 pub use cloning::NewCloneView;
@@ -85,7 +94,7 @@ pub use live::{JobCheck, JobsCheck, ReopenPlan, WorktreeState};
 pub use plan::{LaunchSettings, PlanInput, inspect_request, plan};
 pub use refusal::{Refusal, RefusalReason};
 
-use crate::domain::{NextStep, RepoId, WorkItemId, facts::Reviewer};
+use crate::domain::{LinearWorkflowPolicy, NextStep, RepoId, WorkItemId, facts::Reviewer};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -96,17 +105,25 @@ pub const MAX_PROMPT_CHARS: usize = 8_000;
 /// Characters of a commit shown on the sheet.
 pub const SHORT_COMMIT_CHARS: usize = 7;
 
-/// The permission mode a Job for `step` runs in: approval-required for a
-/// coordination Job (Request review, Land), none (milestone 1's command) for
-/// every coding Job.
-pub fn coordination_mode(step: NextStep) -> Option<PermissionMode> {
+/// The permission mode a Job for `step` runs in, given its Owner's Linear
+/// Workflow `policy` (the empty policy for an Owner without one):
+/// approval-required for a coordination Job (Request review, Land) and for a
+/// Review Job in a Linear Workflow, which returns a verdict only (#41,
+/// [`LinearWorkflowPolicy::reviews_verdict_only`]); none (milestone 1's
+/// command) for every other Job. The match is exhaustive, so a new kind
+/// must choose.
+pub fn job_permission_mode(
+    step: NextStep,
+    policy: &LinearWorkflowPolicy,
+) -> Option<PermissionMode> {
     match step {
         NextStep::RequestReview | NextStep::Land => Some(PermissionMode::ApprovalRequired),
-        NextStep::FinishDraft
+        NextStep::Review if policy.reviews_verdict_only() => Some(PermissionMode::ApprovalRequired),
+        NextStep::Review
+        | NextStep::FinishDraft
         | NextStep::ResolveConflicts
         | NextStep::FixCi
         | NextStep::AddressReview
-        | NextStep::Review
         | NextStep::Merge
         | NextStep::Triage
         | NextStep::Implement
@@ -322,8 +339,9 @@ pub struct LaunchPlan {
     pub renamed: Option<Renamed>,
     pub session: String,
     pub prompt: String,
-    /// The approval-required mode for a coordination Job; `None` for a coding
-    /// Job, whose command is milestone 1's ([`coordination_mode`]).
+    /// The approval-required mode for a coordination Job and for a Review Job
+    /// in a Linear Workflow; `None` for any other Job, whose command is
+    /// milestone 1's ([`job_permission_mode`]).
     pub permission_mode: Option<PermissionMode>,
     /// Request review only: whom the prompt asks, and where it announces.
     pub review_request: Option<ReviewRequest>,
