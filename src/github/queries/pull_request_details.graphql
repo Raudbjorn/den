@@ -1,0 +1,49 @@
+# Checks and reviews of one PR: the selection inside `... on PullRequest { }`.
+# den repeats it once per PR in a batch (aliases pr0, pr1, …), replacing $PR_ID
+# with that PR's own variable ($id0, $id1, …); `isRequired` needs the PR's ID.
+reviewThreads(first: 100) {
+  pageInfo { hasNextPage endCursor }
+  nodes { isResolved }
+}
+reviewRequests(first: 50) {
+  pageInfo { hasNextPage endCursor }
+  nodes {
+    requestedReviewer {
+      __typename
+      ... on User { login }
+      ... on Bot { login }
+      ... on Mannequin { login }
+      ... on Team { slug organization { login } }
+    }
+  }
+}
+latestOpinionatedReviews(first: 50) {
+  pageInfo { hasNextPage endCursor }
+  nodes { state author { login } }
+}
+commits(last: 1) {
+  nodes {
+    commit {
+      statusCheckRollup {
+        contexts(first: 100) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            __typename
+            ... on CheckRun {
+              name
+              status
+              conclusion
+              isRequired(pullRequestId: $PR_ID)
+              checkSuite { workflowRun { workflow { name } } }
+            }
+            ... on StatusContext {
+              context
+              state
+              isRequired(pullRequestId: $PR_ID)
+            }
+          }
+        }
+      }
+    }
+  }
+}
