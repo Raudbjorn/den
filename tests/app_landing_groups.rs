@@ -79,6 +79,7 @@ fn harness_with(extra: Vec<LinearIssue>) -> Harness {
         worktree: WORKTREE_7.into(),
         branch: "feature-7".to_owned(),
         session: "app-pr7-address-review".to_owned(),
+        permission_mode: None,
         launched_at: now(),
     });
     harness.workspace.add_existing(WORKTREE_7);

@@ -812,6 +812,8 @@ fn every_next_step_kind_has_a_default_prompt_that_carries_no_title_or_body() {
         url: "https://github.com/octo/app/issues/9".to_owned(),
         title: "TITLE-TEXT".to_owned(),
         branch: ISSUE_BRANCH.to_owned(),
+        reviewers: Vec::new(),
+        slack_channel: None,
     };
     let skills = [
         (NextStep::AddressReview, "/gh-resolve "),
@@ -838,6 +840,8 @@ fn every_next_step_kind_has_a_default_prompt_that_carries_no_title_or_body() {
         number: None,
         url: "https://github.com/octo/app/tree/feature/login".to_owned(),
         branch: "feature/login".to_owned(),
+        reviewers: Vec::new(),
+        slack_channel: None,
         ..fields
     };
     for step in [NextStep::OpenPr, NextStep::PruneOrRevive] {

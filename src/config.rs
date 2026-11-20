@@ -33,6 +33,9 @@ use std::{
 };
 use toml::Spanned;
 
+/// den's bound on a team slug, in characters.
+const MAX_TEAM_SLUG_CHARS: usize = 100;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     /// Watched Owners, in the order written, without duplicates.
@@ -231,6 +234,14 @@ fn absolute(path: Spanned<PathBuf>, what: &str) -> Result<PathBuf, (Range<usize>
             path.display().to_string()
         ),
     ))
+}
+
+/// A team's slug, the `team` of `org/team`.
+pub(crate) fn is_valid_team_slug(slug: &str) -> bool {
+    (1..=MAX_TEAM_SLUG_CHARS).contains(&slug.chars().count())
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 pub(crate) fn location_of(text: &str, offset: usize) -> Location {

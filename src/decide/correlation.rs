@@ -327,6 +327,7 @@ pub fn correlate(observation: &Observation) -> Correlation {
                     status: status(observation, &lookup, &issue.owner, pr),
                     also_attached_to: attachers
                         .get(&PullRequestKey::of(&pr.repo, pr.number))
+                        .filter(|_| same_login(&pr.repo.owner, &issue.owner))
                         .into_iter()
                         .flatten()
                         .filter(|g| g.issue != this)

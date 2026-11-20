@@ -428,3 +428,31 @@ fn a_missing_key_variable_is_an_error_naming_it_and_its_line() {
     let github_only = parse("owners = [\"acme\"]\n").expect("valid");
     assert_eq!(github_only.check_linear_keys(path, env(&[])), Ok(()));
 }
+
+/// Review on #50: the config's `reviewers` and the Request review sheet share
+/// one grammar (`handoff::reviewers::parse`), so a reviewer the config takes
+/// is one the sheet takes, and the other way round.
+#[test]
+fn config_reviewers_and_the_sheets_reviewers_accept_the_same_words() {
+    let base = "owners = [\"acme\"]\n[linear.acme]\nworkspace = \"acme\"\napi_key_env = \"K\"\n";
+    for word in [
+        "alice",
+        "acme/backend",
+        "acme/web.team_2",
+        "-x",
+        "x-",
+        "a b",
+        "acme/",
+        "/backend",
+        "a/b/c",
+        "acme/back end",
+    ] {
+        let config = parse(&format!("{base}reviewers = [{word:?}]\n"));
+        let sheet = den::handoff::reviewers::parse(word);
+        assert_eq!(
+            config.as_ref().ok().map(|c| c.linear[0].reviewers.clone()),
+            sheet.clone().map(|r| vec![r]),
+            "{word:?}: config {config:?}, sheet {sheet:?}"
+        );
+    }
+}
