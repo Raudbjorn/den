@@ -1,6 +1,6 @@
 //! The real GitHub source's PR facts over a scripted GraphQL transport:
-//! mergeability, review decision and merge queue from the PR list (a null
-//! decision on a page with errors is unknown); checks
+//! mergeability, merge state, review decision and merge queue from the PR
+//! list (a null decision on a page with errors is unknown); checks
 //! (required / advisory, passing / failing / pending), review threads, review
 //! requests (users and teams) and latest reviews from the batched details
 //! query; and what coverage says when that follow-up query is lost or not
@@ -17,8 +17,8 @@ use den::{
     domain::{
         Incompleteness, Observation, Source, SourceKind, SourceState, TeamRef,
         facts::{
-            Check, CheckOutcome, Mergeability, PullRequest, Review, ReviewDecision, ReviewVerdict,
-            Reviewer,
+            Check, CheckOutcome, MergeState, Mergeability, PullRequest, Review, ReviewDecision,
+            ReviewVerdict, Reviewer,
         },
     },
     github::{
@@ -62,6 +62,7 @@ fn pr_node(number: u64, mergeable: &str, decision: Value, queued: bool) -> Value
         "headRefOid": "abc123",
         "headRepository": { "name": "app", "owner": { "login": "octo" } },
         "mergeable": mergeable,
+        "mergeStateStatus": "CLEAN",
         "reviewDecision": decision,
         "isInMergeQueue": queued
     })
@@ -321,6 +322,39 @@ fn more_pages_or_unreadable_entries_mark_a_list_incomplete() {
             what: "#1 (checks, review threads, review requests)".to_owned()
         }))
     );
+}
+
+#[test]
+fn list_facts_map_github_merge_state() {
+    let states = [
+        ("CLEAN", MergeState::Clean),
+        ("HAS_HOOKS", MergeState::HasHooks),
+        ("UNSTABLE", MergeState::Unstable),
+        ("BLOCKED", MergeState::Blocked),
+        ("BEHIND", MergeState::Behind),
+        ("DIRTY", MergeState::Dirty),
+        ("DRAFT", MergeState::Draft),
+        ("UNKNOWN", MergeState::Unknown),
+        ("SOMETHING_NEW", MergeState::Unknown),
+    ];
+    let prs = states
+        .iter()
+        .zip(1..)
+        .map(|((status, _), number)| {
+            let mut node = pr_node(number, "MERGEABLE", json!("APPROVED"), false);
+            node["mergeStateStatus"] = json!(status);
+            node
+        })
+        .collect();
+    let gql = octo(prs, each(no_details()));
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    for ((status, expected), number) in states.iter().zip(1..) {
+        assert_eq!(
+            the_pr(&observation, number).merge_state,
+            *expected,
+            "{status}"
+        );
+    }
 }
 
 #[test]

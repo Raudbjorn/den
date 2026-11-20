@@ -4,8 +4,8 @@ use super::{repo_id, ts};
 use den::domain::{
     TeamRef,
     facts::{
-        Check, CheckOutcome, Mergeability, PrDetails, PullRequest, Review, ReviewDecision,
-        ReviewVerdict, Reviewer,
+        Check, CheckOutcome, MergeState, Mergeability, PrDetails, PullRequest, Review,
+        ReviewDecision, ReviewVerdict, Reviewer,
     },
 };
 
@@ -13,8 +13,8 @@ use den::domain::{
 const DEFAULT_UPDATED: &str = "2026-11-18T12:00:00Z";
 
 /// A ready, non-draft PR in `repo` ("owner/name"), authored by "someone":
-/// mergeable, review required by GitHub but none given, no checks, no review
-/// requests, not queued, details read. No rule holds for it (it is not approved).
+/// mergeable (and GitHub's merge state clean), review required by GitHub but
+/// none given, no checks, no review requests, not queued, details read. No rule holds for it (it is not approved).
 pub fn pr(repo: &str, number: u64) -> PrBuilder {
     let repo = repo_id(repo);
     PrBuilder {
@@ -32,6 +32,7 @@ pub fn pr(repo: &str, number: u64) -> PrBuilder {
             created_at: ts(DEFAULT_UPDATED),
             updated_at: ts(DEFAULT_UPDATED),
             mergeability: Mergeability::Mergeable,
+            merge_state: MergeState::Clean,
             review_decision: ReviewDecision::ReviewRequired,
             in_merge_queue: false,
             details: Some(PrDetails::default()),
@@ -78,6 +79,12 @@ impl PrBuilder {
     /// GitHub has not computed mergeability yet.
     pub fn mergeability_unknown(mut self) -> Self {
         self.pr.mergeability = Mergeability::Unknown;
+        self
+    }
+
+    /// GitHub's own merge state (`mergeStateStatus`).
+    pub fn merge_state(mut self, state: MergeState) -> Self {
+        self.pr.merge_state = state;
         self
     }
 

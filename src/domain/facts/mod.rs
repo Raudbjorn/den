@@ -10,7 +10,7 @@ pub mod run;
 pub use branch::Branch;
 pub use issue::{Issue, IssueLink, LinkKind};
 pub use pull_request::{
-    Check, CheckOutcome, Listed, Mergeability, PrDetails, PullRequest, Review, ReviewDecision,
-    ReviewVerdict, Reviewer,
+    Check, CheckOutcome, Listed, MergeState, Mergeability, PrDetails, PullRequest, Review,
+    ReviewDecision, ReviewVerdict, Reviewer,
 };
 pub use run::{Run, RunConclusion, RunStatus};

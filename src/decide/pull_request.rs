@@ -7,7 +7,8 @@
 //! 5. review requested → Review
 //! 6. approved (or, where the base branch requires no review, nobody asked
 //!    for changes), no unresolved threads and every review request read, every
-//!    check passing, known mergeable, not queued → Merge
+//!    check passing, known mergeable, not queued, and GitHub itself reporting
+//!    the PR ready to merge → Merge
 //!
 //! A rule whose facts den could not establish neither holds nor is ruled out:
 //! later rules may still win, and the Explanation says which earlier rule
@@ -22,8 +23,8 @@ use super::{Attribution, Context, Decision, Explanation, WorkItem};
 use crate::domain::{
     NextStep, Viewer,
     facts::{
-        Check, CheckOutcome, Mergeability, PrDetails, PullRequest, ReviewDecision, ReviewVerdict,
-        Reviewer,
+        Check, CheckOutcome, MergeState, Mergeability, PrDetails, PullRequest, ReviewDecision,
+        ReviewVerdict, Reviewer,
     },
 };
 
@@ -110,6 +111,10 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
     unknowns.extend(unrecognised_checks(pr.details.as_ref()));
     if matches!(approval, Approval::Unknown) {
         unknowns.push("approval could not be established".to_owned());
+    }
+    // Unknown mergeability already says this, through the conflicts rule.
+    if pr.merge_state == MergeState::Unknown && pr.mergeability != Mergeability::Unknown {
+        unknowns.push("merge state not computed yet by GitHub".to_owned());
     }
     unknowns.dedup();
 
@@ -288,7 +293,8 @@ fn merge(pr: &PullRequest, approval: &Approval, blockers: &[String]) -> Finding 
 /// Everything that stops Merge. Empty means Merge holds: approved (or no
 /// review required), no unresolved review threads and all threads read, every
 /// review request read, every check (required or advisory) passing and all
-/// read, known mergeable, not a draft, not in a merge queue.
+/// read, known mergeable, not a draft, not in a merge queue, and GitHub's own
+/// merge state agreeing.
 fn merge_blockers(pr: &PullRequest, approval: &Approval) -> Vec<String> {
     let mut blockers = Vec::new();
     if pr.is_draft {
@@ -343,7 +349,38 @@ fn merge_blockers(pr: &PullRequest, approval: &Approval) -> Vec<String> {
     if pr.in_merge_queue {
         blockers.push("already in the merge queue".to_owned());
     }
+    // Only when den's own facts allow Merge: GitHub's merge state then catches
+    // rules den does not read. Otherwise den's reasons already say more.
+    if blockers.is_empty()
+        && let Some(blocker) = merge_state_blocker(pr)
+    {
+        blockers.push(blocker);
+    }
     blockers
+}
+
+/// Why GitHub's own merge state disagrees with Merge, if it does.
+fn merge_state_blocker(pr: &PullRequest) -> Option<String> {
+    let base = &pr.base_ref;
+    match pr.merge_state {
+        MergeState::Clean | MergeState::HasHooks => None,
+        MergeState::Blocked => Some(
+            "GitHub reports merging blocked by a rule den does not read \
+             (for example a required check that has not reported)"
+                .to_owned(),
+        ),
+        MergeState::Behind => Some(format!(
+            "behind {base}, which must be merged in before this PR can merge"
+        )),
+        MergeState::Unstable => Some("GitHub reports a check that is not passing".to_owned()),
+        MergeState::Dirty => Some(format!(
+            "GitHub reports it cannot merge cleanly into {base}"
+        )),
+        MergeState::Draft => Some("GitHub reports the PR as a draft".to_owned()),
+        MergeState::Unknown => {
+            Some("waiting for GitHub to compute whether it can merge".to_owned())
+        }
+    }
 }
 
 /// Context that is not itself a rule: checks still running, merge queue,

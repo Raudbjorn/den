@@ -13,7 +13,7 @@ use den::{
     domain::{
         Incompleteness, NextStep, Observation, Source, SourceKind, SourceState, WaitingOn,
         WorkItemId,
-        facts::{CheckOutcome, ReviewDecision, ReviewVerdict},
+        facts::{CheckOutcome, MergeState, ReviewDecision, ReviewVerdict},
     },
 };
 use support::build::{ME, ObservationBuilder, PrBuilder, now, pr, repo_id};
@@ -496,6 +496,32 @@ fn pr_rule_deck() -> Vec<(&'static str, PrBuilder, Expect)> {
                 "changes requested by bob",
                 "PR author",
             ),
+        ),
+        (
+            "GitHub reports merging blocked (a required check never reported): no Merge",
+            ready(1).author(ME).merge_state(MergeState::Blocked),
+            expect(
+                None,
+                Nobody,
+                "GitHub reports merging blocked by a rule den does not read",
+                "no Next Step",
+            ),
+        ),
+        (
+            "behind a base that must be merged in first: no Merge",
+            ready(1).author(ME).merge_state(MergeState::Behind),
+            expect(None, Nobody, "behind main", "no Next Step"),
+        ),
+        (
+            "GitHub's merge state not computed yet: no Merge",
+            ready(1).author(ME).merge_state(MergeState::Unknown),
+            expect(
+                None,
+                Nobody,
+                "waiting for GitHub to compute whether it can merge",
+                "no Next Step",
+            )
+            .unknown(&["merge state not computed yet"]),
         ),
         // ── Unknown facts ────────────────────────────────────────────────
         (

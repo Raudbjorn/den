@@ -12,7 +12,7 @@ use super::{
 use crate::{
     domain::{
         CoverageEntry, RepoId, Source, SourceKind,
-        facts::{Mergeability, PullRequest, ReviewDecision},
+        facts::{MergeState, Mergeability, PullRequest, ReviewDecision},
     },
     ports::SurveyFailure,
 };
@@ -71,6 +71,7 @@ struct PrNode {
     head_ref_oid: String,
     head_repository: Option<HeadRepo>,
     mergeable: String,
+    merge_state_status: String,
     review_decision: Option<String>,
     is_in_merge_queue: bool,
 }
@@ -102,6 +103,7 @@ impl PrNode {
             created_at: self.created_at,
             updated_at: self.updated_at,
             mergeability: mergeability(&self.mergeable),
+            merge_state: merge_state(&self.merge_state_status),
             review_decision: review_decision(self.review_decision.as_deref(), page_complete),
             in_merge_queue: self.is_in_merge_queue,
             details: None,
@@ -122,6 +124,27 @@ fn mergeability(state: &str) -> Mergeability {
                 "unrecognised PR mergeability; treated as unknown"
             );
             Mergeability::Unknown
+        }
+    }
+}
+
+/// GitHub's `MergeStateStatus`. Anything den doesn't recognise counts as unknown.
+fn merge_state(state: &str) -> MergeState {
+    match state {
+        "CLEAN" => MergeState::Clean,
+        "HAS_HOOKS" => MergeState::HasHooks,
+        "UNSTABLE" => MergeState::Unstable,
+        "BLOCKED" => MergeState::Blocked,
+        "BEHIND" => MergeState::Behind,
+        "DIRTY" => MergeState::Dirty,
+        "DRAFT" => MergeState::Draft,
+        "UNKNOWN" => MergeState::Unknown,
+        other => {
+            tracing::warn!(
+                state = other,
+                "unrecognised PR merge state; treated as unknown"
+            );
+            MergeState::Unknown
         }
     }
 }
