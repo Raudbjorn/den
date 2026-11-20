@@ -12,8 +12,8 @@ mod support;
 use den::{
     decide::{Decision, HeldBack, decide},
     domain::{
-        LinearWorkflowPolicy, NextStep, Observation, Policies, ReviewPolicy, TeamRef, Viewers,
-        WaitingOn,
+        LinearWorkflowPolicy, NextStep, Observation, Policies, ReviewPolicy, SourceState, TeamRef,
+        Viewers, WaitingOn,
         facts::{MergeState, ReviewDecision, ReviewVerdict, Reviewer},
     },
 };
@@ -647,5 +647,67 @@ fn the_same_facts_under_an_owner_without_a_workflow_give_milestone_1_decisions()
             Some(NextStep::RequestReview),
             Some(NextStep::FinishDraft),
         ]
+    );
+}
+
+/// A ready PR by me: alice approved the current head, bob only commented on
+/// an older one.
+fn approved_and_commented(owner: &str, number: u64) -> PrBuilder {
+    pr(&format!("{owner}/api"), number)
+        .author(ME)
+        .passing("ci")
+        .approved()
+        .review_at_head("alice", ReviewVerdict::Approved)
+        .review_on("bob", ReviewVerdict::Commented, OLDER_HEAD)
+}
+
+/// As [`approved_and_commented`], and GitHub listed more latest reviews of
+/// any kind (`latestReviews`) than den read. The standing verdicts were read
+/// in full.
+fn latest_reviews_cut_short(owner: &str, number: u64) -> PrBuilder {
+    approved_and_commented(owner, number).latest_reviews_truncated()
+}
+
+#[test]
+fn truncated_latest_reviews_leave_an_owner_without_a_workflow_on_milestone_1() {
+    // Only the workflow's rules read `latestReviews` (#51 review): an Owner
+    // without one gets exactly the Decision it gets when the list was read in
+    // full, with complete coverage.
+    let truncated = decided(latest_reviews_cut_short("octo", 30), &acme(BOTH_ON));
+    let milestone_1 = decided(approved_and_commented("octo", 30), &acme(BOTH_ON));
+
+    assert_eq!(truncated, milestone_1);
+    assert_eq!(truncated.next_step, Some(NextStep::Merge), "{truncated:#?}");
+    assert!(truncated.explanation.unknowns.is_empty(), "{truncated:#?}");
+    assert!(!truncated.coverage.is_empty(), "{truncated:#?}");
+    assert!(
+        truncated
+            .coverage
+            .iter()
+            .all(|entry| entry.state == SourceState::Complete),
+        "{truncated:#?}"
+    );
+}
+
+#[test]
+fn truncated_latest_reviews_under_a_workflow_are_unknown_and_never_give_merge() {
+    // alice's approval at the head stands and the standing verdicts were read
+    // in full, but someone den didn't read may have commented on an older
+    // head: whether anyone awaits re-review is unknown, so no Merge.
+    let decision = decided(
+        ready(31)
+            .review_at_head("alice", ReviewVerdict::Approved)
+            .latest_reviews_truncated(),
+        &acme(BOTH_ON),
+    );
+    assert_ne!(decision.next_step, Some(NextStep::Merge), "{decision:#?}");
+    assert_eq!(decision.next_step, None, "{decision:#?}");
+    assert_says(
+        &decision,
+        &["not every review was read, so someone may be awaiting re-review"],
+    );
+    assert_eq!(
+        decision.suggested_reviewers_unread.as_deref(),
+        Some("not every review was read")
     );
 }
