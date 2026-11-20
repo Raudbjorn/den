@@ -1,6 +1,6 @@
 //! The Next Step list and its empty states.
 
-use super::{State, format, header, jobs, scope};
+use super::{State, format, header, jobs, landing, scope};
 use crate::cache;
 use crate::{
     app::view_model::{ELLIPSIS, EmptyState, List, Row},
@@ -29,12 +29,16 @@ fn row(state: &State<'_>, decision: &Decision) -> Row {
         id: id.clone(),
         kind: id.kind(),
         next_step: decision.next_step,
-        step_label: decision
-            .next_step
-            .map_or(NO_STEP, |step| step.label())
-            .to_owned(),
-        repo: id.repo().to_string(),
-        reference: id.reference(),
+        step_label: match (decision.next_step, &decision.held_back) {
+            (Some(step), _) => step.label().to_owned(),
+            // "held for release": text, so it reads in monochrome.
+            (None, Some(held)) => held.label(),
+            (None, None) => NO_STEP.to_owned(),
+        },
+        repo: id
+            .repo()
+            .map_or_else(|| id.owner().to_owned(), ToString::to_string),
+        reference: decision.item.reference(),
         title: decision.item.title.clone(),
         waiting_on: decision.waiting_on,
         waiting_label: if decision.unattributed {
@@ -47,6 +51,7 @@ fn row(state: &State<'_>, decision: &Decision) -> Row {
         incomplete: decision.coverage.iter().any(|c| !c.state.is_complete()),
         age: format::age(state.now, decision.item.updated_at),
         job: live::most_telling(state.job_checks, id).map(|c| jobs::marker(&c.state)),
+        landing: landing::row(decision),
     }
 }
 

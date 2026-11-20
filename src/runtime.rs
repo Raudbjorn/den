@@ -3,9 +3,10 @@
 //! `gh` runs) or synchronously until nothing is pending (`den --dump`, and the
 //! seam-2 test harness).
 //!
-//! The Worker has two lanes, each a thread with bounded queues ([`lane_of`]):
+//! The Worker has three lanes, each a thread with bounded queues ([`lane_of`]):
 //! the store lane reads and writes den's own state files (cache, Upstream
 //! choices), so a choice is saved at once instead of waiting behind a survey;
+//! Linear surveys have their own lane so they cannot hold back GitHub;
 //! the remote lane runs everything else (`gh`, git, kitty). The UI thread only
 //! logs. On quit, [`Worker::finish`] waits a bounded time for the store lane to
 //! write what is queued; remote work still running is abandoned.
@@ -23,6 +24,8 @@ use std::{
 
 /// How many Effects may wait for each lane before new ones are refused.
 const EFFECT_QUEUE_CAPACITY: usize = 16;
+/// How many Linear surveys may wait behind one that is still running.
+const LINEAR_QUEUE_CAPACITY: usize = 2;
 /// How many finished-operation Events may wait for the UI thread, per lane.
 const EVENT_QUEUE_CAPACITY: usize = 16;
 /// How long quitting waits for the store lane to write what is queued.
@@ -72,6 +75,8 @@ pub enum LaneKind {
     Store,
     /// `gh`, git and kitty: slow or external, abandoned on quit.
     Remote,
+    /// Linear surveys: independent of GitHub and abandoned on quit.
+    Linear,
 }
 
 /// The lane `effect` runs on, or `None` for the Effects the UI thread handles
@@ -81,7 +86,9 @@ pub fn lane_of(effect: &Effect) -> Option<LaneKind> {
         Effect::LoadCache | Effect::StoreCache { .. } | Effect::StoreUpstreams { .. } => {
             Some(LaneKind::Store)
         }
+        Effect::SurveyLinear { .. } => Some(LaneKind::Linear),
         Effect::Survey { .. }
+        | Effect::ReadMemberStates { .. }
         | Effect::InspectLaunch { .. }
         | Effect::Launch { .. }
         | Effect::CheckJobs
@@ -100,8 +107,8 @@ struct Lane {
 }
 
 impl Lane {
-    fn start(ports: Ports) -> Self {
-        let (effect_tx, effect_rx) = mpsc::sync_channel::<Effect>(EFFECT_QUEUE_CAPACITY);
+    fn start(ports: Ports, capacity: usize) -> Self {
+        let (effect_tx, effect_rx) = mpsc::sync_channel::<Effect>(capacity);
         let (event_tx, event_rx) = mpsc::sync_channel::<Event>(EVENT_QUEUE_CAPACITY);
         thread::spawn(move || {
             for effect in effect_rx {
@@ -137,11 +144,12 @@ impl Lane {
     }
 }
 
-/// Performs Effects in the background on two lanes (see the module doc) and
+/// Performs Effects in the background on three lanes (see the module doc) and
 /// sends back their Events.
 pub struct Worker {
     store: Lane,
     remote: Lane,
+    linear: Lane,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -165,8 +173,9 @@ pub enum FinishError {
 impl Worker {
     pub fn start(ports: Ports) -> Self {
         Self {
-            store: Lane::start(ports.clone()),
-            remote: Lane::start(ports),
+            store: Lane::start(ports.clone(), EFFECT_QUEUE_CAPACITY),
+            remote: Lane::start(ports.clone(), EFFECT_QUEUE_CAPACITY),
+            linear: Lane::start(ports, LINEAR_QUEUE_CAPACITY),
         }
     }
 
@@ -189,6 +198,7 @@ impl Worker {
                 }
                 Some(LaneKind::Store) => &self.store,
                 Some(LaneKind::Remote) => &self.remote,
+                Some(LaneKind::Linear) => &self.linear,
             };
             if let Err(rejected) = lane.submit(effect) {
                 let (next_view, effects) = app.handle(*rejected);
@@ -205,10 +215,11 @@ impl Worker {
             .events
             .try_iter()
             .chain(self.remote.events.try_iter())
+            .chain(self.linear.events.try_iter())
     }
 
     /// Ends the Worker for quitting. Events already finished are handled first,
-    /// so a survey that just answered is still cached. Then both lanes close,
+    /// so a survey that just answered is still cached. Then all lanes close,
     /// and this waits, at most `within`, for the store lane to perform what is
     /// queued, handing its Events to `app` so a failed write is logged. Effects
     /// emitted meanwhile are rejected (the lanes are closed) and logged by the
@@ -221,6 +232,7 @@ impl Worker {
         }
         self.store.effects = None;
         self.remote.effects = None;
+        self.linear.effects = None;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             match self.store.events.recv_timeout(left) {
@@ -295,12 +307,18 @@ mod tests {
     fn a_rejected_survey_is_undone_before_the_next_key() {
         let (store, _store_queue, _store_events) = held_lane();
         let (remote, remote_queue, _remote_events) = held_lane();
+        let (linear, _linear_queue, _linear_events) = held_lane();
         drop(remote_queue); // The remote lane has stopped.
-        let worker = Worker { store, remote };
+        let worker = Worker {
+            store,
+            remote,
+            linear,
+        };
         let mut app = App::new(Ok(Config {
             owners: vec!["octo".to_owned()],
             main_clone_root: None,
             main_clones: Default::default(),
+            linear: Vec::new(),
         }));
         let (mut view, effects) = app.handle(Event::Started {
             now: Timestamp::UNIX_EPOCH,

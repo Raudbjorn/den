@@ -52,9 +52,20 @@ pub fn session_name(item: &WorkItemId, step: NextStep) -> String {
         WorkItemId::Issue { number, .. } => format!("issue{number}"),
         WorkItemId::Branch { name, .. } => name.clone(),
         WorkItemId::Run { workflow, .. } => slug(workflow_stem(&workflow.0)),
+        WorkItemId::LinearIssue { issue, .. } => slug(&issue.id),
     };
+    let place = item.repo().map_or(item.owner(), |repo| repo.name.as_str());
     clean(
-        &format!("{}-{what}-{}", item.repo().name, step_slug(step)),
+        &format!("{place}-{what}-{}", step_slug(step)),
+        MAX_SESSION_NAME_CHARS,
+    )
+}
+
+/// The Claude Code session name for a Land Job (#40):
+/// `<owner>-<identifier>-land`, e.g. `acme-team-2-land`.
+pub fn landing_session_name(owner: &str, identifier: &str) -> String {
+    clean(
+        &format!("{owner}-{}-{}", slug(identifier), step_slug(NextStep::Land)),
         MAX_SESSION_NAME_CHARS,
     )
 }

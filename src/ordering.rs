@@ -2,9 +2,12 @@
 //! (spec, "Ordering").
 //!
 //! Order: Waiting On (me › nobody › someone else), then the kind order (Fix CI
-//! on a default branch › Resolve conflicts › Address review › Merge › Review ›
-//! Fix CI on a PR › Finish draft › Implement › Triage › Open PR › Prune or
-//! revive › no Next Step), then most recently updated first. The Work Item's
+//! on a default branch › Resolve conflicts › Address review › Land › Merge ›
+//! Review › Request review › Fix CI on a PR › Finish draft › Mark for release ›
+//! Implement › Start › Triage › Open PR › Prune or revive › no Next Step; spec
+//! 0002, "Ordering"), then most recently updated first, except that Starts
+//! order by priority, then active cycle, then oldest first
+//! ([`StartOrder`](crate::decide::StartOrder)). The Work Item's
 //! identity breaks remaining ties, so the order is total and stable across
 //! refreshes.
 
@@ -25,8 +28,48 @@ pub enum Scope {
 
 impl Scope {
     /// Whether a Work Item belongs to this Scope.
+    ///
+    /// A Linear Issue belongs to its Owner, so the Owner and All Owners
+    /// Scopes include it; a Repo Scope never does by identity alone. Whether
+    /// a Repo Scope includes one depends on its Landing Group:
+    /// [`Scope::contains_decision`].
     pub fn contains(&self, item: &WorkItemId) -> bool {
-        self.contains_repo(item.repo())
+        match item.repo() {
+            Some(repo) => self.contains_repo(repo),
+            None => match self {
+                Self::AllOwners => true,
+                Self::Owner(owner) => same_login(owner, item.owner()),
+                Self::Repo(_) => false,
+            },
+        }
+    }
+
+    /// Whether a decided Work Item belongs to this Scope: [`Scope::contains`],
+    /// and a Repo Scope also includes the Linear Issues with a member (an
+    /// attached Pull Request, never a hint) in that Repo (spec 0002,
+    /// "Ordering and Scope"; #35). The Decision was made on the whole
+    /// Observation, so narrowing never changes it.
+    ///
+    /// Only a Repo of the issue's own Owner counts: a Landing Group's Pull
+    /// Requests are its Owner's (CONTEXT.md), and one attached in another
+    /// Owner's Repo is "not surveyed". So a Repo Scope never shows what its
+    /// Owner's Scope hides, and a Repo's sidebar count never exceeds its
+    /// Owner's.
+    pub fn contains_decision(&self, decision: &Decision) -> bool {
+        if self.contains(&decision.item.id) {
+            return true;
+        }
+        match self {
+            Self::Repo(scoped) => {
+                same_login(&scoped.owner, decision.item.id.owner())
+                    && decision
+                        .landing
+                        .members
+                        .iter()
+                        .any(|member| same_repo(scoped, &member.pr.repo))
+            }
+            Self::AllOwners | Self::Owner(_) => false,
+        }
     }
 
     /// Whether a Repo belongs to this Scope.
@@ -35,6 +78,21 @@ impl Scope {
             Self::AllOwners => true,
             Self::Owner(owner) => same_login(owner, &repo.owner),
             Self::Repo(scoped) => same_repo(scoped, repo),
+        }
+    }
+
+    /// Whether this Scope can hold Linear Issues, and so whether its Owner's
+    /// Linear sources bear on its coverage (a Linear source den could not
+    /// read may hide work only where Linear Issues can appear).
+    ///
+    /// Every Scope does. The Owner and All Owners Scopes hold the Owner's
+    /// Linear Issues, and since Landing Groups (#35) a Repo Scope holds those
+    /// with a member PR in it ([`Scope::contains_decision`]). Which Repo a
+    /// Linear Issue's member is in can't be known from a Linear source den
+    /// couldn't read, so every Repo of the Owner counts it.
+    pub fn holds_linear_issues(&self) -> bool {
+        match self {
+            Self::AllOwners | Self::Owner(_) | Self::Repo(_) => true,
         }
     }
 
@@ -92,19 +150,23 @@ pub fn kind_rank(next_step: Option<NextStep>, kind: WorkItemKind) -> u8 {
         (NextStep::FixCi, WorkItemKind::Run) => 0,
         (NextStep::ResolveConflicts, _) => 1,
         (NextStep::AddressReview, _) => 2,
-        (NextStep::Merge, _) => 3,
-        (NextStep::Review, _) => 4,
-        (NextStep::FixCi, _) => 5,
-        (NextStep::FinishDraft, _) => 6,
-        (NextStep::Implement, _) => 7,
-        (NextStep::Triage, _) => 8,
-        (NextStep::OpenPr, _) => 9,
-        (NextStep::PruneOrRevive, _) => 10,
+        (NextStep::Land, _) => 3,
+        (NextStep::Merge, _) => 4,
+        (NextStep::Review, _) => 5,
+        (NextStep::RequestReview, _) => 6,
+        (NextStep::FixCi, _) => 7,
+        (NextStep::FinishDraft, _) => 8,
+        (NextStep::MarkForRelease, _) => 9,
+        (NextStep::Implement, _) => 10,
+        (NextStep::Start, _) => 11,
+        (NextStep::Triage, _) => 12,
+        (NextStep::OpenPr, _) => 13,
+        (NextStep::PruneOrRevive, _) => 14,
     }
 }
 
 /// The rank of a Work Item with no Next Step: after every kind.
-const NO_STEP_RANK: u8 = 11;
+const NO_STEP_RANK: u8 = 15;
 
 /// Sorts Decisions for display (see the module docs).
 pub fn order(mut decisions: Vec<Decision>) -> Vec<Decision> {
@@ -116,6 +178,9 @@ fn sort_key(d: &Decision) -> impl Ord + '_ {
     (
         d.waiting_on,
         kind_rank(d.next_step, d.item.id.kind()),
+        // Only Starts carry one, so it orders Starts among themselves and
+        // leaves every other kind to the update time.
+        d.start_order,
         Reverse(d.item.updated_at),
         &d.item.id,
     )
@@ -126,5 +191,5 @@ pub fn in_scope<'a>(
     decisions: &'a [Decision],
     scope: &'a Scope,
 ) -> impl Iterator<Item = &'a Decision> + 'a {
-    decisions.iter().filter(|d| scope.contains(&d.item.id))
+    decisions.iter().filter(|d| scope.contains_decision(d))
 }

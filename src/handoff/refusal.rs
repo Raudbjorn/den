@@ -2,7 +2,7 @@
 //! silently picks another target instead.
 
 use super::{Remote, short_commit};
-use crate::domain::RepoId;
+use crate::domain::{RepoId, facts::PullRequestRef};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf};
@@ -31,6 +31,31 @@ impl fmt::Display for Refusal {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RefusalReason {
     NoNextStep,
+    /// A Linear Issue: den launches Jobs for it only from the Start and
+    /// Implement sheets, which arrive with the Linear writes (#38), and for
+    /// its Landing Group when its Next Step is Land (#40).
+    LinearIssueNotLaunchable,
+    /// Land (#40): no open member outside a Held Repo is left to land.
+    NothingToLand {
+        identifier: String,
+    },
+    /// Land (#40): a member den planned to land is no longer among the open
+    /// Pull Requests den surveyed.
+    LandingMemberGone {
+        pr: PullRequestRef,
+    },
+    /// Land (#40): just before launching, GitHub had a member's head at
+    /// another commit than the one approved on the sheet.
+    LandingMemberMoved {
+        pr: PullRequestRef,
+        approved: String,
+        now: String,
+    },
+    /// Land (#40): just before launching, GitHub had no head for a member
+    /// (`refs/pull/<n>/head`).
+    LandingMemberHeadGone {
+        pr: PullRequestRef,
+    },
     /// The Work Item is not in what den last observed.
     WorkItemGone,
     RepoUnknown {
@@ -67,6 +92,11 @@ pub enum RefusalReason {
         target: RepoId,
     },
     PromptsUnusable {
+        error: String,
+    },
+    /// The prompts file's template for this Next Step kind can't be used; the
+    /// file's other templates can.
+    TemplateUnusable {
         error: String,
     },
     JobRecordsUnreadable {
@@ -211,6 +241,31 @@ impl fmt::Display for RefusalReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoNextStep => f.write_str("this Work Item has no Next Step to hand off"),
+            Self::LinearIssueNotLaunchable => f.write_str(
+                "den can't launch a Job for this Linear Issue yet: it has no Repo until one is chosen for it, and the sheet that chooses one isn't built yet (only Land launches from a Linear Issue, for its Landing Group)",
+            ),
+            Self::NothingToLand { identifier } => write!(
+                f,
+                "{identifier}'s Landing Group has no open member outside a Held Repo, so there is nothing to land"
+            ),
+            Self::LandingMemberGone { pr } => write!(
+                f,
+                "{}#{}, a member of the Landing Group, is no longer among the open Pull Requests den surveyed",
+                pr.repo, pr.number
+            ),
+            Self::LandingMemberMoved { pr, approved, now } => write!(
+                f,
+                "{}#{}'s head is now {} on GitHub, not the approved {}; nothing was done. Refresh (r) and open the Land sheet again to approve the new head",
+                pr.repo,
+                pr.number,
+                short_commit(now),
+                short_commit(approved)
+            ),
+            Self::LandingMemberHeadGone { pr } => write!(
+                f,
+                "GitHub has no head for {}#{} (refs/pull/{}/head); nothing was done",
+                pr.repo, pr.number, pr.number
+            ),
             Self::WorkItemGone => f.write_str("this Work Item is no longer in the survey"),
             Self::RepoUnknown { repo } => write!(f, "den has no facts about the Repo {repo}"),
             Self::RepoArchived { repo } => {
@@ -270,6 +325,10 @@ impl fmt::Display for RefusalReason {
                 "the Branch {branch} is in {repo}, not in {target}: den fetches a Branch only from the Repo it is in; press u to target {repo} for this Job"
             ),
             Self::PromptsUnusable { error } => write!(f, "the prompts file is unusable: {error}"),
+            Self::TemplateUnusable { error } => write!(
+                f,
+                "the prompts file's template for this kind is unusable: {error}"
+            ),
             Self::JobRecordsUnreadable { error } => write!(
                 f,
                 "den can't read its Job records, so it can't tell whether this Work Item already has a Job: {error}"

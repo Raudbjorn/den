@@ -2,9 +2,9 @@
 
 use super::{
     coverage::Coverage,
-    facts::{Branch, Issue, PullRequest, Run},
-    ids::{RepoId, same_login},
-    linear::LinearPart,
+    facts::{Branch, Issue, MemberPullRequestState, MemberStateAttempt, PullRequest, Run},
+    ids::{RepoId, WorkItemId, same_login},
+    linear::{LinearPart, LinearViewer},
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,14 @@ use serde::{Deserialize, Serialize};
 pub struct TeamRef {
     pub org: String,
     pub slug: String,
+}
+
+impl TeamRef {
+    /// The same team on GitHub, whose organization logins and team slugs are
+    /// case-insensitive.
+    pub fn same(&self, other: &TeamRef) -> bool {
+        same_login(&self.org, &other.org) && self.slug.eq_ignore_ascii_case(&other.slug)
+    }
 }
 
 /// Who is looking: Waiting On "me" means this login, or a team it belongs to.
@@ -29,30 +37,38 @@ impl Viewer {
     }
 
     pub fn belongs_to(&self, team: &TeamRef) -> bool {
-        self.teams
-            .iter()
-            .any(|t| same_login(&t.org, &team.org) && t.slug.eq_ignore_ascii_case(&team.slug))
+        self.teams.iter().any(|t| t.same(team))
     }
 }
 
-/// Everyone den decides "me" by: the GitHub viewer now, and, from #32, the
-/// Linear viewer of each Linear Workflow's workspace. A Linear viewer is never
-/// matched to a GitHub login (spec 0002, "Waiting On").
+/// Everyone den decides "me" by: the GitHub viewer, and the Linear viewer of
+/// each Linear Workflow's workspace. A Linear viewer is never matched to a
+/// GitHub login (spec 0002, "Waiting On").
 ///
 /// It borrows the viewers from where they are recorded (the Observation), so
 /// deciding copies nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Viewers<'a> {
     pub github: &'a Viewer,
+    /// One per workspace whose Linear viewer den read.
+    pub linear: &'a [LinearViewer],
 }
 
 impl<'a> Viewers<'a> {
-    /// The viewers an Observation recorded: its GitHub viewer (and, from #32,
-    /// the Linear viewers in its Linear part).
+    /// The viewers an Observation recorded: its GitHub viewer and the Linear
+    /// viewers in its Linear part.
     pub fn of(observation: &'a Observation) -> Self {
         Self {
             github: &observation.viewer,
+            linear: &observation.linear.viewers,
         }
+    }
+
+    /// The Linear viewer of `workspace`, if den read it.
+    pub fn linear(&self, workspace: &str) -> Option<&'a LinearViewer> {
+        self.linear
+            .iter()
+            .find(|v| v.workspace.eq_ignore_ascii_case(workspace))
     }
 }
 
@@ -87,6 +103,15 @@ pub struct Observation {
     /// What den read from Linear, for Owners with a Linear Workflow. Empty when
     /// no Owner has one; its sources are in `coverage` like GitHub's.
     pub linear: LinearPart,
+    /// What GitHub said, after the survey, of the Landing Group members den
+    /// didn't find among the open Pull Requests (#37): merged, closed or open
+    /// again. Read by number, with their own coverage
+    /// (`SourceKind::MemberStates`, per Owner).
+    pub member_states: Vec<MemberPullRequestState>,
+    /// The members den asked about and got no state for, with when it last
+    /// asked (#37): they order the next bounded read, oldest first, after
+    /// the members never asked about.
+    pub member_attempts: Vec<MemberStateAttempt>,
     pub coverage: Coverage,
 }
 
@@ -110,11 +135,24 @@ impl Observation {
             branches: Vec::new(),
             runs: Vec::new(),
             linear: LinearPart::default(),
+            member_states: Vec::new(),
+            member_attempts: Vec::new(),
             coverage: Coverage::default(),
         }
     }
 
     pub fn repo(&self, id: &RepoId) -> Option<&Repo> {
         self.repos.iter().find(|r| &r.id == id)
+    }
+
+    /// When the survey that read `id`'s facts was made: a Linear Issue's is
+    /// the Linear survey's (Linear is surveyed apart from GitHub), any other
+    /// Work Item's the GitHub survey's. Data kept from an earlier survey is
+    /// older still; the cache records that age.
+    pub fn observed_at_of(&self, id: &WorkItemId) -> Timestamp {
+        match (id, self.linear.observed_at) {
+            (WorkItemId::LinearIssue { .. }, Some(linear)) => linear,
+            _ => self.observed_at,
+        }
     }
 }

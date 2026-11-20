@@ -19,9 +19,14 @@ pub enum SourceKind {
     IssueDetails,
     Branches,
     Runs,
-    /// One of the Linear sources of an Owner with a Linear Workflow (spec 0002).
-    /// Reserved: nothing records them before #32 (see [`LinearSourceKind`]).
+    /// One of the Linear sources of an Owner with a Linear Workflow (spec 0002,
+    /// see [`LinearSourceKind`]).
     Linear(LinearSourceKind),
+    /// The states of the Owner's Landing Group members that weren't among its
+    /// open Pull Requests: merged, closed or open again (#37). Read by number
+    /// after the survey, so Mark for release rests on a member that really
+    /// merged. Not a Work Item list, and not applicable to a GitHub Work Item.
+    MemberStates,
 }
 
 /// What a Linear source fetches for an Owner with a Linear Workflow. Each is
@@ -68,6 +73,7 @@ impl SourceKind {
             WorkItemKind::PullRequest => Self::PullRequests,
             WorkItemKind::Branch => Self::Branches,
             WorkItemKind::Run => Self::Runs,
+            WorkItemKind::LinearIssue => Self::Linear(LinearSourceKind::AssignedIssues),
         }
     }
 
@@ -81,6 +87,7 @@ impl SourceKind {
             Self::Branches => "Branches",
             Self::Runs => "Runs",
             Self::Linear(kind) => kind.label(),
+            Self::MemberStates => "Landing Group member states",
         }
     }
 }
@@ -112,6 +119,28 @@ impl Source {
         }
     }
 
+    /// One of an Owner's Linear sources.
+    pub fn is_linear(&self) -> bool {
+        matches!(
+            self,
+            Self::Owner {
+                kind: SourceKind::Linear(_),
+                ..
+            }
+        )
+    }
+
+    /// One of an Owner's Landing Group member-state sources (#37).
+    pub fn is_member_states(&self) -> bool {
+        matches!(
+            self,
+            Self::Owner {
+                kind: SourceKind::MemberStates,
+                ..
+            }
+        )
+    }
+
     pub fn label(&self) -> String {
         match self {
             Self::Viewer => "viewer and teams".to_owned(),
@@ -140,9 +169,41 @@ pub enum Incompleteness {
     /// The Owner's Repo list was not read completely, so Work Items in the
     /// Repos den missed may be missing too (whatever this kind's own fetch said).
     RepoListIncomplete { owner: String },
+    /// Linear's GraphQL responses carried errors next to data: the first
+    /// [`MAX_KEPT_LINEAR_ERRORS`] messages, and how many more there were
+    /// (counted, not kept, so one reply can't grow coverage, the cache or
+    /// the log without bound).
+    LinearErrorsAlongsideData {
+        errors: Vec<String>,
+        #[serde(default)]
+        more: usize,
+    },
+    /// Linear's rate limit was hit; `resets_at` when Linear said.
+    LinearRateLimited { resets_at: Option<Timestamp> },
 }
 
+/// The most Linear error messages one source keeps; the rest are counted.
+pub const MAX_KEPT_LINEAR_ERRORS: usize = 5;
+
 impl Incompleteness {
+    /// Linear's errors alongside data: the first [`MAX_KEPT_LINEAR_ERRORS`]
+    /// of `messages`, the rest counted with `more` (messages already dropped).
+    pub fn linear_errors(messages: impl IntoIterator<Item = String>, more: usize) -> Self {
+        let mut errors = Vec::new();
+        let mut dropped = more;
+        for message in messages {
+            if errors.len() < MAX_KEPT_LINEAR_ERRORS {
+                errors.push(message);
+            } else {
+                dropped = dropped.saturating_add(1);
+            }
+        }
+        Self::LinearErrorsAlongsideData {
+            errors,
+            more: dropped,
+        }
+    }
+
     /// Ranks reasons so that combining two keeps the more telling one: a rate
     /// limit (which also stops pagination, and says when it resets) over whole
     /// items missing (a stopped pagination, or a Repo list read only in part)
@@ -151,10 +212,11 @@ impl Incompleteness {
     fn rank(&self) -> u8 {
         match self {
             Self::ErrorsAlongsideData { .. }
+            | Self::LinearErrorsAlongsideData { .. }
             | Self::FollowUpLost { .. }
             | Self::FollowUpTruncated { .. } => 0,
             Self::PaginationStopped { .. } | Self::RepoListIncomplete { .. } => 1,
-            Self::RateLimited { .. } => 2,
+            Self::RateLimited { .. } | Self::LinearRateLimited { .. } => 2,
         }
     }
 
@@ -175,6 +237,22 @@ impl Incompleteness {
                     resets_at: first.max(second),
                 }
             }
+            (
+                Self::LinearErrorsAlongsideData { errors, more },
+                Self::LinearErrorsAlongsideData {
+                    errors: next,
+                    more: next_more,
+                },
+            ) => Self::linear_errors(
+                errors.into_iter().chain(next),
+                more.saturating_add(next_more),
+            ),
+            (
+                Self::LinearRateLimited { resets_at: first },
+                Self::LinearRateLimited { resets_at: second },
+            ) => Self::LinearRateLimited {
+                resets_at: first.max(second),
+            },
             (first, second) => {
                 if second.rank() > first.rank() {
                     second
@@ -211,6 +289,30 @@ impl Incompleteness {
                     "the Repo list of {owner} was not read completely, so some of its Repos may be missing"
                 )
             }
+            Self::LinearErrorsAlongsideData { errors, more } => {
+                match (errors.as_slice(), errors.len().saturating_add(*more)) {
+                    ([], _) => "Linear returned errors alongside data".to_owned(),
+                    ([only], 1) => format!("Linear returned an error alongside data: {only}"),
+                    ([first, ..], total) => {
+                        format!("Linear returned {total} errors alongside data, first: {first}")
+                    }
+                }
+            }
+            Self::LinearRateLimited {
+                resets_at: Some(at),
+            } => format!("rate limited by Linear until {at}"),
+            Self::LinearRateLimited { resets_at: None } => "rate limited by Linear".to_owned(),
+        }
+    }
+
+    /// When a rate limit resets: `Some(None)` for a rate limit that didn't
+    /// say, `None` for anything that isn't a rate limit.
+    pub fn rate_limit_reset(&self) -> Option<Option<Timestamp>> {
+        match self {
+            Self::RateLimited { resets_at } | Self::LinearRateLimited { resets_at } => {
+                Some(*resets_at)
+            }
+            _ => None,
         }
     }
 }
@@ -356,12 +458,83 @@ impl Coverage {
         self.entries.iter().filter(|e| !e.state.is_complete())
     }
 
+    /// Keeps only the entries `keep` accepts (no cross-kind rule applies:
+    /// dropping an entry never changes another).
+    pub fn retain(&mut self, keep: impl FnMut(&CoverageEntry) -> bool) {
+        self.entries.retain(keep);
+    }
+
+    /// Whether den read every `kind` fact of `repo`: the one rule for "is a
+    /// fact of this Repo that den didn't see really gone?", shared by the
+    /// cache merge and the Landing Groups' "merged or closed".
+    ///
+    /// A Repo with a source of its own is judged by that source alone: read
+    /// completely, its facts are all there even if a later page of its
+    /// Owner's list was lost. A Repo without one was read (or not) as part of
+    /// its Owner's list, so only a complete Owner source says it is all
+    /// there.
+    ///
+    /// Matched case-insensitively, as GitHub names are: entries under two
+    /// spellings are one source, read completely when any of them was (a
+    /// complete read of a Repo holds all its facts, whatever another
+    /// spelling's entry says).
+    pub fn read_completely(&self, repo: &RepoId, kind: SourceKind) -> bool {
+        let own: Vec<&CoverageEntry> = self
+            .entries
+            .iter()
+            .filter(|e| match &e.source {
+                Source::Repo { repo: r, kind: k } => *k == kind && r.same(repo),
+                _ => false,
+            })
+            .collect();
+        if !own.is_empty() {
+            return own.iter().any(|e| e.state.is_complete());
+        }
+        self.entries.iter().any(|e| match &e.source {
+            Source::Owner { owner, kind: k } => {
+                *k == kind && same_login(owner, &repo.owner) && e.state.is_complete()
+            }
+            _ => false,
+        })
+    }
+
     /// The sources whose completeness bears on one Work Item: the viewer (for
     /// Waiting On), its kind across its Owner, and its kind for its own Repo.
     /// Matched case-insensitively, as GitHub names are: a fact kept from an
     /// earlier survey may spell its Owner as the config did then.
+    ///
+    /// A Linear Issue's are its Owner's Linear sources: the Linear viewer (for
+    /// Waiting On) and the issue lists; and its Owner's Landing Group member
+    /// states (#37), which Mark for release rests on (the Linear Issue rules
+    /// drop that one from an issue with no member whose end den reads by
+    /// number). The GitHub viewer doesn't bear on it.
     pub fn applicable_to(&self, item: &WorkItemId) -> Vec<CoverageEntry> {
-        let repo = item.repo();
+        let Some(repo) = item.repo() else {
+            return self
+                .entries
+                .iter()
+                .filter(|e| match &e.source {
+                    Source::Owner {
+                        owner,
+                        kind: SourceKind::Linear(k),
+                    } => {
+                        same_login(owner, item.owner())
+                            && matches!(
+                                k,
+                                LinearSourceKind::Viewer
+                                    | LinearSourceKind::AssignedIssues
+                                    | LinearSourceKind::StartTeamIssues
+                            )
+                    }
+                    Source::Owner {
+                        owner,
+                        kind: SourceKind::MemberStates,
+                    } => same_login(owner, item.owner()),
+                    _ => false,
+                })
+                .cloned()
+                .collect();
+        };
         let kind = SourceKind::for_work_item(item.kind());
         let relevant = |k: SourceKind| {
             k == kind

@@ -40,6 +40,7 @@ struct OwnStep {
 fn decide(ctx: &Context<'_>, issue: &Issue) -> Decision {
     let item = WorkItem {
         id: issue.id(),
+        identifier: None,
         title: issue.title.clone(),
         url: issue.url.clone(),
         updated_at: issue.updated_at,

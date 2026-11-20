@@ -1,7 +1,14 @@
 //! The detail pane: the selected item's Next Step, Waiting On and Explanation.
 
-use super::{State, coverage, format, jobs};
-use crate::app::view_model::{Detail, DetailContent};
+use super::{State, coverage, format, jobs, landing};
+use crate::{
+    app::view_model::{Detail, DetailContent, DetailFacts},
+    decide::Decision,
+    domain::{
+        WorkItemId,
+        facts::{LinearIssue, Reviewer},
+    },
+};
 
 const LABEL: &str = "D E T A I L";
 const PLACEHOLDER: &str = "Nothing selected.";
@@ -18,13 +25,14 @@ pub fn build(state: &State<'_>) -> Detail {
                 .or_else(|| explanation.no_step_reason.clone())
                 .unwrap_or_default();
             DetailContent {
-                reference: decision.item.id.to_string(),
+                reference: reference(decision),
                 title: decision.item.title.clone(),
                 url: decision.item.url.clone(),
-                next_step: decision
-                    .next_step
-                    .map_or("none", |step| step.label())
-                    .to_owned(),
+                next_step: match (decision.next_step, &decision.held_back) {
+                    (Some(step), _) => step.label().to_owned(),
+                    (None, Some(held)) => format!("none ({})", held.label()),
+                    (None, None) => "none".to_owned(),
+                },
                 waiting_on: if decision.unattributed {
                     format!("{} (unattributed)", decision.waiting_on.label())
                 } else {
@@ -45,6 +53,10 @@ pub fn build(state: &State<'_>) -> Detail {
                     coverage::item_observed_at(state, &decision.coverage, decision.observed_at),
                 ),
                 job: jobs::detail(state.job_checks, &decision.item.id),
+                facts: linear_issue(state, &decision.item.id)
+                    .map(linear_facts)
+                    .or_else(|| workflow_facts(decision)),
+                landing: landing::detail(state, decision),
             }
         });
     Detail {
@@ -63,4 +75,76 @@ fn observed(state: &State<'_>, at: jiff::Timestamp) -> String {
     } else {
         format!("{}, {ago}", format::clock_time(at))
     }
+}
+
+/// `owner/name #12`; a Linear Issue's identifier, its workspace and Owner.
+fn reference(decision: &Decision) -> String {
+    match &decision.item.id {
+        WorkItemId::LinearIssue { owner, issue } => format!(
+            "{} {} Linear workspace {} {} Owner {owner}",
+            decision.item.reference(),
+            crate::app::view_model::SEPARATOR,
+            issue.workspace,
+            crate::app::view_model::SEPARATOR,
+        ),
+        id => id.to_string(),
+    }
+}
+
+pub(super) fn linear_issue<'s>(state: &State<'s>, id: &WorkItemId) -> Option<&'s LinearIssue> {
+    let issue = id.linear_issue()?;
+    state
+        .observation?
+        .linear
+        .issues
+        .iter()
+        .find(|i| &i.id == issue)
+}
+
+/// Spec 0002, story 17: team, state, assignee, priority, cycle (the URL is
+/// the detail's own last line).
+fn linear_facts(issue: &LinearIssue) -> DetailFacts {
+    DetailFacts {
+        label: "LINEAR ISSUE".to_owned(),
+        lines: vec![
+            format!("team {}", issue.team.key),
+            format!("state {} ({})", issue.state.name, issue.state.kind.label()),
+            match &issue.assignee {
+                Some(assignee) => format!("assignee {}", assignee.name),
+                None => "unassigned".to_owned(),
+            },
+            format!("priority {}", issue.priority.label()),
+            issue
+                .cycle
+                .as_ref()
+                .map_or_else(|| "no cycle".to_owned(), |c| c.describe()),
+        ],
+    }
+}
+
+/// A PR of an Owner with a Linear Workflow (#36): the hold, if any, and the
+/// suggested reviewers (configured plus awaiting re-review, minus fresh
+/// approvers, pending requests and the author), with what den did not read
+/// to filter them, if anything.
+fn workflow_facts(decision: &Decision) -> Option<DetailFacts> {
+    let suggested = decision.suggested_reviewers.as_ref()?;
+    let mut lines = Vec::new();
+    if let Some(held) = &decision.held_back {
+        lines.push(held.label());
+    }
+    lines.push(if suggested.is_empty() {
+        "suggested reviewers: none".to_owned()
+    } else {
+        let names: Vec<String> = suggested.iter().map(Reviewer::label).collect();
+        format!("suggested reviewers: {}", names.join(", "))
+    });
+    if let Some(unread) = &decision.suggested_reviewers_unread {
+        lines.push(format!(
+            "(may include someone already asked or approved: {unread})"
+        ));
+    }
+    Some(DetailFacts {
+        label: "LINEAR WORKFLOW".to_owned(),
+        lines,
+    })
 }

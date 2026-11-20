@@ -3,8 +3,8 @@
 //!
 //! When the sheet has more lines than rows, sections give way in this order:
 //! the fields' notes move onto their value's line, then go, then fields are cut,
-//! then the command, then the prompt; the Work Item, its status and the messages
-//! (refusals, what a launch did) stay.
+//! then the command, then the prompt, then a Request review's reviewers; the
+//! Work Item, its status and the messages (refusals, what a launch did) stay.
 
 use super::{
     Theme, UiError, glyphs, templates,
@@ -23,6 +23,8 @@ pub const LABEL_COLS: u16 = 12;
 const CHROME_ROWS: u16 = 3;
 /// The most rows the prompt field takes.
 const PROMPT_MAX_ROWS: usize = 6;
+/// The most rows a Request review's reviewers field takes.
+const REVIEWERS_MAX_ROWS: usize = 2;
 /// The most rows the command takes.
 const COMMAND_MAX_ROWS: usize = 4;
 /// The most rows the title takes.
@@ -89,7 +91,12 @@ pub fn lines(sheet: &LaunchSheet, width: usize, rows: usize, glyphs: glyphs::Gly
     let prompt = sheet
         .prompt
         .as_ref()
-        .map(|p| prompt_lines(p, width, glyphs))
+        .map(|p| input_lines("PROMPT", p, width, PROMPT_MAX_ROWS, glyphs))
+        .unwrap_or_default();
+    let reviewers = sheet
+        .reviewers
+        .as_ref()
+        .map(|r| input_lines("REVIEWERS", r, width, REVIEWERS_MAX_ROWS, glyphs))
         .unwrap_or_default();
     let command: Vec<Line> = sheet
         .command
@@ -105,6 +112,7 @@ pub fn lines(sheet: &LaunchSheet, width: usize, rows: usize, glyphs: glyphs::Gly
     let mut left = rows;
     let head = take(&head, usize::MAX, &mut left, width, glyphs);
     let messages = take(&messages, usize::MAX, &mut left, width, glyphs);
+    let reviewers = take(&reviewers, REVIEWERS_MAX_ROWS, &mut left, width, glyphs);
     let prompt = take(&prompt, PROMPT_MAX_ROWS, &mut left, width, glyphs);
     let command = take(&command, COMMAND_MAX_ROWS, &mut left, width, glyphs);
     let fields = if full_fields.len() <= left {
@@ -114,7 +122,7 @@ pub fn lines(sheet: &LaunchSheet, width: usize, rows: usize, glyphs: glyphs::Gly
     } else {
         take(&compact_fields, usize::MAX, &mut left, width, glyphs)
     };
-    let sections = [head, fields, prompt, command, messages];
+    let sections = [head, fields, reviewers, prompt, command, messages];
     let filled: usize = sections.iter().map(Vec::len).sum();
     let gaps = sections
         .iter()
@@ -204,9 +212,16 @@ fn field_lines(
     lines
 }
 
-/// The prompt, wrapped by terminal cells, with the
-/// cursor drawn while editing, scrolled so the cursor's row shows.
-fn prompt_lines(prompt: &PromptField, width: usize, glyphs: glyphs::Glyphs) -> Vec<Line> {
+/// An input field (the prompt, a Request review's reviewers), wrapped by
+/// terminal cells, with the cursor drawn while editing, scrolled so the
+/// cursor's row shows within `max_rows`.
+fn input_lines(
+    label: &str,
+    prompt: &PromptField,
+    width: usize,
+    max_rows: usize,
+    glyphs: glyphs::Glyphs,
+) -> Vec<Line> {
     let mut chars: Vec<String> = prompt.text.chars().map(String::from).collect();
     let cursor = prompt.cursor.min(chars.len());
     if prompt.editing {
@@ -229,7 +244,7 @@ fn prompt_lines(prompt: &PromptField, width: usize, glyphs: glyphs::Glyphs) -> V
     }
     rows.push(row);
     let first = cursor_row
-        .saturating_sub(PROMPT_MAX_ROWS - 1)
+        .saturating_sub(max_rows.saturating_sub(1))
         .min(rows.len());
     let first = if prompt.editing { first } else { 0 };
     let style = if prompt.editing {
@@ -241,7 +256,7 @@ fn prompt_lines(prompt: &PromptField, width: usize, glyphs: glyphs::Glyphs) -> V
         .skip(first)
         .enumerate()
         .map(|(i, row)| {
-            let label = if i == 0 { "PROMPT" } else { "" };
+            let label = if i == 0 { label } else { "" };
             (label.to_owned(), row, style)
         })
         .collect()
@@ -310,7 +325,7 @@ mod tests {
                     cursor,
                     editing: true,
                 };
-                let rows = prompt_lines(&prompt, 58, glyphs);
+                let rows = input_lines("PROMPT", &prompt, 58, PROMPT_MAX_ROWS, glyphs);
                 assert!(rows.iter().all(|(_, row, _)| row.width() <= 58));
                 assert!(
                     rows.iter()
@@ -346,6 +361,7 @@ mod tests {
             headline: "Ready to launch".to_owned(),
             fields: Vec::new(),
             prompt: None,
+            reviewers: None,
             command: Some(command),
             messages: Vec::new(),
         };

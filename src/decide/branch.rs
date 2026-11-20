@@ -52,6 +52,7 @@ fn is_candidate(ctx: &Context<'_>, branch: &Branch) -> bool {
 fn decide(ctx: &Context<'_>, branch: &Branch) -> Decision {
     let item = WorkItem {
         id: branch.id(),
+        identifier: None,
         title: if branch.last_commit_headline.is_empty() {
             branch.name.clone()
         } else {

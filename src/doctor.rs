@@ -16,7 +16,10 @@ pub fn run(
 ) -> io::Result<bool> {
     let mut passed = true;
     writeln!(out, "Survey prerequisites:")?;
-    let config = config::load(&paths.config_file);
+    let config = config::load(&paths.config_file).and_then(|config| {
+        config.check_linear_keys(&paths.config_file, |name| std::env::var_os(name))?;
+        Ok(config)
+    });
     let config_check = match &config {
         Ok(_) => Ok(()),
         Err(ConfigError::Missing { .. }) => Err(format!(
@@ -33,6 +36,10 @@ pub fn run(
             paths.config_file,
             location.map(|l| format!(", {l}")).unwrap_or_default()
         )),
+        Err(ConfigError::MissingLinearKey { .. }) => Err(
+            "set the api_key_env variable named by each Linear Workflow in the configuration"
+                .to_owned(),
+        ),
     };
     passed &= check(out, "configuration", config_check)?;
     passed &= executable(out, environment, "gh")?;
@@ -42,6 +49,10 @@ pub fn run(
     passed &= git_available;
     passed &= executable(out, environment, "claude")?;
     let prompt_check = match prompts::load(&paths.prompts_file) {
+        Ok(prompts) if prompts.problems().next().is_some() => Err(
+            "a prompt template is missing a required placeholder; check prompt keys and placeholders"
+                .to_owned(),
+        ),
         Ok(_) => Ok(()),
         Err(prompts::PromptsError::Unreadable { .. }) => Err(format!(
             "cannot read {:?}; check file permissions",

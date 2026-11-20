@@ -4,9 +4,14 @@
 //! - [`CachedObservation`]: the Observation den shows, plus the age of any data it
 //!   carried over from an earlier survey because the latest one could not read
 //!   that source.
-//! - [`merge`]: pure. A source the refresh read completely is replaced; a source it
-//!   could not read (failed, partial, not fetched) keeps the earlier data, marked
-//!   with that data's own age. One error never wipes the list.
+//! - [`merge`] (a GitHub survey), [`merge_linear`] (a Linear survey),
+//!   [`merge_member_states`] (Landing Group members' states, #37) and
+//!   [`settle_member_states`] (those states against the groups shown): pure. A
+//!   source the refresh read completely is replaced; a source it could not read
+//!   (failed, partial, not fetched) keeps the earlier data, marked with that
+//!   data's own age. One error never wipes the list, and a refresh of one service
+//!   never touches the other's data. Linear data is dropped when the Linear
+//!   viewer behind it changes, or when its Linear source is no longer read.
 //! - [`FileCache`]: the real [`ObservationCache`](crate::ports::ObservationCache),
 //!   one versioned JSON file per viewer under `$XDG_STATE_HOME/den/cache/`.
 //!
@@ -17,9 +22,11 @@ mod file;
 mod merge;
 
 pub use file::{CACHE_FORMAT, CACHE_SUBDIR, FileCache, MAX_CACHE_BYTES};
-pub use merge::merge;
+pub use merge::{LinearMerge, merge, merge_linear, merge_member_states, settle_member_states};
 
-use crate::domain::{Observation, Source, SourceKind, SourceState};
+use crate::domain::{
+    LinearSourceKind, Observation, Source, SourceKind, SourceState, ids::same_login,
+};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -28,7 +35,8 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Carried {
     pub source: Source,
-    /// When the kept data was observed (older than the Observation's own time).
+    /// When the kept data was observed: older than the survey of its service
+    /// (the Observation's own time for GitHub, its Linear part's for Linear).
     pub observed_at: Timestamp,
 }
 
@@ -38,7 +46,9 @@ pub struct Carried {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CachedObservation {
     pub observation: Observation,
-    /// One entry per source whose shown data is older than `observation.observed_at`.
+    /// One entry per source whose shown data is older than its service's latest
+    /// survey (`observation.observed_at`, or `observation.linear.observed_at`
+    /// for a Linear source).
     pub carried: Vec<Carried>,
 }
 
@@ -79,6 +89,15 @@ impl CachedObservation {
         observation.issues.retain(|i| watched(&i.repo.owner));
         observation.branches.retain(|i| watched(&i.repo.owner));
         observation.runs.retain(|i| watched(&i.repo.owner));
+        observation.linear.issues.retain(|i| watched(&i.owner));
+        observation.linear.viewers.retain(|v| watched(&v.owner));
+        observation.linear.team_states.retain(|t| watched(&t.owner));
+        observation
+            .member_states
+            .retain(|m| watched(&m.pr.repo.owner));
+        observation
+            .member_attempts
+            .retain(|a| watched(&a.pr.repo.owner));
         let mut coverage = crate::domain::Coverage::default();
         for entry in observation.coverage.entries() {
             if source_owner(&entry.source).is_none_or(watched) {
@@ -104,6 +123,54 @@ impl CachedObservation {
         observation.owners = owners.to_vec();
         self.carried
             .retain(|c| source_owner(&c.source).is_none_or(watched));
+        self
+    }
+}
+
+/// What den reads from Linear for one Owner's Linear Workflow: the workspace,
+/// and the Linear sources its config asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinearReads<'a> {
+    pub owner: &'a str,
+    pub workspace: &'a str,
+    pub sources: Vec<LinearSourceKind>,
+}
+
+impl CachedObservation {
+    /// Fits a cached Linear part to the configured Linear Workflows: drops the
+    /// Linear facts, Linear coverage and Linear ages of an Owner that has no
+    /// Linear Workflow now, or whose workflow names another workspace than the
+    /// cached data was read in, and of every Linear source the config no
+    /// longer reads (a fact goes with the source that listed it).
+    pub fn restricted_to_linear(mut self, workflows: &[LinearReads<'_>]) -> Self {
+        let workflow_of = |owner: &str| workflows.iter().find(|w| same_login(w.owner, owner));
+        let mut dropped: Vec<String> = Vec::new();
+        for (owner, workspace) in self.observation.linear.workspaces() {
+            let fits =
+                workflow_of(owner).is_some_and(|w| w.workspace.eq_ignore_ascii_case(workspace));
+            if !fits && !dropped.iter().any(|d| same_login(d, owner)) {
+                dropped.push(owner.to_owned());
+            }
+        }
+        let reads = |owner: &str, kind: LinearSourceKind| {
+            !dropped.iter().any(|d| same_login(d, owner))
+                && workflow_of(owner).is_some_and(|w| w.sources.contains(&kind))
+        };
+        let part = &mut self.observation.linear;
+        part.viewers
+            .retain(|v| reads(&v.owner, LinearSourceKind::Viewer));
+        part.issues.retain(|i| reads(&i.owner, i.listed_by));
+        part.team_states
+            .retain(|t| reads(&t.owner, LinearSourceKind::TeamStates));
+        let linear_kept = |source: &Source| match source {
+            Source::Owner {
+                owner,
+                kind: SourceKind::Linear(kind),
+            } => reads(owner, *kind),
+            Source::Owner { .. } | Source::Repo { .. } | Source::Viewer => true,
+        };
+        self.observation.coverage.retain(|e| linear_kept(&e.source));
+        self.carried.retain(|c| linear_kept(&c.source));
         self
     }
 }

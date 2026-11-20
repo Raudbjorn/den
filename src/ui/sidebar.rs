@@ -154,10 +154,13 @@ fn row_context(
     label_cols: usize,
 ) -> TemplateContext {
     let heading = row.entry != SidebarEntry::Repo;
-    let label = if heading {
-        row.label.clone()
-    } else {
+    let label = if !heading {
         format!("{REPO_INDENT}{}", row.label)
+    } else if row.linear_workflow {
+        // An Owner with a Linear Workflow: the glyph says so, not colour.
+        format!("{} {}", row.label, glyphs.linear)
+    } else {
+        row.label.clone()
     };
     // Cut here, with an ellipsis: left to the template, a long label wraps at
     // a hyphen or space and loses its end without a sign.

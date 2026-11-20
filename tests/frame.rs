@@ -1047,3 +1047,77 @@ fn a_title_of_wide_emoji_is_cut_by_drawn_width_with_an_ellipsis() {
     }
     assert_no_problems(&problems);
 }
+
+/// #32: the Linear glyph marks a Linear Issue's row, its detail's facts, and
+/// an Owner with a Linear Workflow in the sidebar and the header, in every
+/// glyph profile and without colour (monochrome).
+#[test]
+fn linear_markers_are_glyphs_that_read_in_monochrome() {
+    use den::{
+        domain::{Coverage, LinearPart},
+        ports::LinearSurvey,
+    };
+    use support::{
+        build::{linear_issue, linear_viewer},
+        harness::config_with_linear,
+    };
+    let mut harness = Harness::new(Ok(config_with_linear(
+        &["acme", "octo"],
+        &[("acme", "acme")],
+    )));
+    let (cols, rows) = DESIGN_SIZE;
+    harness.send(Event::Resized { cols, rows });
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("acme")
+        .fully_read_owner("octo")
+        .build()));
+    harness.linear.push_answer(LinearSurvey {
+        part: LinearPart {
+            viewers: vec![linear_viewer("acme", "acme")],
+            issues: vec![linear_issue("acme", "id-7", "TEAM-7").build()],
+            ..LinearPart::default()
+        },
+        coverage: Coverage::default(),
+    });
+    let view = harness.start().clone();
+    for (glyphs, mark) in [(GlyphProfile::Unicode, "◇"), (GlyphProfile::Ascii, "[L]")] {
+        let theme = Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
+        let text = frame::buffer_text(&frame::render(&theme, &view, cols, rows).expect("renders"));
+        for expected in [
+            format!("{mark} acme TEAM-7"),
+            format!("acme {mark}"),
+            format!("{mark} LINEAR ISSUE"),
+            "team TEAM".to_owned(),
+        ] {
+            assert!(
+                text.contains(&expected),
+                "{glyphs:?}: missing {expected:?}\n{text}"
+            );
+        }
+    }
+}
+
+/// Landing Group annotations share the reference column's clipping budget.
+#[test]
+fn long_landing_groups_keep_an_ellipsis_and_a_gap_before_the_age() {
+    let (cols, rows) = MINIMUM_SIZE;
+    let mut view = surveyed_harness(MINIMUM_SIZE).view;
+    for row in &mut view.list.rows {
+        row.landing.groups = (1..=10).map(|n| format!("TEAM-{n}")).collect();
+        row.landing.ambiguous = true;
+        row.age = OLD_AGE.to_owned();
+    }
+    for glyphs in [GlyphProfile::Unicode, GlyphProfile::Ascii] {
+        let theme = Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
+        let buffer = frame::render(&theme, &view, cols, rows).expect("renders");
+        let lines = region_lines(&buffer, frame::regions(buffer.area, &view.layout).list);
+        for row in &view.list.rows {
+            let top = lines
+                .iter()
+                .find(|line| line.contains(&row.repo))
+                .expect("Repo row");
+            assert!(top.contains(ellipsis(glyphs)), "{glyphs:?}: {top:?}");
+            assert!(top.ends_with(&format!(" {OLD_AGE}")), "{glyphs:?}: {top:?}");
+        }
+    }
+}

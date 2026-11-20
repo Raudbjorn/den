@@ -9,13 +9,17 @@ mod support;
 use den::{
     cache::{CACHE_FORMAT, CacheError, CachedObservation, Carried, FileCache},
     domain::{
-        Source,
-        facts::{MergeState, ReviewDecision},
+        Incompleteness, LinearSourceKind, LinearTeamStates, Source, SourceKind, SourceState,
+        facts::{
+            ActorKind, Attachment, AttachmentsRead, LinearState, LinearStateKind, LinearTeam,
+            MemberPullRequestState, MemberStateAttempt, MergeState, PullRequestRef,
+            PullRequestState, ReviewDecision, ReviewVerdict,
+        },
     },
     ports::ObservationCache,
 };
 use std::{fs, time::Duration};
-use support::build::{ObservationBuilder, issue, pr, ts};
+use support::build::{ObservationBuilder, issue, linear_issue, pr, ts};
 
 fn cached(viewer: &str, number: u64) -> CachedObservation {
     let mut cached = CachedObservation::fresh(
@@ -101,6 +105,211 @@ fn every_issue_and_pr_shape_loads_back_unchanged() {
     assert_eq!(cache.load(), Ok(Some(stored)));
 }
 
+/// The Linear part survives the file with what the merge needs (#34): its
+/// own survey time, the source that listed each Linear Issue, and the age
+/// of Linear data kept from an earlier survey.
+#[test]
+fn the_linear_part_and_its_ages_load_back_unchanged() {
+    let mut observation = ObservationBuilder::new()
+        .owner("acme")
+        .linear_viewer("acme", "acme")
+        .linear_issue(linear_issue("acme", "id-7", "TEAM-7"))
+        .linear_issue(
+            linear_issue("acme", "id-9", "TEAM-9")
+                .unassigned()
+                .listed_by(LinearSourceKind::StartTeamIssues),
+        )
+        .owner_coverage(
+            "acme",
+            SourceKind::Linear(LinearSourceKind::StartTeamIssues),
+            SourceState::Failed {
+                error: "timeout".to_owned(),
+            },
+        )
+        .build();
+    observation.linear.observed_at = Some(ts("2026-11-19T11:00:00Z"));
+    let mut stored = CachedObservation::fresh(observation);
+    stored.carried.push(Carried {
+        source: Source::Owner {
+            owner: "acme".to_owned(),
+            kind: SourceKind::Linear(LinearSourceKind::StartTeamIssues),
+        },
+        observed_at: ts("2026-11-19T09:00:00Z"),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCache::in_state_dir(dir.path());
+    cache.store(&stored).unwrap();
+    assert_eq!(cache.load(), Ok(Some(stored)));
+}
+
+/// Format 8 was milestone 2's merged shape; 10 adds the second review
+/// round's fields and 11 #37's Landing Group member states. Every field #33,
+/// #34, #35, #36 and #37 added to the stored Observation survives a store and
+/// load, together: #33's `LinearPart.team_states`, #34's
+/// `LinearIssue.listed_by` and `LinearPart.observed_at`, #35's attachments (a
+/// PR, a link, and an issue whose attachments weren't all read), #36's review
+/// commit and author kind (a user's review on an older head, a bot's comment
+/// at the head) and `PrDetails::head_commit`, #32's
+/// `LinearErrorsAlongsideData::more`, and #37's member states (merged with
+/// its time, closed, open again) with their coverage.
+///
+/// (#37 moved its format assertion from 8 to 9, and the second review round
+/// to 10 and then 11, and #37's round 4 to 12 with its member attempts: the
+/// stored Observation gained fields each time. Every
+/// earlier assertion is unchanged. #37 had renamed this test to
+/// `milestone_2_s_shape_…`; the merge keeps integrate/m2-wave3's name.)
+#[test]
+fn milestone_2_s_merged_shape_loads_back_unchanged() {
+    // 12: #37's member attempts joined the Observation (round 4).
+    assert_eq!(
+        CACHE_FORMAT, 12,
+        "the merged milestone-2 shape with member states and attempts"
+    );
+    let team_states = LinearTeamStates {
+        owner: "acme".to_owned(),
+        workspace: "acme".to_owned(),
+        team: LinearTeam {
+            id: "team-team".to_owned(),
+            key: "TEAM".to_owned(),
+        },
+        name: "Team".to_owned(),
+        states: vec![LinearState {
+            id: "TEAM-todo".to_owned(),
+            name: "Todo".to_owned(),
+            kind: LinearStateKind::Unstarted,
+        }],
+    };
+    let mut observation = ObservationBuilder::new()
+        .owner("acme")
+        .repo("acme/api")
+        .pull_request(
+            pr("acme/api", 4)
+                .head("b".repeat(40).as_str())
+                .review_on("alice", ReviewVerdict::ChangesRequested, &"a".repeat(40))
+                .bot_review_at_head("ci-bot", ReviewVerdict::Commented),
+        )
+        .linear_viewer("acme", "acme")
+        .linear_issue(
+            linear_issue("acme", "id-7", "TEAM-7")
+                .attached("acme/api", 4)
+                .link("https://example.com/spec"),
+        )
+        .linear_issue(
+            linear_issue("acme", "id-9", "TEAM-9")
+                .up_for_grabs()
+                .listed_by(LinearSourceKind::StartTeamIssues)
+                .attachments_incomplete("more than 50 attachments"),
+        )
+        .build();
+    observation.linear.team_states = vec![team_states.clone()];
+    observation.linear.observed_at = Some(ts("2026-11-19T11:00:00Z"));
+    let member = |number: u64, state: PullRequestState| MemberPullRequestState {
+        pr: PullRequestRef::new(den::domain::RepoId::new("acme", "api"), number),
+        state,
+    };
+    let member_states = vec![
+        member(
+            5,
+            PullRequestState::Merged {
+                merged_at: Some(ts("2026-11-18T10:00:00Z")),
+            },
+        ),
+        member(6, PullRequestState::Closed),
+        member(7, PullRequestState::Open),
+    ];
+    observation.member_states = member_states.clone();
+    let member_attempts = vec![MemberStateAttempt {
+        pr: PullRequestRef::new(den::domain::RepoId::new("acme", "api"), 99),
+        attempted_at: ts("2026-11-19T11:30:00Z"),
+    }];
+    observation.member_attempts = member_attempts.clone();
+    observation.coverage.record(
+        Source::Owner {
+            owner: "acme".to_owned(),
+            kind: SourceKind::MemberStates,
+        },
+        SourceState::Failed {
+            error: "timeout".to_owned(),
+        },
+    );
+    let assigned = Source::Owner {
+        owner: "acme".to_owned(),
+        kind: SourceKind::Linear(LinearSourceKind::AssignedIssues),
+    };
+    let linear_errors = SourceState::Partial(Incompleteness::LinearErrorsAlongsideData {
+        errors: vec!["Entity not found: Attachment".to_owned()],
+        more: 3,
+    });
+    observation
+        .coverage
+        .record(assigned.clone(), linear_errors.clone());
+    let stored = CachedObservation::fresh(observation);
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCache::in_state_dir(dir.path());
+    cache.store(&stored).unwrap();
+    let loaded = cache.load().unwrap().expect("stored");
+    assert_eq!(loaded, stored);
+
+    // The fixture really holds each field, so the equality above covers it.
+    let linear = &loaded.observation.linear;
+    assert_eq!(linear.team_states, [team_states]);
+    assert_eq!(linear.observed_at, Some(ts("2026-11-19T11:00:00Z")));
+    assert_eq!(
+        linear.issues[1].listed_by,
+        LinearSourceKind::StartTeamIssues
+    );
+    assert_eq!(
+        linear.issues[0].attachments.links,
+        [
+            Attachment::PullRequest(PullRequestRef::new(
+                den::domain::RepoId::new("acme", "api"),
+                4
+            )),
+            Attachment::Link {
+                url: "https://example.com/spec".to_owned()
+            },
+        ]
+    );
+    assert!(matches!(
+        linear.issues[1].attachments.read,
+        AttachmentsRead::Incomplete { .. }
+    ));
+    let details = loaded.observation.pull_requests[0]
+        .details
+        .as_ref()
+        .expect("details");
+    assert_eq!(
+        details.head_commit.as_deref(),
+        Some("b".repeat(40).as_str())
+    );
+    assert_eq!(
+        loaded.observation.coverage.get(&assigned),
+        Some(&linear_errors)
+    );
+    let alice = &details.latest_reviews.items[0];
+    assert_eq!(alice.commit.as_deref(), Some("a".repeat(40).as_str()));
+    assert_eq!(alice.author_kind, ActorKind::User);
+    let bot = details
+        .latest_reviews_with_comments
+        .items
+        .iter()
+        .find(|r| r.author.as_deref() == Some("ci-bot"))
+        .expect("the bot's comment");
+    assert_eq!(bot.author_kind, ActorKind::Bot);
+    assert_eq!(bot.verdict, ReviewVerdict::Commented);
+    assert_eq!(loaded.observation.member_states, member_states);
+    assert_eq!(loaded.observation.member_attempts, member_attempts);
+    assert!(
+        loaded
+            .observation
+            .coverage
+            .entries()
+            .iter()
+            .any(|e| e.source.is_member_states()),
+        "the member states' coverage"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn the_cache_is_readable_only_by_the_user() {
@@ -155,13 +364,16 @@ fn another_format_version_is_refused() {
     cache.store(&cached("me", 1)).unwrap();
     let file = cache.file_for("me").unwrap();
     let mut body: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
-    body["format"] = serde_json::json!(CACHE_FORMAT + 1);
-    fs::write(&file, serde_json::to_vec(&body).unwrap()).unwrap();
-    assert!(matches!(
-        cache.load(),
-        Err(CacheError::Format { found, expected, .. })
-            if found == CACHE_FORMAT + 1 && expected == CACHE_FORMAT
-    ));
+    // The preceding format has a different schema too, even after stacked PRs merge.
+    for format in [CACHE_FORMAT - 1, CACHE_FORMAT + 1] {
+        body["format"] = serde_json::json!(format);
+        fs::write(&file, serde_json::to_vec(&body).unwrap()).unwrap();
+        assert!(matches!(
+            cache.load(),
+            Err(CacheError::Format { found, expected, .. })
+                if found == format && expected == CACHE_FORMAT
+        ));
+    }
 }
 
 /// A temp state directory holding the cache milestone 1 wrote (format 4).
@@ -191,6 +403,24 @@ fn a_cache_milestone_1_wrote_is_refused_by_its_format_version() {
     let fresh = cached("me", 9);
     cache.store(&fresh).unwrap();
     assert_eq!(cache.load(), Ok(Some(fresh)));
+}
+
+/// Stacked branches used formats 7 and 8 for different shapes; neither is the combined shape.
+#[test]
+fn earlier_stacked_cache_formats_are_refused_before_decoding() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCache::in_state_dir(dir.path());
+    cache.store(&cached("me", 1)).unwrap();
+    let file = cache.file_for("me").unwrap();
+    let mut body: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    // Format 8 now also precedes the combined attachment and review facts.
+    for format in [7, 8] {
+        body["format"] = serde_json::json!(format);
+        fs::write(&file, serde_json::to_vec(&body).unwrap()).unwrap();
+        assert!(
+            matches!(cache.load(), Err(CacheError::Format { found, expected, .. }) if found == format && expected == CACHE_FORMAT)
+        );
+    }
 }
 
 #[test]
@@ -239,6 +469,43 @@ fn an_older_survey_never_replaces_a_newer_one() {
     let newest = at("2026-11-19T12:00:00Z", 3);
     cache.store(&newest).unwrap();
     assert_eq!(cache.load(), Ok(Some(newest)));
+}
+
+/// A Linear answer is saved beside the GitHub survey it was merged into, so
+/// a cache is as new as its newer service: a store is refused only when the
+/// stored survey is at least as new for GitHub and for Linear (and newer for
+/// one), never on GitHub's time alone.
+#[test]
+fn a_survey_is_superseded_only_when_both_services_stored_are_at_least_as_new() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCache::in_state_dir(dir.path());
+    let at = |github: &str, linear: &str, number: u64| {
+        let mut c = cached("me", number);
+        c.observation.observed_at = ts(github);
+        c.observation.linear.observed_at = Some(ts(linear));
+        c
+    };
+    // Another den stored a newer GitHub survey with an older Linear answer:
+    // this den's newer Linear answer still replaces it.
+    cache
+        .store(&at("2026-11-19T11:00:00Z", "2026-11-19T09:00:00Z", 2))
+        .unwrap();
+    let newer_linear = at("2026-11-19T10:00:00Z", "2026-11-19T10:30:00Z", 1);
+    cache.store(&newer_linear).unwrap();
+    assert_eq!(cache.load(), Ok(Some(newer_linear)));
+
+    // Same GitHub survey, older Linear answer: refused, naming Linear's times.
+    let older_linear = at("2026-11-19T10:00:00Z", "2026-11-19T09:00:00Z", 3);
+    assert!(matches!(
+        cache.store(&older_linear),
+        Err(CacheError::Superseded { stored, offered, .. })
+            if stored == ts("2026-11-19T10:30:00Z") && offered == ts("2026-11-19T09:00:00Z")
+    ));
+
+    // The same times again (the same survey saved twice) still replace it.
+    let same = at("2026-11-19T10:00:00Z", "2026-11-19T10:30:00Z", 4);
+    cache.store(&same).unwrap();
+    assert_eq!(cache.load(), Ok(Some(same)));
 }
 
 /// A cache of an older format is never read again, so its age can't keep a

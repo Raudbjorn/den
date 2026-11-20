@@ -103,7 +103,7 @@ fn a_partly_read_repo_list_is_carried_onto_every_kind_of_that_owners_work_items(
 
     let alpha: Vec<&Decision> = decided
         .iter()
-        .filter(|d| d.item.id.repo().owner == "alpha")
+        .filter(|d| d.item.id.owner() == "alpha")
         .collect();
     assert_eq!(alpha.len(), 4, "a PR, an Issue, a Run and a Branch");
     for decision in alpha {
@@ -117,7 +117,7 @@ fn a_partly_read_repo_list_is_carried_onto_every_kind_of_that_owners_work_items(
     }
     let beta = decided
         .iter()
-        .find(|d| d.item.id.repo().owner == "beta")
+        .find(|d| d.item.id.owner() == "beta")
         .expect("beta's PR");
     assert!(
         beta.coverage.iter().all(|e| e.state.is_complete()),

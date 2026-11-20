@@ -8,10 +8,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use den::{
-    domain::{NextStep, RepoId, WorkItemId},
+    domain::{LinearIssueId, NextStep, RepoId, WorkItemId, facts::PullRequestRef},
     handoff::{
-        self, Base, BaseRef, BranchStart, CloneSource, JobBranch, LaunchOutcome, LaunchPlan,
-        MainClone, PathState, Remote, SessionStart, Target, WindowCommand, WindowMode, Writability,
+        self, Base, BaseRef, BranchStart, CloneSource, JobBranch, LandingGroupPlan, LandingMember,
+        LaunchOutcome, LaunchPlan, MainClone, PathState, PermissionMode, Remote, SessionStart,
+        Target, WindowCommand, WindowMode, Writability,
         clone::{RepoUrl, has_numeric_suffix, same_repo},
         command, names,
     },
@@ -35,6 +36,8 @@ fn window() -> WindowCommand {
         session: "app-pr7-address-review".to_owned(),
         prompt: "/gh-resolve https://github.com/octo/app/pull/7 — it's fine".to_owned(),
         start: SessionStart::New,
+        permission_mode: None,
+        setting_sources: den::handoff::SettingSources::All,
     }
 }
 
@@ -386,6 +389,10 @@ fn plan_for(clone: &Path, url: &str, head: &str) -> LaunchPlan {
         renamed: None,
         session: "app-pr7-address-review".to_owned(),
         prompt: "/gh-resolve https://github.com/octo/app/pull/7".to_owned(),
+        permission_mode: None,
+        project_settings: den::handoff::ProjectSettings::Loaded,
+        review_request: None,
+        landing: None,
         window: WindowMode::Kitty,
         command: String::new(),
     };
@@ -442,6 +449,72 @@ fn executing_a_plan_with_real_git_puts_the_worktree_on_the_pr_head_tracking_the_
         "{again:#?}"
     );
     assert!(worktree.join("README").exists());
+}
+
+#[test]
+fn a_land_branch_can_be_reused_without_tracking_after_its_worktree_is_removed() {
+    let (temp, _, clone, url, head) = temp_repos();
+    git(Path::new(&url), &["update-ref", "refs/pull/7/head", &head]);
+    let mut plan = plan_for(&clone, &url, &head);
+    plan.work_item = WorkItemId::LinearIssue {
+        owner: "octo".into(),
+        issue: LinearIssueId::new("octo", "id-1"),
+    };
+    plan.next_step = NextStep::Land;
+    plan.permission_mode = Some(PermissionMode::ApprovalRequired);
+    plan.branch.name = "land_team-1".into();
+    plan.worktree = handoff::worktree_path(&clone, "land_team-1");
+    plan.landing = Some(LandingGroupPlan {
+        issue: plan.work_item.clone(),
+        identifier: "TEAM-1".into(),
+        members: vec![LandingMember {
+            pr: PullRequestRef::new(plan.target.repo.clone(), 7),
+            url: plan.url.clone(),
+            repo_url: url,
+            head_commit: head.clone(),
+            checks: "passing (1)".into(),
+            configured: None,
+        }],
+        held: Vec::new(),
+    });
+    let workspace = GitWorkspace::new();
+    let launcher = RecordingLauncher::default();
+    let jobs = FileJobStore::new(temp.path().join("state/jobs.json"));
+    for start in [BranchStart::Fresh, BranchStart::Existing] {
+        plan.branch.start = start;
+        let report = handoff::execute(
+            &plan,
+            &workspace,
+            &launcher,
+            &jobs,
+            "2026-11-20T10:00:00Z".parse().unwrap(),
+        );
+        assert!(
+            matches!(report.outcome, LaunchOutcome::Launched { .. }),
+            "{report:#?}"
+        );
+        assert_eq!(git(&plan.worktree, &["rev-parse", "HEAD"]), head);
+        assert_eq!(
+            git(
+                &clone,
+                &[
+                    "config",
+                    "--default",
+                    "",
+                    "--get",
+                    "branch.land_team-1.remote"
+                ]
+            ),
+            ""
+        );
+        git(
+            &clone,
+            &["worktree", "remove", plan.worktree.to_str().unwrap()],
+        );
+        assert_eq!(git(&clone, &["rev-parse", "refs/heads/land_team-1"]), head);
+    }
+    assert_eq!(launcher.windows.lock().unwrap().len(), 2);
+    assert_eq!(jobs.load().unwrap().len(), 2);
 }
 
 #[test]
@@ -539,6 +612,7 @@ fn job_records_are_appended_and_an_unreadable_file_is_never_overwritten() {
         branch: format!("b{n}"),
         session: format!("s{n}"),
         launched_at: "2026-11-20T10:00:00Z".parse().unwrap(),
+        permission_mode: None,
     };
     store.record(&job(1)).unwrap();
     store.record(&job(2)).unwrap();
@@ -634,6 +708,7 @@ fn dens_appending_job_records_at_once_keep_every_record() {
         branch: format!("b{n}"),
         session: format!("s{n}"),
         launched_at: "2026-11-20T10:00:00Z".parse().unwrap(),
+        permission_mode: None,
     };
     // Each writer has its own store and its own lock file handle, as two den
     // processes would.
@@ -718,6 +793,7 @@ fn a_record_that_exceeds_the_read_limit_keeps_the_existing_history_readable() {
         branch: "feature".into(),
         session: String::new(),
         launched_at: "2026-11-20T10:00:00Z".parse().unwrap(),
+        permission_mode: None,
     };
     let overhead =
         serde_json::to_vec_pretty(&serde_json::json!({"format": JOBS_FORMAT, "jobs": [&job]}))
@@ -875,4 +951,108 @@ fn reusing_a_branch_requires_the_selected_remote_and_branch_before_any_launch_ch
         ),
         "upstream/feature/x"
     );
+}
+
+// ---- the Claude command and skill directories (#41) ----
+
+/// The real adapter reads `commands/` (with subfolders, Markdown only) and
+/// `skills/` (folders holding a SKILL.md); a missing directory reads as empty.
+#[test]
+fn the_git_workspace_reads_a_claude_directorys_commands_and_skills() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join(".claude");
+    let write = |relative: &str| {
+        let path = dir.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "---\ndescription: x\n---\n").unwrap();
+    };
+    write("commands/deploy.md");
+    write("commands/frontend/component.md");
+    write("commands/notes.txt");
+    write("skills/code-review/SKILL.md");
+    write("skills/half-made/README.md");
+    let read = GitWorkspace::new().claude_dir(&dir);
+    assert_eq!(read.path, dir);
+    assert_eq!(
+        read.commands,
+        Ok(vec![
+            PathBuf::from("deploy.md"),
+            PathBuf::from("frontend/component.md")
+        ])
+    );
+    assert_eq!(read.skills, Ok(vec!["code-review".to_owned()]));
+
+    let missing = GitWorkspace::new().claude_dir(&temp.path().join("nowhere"));
+    assert_eq!(missing.commands, Ok(Vec::new()));
+    assert_eq!(missing.skills, Ok(Vec::new()));
+}
+
+/// The real adapter reads the plugins listed in `installed_plugins.json`:
+/// each install's `commands/` and its skill folders, nested up to the depth
+/// bound. A missing or malformed list is "not checked", never an error.
+#[test]
+fn the_git_workspace_reads_installed_plugins_and_tolerates_a_bad_list() {
+    use den::handoff::workflows::{PluginDir, PluginsRead};
+    let temp = tempfile::tempdir().unwrap();
+    let claude = temp.path().join(".claude");
+    let matt = claude.join("plugins/cache/market/mattpocock-skills/1.2.3");
+    let review = claude.join("plugins/cache/market/code-review/1.0.0");
+    let write = |path: PathBuf| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "x").unwrap();
+    };
+    write(matt.join("skills/engineering/implement/SKILL.md"));
+    write(matt.join("skills/engineering/implement/nested/SKILL.md"));
+    write(matt.join("skills/a/b/c/too-deep/SKILL.md"));
+    write(matt.join("skills/top/SKILL.md"));
+    write(review.join("commands/code-review.md"));
+    let file = claude.join("plugins/installed_plugins.json");
+    let list = serde_json::json!({
+        "version": 2,
+        "plugins": {
+            "mattpocock-skills@market": [{"scope": "user", "installPath": matt, "version": "1.2.3"}],
+            "code-review@market": [{"scope": "user", "installPath": review}],
+            "odd@market": [{"scope": "project", "installPath": "relative/path"}],
+        }
+    });
+    std::fs::write(&file, serde_json::to_vec(&list).unwrap()).unwrap();
+    let workspace = GitWorkspace::new();
+    let PluginsRead::Read {
+        file: read_file,
+        plugins,
+    } = workspace.installed_plugins(&claude)
+    else {
+        panic!("the list should read");
+    };
+    assert_eq!(read_file, file);
+    let by_name = |name: &str| plugins.iter().find(|p| p.name == name).unwrap().clone();
+    assert_eq!(
+        by_name("mattpocock-skills"),
+        PluginDir {
+            name: "mattpocock-skills".to_owned(),
+            path: matt.clone(),
+            commands: Ok(Vec::new()),
+            skills: Ok(vec![
+                PathBuf::from("engineering/implement"),
+                PathBuf::from("top")
+            ]),
+        },
+        "a skill folder isn't searched further, and nothing below the depth bound"
+    );
+    assert_eq!(
+        by_name("code-review").commands,
+        Ok(vec![PathBuf::from("code-review.md")])
+    );
+    assert!(by_name("odd").commands.is_err());
+
+    std::fs::write(&file, b"{ not json").unwrap();
+    assert!(matches!(
+        workspace.installed_plugins(&claude),
+        PluginsRead::NotChecked(why) if why.contains("couldn't understand")
+    ));
+    std::fs::remove_file(&file).unwrap();
+    assert!(matches!(
+        workspace.installed_plugins(&claude),
+        PluginsRead::NotChecked(why) if why.contains("isn't there")
+    ));
 }

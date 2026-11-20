@@ -95,9 +95,13 @@ pub enum ReviewDecision {
 }
 
 /// The facts read by the follow-up query. The default is "read completely,
-/// nothing found".
+/// nothing found", at an unknown head.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrDetails {
+    /// The PR's head commit as this query read it. A push between the PR list
+    /// and this query makes it differ from [`PullRequest::head_commit`]; the
+    /// reviews' commits are only comparable to this one. `None`: not known.
+    pub head_commit: Option<String>,
     /// Checks on the head commit (check runs and commit statuses).
     pub checks: Listed<Check>,
     /// Review threads not yet resolved, among those read.
@@ -106,18 +110,26 @@ pub struct PrDetails {
     pub threads_complete: bool,
     /// Pending review requests.
     pub review_requests: Listed<Reviewer>,
-    /// Each reviewer's latest approving or change-requesting review.
+    /// Each reviewer's latest approving or change-requesting review
+    /// (GitHub's `latestOpinionatedReviews`): the verdict that stands.
     pub latest_reviews: Listed<Review>,
+    /// Each reviewer's latest review of any kind, comments included, never a
+    /// pending one (GitHub's `latestReviews`): who looked last, and at which
+    /// commit. Read for the Linear Workflow review rules (#36); milestone 1's
+    /// rules don't use it.
+    pub latest_reviews_with_comments: Listed<Review>,
 }
 
 impl Default for PrDetails {
     fn default() -> Self {
         Self {
+            head_commit: None,
             checks: Listed::default(),
             unresolved_threads: 0,
             threads_complete: true,
             review_requests: Listed::default(),
             latest_reviews: Listed::default(),
+            latest_reviews_with_comments: Listed::default(),
         }
     }
 }
@@ -166,17 +178,43 @@ pub enum Reviewer {
     Team(TeamRef),
 }
 
+impl Reviewer {
+    /// How den names the reviewer: the login, or "team org/slug".
+    pub fn label(&self) -> String {
+        match self {
+            Self::User(login) => login.clone(),
+            Self::Team(team) => format!("team {}/{}", team.org, team.slug),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Review {
     /// `None` when GitHub has no author (a deleted account).
     pub author: Option<String>,
+    /// What kind of account the author is.
+    pub author_kind: ActorKind,
     pub verdict: ReviewVerdict,
+    /// The commit the review was given on; `None` when GitHub no longer has it
+    /// (for example after a force-push removed it).
+    pub commit: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReviewVerdict {
     Approved,
     ChangesRequested,
+    /// A review that only comments.
+    Commented,
     /// Dismissed or another state that neither approves nor blocks.
+    Other,
+}
+
+/// GitHub's kind of account (`Actor.__typename`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ActorKind {
+    User,
+    Bot,
+    /// A mannequin, an organization, or a kind den doesn't know, or no author.
     Other,
 }

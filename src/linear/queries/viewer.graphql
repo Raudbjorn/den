@@ -1,0 +1,9 @@
+query LinearViewer {
+  viewer {
+    id
+    name
+  }
+  organization {
+    urlKey
+  }
+}

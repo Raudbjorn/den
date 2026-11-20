@@ -25,10 +25,18 @@ pub enum NextStep {
     OpenPr,
     /// A Stale Branch needs a decision.
     PruneOrRevive,
+    /// An unassigned, not-yet-started Linear Issue can be picked up (#33).
+    Start,
+    /// A Pull Request needs reviewers asked, or asked again (#36).
+    RequestReview,
+    /// A Landing Group is ready to land (#37).
+    Land,
+    /// A landed Linear Issue can move to the release state (#37).
+    MarkForRelease,
 }
 
 impl NextStep {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 14] = [
         Self::FinishDraft,
         Self::ResolveConflicts,
         Self::FixCi,
@@ -39,6 +47,10 @@ impl NextStep {
         Self::Implement,
         Self::OpenPr,
         Self::PruneOrRevive,
+        Self::Start,
+        Self::RequestReview,
+        Self::Land,
+        Self::MarkForRelease,
     ];
 
     /// The glossary name, as shown to the user.
@@ -54,6 +66,10 @@ impl NextStep {
             Self::Implement => "Implement",
             Self::OpenPr => "Open PR",
             Self::PruneOrRevive => "Prune or revive",
+            Self::Start => "Start",
+            Self::RequestReview => "Request review",
+            Self::Land => "Land",
+            Self::MarkForRelease => "Mark for release",
         }
     }
 }

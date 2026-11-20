@@ -1,6 +1,9 @@
 # Checks and reviews of one PR: the selection inside `... on PullRequest { }`.
 # den repeats it once per PR in a batch (aliases pr0, pr1, …), replacing $PR_ID
 # with that PR's own variable ($id0, $id1, …); `isRequired` needs the PR's ID.
+# The head is read again here: the reviews' commits are compared against the
+# head read in the same response, not against the PR list's.
+headRefOid
 reviewThreads(first: 100) {
   pageInfo { hasNextPage endCursor }
   nodes { isResolved }
@@ -19,7 +22,11 @@ reviewRequests(first: 50) {
 }
 latestOpinionatedReviews(first: 50) {
   pageInfo { hasNextPage endCursor }
-  nodes { state author { login } }
+  nodes { state author { __typename login } commit { oid } }
+}
+latestReviews(first: 50) {
+  pageInfo { hasNextPage endCursor }
+  nodes { state author { __typename login } commit { oid } }
 }
 commits(last: 1) {
   nodes {

@@ -6,6 +6,7 @@ mod footer;
 mod format;
 mod header;
 mod jobs;
+mod landing;
 mod launch;
 mod list;
 mod scope;
@@ -72,6 +73,14 @@ pub fn build(state: &State<'_>) -> ViewModel {
         layout: state.layout,
         splash: splash(state),
     }
+}
+
+/// Whether `owner` has a Linear Workflow in the config (#32).
+pub fn has_linear_workflow(state: &State<'_>, owner: &str) -> bool {
+    state
+        .config
+        .as_ref()
+        .is_ok_and(|config| config.linear_workflow(owner).is_some())
 }
 
 /// The splash stands in for the plates only while den has nothing else to show:

@@ -4,13 +4,20 @@
 
 pub mod branch;
 pub mod issue;
+pub mod linear_issue;
+pub mod member_state;
 pub mod pull_request;
 pub mod run;
 
 pub use branch::{Branch, ComparisonBranch};
 pub use issue::{Issue, IssueLink, LinkKind, LinkedPrState};
+pub use linear_issue::{
+    Attachment, Attachments, AttachmentsRead, LinearCycle, LinearIssue, LinearPriority,
+    LinearState, LinearStateKind, LinearTeam, LinearUser, PullRequestRef,
+};
+pub use member_state::{MemberPullRequestState, MemberStateAttempt, PullRequestState};
 pub use pull_request::{
-    Check, CheckOutcome, Listed, MergeState, Mergeability, PrDetails, PullRequest, Review,
-    ReviewDecision, ReviewVerdict, Reviewer,
+    ActorKind, Check, CheckOutcome, Listed, MergeState, Mergeability, PrDetails, PullRequest,
+    Review, ReviewDecision, ReviewVerdict, Reviewer,
 };
 pub use run::{Run, RunConclusion, RunStatus};

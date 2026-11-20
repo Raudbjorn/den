@@ -175,7 +175,7 @@ pub fn entries(
     let listed = observation
         .into_iter()
         .flat_map(|o| o.repos.iter().map(|r| &r.id));
-    for repo in listed.chain(decisions.iter().map(|d| d.item.id.repo())) {
+    for repo in listed.chain(decisions.iter().filter_map(|d| d.item.id.repo())) {
         if !repos.iter().any(|known| same_repo(known, repo)) {
             repos.push(repo);
         }
