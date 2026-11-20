@@ -18,7 +18,10 @@ use den::{
         view_model::{LaunchSheet, LaunchStatus, Overlay},
     },
     config::{self, Config},
-    domain::{NextStep, RepoId, TeamRef, WorkItemId, facts::ReviewVerdict, facts::Reviewer},
+    domain::{
+        NextStep, Observation, RepoId, TeamRef, WorkItemId, facts::ReviewVerdict,
+        facts::Reviewer,
+    },
     handoff::{
         LaunchPlan, PermissionMode, ReviewRequest, SessionStart, coordination_mode,
         prompts::{self, PromptFields},
@@ -27,7 +30,7 @@ use den::{
 };
 use std::path::PathBuf;
 use support::{
-    build::{ME, ObservationBuilder, now, pr},
+    build::{ME, ObservationBuilder, PrBuilder, now, pr},
     harness::{Harness, config_with_linear},
 };
 
@@ -73,29 +76,59 @@ fn started(slack: Option<&str>) -> Harness {
             &format!("{n:040x}"),
         );
     }
-    harness.answer(Ok(ObservationBuilder::new()
+    harness.answer(Ok(surveyed(pr_2(), pr_4())));
+    harness.start();
+    harness
+}
+
+/// #2 as [`started`] sees it: approved only at an older head, so Request review.
+fn pr_2() -> PrBuilder {
+    pr("acme/api", 2)
+        .author(ME)
+        .title(TITLE)
+        .passing("ci")
+        .approved()
+        .review_on("bob", ReviewVerdict::Approved, "0ld")
+}
+
+/// #4 as [`started`] sees it: approved at its head, so Merge.
+fn pr_4() -> PrBuilder {
+    pr("acme/api", 4)
+        .author(ME)
+        .passing("ci")
+        .approved()
+        .review_at_head("alice", ReviewVerdict::Approved)
+}
+
+/// acme/api with `two`, #3 (Address review) and `four`.
+fn surveyed(two: PrBuilder, four: PrBuilder) -> Observation {
+    ObservationBuilder::new()
         .fully_read_owner("acme")
         .repo("acme/api")
         .fully_read_owner("octo")
-        .pull_request(
-            pr("acme/api", 2)
-                .author(ME)
-                .title(TITLE)
-                .passing("ci")
-                .approved()
-                .review_on("bob", ReviewVerdict::Approved, "0ld"),
-        )
+        .pull_request(two)
         .pull_request(pr("acme/api", 3).author(ME).unresolved_threads(1))
-        .pull_request(
-            pr("acme/api", 4)
-                .author(ME)
-                .passing("ci")
-                .approved()
-                .review_at_head("alice", ReviewVerdict::Approved),
-        )
-        .build()));
-    harness.start();
-    harness
+        .pull_request(four)
+        .build()
+}
+
+/// Starts a refresh that will see `after`, then opens the sheet on
+/// `reference`: the inspection finishes first, so the sheet is ready on what
+/// den saw before. Returns the refresh's Effects; [`land`] performs them.
+fn refresh_pending(harness: &mut Harness, reference: &str, after: Observation) -> Vec<Effect> {
+    select(harness, reference);
+    let survey = harness.key(Key::Char('r'));
+    harness.answer(Ok(after));
+    let ready = open_sheet(harness, reference);
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    survey
+}
+
+/// The refresh lands while the sheet is open.
+fn land(harness: &mut Harness, survey: &[Effect]) {
+    for effect in survey {
+        harness.perform(effect);
+    }
 }
 
 fn press(harness: &mut Harness, key: Key) {
@@ -528,28 +561,7 @@ fn the_sheets_footer_offers_r_on_request_review_only() {
 #[test]
 fn reopening_a_request_review_job_passes_the_approval_required_mode_again() {
     let mut harness = started(None);
-    let job = JobRecord {
-        subject: JobSubject::GitHub(WorkItemId::PullRequest {
-            repo: RepoId::new("acme", "api"),
-            number: 2,
-        }),
-        next_step: NextStep::RequestReview,
-        target: RepoId::new("acme", "api"),
-        main_clone: CLONE.into(),
-        worktree: WORKTREE_2.into(),
-        branch: "feature-2".to_owned(),
-        session: SESSION_2.to_owned(),
-        launched_at: now(),
-        permission_mode: Some(PermissionMode::ApprovalRequired),
-    };
-    harness.jobs.holding(job);
-    harness.workspace.add_existing(WORKTREE_2);
-    harness
-        .workspace
-        .register_worktree(CLONE, WORKTREE_2, Some("feature-2"));
-    harness
-        .workspace
-        .set_local_branch(CLONE, "feature-2", HEAD_2);
+    live_request_review_job(&harness, Some(PermissionMode::ApprovalRequired));
 
     let asking = open_sheet(&mut harness, "#2");
     assert_eq!(
@@ -589,6 +601,276 @@ fn reopening_a_request_review_job_passes_the_approval_required_mode_again() {
     );
 }
 
+// ---- a survey lands while the sheet is open ----
+
+#[test]
+fn a_request_review_that_becomes_merge_while_the_sheet_is_open_is_shown_again_not_launched() {
+    let mut harness = started(None);
+    let survey = refresh_pending(
+        &mut harness,
+        "#2",
+        surveyed(
+            pr_2().review_at_head("alice", ReviewVerdict::Approved),
+            pr_4(),
+        ),
+    );
+    land(&mut harness, &survey);
+    assert_eq!(
+        sheet(&harness).next_step,
+        "Request review",
+        "the survey alone leaves the sheet as the user saw it"
+    );
+
+    press(&mut harness, Key::Enter);
+    assert!(
+        launch_plans(&harness).is_empty(),
+        "the Request review prompt never runs as a Merge Job"
+    );
+    assert!(harness.launcher.windows().is_empty());
+    let asked = sheet(&harness).clone();
+    assert_eq!(asked.status, LaunchStatus::Ready, "{}", messages(&asked));
+    assert_eq!(asked.next_step, "Merge");
+    assert!(
+        messages(&asked).contains("the Next Step is now Merge (was Request review)"),
+        "{}",
+        messages(&asked)
+    );
+    assert_eq!(field(&asked, "PERMISSIONS"), None);
+    assert_eq!(asked.reviewers, None);
+    let merge_prompt = format!(
+        "Pull Request acme/api#2 ({URL_2}) is approved and its checks pass. You are on its head branch feature-2. Check that it is ready, then merge it."
+    );
+    assert_eq!(prompt(&asked), merge_prompt);
+    let command = asked.command.clone().expect("a command");
+    assert!(!command.contains("--permission-mode"), "{command}");
+
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1, "{plans:?}");
+    assert_eq!(plans[0].next_step, NextStep::Merge);
+    assert_eq!(plans[0].permission_mode, None);
+    assert_eq!(plans[0].review_request, None);
+    assert_eq!(plans[0].prompt, merge_prompt);
+    assert_eq!(harness.launcher.windows()[0].permission_mode, None);
+    assert_eq!(harness.jobs.records()[0].permission_mode, None);
+}
+
+#[test]
+fn a_merge_that_becomes_request_review_while_the_sheet_is_open_is_shown_again_in_the_approval_required_mode()
+ {
+    let mut harness = started(None);
+    let survey = refresh_pending(
+        &mut harness,
+        "#4",
+        surveyed(
+            pr_2(),
+            pr("acme/api", 4)
+                .author(ME)
+                .passing("ci")
+                .approved()
+                .review_on("alice", ReviewVerdict::Approved, "0ld"),
+        ),
+    );
+    assert_eq!(sheet(&harness).next_step, "Merge");
+    land(&mut harness, &survey);
+
+    press(&mut harness, Key::Enter);
+    assert!(
+        launch_plans(&harness).is_empty(),
+        "the Merge prompt never runs in the approval-required mode"
+    );
+    let asked = sheet(&harness).clone();
+    assert_eq!(asked.status, LaunchStatus::Ready, "{}", messages(&asked));
+    assert_eq!(asked.next_step, "Request review");
+    assert!(
+        messages(&asked).contains("the Next Step is now Request review (was Merge)"),
+        "{}",
+        messages(&asked)
+    );
+    assert_eq!(
+        field(&asked, "PERMISSIONS").map(|f| f.0),
+        Some("approval-required: Claude asks before acting")
+    );
+    let suggested = field(&asked, "SUGGESTED").expect("SUGGESTED").0.to_owned();
+    assert_eq!(
+        asked.reviewers.as_ref().map(|r| r.text.as_str()),
+        Some(suggested.as_str())
+    );
+    assert!(
+        prompt(&asked).contains("Request reviews on GitHub from exactly these reviewers"),
+        "{}",
+        prompt(&asked)
+    );
+
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1, "{plans:?}");
+    assert_eq!(plans[0].next_step, NextStep::RequestReview);
+    assert_eq!(
+        plans[0].permission_mode,
+        Some(PermissionMode::ApprovalRequired)
+    );
+    assert_eq!(plans[0].prompt, prompt(&asked));
+    assert_eq!(
+        harness.launcher.windows()[0].permission_mode,
+        Some(PermissionMode::ApprovalRequired)
+    );
+}
+
+/// #2 still needs review, with other suggestions: alice approved its head,
+/// carol commented on an older one.
+fn alice_approved_carol_awaiting() -> Observation {
+    surveyed(
+        pr_2()
+            .review_at_head("alice", ReviewVerdict::Approved)
+            .review_on("carol", ReviewVerdict::Commented, "0ld"),
+        pr_4(),
+    )
+}
+
+#[test]
+fn an_unedited_reviewer_list_follows_new_suggestions_and_is_shown_again_before_launching() {
+    let mut harness = started(None);
+    // alice approved the head, so she is no longer suggested; carol commented
+    // on an older head, so she is awaiting re-review and is.
+    let survey = refresh_pending(&mut harness, "#2", alice_approved_carol_awaiting());
+    land(&mut harness, &survey);
+
+    press(&mut harness, Key::Enter);
+    assert!(
+        launch_plans(&harness).is_empty(),
+        "never asks alice from a list the user didn't choose"
+    );
+    let asked = sheet(&harness).clone();
+    assert_eq!(asked.status, LaunchStatus::Ready, "{}", messages(&asked));
+    assert_eq!(asked.next_step, "Request review");
+    assert_eq!(
+        field(&asked, "SUGGESTED").map(|f| f.0),
+        Some("acme/backend, carol")
+    );
+    assert_eq!(
+        asked.reviewers.as_ref().map(|r| r.text.as_str()),
+        Some("acme/backend, carol")
+    );
+    assert_eq!(prompt(&asked), prompt_without_slack("acme/backend, carol"));
+    assert!(
+        messages(&asked).contains("the suggested reviewers changed"),
+        "{}",
+        messages(&asked)
+    );
+
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1, "{plans:?}");
+    assert_eq!(
+        plans[0].review_request.as_ref().map(|r| r.reviewers.clone()),
+        Some(vec![team("acme", "backend"), user("carol")])
+    );
+}
+
+#[test]
+fn an_edited_reviewer_list_is_kept_when_the_suggestions_change() {
+    let mut harness = started(None);
+    let survey = refresh_pending(&mut harness, "#2", alice_approved_carol_awaiting());
+    edit_reviewers(&mut harness, "alice, dave");
+    land(&mut harness, &survey);
+
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1, "the user's own list launches as chosen");
+    assert_eq!(
+        plans[0].review_request.as_ref().map(|r| r.reviewers.clone()),
+        Some(vec![user("alice"), user("dave")])
+    );
+    assert_eq!(plans[0].prompt, prompt_without_slack("alice, dave"));
+}
+
+// ---- Live Jobs ----
+
+/// A recorded Request review Job for #2, live in [`WORKTREE_2`], recorded in
+/// `mode`.
+fn live_request_review_job(harness: &Harness, mode: Option<PermissionMode>) {
+    let job = JobRecord {
+        subject: JobSubject::GitHub(WorkItemId::PullRequest {
+            repo: RepoId::new("acme", "api"),
+            number: 2,
+        }),
+        next_step: NextStep::RequestReview,
+        target: RepoId::new("acme", "api"),
+        main_clone: CLONE.into(),
+        worktree: WORKTREE_2.into(),
+        branch: "feature-2".to_owned(),
+        session: SESSION_2.to_owned(),
+        launched_at: now(),
+        permission_mode: mode,
+    };
+    harness.jobs.holding(job);
+    harness.workspace.add_existing(WORKTREE_2);
+    harness
+        .workspace
+        .register_worktree(CLONE, WORKTREE_2, Some("feature-2"));
+    harness
+        .workspace
+        .set_local_branch(CLONE, "feature-2", HEAD_2);
+}
+
+#[test]
+fn reopening_a_request_review_job_whose_record_lost_its_mode_still_passes_it() {
+    // A den from before #39 reads format 2 too, ignores `permission_mode`, and
+    // writes the record back without it on its next launch.
+    let mut harness = started(None);
+    live_request_review_job(&harness, None);
+    let asking = open_sheet(&mut harness, "#2");
+    assert_eq!(
+        asking.status,
+        LaunchStatus::LiveJob,
+        "{}",
+        messages(&asking)
+    );
+    press(&mut harness, Key::Char('o'));
+    let ready = sheet(&harness).clone();
+    assert_eq!(
+        ready.status,
+        LaunchStatus::ReopenReady,
+        "{}",
+        messages(&ready)
+    );
+    assert_eq!(
+        field(&ready, "PERMISSIONS").map(|f| f.0),
+        Some("approval-required: Claude asks before acting")
+    );
+    press(&mut harness, Key::Enter);
+    let windows = harness.launcher.windows();
+    assert_eq!(windows.len(), 1);
+    assert_eq!(windows[0].start, SessionStart::Resume);
+    assert_eq!(
+        windows[0].permission_mode,
+        Some(PermissionMode::ApprovalRequired),
+        "the mode follows from the recorded Next Step"
+    );
+}
+
+#[test]
+fn a_fresh_start_request_review_prompt_has_no_push_line() {
+    // A coordination Job changes nothing on the PR branch: no "Push with".
+    let mut harness = started(None);
+    live_request_review_job(&harness, Some(PermissionMode::ApprovalRequired));
+    open_sheet(&mut harness, "#2");
+    press(&mut harness, Key::Char('f'));
+    let ready = sheet(&harness).clone();
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    assert_eq!(
+        prompt(&ready),
+        prompt_without_slack("alice, acme/backend"),
+        "the fresh Job's local branch differs from the head, yet no push line"
+    );
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1, "{plans:?}");
+    assert_ne!(plans[0].branch.name, "feature-2", "a fresh start");
+    assert!(!plans[0].prompt.contains("Push with"), "{}", plans[0].prompt);
+}
+
 // ---- the prompts file ----
 
 #[test]
@@ -609,6 +891,13 @@ fn reviewers_and_announcement_are_request_review_placeholders_only() {
         format!(
             "Ask alice, acme/backend to review {URL_2}. Then report whether the review request was made, with the error if it failed."
         )
+    );
+
+    let without = prompts::parse(path, "request_review = \"Ask for reviews of {url}.\"\n")
+        .expect_err("a request_review template must name the reviewers chosen on the sheet");
+    assert!(
+        without.to_string().contains("`request_review` must use {reviewers}"),
+        "{without}"
     );
 
     let misplaced = prompts::parse(path, "review = \"/code-review {url} {reviewers}\"\n")
