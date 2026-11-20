@@ -361,6 +361,66 @@ fn quiet_archived_and_empty_repos_cost_at_most_one_request() {
 }
 
 #[test]
+fn a_workflow_is_identified_by_its_whole_path_without_the_ref_suffix() {
+    let full_name = "octo/at";
+    let github = ScriptedGitHub::new(json!([]), move |_| {
+        ok(runs_page(
+            3,
+            vec![
+                with(
+                    run_node(full_name, (1, "deploy"), 30, "failure"),
+                    json!({ "path": ".github/workflows/deploy@prod.yml@refs/heads/main" }),
+                ),
+                with(
+                    run_node(full_name, (2, "deploy"), 20, "success"),
+                    json!({ "path": ".github/workflows/deploy@staging.yml" }),
+                ),
+                with(
+                    run_node(full_name, (3, "ci"), 10, "failure"),
+                    json!({ "path": ".github/workflows/ci.yml@refs/heads/main" }),
+                ),
+            ],
+        ))
+    });
+    let fetched = fetch(&github, &[repo("at", Some("main"), false)]).expect("fetch");
+    let mut workflows: Vec<&str> = fetched
+        .items
+        .iter()
+        .map(|r| r.workflow.0.as_str())
+        .collect();
+    workflows.sort_unstable();
+    assert_eq!(
+        workflows,
+        [
+            ".github/workflows/ci.yml",
+            ".github/workflows/deploy@prod.yml",
+            ".github/workflows/deploy@staging.yml",
+        ],
+        "an `@` in a file name keeps two workflows apart; only `@refs/...` is dropped"
+    );
+}
+
+#[test]
+fn a_run_from_an_unnamed_source_repo_is_not_a_default_branch_run() {
+    let full_name = "octo/orphan";
+    let github = ScriptedGitHub::new(json!([]), move |_| {
+        ok(runs_page(
+            1,
+            vec![with(
+                run_node(full_name, (1, "ci"), 10, "failure"),
+                json!({ "head_repository": null }),
+            )],
+        ))
+    });
+    let fetched = fetch(&github, &[repo("orphan", Some("main"), false)]).expect("fetch");
+    assert!(
+        fetched.items.is_empty(),
+        "GitHub didn't say which Repo it ran from, so it isn't known to be this one's: {:#?}",
+        fetched.items
+    );
+}
+
+#[test]
 fn a_failed_repo_is_recorded_on_that_repo_and_the_rest_are_still_read() {
     let github = ScriptedGitHub::new(json!([]), |path| {
         if path.starts_with("repos/octo/gone/") {

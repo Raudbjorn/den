@@ -46,6 +46,11 @@ pub const WORKFLOW_RUNS_PAGE_SIZE: usize = 10;
 /// inside GitHub's secondary rate limits while keeping ~100 Repos to seconds.
 pub const CONCURRENT_REQUESTS_PER_OWNER: usize = 8;
 
+/// What GitHub appends to a Run's workflow path when it names the ref the
+/// workflow file was read from. Workflow files live directly in
+/// `.github/workflows/`, so no directory in the path itself can contain it.
+const REF_SUFFIX: &str = "@refs/";
+
 /// Events whose Runs belong to a Pull Request, not to the branch they name.
 const PULL_REQUEST_EVENTS: [&str; 4] = [
     "pull_request",
@@ -503,18 +508,25 @@ impl RunNode {
     /// The fact, with GitHub's numeric workflow ID beside it for bookkeeping.
     fn into_fact(self, target: &Target<'_>) -> (u64, Run) {
         let repo = target.repo;
+        // A Run whose source Repo GitHub didn't name (a deleted fork, say) is
+        // not known to have run on this Repo's default branch, so it doesn't count.
         let same_repo = self
             .head_repository
             .as_ref()
-            .is_none_or(|h| h.full_name.eq_ignore_ascii_case(&repo.to_string()));
+            .is_some_and(|h| h.full_name.eq_ignore_ascii_case(&repo.to_string()));
         let on_default_branch = same_repo
             && self.head_branch.as_deref() == Some(target.default_branch)
             && !PULL_REQUEST_EVENTS.contains(&self.event.as_str());
         // A Run's path may carry the ref it ran from (`ci.yml@refs/heads/main`).
+        // Only that suffix goes: a workflow file name may itself contain `@`.
         let workflow = self
             .path
             .as_deref()
-            .map(|p| p.split('@').next().unwrap_or(p).to_owned())
+            .map(|p| {
+                p.split_once(REF_SUFFIX)
+                    .map_or(p, |(path, _)| path)
+                    .to_owned()
+            })
             .filter(|p| !p.is_empty())
             .unwrap_or_else(|| format!("workflow {}", self.workflow_id));
         let run = Run {
