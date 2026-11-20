@@ -885,3 +885,74 @@ fn the_page_bound_cuts_the_least_urgent_and_says_so() {
         "{reason_text}"
     );
 }
+
+/// A priority page den loses (here rate limited) doesn't cost the issues
+/// it already has: the first page's (oldest of any priority) are kept next
+/// to the priorities read before the loss, each once, and the source is
+/// partial with the rate limit's reset.
+#[test]
+fn a_lost_priority_page_keeps_the_first_page() {
+    // Urgent is read; high is rate limited. "both" is on the first page and
+    // in urgent.
+    let lost_at_high = |request: &LinearRequest| match priority_of(request)
+        .get("eq")
+        .and_then(Value::as_u64)
+    {
+        None => ok(start_page(
+            vec![start_node_at("old-low", 4.0), start_node_at("both", 1.0)],
+            Some("more"),
+        )),
+        Some(1) => ok(start_page(
+            vec![start_node_at("both", 1.0), start_node_at("u0", 1.0)],
+            None,
+        )),
+        Some(_) => support::linear_replies::reply(
+            429,
+            json!({ "errors": [{ "message": "slow down", "extensions": { "code": "RATELIMITED" } }] }),
+            &[("x-ratelimit-requests-reset", "1795000000000")],
+        ),
+    };
+    let (survey, _) = run_survey(start_workflow(), script(all_teams, lost_at_high));
+    let mut start: Vec<&str> = survey
+        .part
+        .issues
+        .iter()
+        .filter(|i| i.identifier != "TEAM-1")
+        .map(|i| i.identifier.as_str())
+        .collect();
+    start.sort_unstable();
+    assert_eq!(start, ["TEAM-both", "TEAM-old-low", "TEAM-u0"]);
+    match state(&survey, LinearSourceKind::StartTeamIssues) {
+        Some(SourceState::Partial(why)) => {
+            assert!(why.rate_limit_reset().is_some(), "{why:?}");
+        }
+        other => panic!("partial, not {other:?}"),
+    }
+
+    // The very first priority request is lost: the first page is all den
+    // has, and it is kept.
+    let lost_at_once = |request: &LinearRequest| {
+        if priority_of(request).is_null() {
+            ok(start_page(
+                vec![start_node_at("old-low", 4.0)],
+                Some("more"),
+            ))
+        } else {
+            support::linear_replies::reply(500, json!({ "message": "down" }), &[])
+        }
+    };
+    let (survey, _) = run_survey(start_workflow(), script(all_teams, lost_at_once));
+    assert!(
+        survey
+            .part
+            .issues
+            .iter()
+            .any(|i| i.identifier == "TEAM-old-low"),
+        "{:?}",
+        survey.part.issues
+    );
+    assert!(matches!(
+        state(&survey, LinearSourceKind::StartTeamIssues),
+        Some(SourceState::Partial(_))
+    ));
+}
