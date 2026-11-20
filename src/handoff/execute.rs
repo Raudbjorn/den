@@ -102,7 +102,7 @@ fn run(
                 .members
                 .iter()
                 .map(|m| format!(
-                    "{} #{} {}",
+                    "{}#{} {}",
                     m.pr.repo,
                     m.pr.number,
                     short_commit(&m.head_commit)
@@ -263,7 +263,7 @@ fn verify_members(
                 Box::new(LaunchOutcome::Failed {
                     step: LaunchStep::Verify,
                     error: format!(
-                        "couldn't re-read the head of {} #{} from GitHub: {e}",
+                        "couldn't re-read the head of {}#{} from GitHub: {e}",
                         member.pr.repo, member.pr.number
                     ),
                 })

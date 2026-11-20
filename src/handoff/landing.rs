@@ -127,9 +127,9 @@ impl LandingGroupPlan {
     }
 }
 
-/// `acme/api #1`.
+/// `acme/api#1`, as every Pull Request reference is written.
 pub fn reference(pr: &PullRequestRef) -> String {
-    format!("{} #{}", pr.repo, pr.number)
+    pr.id().to_string()
 }
 
 /// The launch facts of a Land Decision: the Landing Group, and a worktree on

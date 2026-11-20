@@ -16,7 +16,9 @@
 //!   Repo and didn't find isn't open: merged or closed. The survey reads open
 //!   Pull Requests only, so den says which only once it has read that
 //!   member's state by number (`Observation.member_states`, #37): **merged**,
-//!   **closed** without merging, or still "merged or closed" until then.
+//!   **closed** without merging, or still "merged or closed" until then. One
+//!   GitHub reports open at that read is **open again**: open, but not in
+//!   the survey, so den hasn't read its facts.
 //!
 //! Pull Requests are identified by Owner, Repo and number, compared as GitHub
 //! does (case-insensitively), so two Owners' `api#42` never meet; Linear
@@ -30,7 +32,7 @@ use crate::domain::{
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Where one Work Item stands in Landing Groups, carried on its Decision. A
 /// Linear Issue fills `members` and `hints`; a Pull Request fills `groups`
@@ -107,7 +109,7 @@ impl Member {
         Some(format!("ambiguous, also attached to {}", others.join(", ")))
     }
 
-    /// `acme/api #4`.
+    /// `acme/api#4`.
     pub fn reference(&self) -> String {
         pull_request_reference(&self.pr)
     }
@@ -119,9 +121,12 @@ pub enum MemberStatus {
     /// Open, and in the survey: its own Decision says what it needs.
     Open { draft: bool },
     /// Its Repo's open Pull Requests were read completely and it isn't among
-    /// them: merged or closed, and den hasn't read which (or GitHub reported
-    /// it open again when den asked).
+    /// them: merged or closed, and den hasn't read which.
     NotOpen,
+    /// Missing from its Repo's open Pull Requests, but GitHub reported it
+    /// open when den read its state after the survey (#37): open, and den
+    /// hasn't read its facts. Until a survey lists it, it can't be judged.
+    OpenAgain,
     /// Not open, and GitHub reported it merged when den read its state (#37).
     Merged { merged_at: Option<Timestamp> },
     /// Not open, and GitHub reported it closed without merging (#37).
@@ -131,13 +136,14 @@ pub enum MemberStatus {
 }
 
 impl MemberStatus {
-    /// "open", "draft", "merged or closed", "merged", "closed without
-    /// merging", "member not surveyed".
+    /// "open", "draft", "merged or closed", "open again", "merged", "closed
+    /// without merging", "member not surveyed".
     pub fn label(&self) -> &'static str {
         match self {
             Self::Open { draft: false } => "open",
             Self::Open { draft: true } => "draft",
             Self::NotOpen => "merged or closed",
+            Self::OpenAgain => "open again",
             Self::Merged { .. } => "merged",
             Self::Closed => "closed without merging",
             Self::NotSurveyed(_) => "member not surveyed",
@@ -147,6 +153,11 @@ impl MemberStatus {
     /// Not open, whether or not den has read how it ended.
     pub fn is_not_open(&self) -> bool {
         matches!(self, Self::NotOpen | Self::Merged { .. } | Self::Closed)
+    }
+
+    /// Open: in the survey, or reported open again after it.
+    pub fn is_open(&self) -> bool {
+        matches!(self, Self::Open { .. } | Self::OpenAgain)
     }
 
     /// The label and, when den can't see the member, why.
@@ -193,15 +204,17 @@ pub struct Hint {
 }
 
 impl Hint {
-    /// `acme/api #4`.
+    /// `acme/api#4`.
     pub fn reference(&self) -> String {
         pull_request_reference(&self.pr)
     }
 }
 
-/// `acme/api #4`.
+/// `acme/api#4`: a Pull Request's Work Item identity as den shows it
+/// everywhere (`WorkItemId`'s `Display`), so a member and the Pull Request's
+/// own detail read alike.
 pub fn pull_request_reference(pr: &PullRequestRef) -> String {
-    format!("{} #{}", pr.repo, pr.number)
+    pr.id().to_string()
 }
 
 /// The Landing Groups of one Observation, looked up per Work Item by
@@ -228,38 +241,72 @@ impl Correlation {
     }
 }
 
-/// A Pull Request's identity as GitHub compares it: Owner and Repo folded
-/// (case-insensitive), and its number. A map key, so a lookup by Pull
-/// Request needn't scan.
+/// A Pull Request's identity as GitHub compares it: its folded Work Item
+/// identity ([`WorkItemId::folded`], the one case-insensitive rule). A map
+/// key, so a lookup by Pull Request needn't scan.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct PullRequestKey {
-    owner: String,
-    repo: String,
-    number: u64,
-}
+pub struct PullRequestKey(WorkItemId);
 
 impl PullRequestKey {
     pub fn of(repo: &RepoId, number: u64) -> Self {
+        Self(
+            WorkItemId::PullRequest {
+                repo: repo.clone(),
+                number,
+            }
+            .folded(),
+        )
+    }
+}
+
+/// What `status` and the hints look up, built once per `correlate`: the
+/// open Pull Requests by identity, the surveyed Repos (folded), and each
+/// open Pull Request's head branch lowercased.
+struct Lookup<'o> {
+    open: HashMap<PullRequestKey, &'o PullRequest>,
+    repos: HashSet<RepoId>,
+    branches: Vec<String>,
+}
+
+impl<'o> Lookup<'o> {
+    fn of(observation: &'o Observation) -> Self {
+        let mut open = HashMap::new();
+        for pr in &observation.pull_requests {
+            // The first one read wins, as everywhere in correlation.
+            open.entry(PullRequestKey::of(&pr.repo, pr.number))
+                .or_insert(pr);
+        }
         Self {
-            owner: repo.owner.to_ascii_lowercase(),
-            repo: repo.name.to_ascii_lowercase(),
-            number,
+            open,
+            repos: observation.repos.iter().map(|r| r.id.folded()).collect(),
+            branches: observation
+                .pull_requests
+                .iter()
+                .map(|pr| pr.head_ref.to_ascii_lowercase())
+                .collect(),
         }
     }
 }
 
 /// Builds every Landing Group of `observation` (see the module docs).
 pub fn correlate(observation: &Observation) -> Correlation {
+    let lookup = Lookup::of(observation);
     let issues = distinct_issues(&observation.linear.issues);
     let attached: Vec<(&LinearIssue, Vec<PullRequestRef>)> = issues
         .iter()
         .map(|issue| (*issue, attached_pull_requests(issue)))
         .collect();
 
-    // Which Linear Issues each Pull Request is attached to.
+    // Which Linear Issues each Pull Request is attached to. Only its own
+    // Owner's: a Landing Group's Pull Requests are its Owner's, so another
+    // Owner's attachment (a member "not surveyed" on the issue's side) puts
+    // the Pull Request in no group and makes no member ambiguous.
     let mut attachers: HashMap<PullRequestKey, Vec<GroupRef>> = HashMap::new();
     for (issue, prs) in &attached {
-        for pr in prs {
+        for pr in prs
+            .iter()
+            .filter(|pr| same_login(&pr.repo.owner, &issue.owner))
+        {
             attachers
                 .entry(PullRequestKey::of(&pr.repo, pr.number))
                 .or_default()
@@ -273,8 +320,14 @@ pub fn correlate(observation: &Observation) -> Correlation {
     let mut pull_request_hints: Vec<Vec<GroupRef>> =
         vec![Vec::new(); observation.pull_requests.len()];
     for (i, (issue, prs)) in attached.iter().enumerate() {
-        for (p, pr) in observation.pull_requests.iter().enumerate() {
-            if !is_hint(issue, prs, pr) {
+        let identifier = issue.identifier.to_ascii_lowercase();
+        for (p, (pr, branch)) in observation
+            .pull_requests
+            .iter()
+            .zip(&lookup.branches)
+            .enumerate()
+        {
+            if !is_hint(issue, prs, pr, branch, &identifier) {
                 continue;
             }
             if let Some(hints) = issue_hints.get_mut(i) {
@@ -298,7 +351,7 @@ pub fn correlate(observation: &Observation) -> Correlation {
                 .iter()
                 .map(|pr| Member {
                     pr: pr.clone(),
-                    status: status(observation, &issue.owner, pr),
+                    status: status(observation, &lookup, &issue.owner, pr),
                     also_attached_to: attachers
                         .get(&PullRequestKey::of(&pr.repo, pr.number))
                         .into_iter()
@@ -341,22 +394,26 @@ pub fn correlate(observation: &Observation) -> Correlation {
 
 /// The hint rule, in one place: `pr` is an open Pull Request of `issue`'s
 /// Owner, not attached to it (`attached`), whose head branch names the
-/// issue's identifier.
-fn is_hint(issue: &LinearIssue, attached: &[PullRequestRef], pr: &PullRequest) -> bool {
+/// issue's identifier. `branch` and `identifier` come lowercased.
+fn is_hint(
+    issue: &LinearIssue,
+    attached: &[PullRequestRef],
+    pr: &PullRequest,
+    branch: &str,
+    identifier: &str,
+) -> bool {
     same_login(&pr.repo.owner, &issue.owner)
+        && names_identifier(branch, identifier)
         && !attached.iter().any(|p| p.is(&pr.repo, pr.number))
-        && names_identifier(&pr.head_ref, &issue.identifier)
 }
 
 /// Each Linear Issue once, by identity (the first one read wins).
 fn distinct_issues(issues: &[LinearIssue]) -> Vec<&LinearIssue> {
-    let mut distinct: Vec<&LinearIssue> = Vec::new();
-    for issue in issues {
-        if !distinct.iter().any(|seen| seen.id == issue.id) {
-            distinct.push(issue);
-        }
-    }
-    distinct
+    let mut seen: HashSet<&LinearIssueId> = HashSet::new();
+    issues
+        .iter()
+        .filter(|issue| seen.insert(&issue.id))
+        .collect()
 }
 
 /// The Pull Requests attached to `issue`, each once (`Attachments` holds
@@ -377,20 +434,21 @@ fn reference_of(pr: &PullRequest) -> PullRequestRef {
 }
 
 /// What den knows of `pr`, a member of a Linear Issue of `owner`.
-fn status(observation: &Observation, owner: &str, pr: &PullRequestRef) -> MemberStatus {
+fn status(
+    observation: &Observation,
+    lookup: &Lookup<'_>,
+    owner: &str,
+    pr: &PullRequestRef,
+) -> MemberStatus {
     if !same_login(&pr.repo.owner, owner) {
         return MemberStatus::NotSurveyed(NotSurveyed::OtherOwner);
     }
-    if let Some(found) = observation
-        .pull_requests
-        .iter()
-        .find(|p| pr.is(&p.repo, p.number))
-    {
+    if let Some(found) = lookup.open.get(&PullRequestKey::of(&pr.repo, pr.number)) {
         return MemberStatus::Open {
             draft: found.is_draft,
         };
     }
-    if !observation.repos.iter().any(|r| r.id.same(&pr.repo)) {
+    if !lookup.repos.contains(&pr.repo.folded()) {
         return MemberStatus::NotSurveyed(NotSurveyed::RepoNotSurveyed);
     }
     // The cache merge's rule: a member missing from a Repo read completely
@@ -410,22 +468,22 @@ fn status(observation: &Observation, owner: &str, pr: &PullRequestRef) -> Member
             merged_at: *merged_at,
         },
         Some(PullRequestState::Closed) => MemberStatus::Closed,
-        // Open again, or not read yet: den can't say how it ended.
-        Some(PullRequestState::Open) | None => MemberStatus::NotOpen,
+        // Reopened since the survey listed the Repo's open Pull Requests.
+        Some(PullRequestState::Open) => MemberStatus::OpenAgain,
+        // Not read yet: den can't say how it ended.
+        None => MemberStatus::NotOpen,
     }
 }
 
-/// Whether `branch` contains `identifier` on word boundaries, ignoring case:
+/// Whether `branch` contains `identifier` on word boundaries, ignoring case
+/// (the caller lowercases both, ASCII only, which keeps every byte offset):
 /// the characters on either side, if any, are neither letters nor digits.
-/// `TEAM-1` is in `me/team-1-fix` and `TEAM-1`, never in `team-12-fix` or
+/// `team-1` is in `me/team-1-fix` and `team-1`, never in `team-12-fix` or
 /// `steam-1`.
 fn names_identifier(branch: &str, identifier: &str) -> bool {
     if identifier.is_empty() {
         return false;
     }
-    // ASCII lowercasing keeps every byte offset.
-    let branch = branch.to_ascii_lowercase();
-    let identifier = identifier.to_ascii_lowercase();
     let boundary = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
     branch.match_indices(&identifier).any(|(start, found)| {
         let before = branch.get(..start).and_then(|s| s.chars().next_back());

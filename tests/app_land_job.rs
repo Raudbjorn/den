@@ -290,24 +290,24 @@ fn c_then_enter_on_land_launches_one_coordination_job_with_the_approved_members_
     assert_eq!(
         field(&ready, "LAND 1"),
         Some((
-            "acme/app #2 @ 2222222",
+            "acme/app#2 @ 2222222",
             Some("checks passing (1); landing_order position 1")
         ))
     );
     assert_eq!(
         field(&ready, "LAND 2"),
-        Some(("acme/api #1 @ 1111111", Some("checks passing (1)")))
+        Some(("acme/api#1 @ 1111111", Some("checks passing (1)")))
     );
     assert_eq!(
         field(&ready, "HELD"),
         Some((
-            "acme/web #3",
+            "acme/web#3",
             Some("not landed: held (Held Repo acme/web); the Job is told never to merge it")
         ))
     );
     assert_eq!(
         field(&ready, "BASE").map(|f| f.0),
-        Some("PR head feature-2 of acme/app #2, the first to land @ 2222222")
+        Some("PR head feature-2 of acme/app#2, the first to land @ 2222222")
     );
     assert_eq!(field(&ready, "BRANCH").map(|f| f.0), Some("land_team-1"));
     assert_eq!(field(&ready, "WORKTREE").map(|f| f.0), Some(WORKTREE));
@@ -404,7 +404,7 @@ fn the_job_record_covers_every_member_and_c_on_a_member_names_the_land_job() {
     let job = detail.job.expect("a Job section");
     assert_eq!(
         job.lines.first().map(String::as_str),
-        Some("Land Job of TEAM-1: acme/app #2, acme/api #1")
+        Some("Land Job of TEAM-1: acme/app#2, acme/api#1")
     );
 
     // api #1 now fails CI: its own Next Step, Fix CI; `c` asks first.
@@ -429,7 +429,7 @@ fn the_job_record_covers_every_member_and_c_on_a_member_names_the_land_job() {
         field(&asked, "LAND JOB"),
         Some((
             "the Landing Group of TEAM-1",
-            Some("it lands acme/app #2, acme/api #1, pinned to their approved heads")
+            Some("it lands acme/app#2, acme/api#1, pinned to their approved heads")
         ))
     );
     assert!(launch_plans(&harness).len() == 1, "nothing launched again");
@@ -481,7 +481,7 @@ fn a_head_changed_between_sheet_and_enter_asks_again() {
     let ready_sheet = open_sheet(&mut harness, "TEAM-1");
     assert_eq!(
         field(&ready_sheet, "LAND 2").map(|f| f.0),
-        Some("acme/api #1 @ 1111111")
+        Some("acme/api#1 @ 1111111")
     );
     for effect in &survey {
         harness.perform(effect);
@@ -492,14 +492,14 @@ fn a_head_changed_between_sheet_and_enter_asks_again() {
     assert_eq!(asked.status, LaunchStatus::Ready);
     assert!(
         messages(&asked).contains(
-            "Not launched: the Landing Group of TEAM-1 changed (acme/api #1's head moved from 1111111 to 3333333) since the sheet showed it"
+            "Not launched: the Landing Group of TEAM-1 changed (acme/api#1's head moved from 1111111 to 3333333) since the sheet showed it"
         ),
         "{}",
         messages(&asked)
     );
     assert_eq!(
         field(&asked, "LAND 2").map(|f| f.0),
-        Some("acme/api #1 @ 3333333")
+        Some("acme/api#1 @ 3333333")
     );
     assert_eq!(
         asked.prompt.as_ref().map(|p| p.text.clone()),
@@ -539,14 +539,14 @@ fn a_membership_change_asks_again() {
     let asked = sheet(&harness).clone();
     assert!(
         messages(&asked).contains(
-            "Not launched: the Landing Group of TEAM-1 changed (acme/app #4 joined; acme/api #1 left)"
+            "Not launched: the Landing Group of TEAM-1 changed (acme/app#4 joined; acme/api#1 left)"
         ),
         "{}",
         messages(&asked)
     );
     assert_eq!(
         field(&asked, "LAND 2").map(|f| f.0),
-        Some("acme/app #4 @ 4444444")
+        Some("acme/app#4 @ 4444444")
     );
 }
 
@@ -568,7 +568,7 @@ fn a_member_head_moved_on_github_refuses_before_anything_is_done() {
     );
     assert!(
         messages(&refused).contains(
-            "acme/api #1's head is now 3333333 on GitHub, not the approved 1111111; nothing was done"
+            "acme/api#1's head is now 3333333 on GitHub, not the approved 1111111; nothing was done"
         ),
         "{}",
         messages(&refused)
@@ -608,7 +608,7 @@ fn after_a_land_job_a_queued_first_member_shows_no_land_and_is_named() {
             .also
             .iter()
             .any(|l| l
-                .starts_with("blocking: acme/app #2: queued: in the merge queue, not merged yet")),
+                .starts_with("blocking: acme/app#2: queued: in the merge queue, not merged yet")),
         "{:?}",
         detail.also
     );
@@ -652,7 +652,7 @@ fn a_survey_with_the_first_merged_and_the_second_failed_shows_the_partial_result
         detail
             .also
             .iter()
-            .any(|l| l.starts_with("blocking: acme/api #1: its own Next Step is Fix CI")),
+            .any(|l| l.starts_with("blocking: acme/api#1: its own Next Step is Fix CI")),
         "{:?}",
         detail.also
     );
@@ -661,7 +661,7 @@ fn a_survey_with_the_first_merged_and_the_second_failed_shows_the_partial_result
         landing
             .lines
             .iter()
-            .any(|l| l.text.contains("acme/app #2") && l.text.contains("merged")),
+            .any(|l| l.text.contains("acme/app#2") && l.text.contains("merged")),
         "{:?}",
         landing.lines
     );
@@ -669,7 +669,7 @@ fn a_survey_with_the_first_merged_and_the_second_failed_shows_the_partial_result
         landing
             .lines
             .iter()
-            .any(|l| l.text.contains("acme/api #1") && l.text.contains("Fix CI")),
+            .any(|l| l.text.contains("acme/api#1") && l.text.contains("Fix CI")),
         "{:?}",
         landing.lines
     );
@@ -677,16 +677,20 @@ fn a_survey_with_the_first_merged_and_the_second_failed_shows_the_partial_result
 }
 
 /// `{members}` belongs to `land` alone, which must use it: a Land Job learns
-/// what to merge, and at which heads, only from it.
+/// what to merge, and at which heads, only from it. A `land` template without
+/// it makes Land unusable (the other kinds still load); `{members}` in another
+/// kind makes the file malformed.
 #[test]
 fn members_is_a_land_placeholder_that_land_must_use() {
     use den::handoff::prompts;
     let path = std::path::Path::new("prompts.toml");
-    let error = prompts::parse(path, "land = \"Land {url}.\"\n").expect_err("land without members");
-    assert!(
-        error.to_string().contains("`land` must use {members}"),
-        "{error}"
-    );
+    let loaded = prompts::parse(path, "land = \"Land {url}.\"\n").expect("other kinds load");
+    let unusable = loaded
+        .unusable(NextStep::Land)
+        .expect("land without members is unusable")
+        .to_string();
+    assert!(unusable.contains("`land` must use {members}"), "{unusable}");
+    assert!(loaded.unusable(NextStep::Review).is_none());
     let error = prompts::parse(path, "review = \"/code-review {url} {members}\"\n")
         .expect_err("members outside land");
     assert!(
@@ -695,5 +699,7 @@ fn members_is_a_land_placeholder_that_land_must_use() {
             .contains("the land-only placeholder {members}"),
         "{error}"
     );
-    prompts::parse(path, "land = \"/land {url} {members}{held}\"\n").expect("a land template");
+    let land =
+        prompts::parse(path, "land = \"/land {url} {members}{held}\"\n").expect("a land template");
+    assert!(land.unusable(NextStep::Land).is_none());
 }

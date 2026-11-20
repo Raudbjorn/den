@@ -94,6 +94,11 @@ pub enum RefusalReason {
     PromptsUnusable {
         error: String,
     },
+    /// The prompts file's template for this Next Step kind can't be used; the
+    /// file's other templates can.
+    TemplateUnusable {
+        error: String,
+    },
     JobRecordsUnreadable {
         error: String,
     },
@@ -245,12 +250,12 @@ impl fmt::Display for RefusalReason {
             ),
             Self::LandingMemberGone { pr } => write!(
                 f,
-                "{} #{}, a member of the Landing Group, is no longer among the open Pull Requests den surveyed",
+                "{}#{}, a member of the Landing Group, is no longer among the open Pull Requests den surveyed",
                 pr.repo, pr.number
             ),
             Self::LandingMemberMoved { pr, approved, now } => write!(
                 f,
-                "{} #{}'s head is now {} on GitHub, not the approved {}; nothing was done. Refresh (r) and open the Land sheet again to approve the new head",
+                "{}#{}'s head is now {} on GitHub, not the approved {}; nothing was done. Refresh (r) and open the Land sheet again to approve the new head",
                 pr.repo,
                 pr.number,
                 short_commit(now),
@@ -258,7 +263,7 @@ impl fmt::Display for RefusalReason {
             ),
             Self::LandingMemberHeadGone { pr } => write!(
                 f,
-                "GitHub has no head for {} #{} (refs/pull/{}/head); nothing was done",
+                "GitHub has no head for {}#{} (refs/pull/{}/head); nothing was done",
                 pr.repo, pr.number, pr.number
             ),
             Self::WorkItemGone => f.write_str("this Work Item is no longer in the survey"),
@@ -320,6 +325,10 @@ impl fmt::Display for RefusalReason {
                 "the Branch {branch} is in {repo}, not in {target}: den fetches a Branch only from the Repo it is in; press u to target {repo} for this Job"
             ),
             Self::PromptsUnusable { error } => write!(f, "the prompts file is unusable: {error}"),
+            Self::TemplateUnusable { error } => write!(
+                f,
+                "the prompts file's template for this kind is unusable: {error}"
+            ),
             Self::JobRecordsUnreadable { error } => write!(
                 f,
                 "den can't read its Job records, so it can't tell whether this Work Item already has a Job: {error}"

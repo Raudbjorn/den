@@ -27,9 +27,12 @@
 //! the policy type's (whose empty default changes nothing).
 
 use super::{Location, location_of};
-use crate::domain::{
-    LinearSourceKind, LinearWorkflowPolicy, RepoId, ReviewPolicy, StartPolicy, TeamRef,
-    ids::{is_valid_login, is_valid_repo_name, is_valid_team_slug},
+use crate::{
+    domain::{
+        LinearSourceKind, LinearWorkflowPolicy, RepoId, ReviewPolicy, StartPolicy,
+        ids::is_valid_repo_name,
+    },
+    handoff::reviewers,
 };
 use serde::Deserialize;
 use std::{collections::BTreeMap, ops::Range};
@@ -106,7 +109,8 @@ impl LinearWorkflow {
     /// a start team or a state to check against Linear; the start teams'
     /// issues when it names a start team. Every Linear source den records
     /// for the workflow comes from here, so one it no longer reads is dropped
-    /// from the cache (`CachedObservation::restricted_to_linear`).
+    /// from the cache (`CachedObservation::restricted_to_linear`,
+    /// `cache::merge_linear`).
     pub fn linear_sources(&self) -> Vec<LinearSourceKind> {
         let mut sources = vec![LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues];
         if !self.start_teams.is_empty() || self.state_names().next().is_some() {
@@ -290,10 +294,7 @@ impl Folded for RepoId {
 
 impl Folded for Reviewer {
     fn folded(&self) -> String {
-        match self {
-            Self::User(login) => login.to_ascii_lowercase(),
-            Self::Team(team) => format!("{}/{}", team.org, team.slug).to_ascii_lowercase(),
-        }
+        reviewers::folded(self)
     }
 }
 
@@ -376,30 +377,17 @@ fn repo(owner: &str, field: &str, value: Spanned<String>) -> Result<RepoId, Inva
     Ok(RepoId::new(owner, name))
 }
 
-/// A GitHub login, or `org/team-slug`.
+/// A GitHub login, or `org/team-slug`: the grammar the Request review sheet
+/// takes too ([`reviewers::parse`]).
 fn reviewer(value: Spanned<String>) -> Result<Reviewer, Invalid> {
     let span = value.span();
     let value = value.into_inner();
-    let invalid = || {
+    reviewers::parse(&value).ok_or_else(|| {
         (
-            span.clone(),
+            span,
             format!("{value:?} in `reviewers` is not a GitHub login or an org/team"),
         )
-    };
-    match value.split_once('/') {
-        None if is_valid_login(&value) => Ok(Reviewer::User(value.clone())),
-        None => Err(invalid()),
-        Some((org, slug)) => {
-            if is_valid_login(org) && is_valid_team_slug(slug) {
-                Ok(Reviewer::Team(TeamRef {
-                    org: org.to_owned(),
-                    slug: slug.to_owned(),
-                }))
-            } else {
-                Err(invalid())
-            }
-        }
-    }
+    })
 }
 
 /// A free-text setting: not blank, no control characters, bounded.

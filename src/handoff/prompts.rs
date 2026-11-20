@@ -1,6 +1,10 @@
 //! The prompts file (`$XDG_CONFIG_HOME/den/prompts.toml`): one template per Next
 //! Step kind. A missing file, or a kind it doesn't mention, uses the default; a
-//! malformed file is an error with the file and line, never ignored.
+//! malformed file is an error with the file and line, never ignored. A template
+//! that is well formed but lacks a placeholder its kind requires (a
+//! `request_review` without `{reviewers}`, valid before #39) makes only its own
+//! kind unusable ([`Prompts::unusable`]): den refuses that kind with the file
+//! and line, and every other kind launches as before.
 //!
 //! ```toml
 //! address_review = "/gh-resolve {url}"
@@ -144,6 +148,9 @@ pub struct PromptFields {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prompts {
     templates: BTreeMap<NextStep, String>,
+    /// Kinds whose template in the file den can't use, and why; den refuses
+    /// to launch them rather than run another prompt than the file's.
+    unusable: BTreeMap<NextStep, PromptsError>,
 }
 
 impl Default for Prompts {
@@ -153,15 +160,33 @@ impl Default for Prompts {
                 .iter()
                 .map(|&step| (step, default_template(step).to_owned()))
                 .collect(),
+            unusable: BTreeMap::new(),
         }
     }
 }
 
 impl Prompts {
+    /// Why the file's template for `step` can't be used, if it can't.
+    pub fn unusable(&self, step: NextStep) -> Option<&PromptsError> {
+        self.unusable.get(&step)
+    }
+
+    /// Every unusable template's problem, in Next Step order.
+    pub fn problems(&self) -> impl Iterator<Item = &PromptsError> {
+        self.unusable.values()
+    }
+
     pub fn template(&self, step: NextStep) -> &str {
         self.templates
             .get(&step)
             .map_or_else(|| default_template(step), String::as_str)
+    }
+
+    /// `step`'s template uses `{placeholder}`.
+    pub fn uses(&self, step: NextStep, placeholder: &str) -> bool {
+        // Templates are validated when loaded (defaults included), so this
+        // check only lists what they use.
+        check(self.template(step), step).is_ok_and(|used| used.iter().any(|u| u == placeholder))
     }
 
     /// The prompt for `step` with `fields` filled in.
@@ -231,17 +256,22 @@ pub fn parse(path: &Path, text: &str) -> Result<Prompts, PromptsError> {
                 format!("`{key}` is longer than {MAX_TEMPLATE_CHARS} characters"),
             ));
         }
-        if let Err(problem) = check(&template, step) {
-            return Err(malformed(Some(span), format!("`{key}`: {problem}")));
+        let used = check(&template, step)
+            .map_err(|problem| malformed(Some(span.clone()), format!("`{key}`: {problem}")))?;
+        if let Some(missing) = missing_required(step, &used) {
+            prompts
+                .unusable
+                .insert(step, malformed(Some(span), missing));
+            continue;
         }
         prompts.templates.insert(step, template);
     }
     Ok(prompts)
 }
 
-/// Checks every `{…}` in `step`'s `template` is a placeholder it has, and
-/// that it uses every placeholder `step` needs ([`required_placeholders`]).
-fn check(template: &str, step: NextStep) -> Result<(), String> {
+/// Checks every `{…}` in `step`'s `template` is a placeholder it has; returns
+/// the placeholders it uses.
+fn check(template: &str, step: NextStep) -> Result<Vec<String>, String> {
     let usable: Vec<&str> = PLACEHOLDERS
         .iter()
         .chain(own_placeholders(step))
@@ -278,16 +308,19 @@ fn check(template: &str, step: NextStep) -> Result<(), String> {
             _ => {}
         }
     }
-    match required_placeholders(step)
+    Ok(used)
+}
+
+/// Why a template of `step` that uses `used` lacks a placeholder `step`
+/// needs ([`required_placeholders`]), if it does.
+fn missing_required(step: NextStep, used: &[String]) -> Option<String> {
+    let missing = required_placeholders(step)
         .iter()
-        .find(|needed| !used.iter().any(|u| u == *needed))
-    {
-        Some(missing) => Err(format!(
-            "`{}` must use {{{missing}}}, or the Job never gets what the sheet chose",
-            step_key(step)
-        )),
-        None => Ok(()),
-    }
+        .find(|needed| !used.iter().any(|u| u == *needed))?;
+    Some(format!(
+        "`{}` must use {{{missing}}}, or the Job never gets what the sheet chose",
+        step_key(step)
+    ))
 }
 
 /// The placeholders only `step`'s template has, besides everyone's.

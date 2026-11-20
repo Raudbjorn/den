@@ -35,10 +35,17 @@ const CLAUDE_MANUAL_MODE: &str = "manual";
 
 /// A permission mode den passes to Claude Code. Only the approval-required
 /// mode exists: den never passes a bypass mode, nor `dontAsk`.
+///
+/// Job records store it (`JobRecord::permission_mode`) under a name pinned by
+/// `#[serde(rename)]`, so a Rust rename never changes the file. **Adding a
+/// variant bumps `jobs::JOBS_FORMAT`**: an older den would fail on the
+/// unknown name and could not say the file is from a newer den.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PermissionMode {
     /// Claude asks before acting (Claude Code's Manual mode), for coordination
-    /// Jobs, which act on GitHub and beyond rather than on code.
+    /// Jobs, which act on GitHub and beyond rather than on code. The alias
+    /// reads records written before the name was pinned.
+    #[serde(rename = "approval_required", alias = "ApprovalRequired")]
     ApprovalRequired,
 }
 
