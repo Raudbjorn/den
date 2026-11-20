@@ -117,6 +117,24 @@ impl ObservationBuilder {
         self
     }
 
+    /// A fork of `parent` ("owner/name"), or of a parent den cannot see.
+    pub fn fork(mut self, full_name: &str, parent: Option<&str>) -> Self {
+        self = self.repo(full_name);
+        if let Some(repo) = self.observation.repos.last_mut() {
+            repo.is_fork = true;
+            repo.parent = parent.map(repo_id);
+        }
+        self
+    }
+
+    pub fn archived_repo(mut self, full_name: &str) -> Self {
+        self = self.repo(full_name);
+        if let Some(repo) = self.observation.repos.last_mut() {
+            repo.is_archived = true;
+        }
+        self
+    }
+
     pub fn pull_request(mut self, pr: PrBuilder) -> Self {
         self.observation.pull_requests.push(pr.build());
         self
