@@ -1,6 +1,8 @@
 //! The reviewers a Request review Job asks (#39): the sheet's editable list,
 //! spelled and parsed. Each is a GitHub login (`alice`) or a team
-//! (`acme/backend`), comma- or space-separated, as `gh` takes them.
+//! (`acme/backend`), comma- or space-separated, as `gh` takes them. The one
+//! reviewer grammar: the config's `reviewers` parse and compare through
+//! [`parse`] and [`folded`] too.
 
 use crate::domain::{
     TeamRef,
@@ -43,10 +45,7 @@ pub fn parse_list(text: &str) -> Result<Vec<Reviewer>, ReviewersProblem> {
     {
         let reviewer =
             parse(word).ok_or_else(|| ReviewersProblem::NotAReviewer(word.to_owned()))?;
-        if reviewers
-            .iter()
-            .any(|r| spell(r).eq_ignore_ascii_case(&spell(&reviewer)))
-        {
+        if reviewers.iter().any(|r| folded(r) == folded(&reviewer)) {
             return Err(ReviewersProblem::ListedTwice(word.to_owned()));
         }
         reviewers.push(reviewer);
@@ -57,7 +56,14 @@ pub fn parse_list(text: &str) -> Result<Vec<Reviewer>, ReviewersProblem> {
     Ok(reviewers)
 }
 
-fn parse(word: &str) -> Option<Reviewer> {
+/// A reviewer's identity for duplicate checks: GitHub compares logins and
+/// team names case-insensitively.
+pub fn folded(reviewer: &Reviewer) -> String {
+    spell(reviewer).to_ascii_lowercase()
+}
+
+/// One reviewer: a GitHub login, or `org/team-slug`.
+pub fn parse(word: &str) -> Option<Reviewer> {
     match word.split_once('/') {
         None => is_valid_login(word).then(|| Reviewer::User(word.to_owned())),
         Some((org, slug)) => (is_valid_login(org) && is_valid_team_slug(slug)).then(|| {

@@ -207,6 +207,14 @@ fn review_request_fields(
         Tone::Plain,
     );
     let announce = match &request.slack_channel {
+        Some(channel) if !request.announces => field(
+            "ANNOUNCE",
+            "nowhere".to_owned(),
+            Some(format!(
+                "the request_review template in prompts.toml has no {{announcement}}: the prompt neither announces in {channel} nor asks for the request's outcome"
+            )),
+            Tone::Caution,
+        ),
         Some(channel) => field(
             "ANNOUNCE",
             channel.clone(),
