@@ -144,7 +144,7 @@ pub fn inspect_request(
         (None, None) => return Err(Refusal::one(RefusalReason::NoSearchRoot)),
     };
     Ok(InspectRequest {
-        work_item: decision.item.id.clone(),
+        item: decision.item.id.clone(),
         target: facts.target.repo.clone(),
         target_url: facts.target.url.clone(),
         configured_clone,
@@ -192,7 +192,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     });
 
     let fresh = |name: String, max_chars: usize| match input.fresh {
-        Some(n) => names::suffixed(&name, n, max_chars),
+        Some(n) => names::suffixed_within(&name, n, max_chars),
         None => name,
     };
     let worktree_name = fresh(

@@ -223,11 +223,11 @@ pub fn fresh_suffix(view: &WorkspaceView, worktree_name: &str, branch: &str) -> 
         branches_taken.extend(worktree.branch.clone());
     }
     (FIRST_FRESH_SUFFIX..=MAX_FRESH_SUFFIX).find(|&n| {
-        !names_taken.contains(&names::suffixed(
+        !names_taken.contains(&names::suffixed_within(
             worktree_name,
             n,
             names::MAX_WORKTREE_NAME_CHARS,
-        )) && !branches_taken.contains(&names::suffixed(branch, n, MAX_FRESH_BRANCH_CHARS))
+        )) && !branches_taken.contains(&names::suffixed_within(branch, n, MAX_FRESH_BRANCH_CHARS))
     })
 }
 

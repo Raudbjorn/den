@@ -283,7 +283,7 @@ impl App {
             })
             .and_then(|request| {
                 live::fresh_suffix(view, &request.worktree_name, &request.branch)
-                    .map(|n| (n, request.fresh(n)))
+                    .map(|n| (n, request.beside_live_job(n)))
                     .ok_or_else(|| {
                         Refusal::one(RefusalReason::NoFreshName {
                             last_tried: live::MAX_FRESH_SUFFIX,

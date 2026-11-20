@@ -32,7 +32,7 @@ pub fn pr_session_name(repo: &RepoId, number: u64, step: NextStep) -> String {
 /// Live Job (#14). `name` is already clean (from [`worktree_name`],
 /// [`pr_session_name`] or a branch name); it is shortened, never the suffix, so
 /// the result stays within `max_chars` and stays distinct.
-pub fn suffixed(name: &str, n: u32, max_chars: usize) -> String {
+pub fn suffixed_within(name: &str, n: u32, max_chars: usize) -> String {
     let suffix = format!("-{n}");
     let room = max_chars.saturating_sub(suffix.chars().count());
     let base: String = name.chars().take(room).collect();

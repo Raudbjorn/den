@@ -18,7 +18,7 @@ use std::{path::PathBuf, time::Duration};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectRequest {
     /// The Work Item being launched; its recorded Jobs are checked (#14).
-    pub work_item: WorkItemId,
+    pub item: WorkItemId,
     pub target: RepoId,
     pub target_url: String,
     /// The Main Clone set for this Repo in the config, if any.
@@ -35,10 +35,10 @@ impl InspectRequest {
     /// The same request for a fresh start beside a Live Job (#14): the
     /// worktree folder and the local branch get the suffix `n`.
     #[must_use]
-    pub fn fresh(mut self, n: u32) -> Self {
+    pub fn beside_live_job(mut self, n: u32) -> Self {
         self.worktree_name =
-            names::suffixed(&self.worktree_name, n, names::MAX_WORKTREE_NAME_CHARS);
-        self.branch = names::suffixed(&self.branch, n, MAX_FRESH_BRANCH_CHARS);
+            names::suffixed_within(&self.worktree_name, n, names::MAX_WORKTREE_NAME_CHARS);
+        self.branch = names::suffixed_within(&self.branch, n, MAX_FRESH_BRANCH_CHARS);
         self
     }
 }
@@ -124,7 +124,7 @@ pub fn inspect(
         Ok(records) => {
             let mine: Vec<JobRecord> = records
                 .iter()
-                .filter(|job| job.work_item == request.work_item)
+                .filter(|job| job.work_item == request.item)
                 .cloned()
                 .collect();
             live::check_jobs(&mine, workspace, Duration::from_secs(JOB_CHECK_BUDGET_SECS)).checks

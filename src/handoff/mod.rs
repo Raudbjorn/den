@@ -28,7 +28,7 @@
 //!   Live Job. Open existing is a [`live::ReopenPlan`] carried out by
 //!   [`live::reopen`] (`claude --resume`, never in the Main Clone); start fresh
 //!   is [`PlanInput::fresh`], a suffix on the worktree name, branch and
-//!   session ([`names::suffixed`]).
+//!   session ([`names::suffixed_within`]).
 
 pub mod clone;
 pub mod command;
