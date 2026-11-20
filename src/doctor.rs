@@ -85,8 +85,21 @@ pub fn run(
             } else if !git_available {
                 Err("cannot inspect the Main Clone without git on PATH".to_owned())
             } else {
-                GitWorkspace::new().remotes(path)
-                    .map_err(|_| "cannot read Git remotes; check repository ownership and local Git configuration".to_owned())
+                let workspace = GitWorkspace::new();
+                workspace.worktrees(path)
+                    .map_err(|_| "cannot inspect Git worktrees; check repository ownership and local Git configuration".to_owned())
+                    .and_then(|worktrees| {
+                        if worktrees.iter().any(|worktree| worktree.path == *path) {
+                            Ok(())
+                        } else {
+                            Err("configured path is not the root of a Git Main Clone".to_owned())
+                        }
+                    })
+                    .and_then(|()| {
+                        workspace.remotes(path).map_err(|_| {
+                            "cannot read Git remotes; check repository ownership and local Git configuration".to_owned()
+                        })
+                    })
                     .and_then(|remotes| {
                         clone::remote_for(&remotes, &format!("https://github.com/{repo}"))
                             .map(|_| ())

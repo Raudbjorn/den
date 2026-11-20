@@ -217,6 +217,16 @@ fn configured_clone_needs_a_matching_remote_without_exposing_credentials() {
     assert!(output.status.success(), "{output:?}");
     assert!(!stdout(&output).contains("secret-sentinel"));
     assert_eq!(fs::read(clone.join(".git/config")).unwrap(), before);
+
+    // Git discovers the parent repository when a nested .git directory is invalid.
+    let nested = clone.join("nested");
+    fs::create_dir_all(nested.join(".git")).unwrap();
+    fixture.config(&format!(
+        "owners = ['example-owner']\n[main_clones]\n'example-owner/app' = {nested:?}\n"
+    ));
+    let output = fixture.doctor();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stdout(&output).contains("not the root of a Git Main Clone"));
 }
 
 #[test]
