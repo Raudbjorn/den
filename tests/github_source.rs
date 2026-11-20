@@ -64,7 +64,7 @@ fn no_pr_details(request: &GraphQlRequest) -> Value {
         answer.insert(
             format!("pr{i}"),
             json!({
-                "reviewThreads": empty, "reviewRequests": empty, "latestOpinionatedReviews": empty,
+                "reviewThreads": empty, "reviewRequests": empty, "latestOpinionatedReviews": empty, "latestReviews": empty,
                 "commits": { "nodes": [{ "commit": { "statusCheckRollup": null } }] }
             }),
         );

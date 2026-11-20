@@ -106,8 +106,14 @@ pub struct PrDetails {
     pub threads_complete: bool,
     /// Pending review requests.
     pub review_requests: Listed<Reviewer>,
-    /// Each reviewer's latest approving or change-requesting review.
+    /// Each reviewer's latest approving or change-requesting review
+    /// (GitHub's `latestOpinionatedReviews`): the verdict that stands.
     pub latest_reviews: Listed<Review>,
+    /// Each reviewer's latest review of any kind, comments included, never a
+    /// pending one (GitHub's `latestReviews`): who looked last, and at which
+    /// commit. Read for the Linear Workflow review rules (#36); milestone 1's
+    /// rules don't use it.
+    pub latest_reviews_with_comments: Listed<Review>,
 }
 
 impl Default for PrDetails {
@@ -118,6 +124,7 @@ impl Default for PrDetails {
             threads_complete: true,
             review_requests: Listed::default(),
             latest_reviews: Listed::default(),
+            latest_reviews_with_comments: Listed::default(),
         }
     }
 }
@@ -170,13 +177,29 @@ pub enum Reviewer {
 pub struct Review {
     /// `None` when GitHub has no author (a deleted account).
     pub author: Option<String>,
+    /// What kind of account the author is.
+    pub author_kind: ActorKind,
     pub verdict: ReviewVerdict,
+    /// The commit the review was given on; `None` when GitHub no longer has it
+    /// (for example after a force-push removed it).
+    pub commit: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReviewVerdict {
     Approved,
     ChangesRequested,
+    /// A review that only comments.
+    Commented,
     /// Dismissed or another state that neither approves nor blocks.
+    Other,
+}
+
+/// GitHub's kind of account (`Actor.__typename`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ActorKind {
+    User,
+    Bot,
+    /// A mannequin, an organization, or a kind den doesn't know, or no author.
     Other,
 }

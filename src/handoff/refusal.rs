@@ -34,6 +34,9 @@ pub enum RefusalReason {
     /// A Linear Issue: den launches Jobs for it only from the Start and
     /// Implement sheets, which arrive with the Linear writes (#38).
     LinearIssueNotLaunchable,
+    /// Request review (#36) is a decision only: its Job needs the reviewer
+    /// sheet and the approval-required permission mode, which arrive with #39.
+    RequestReviewNotLaunchable,
     /// The Work Item is not in what den last observed.
     WorkItemGone,
     RepoUnknown {
@@ -216,6 +219,9 @@ impl fmt::Display for RefusalReason {
             Self::NoNextStep => f.write_str("this Work Item has no Next Step to hand off"),
             Self::LinearIssueNotLaunchable => f.write_str(
                 "den can't launch a Job for a Linear Issue yet: it has no Repo until one is chosen for it, and the sheet that chooses one isn't built yet",
+            ),
+            Self::RequestReviewNotLaunchable => f.write_str(
+                "den can't launch a Request review Job yet: it needs the reviewer sheet and a permission mode where Claude asks before acting, which aren't built yet; request reviewers on GitHub for now",
             ),
             Self::WorkItemGone => f.write_str("this Work Item is no longer in the survey"),
             Self::RepoUnknown { repo } => write!(f, "den has no facts about the Repo {repo}"),

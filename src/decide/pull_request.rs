@@ -19,10 +19,21 @@
 //! Waiting On: the PR author, except for Review (the requested reviewers;
 //! me when I or a team of mine is requested; unattributed when den read too
 //! little of the requests or of my teams to say it is not me).
+//!
+//! For an Owner with a Linear Workflow, the policy's review rules
+//! ([`workflow`]) change approval and Address review, and add **Request
+//! review** between Review and Merge (Waiting On the author). A PR that would
+//! Merge then passes [`held_back`], the one place "would Merge" becomes Merge:
+//! in a Held Repo it has no Next Step and is held for release. The empty
+//! policy (no Linear Workflow) changes none of this module's Decisions.
 
-use super::{Attribution, Context, Decision, Explanation, WorkItem};
+mod workflow;
+
+use workflow::WorkflowReview;
+
+use super::{Attribution, Context, Decision, Explanation, HeldBack, WorkItem};
 use crate::domain::{
-    NextStep, Source, SourceState, Viewer,
+    LinearWorkflowPolicy, NextStep, Source, SourceState, Viewer,
     facts::{
         Check, CheckOutcome, MergeState, Mergeability, PrDetails, PullRequest, ReviewDecision,
         ReviewVerdict, Reviewer,
@@ -60,7 +71,7 @@ enum Approval {
     /// review was read. Enough for Merge (an orchestrator decision; the spec
     /// says "approved").
     NoReviewRequired,
-    NotApproved(&'static str),
+    NotApproved(String),
     Unknown,
 }
 
@@ -72,19 +83,43 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         url: pr.url.clone(),
         updated_at: pr.updated_at,
     };
-    let approval = approval(pr);
-    let merge_blockers = merge_blockers(pr, &approval);
-    let rules = [
+    let policy = ctx.policy(&pr.repo.owner);
+    let workflow = policy
+        .review
+        .as_ref()
+        .map(|rules| WorkflowReview::assess(pr, rules));
+    let approval = match &workflow {
+        Some(workflow) => workflow.approval(pr),
+        None => approval(pr),
+    };
+    let merge_blockers = merge_blockers(pr, &approval, workflow.as_ref());
+    let mut rules = vec![
         (NextStep::FinishDraft, draft(pr)),
         (NextStep::ResolveConflicts, conflicts(pr)),
         (NextStep::FixCi, fix_ci(pr.details.as_ref())),
-        (NextStep::AddressReview, address_review(pr)),
+        (
+            NextStep::AddressReview,
+            match &workflow {
+                Some(workflow) => workflow.address_review(pr),
+                None => address_review(pr),
+            },
+        ),
         (
             NextStep::Review,
             review(pr.details.as_ref(), &ctx.viewers.github),
         ),
-        (NextStep::Merge, merge(pr, &approval, &merge_blockers)),
     ];
+    if let Some(workflow) = &workflow {
+        rules.push((
+            NextStep::RequestReview,
+            workflow.request_review(pr, &approval),
+        ));
+    }
+    rules.push((
+        NextStep::Merge,
+        merge(pr, &approval, &merge_blockers, workflow.as_ref()),
+    ));
+    let suggested_reviewers = workflow.as_ref().map(WorkflowReview::suggested_reviewers);
     let winner = rules
         .iter()
         .enumerate()
@@ -104,7 +139,13 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
             _ => None,
         })
         .collect();
-    other_conditions.extend(notes(pr, &approval, &merge_blockers, winner_step));
+    other_conditions.extend(notes(
+        pr,
+        &approval,
+        &merge_blockers,
+        winner_step,
+        workflow.as_ref(),
+    ));
 
     let mut unknowns: Vec<String> = rules
         .iter()
@@ -124,7 +165,7 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
     unknowns.dedup();
 
     let Some((index, step, why)) = winner else {
-        return Decision::new(
+        let mut decision = Decision::new(
             ctx,
             item,
             None,
@@ -136,6 +177,8 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
                 ..Explanation::default()
             },
         );
+        decision.suggested_reviewers = suggested_reviewers;
+        return decision;
     };
     let not_ruled_out: Vec<String> = rules[..index]
         .iter()
@@ -152,7 +195,29 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
             not_ruled_out.join(", ")
         )
     };
-    Decision::new(
+    if step == NextStep::Merge
+        && let Some((held, why_held)) = held_back(policy, pr)
+    {
+        let mut decision = Decision::new(
+            ctx,
+            item,
+            None,
+            Attribution::nobody(format!("{}, so nobody owes a Next Step", held.label())),
+            Explanation {
+                no_step_reason: Some(format!(
+                    "{}: {why_held}; it would otherwise Merge ({winning_rule})",
+                    held.label()
+                )),
+                other_conditions,
+                unknowns,
+                ..Explanation::default()
+            },
+        );
+        decision.held_back = Some(held);
+        decision.suggested_reviewers = suggested_reviewers;
+        return decision;
+    }
+    let mut decision = Decision::new(
         ctx,
         item,
         Some(step),
@@ -163,7 +228,25 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
             unknowns,
             ..Explanation::default()
         },
-    )
+    );
+    decision.suggested_reviewers = suggested_reviewers;
+    decision
+}
+
+/// The one place a PR that would Merge is held back instead (spec 0002:
+/// "would Merge" is then filtered): in a Held Repo it is held for release.
+/// Landing Group members ("lands with", #37) join here. `None`: Merge.
+fn held_back(policy: &LinearWorkflowPolicy, pr: &PullRequest) -> Option<(HeldBack, String)> {
+    if policy.holds(&pr.repo) {
+        return Some((
+            HeldBack::ForRelease,
+            format!(
+                "{} is a Held Repo (workflow policy: a Held Repo's PRs are held for release, not merged)",
+                pr.repo
+            ),
+        ));
+    }
+    None
 }
 
 fn waiting_on(step: NextStep, pr: &PullRequest, ctx: &Context<'_>) -> Attribution {
@@ -249,18 +332,7 @@ fn address_review(pr: &PullRequest) -> Finding {
         }
         return Finding::Holds(reasons.join(", "));
     };
-    if details.unresolved_threads > 0 {
-        let at_least = if details.threads_complete {
-            ""
-        } else {
-            "at least "
-        };
-        reasons.push(format!(
-            "{at_least}{} unresolved review {}",
-            details.unresolved_threads,
-            plural(details.unresolved_threads as usize, "thread")
-        ));
-    }
+    reasons.extend(unresolved_threads(details));
     if !reasons.is_empty() {
         return Finding::Holds(reasons.join(", "));
     }
@@ -268,6 +340,23 @@ fn address_review(pr: &PullRequest) -> Finding {
         return Finding::Unknown("not every review thread was read".to_owned());
     }
     Finding::No
+}
+
+/// "2 unresolved review threads" ("at least" when not every thread was read).
+fn unresolved_threads(details: &PrDetails) -> Option<String> {
+    if details.unresolved_threads == 0 {
+        return None;
+    }
+    let at_least = if details.threads_complete {
+        ""
+    } else {
+        "at least "
+    };
+    Some(format!(
+        "{at_least}{} unresolved review {}",
+        details.unresolved_threads,
+        plural(details.unresolved_threads as usize, "thread")
+    ))
 }
 
 fn review(details: Option<&PrDetails>, viewer: &Viewer) -> Finding {
@@ -296,13 +385,21 @@ fn review(details: Option<&PrDetails>, viewer: &Viewer) -> Finding {
     Finding::Holds(format!("review requested from {}", names.join(", ")))
 }
 
-fn merge(pr: &PullRequest, approval: &Approval, blockers: &[String]) -> Finding {
+fn merge(
+    pr: &PullRequest,
+    approval: &Approval,
+    blockers: &[String],
+    workflow: Option<&WorkflowReview>,
+) -> Finding {
     if !blockers.is_empty() {
         return Finding::No;
     }
-    let review = match approval {
-        Approval::NoReviewRequired => "no review required and no changes requested",
-        _ => "approved",
+    let review = match (workflow, approval) {
+        (Some(workflow), _) => workflow.merge_text(approval),
+        (None, Approval::NoReviewRequired) => {
+            "no review required and no changes requested".to_owned()
+        }
+        (None, _) => "approved".to_owned(),
     };
     Finding::Holds(format!(
         "{review}, checks passing and mergeable into {}",
@@ -314,16 +411,24 @@ fn merge(pr: &PullRequest, approval: &Approval, blockers: &[String]) -> Finding 
 /// review required), no unresolved review threads and all threads read, every
 /// review request read, every check (required or advisory) passing and all
 /// read, known mergeable, not a draft, not in a merge queue, and GitHub's own
-/// merge state agreeing.
-fn merge_blockers(pr: &PullRequest, approval: &Approval) -> Vec<String> {
+/// merge state agreeing. Under a Linear Workflow, also nobody awaiting
+/// re-review (and approval is the workflow's).
+fn merge_blockers(
+    pr: &PullRequest,
+    approval: &Approval,
+    workflow: Option<&WorkflowReview>,
+) -> Vec<String> {
     let mut blockers = Vec::new();
     if pr.is_draft {
         blockers.push("the PR is a draft".to_owned());
     }
     match approval {
         Approval::Approved | Approval::NoReviewRequired => {}
-        Approval::NotApproved(why) => blockers.push((*why).to_owned()),
+        Approval::NotApproved(why) => blockers.push(why.clone()),
         Approval::Unknown => blockers.push("approval could not be established".to_owned()),
+    }
+    if let Some(workflow) = workflow {
+        blockers.extend(workflow.merge_blockers());
     }
     match &pr.details {
         None => blockers.push("checks could not be read".to_owned()),
@@ -410,6 +515,7 @@ fn notes(
     approval: &Approval,
     merge_blockers: &[String],
     winner: Option<NextStep>,
+    workflow: Option<&WorkflowReview>,
 ) -> Vec<String> {
     let mut notes = Vec::new();
     if let Some(details) = &pr.details {
@@ -428,7 +534,10 @@ fn notes(
     }
     // When Merge holds (behind an earlier rule), its own condition says "approved".
     if matches!(approval, Approval::Approved) && winner.is_some() && !merge_blockers.is_empty() {
-        notes.push("approved".to_owned());
+        notes.push(workflow.map_or_else(|| "approved".to_owned(), |w| w.approved_text(approval)));
+    }
+    if let Some(workflow) = workflow {
+        notes.extend(workflow.notes());
     }
     notes
 }
@@ -451,14 +560,14 @@ fn unrecognised_checks(details: Option<&PrDetails>) -> Vec<String> {
 fn approval(pr: &PullRequest) -> Approval {
     match pr.review_decision {
         ReviewDecision::Approved => Approval::Approved,
-        ReviewDecision::ChangesRequested => Approval::NotApproved("changes requested"),
+        ReviewDecision::ChangesRequested => Approval::NotApproved("changes requested".to_owned()),
         ReviewDecision::ReviewRequired => {
-            Approval::NotApproved("not approved: a review is required")
+            Approval::NotApproved("not approved: a review is required".to_owned())
         }
         // Without GitHub's decision, a latest review asking for changes still
         // counts; nothing else can establish approval.
         ReviewDecision::Unknown if latest_review_requests_changes(pr) => {
-            Approval::NotApproved("changes requested")
+            Approval::NotApproved("changes requested".to_owned())
         }
         ReviewDecision::Unknown => Approval::Unknown,
         ReviewDecision::NotRequired => {
@@ -467,7 +576,7 @@ fn approval(pr: &PullRequest) -> Approval {
             };
             let reviews = &details.latest_reviews;
             if latest_review_requests_changes(pr) {
-                Approval::NotApproved("changes requested")
+                Approval::NotApproved("changes requested".to_owned())
             } else if !reviews.complete {
                 Approval::Unknown
             } else if reviews

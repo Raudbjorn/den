@@ -213,15 +213,16 @@ pub struct DetailContent {
     /// The Job den launched for this Work Item, if any (#14).
     pub job: Option<JobDetail>,
     /// Facts about the Work Item shown as a section of their own: a Linear
-    /// Issue's team, state, assignee, priority and cycle (#32). `None` for
-    /// GitHub Work Items, whose facts are in the Explanation.
+    /// Issue's team, state, assignee, priority and cycle (#32); a PR's Linear
+    /// Workflow section: "held for release" and the suggested reviewers (#36).
+    /// `None` for other GitHub Work Items, whose facts are in the Explanation.
     pub facts: Option<DetailFacts>,
 }
 
 /// A section of facts in the detail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailFacts {
-    /// "LINEAR ISSUE".
+    /// "LINEAR ISSUE", "LINEAR WORKFLOW".
     pub label: String,
     /// One fact per line, each saying what it is ("team TEAM").
     pub lines: Vec<String>,

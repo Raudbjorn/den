@@ -17,8 +17,8 @@ use den::{
     domain::{
         Incompleteness, Observation, Source, SourceKind, SourceState, TeamRef,
         facts::{
-            Check, CheckOutcome, MergeState, Mergeability, PullRequest, Review, ReviewDecision,
-            ReviewVerdict, Reviewer,
+            ActorKind, Check, CheckOutcome, MergeState, Mergeability, PullRequest, Review,
+            ReviewDecision, ReviewVerdict, Reviewer,
         },
     },
     github::{
@@ -75,6 +75,7 @@ fn no_details() -> Value {
         "reviewThreads": empty_connection(),
         "reviewRequests": empty_connection(),
         "latestOpinionatedReviews": empty_connection(),
+        "latestReviews": empty_connection(),
         "commits": { "nodes": [{ "commit": { "statusCheckRollup": null } }] }
     })
 }
@@ -90,8 +91,17 @@ fn rich_details() -> Value {
             { "requestedReviewer": { "__typename": "Team", "slug": "core", "organization": { "login": "octo" } } }
         ]},
         "latestOpinionatedReviews": { "pageInfo": page_info(false), "nodes": [
-            { "state": "CHANGES_REQUESTED", "author": { "login": "bob" } },
-            { "state": "APPROVED", "author": null }
+            { "state": "CHANGES_REQUESTED", "author": { "__typename": "User", "login": "bob" },
+              "commit": { "oid": "c0ffee" } },
+            { "state": "APPROVED", "author": null, "commit": null },
+            { "state": "APPROVED", "author": { "__typename": "Bot", "login": "ci-bot" },
+              "commit": { "oid": "head1" } }
+        ]},
+        "latestReviews": { "pageInfo": page_info(false), "nodes": [
+            { "state": "COMMENTED", "author": { "__typename": "User", "login": "bob" },
+              "commit": { "oid": "head1" } },
+            { "state": "DISMISSED", "author": { "__typename": "Mannequin", "login": "old" },
+              "commit": { "oid": "c0ffee" } }
         ]},
         "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "contexts": {
             "pageInfo": page_info(false),
@@ -297,13 +307,66 @@ fn details_map_checks_threads_requests_and_reviews() {
         [
             Review {
                 author: Some("bob".to_owned()),
-                verdict: ReviewVerdict::ChangesRequested
+                author_kind: ActorKind::User,
+                verdict: ReviewVerdict::ChangesRequested,
+                commit: Some("c0ffee".to_owned()),
             },
             Review {
                 author: None,
-                verdict: ReviewVerdict::Approved
+                author_kind: ActorKind::Other,
+                verdict: ReviewVerdict::Approved,
+                commit: None,
+            },
+            Review {
+                author: Some("ci-bot".to_owned()),
+                author_kind: ActorKind::Bot,
+                verdict: ReviewVerdict::Approved,
+                commit: Some("head1".to_owned()),
             },
         ]
+    );
+    // GitHub's `latestReviews` (#36): the latest review of any kind per
+    // reviewer, comments included, with its commit and the author's kind.
+    assert_eq!(
+        details.latest_reviews_with_comments.items,
+        [
+            Review {
+                author: Some("bob".to_owned()),
+                author_kind: ActorKind::User,
+                verdict: ReviewVerdict::Commented,
+                commit: Some("head1".to_owned()),
+            },
+            Review {
+                author: Some("old".to_owned()),
+                author_kind: ActorKind::Other,
+                verdict: ReviewVerdict::Other,
+                commit: Some("c0ffee".to_owned()),
+            },
+        ]
+    );
+    assert!(details.latest_reviews_with_comments.complete);
+}
+
+#[test]
+fn more_latest_reviews_than_read_mark_the_pr_details_partial() {
+    let mut node = no_details();
+    node["latestReviews"] = json!({ "pageInfo": page_info(true), "nodes": [
+        { "state": "COMMENTED", "author": { "__typename": "User", "login": "carol" },
+          "commit": { "oid": "abc" } }
+    ]});
+    let gql = octo(
+        vec![pr_node(1, "MERGEABLE", Value::Null, false)],
+        each(node),
+    );
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    let details = the_pr(&observation, 1).details.clone().expect("details");
+    assert!(!details.latest_reviews_with_comments.complete);
+    assert_eq!(details.latest_reviews_with_comments.items.len(), 1);
+    assert_eq!(
+        app_details_state(&observation),
+        Some(SourceState::Partial(Incompleteness::FollowUpTruncated {
+            what: "#1 (latest reviews)".to_owned()
+        }))
     );
 }
 
