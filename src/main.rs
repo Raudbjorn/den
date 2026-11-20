@@ -102,10 +102,14 @@ fn event_loop(session: &mut TerminalSession, theme: &Theme) -> Result<(), DenErr
             .draw(|f| drawn = frame::draw_empty_frame(f, theme))?;
         drawn?;
         // Waits until the user does something (resizes also wake it to redraw),
-        // checking for a termination signal in between.
-        while !event::poll(Duration::from_millis(SIGNAL_CHECK_MS))? {
+        // checking for a termination signal before every wait, so steady input
+        // (held keys) cannot keep the check from running.
+        loop {
             if let Some(signal) = session.termination_signal() {
                 return Err(DenError::Signalled(signal));
+            }
+            if event::poll(Duration::from_millis(SIGNAL_CHECK_MS))? {
+                break;
             }
         }
         if let Event::Key(key) = event::read()?
