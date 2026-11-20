@@ -3,12 +3,13 @@
 //! WorkspaceView (which carries the Job records) was gathered by `inspect`.
 
 use super::{
-    Base, BaseRef, BranchStart, CloneSource, InspectRequest, JobBranch, LaunchPlan, MainClone,
-    PathState, Refusal, RefusalReason, Remote, Target, TargetChoice, WindowMode, WorkspaceView,
-    Writability,
+    Base, BaseRef, BranchStart, ChosenClone, CloneSource, InspectRequest, JobBranch, LaunchPlan,
+    MainClone, NewCloneView, PathState, Refusal, RefusalReason, RegisteredWorktree, Remote,
+    Renamed, Target, TargetChoice, WindowMode, WorkspaceView, Writability,
     clone::{self, Candidate},
-    command,
+    cloning, command,
     inspect::CloneSearch,
+    kinds::{self, Facts},
     names,
     prompts::{PromptFields, Prompts, PromptsError},
     worktree_path,
@@ -16,7 +17,7 @@ use super::{
 use crate::{
     config::Config,
     decide::Decision,
-    domain::{NextStep, Observation, Repo, WorkItemId},
+    domain::{Observation, WorkItemId},
 };
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -57,33 +58,21 @@ pub struct PlanInput<'a> {
     pub prompts: Result<&'a Prompts, &'a PromptsError>,
 }
 
-/// What a launch needs from GitHub's facts alone.
-struct Facts {
-    step: NextStep,
-    target: Target,
-    number: u64,
-    head_branch: String,
-    head_commit: String,
-    base: BaseRef,
-}
-
-/// The facts for a launch, or every reason it can't happen.
+/// The facts for a launch, or every reason it can't happen. PRs here; Issues,
+/// Branches and Runs in [`kinds`].
 fn facts(
     decision: &Decision,
     observation: &Observation,
     choice: TargetChoice,
 ) -> Result<Facts, Refusal> {
+    let WorkItemId::PullRequest { repo, number } = &decision.item.id else {
+        return kinds::facts(decision, observation, choice);
+    };
     let mut reasons = Vec::new();
     let step = decision.next_step;
     if step.is_none() {
         reasons.push(RefusalReason::NoNextStep);
     }
-    let WorkItemId::PullRequest { repo, number } = &decision.item.id else {
-        reasons.push(RefusalReason::NotYetLaunchable {
-            kind: decision.item.id.kind(),
-        });
-        return Err(Refusal { reasons });
-    };
     let Some(pr) = observation
         .pull_requests
         .iter()
@@ -96,7 +85,7 @@ fn facts(
         reasons.push(RefusalReason::RepoUnknown { repo: repo.clone() });
         return Err(Refusal { reasons });
     };
-    let target = match chosen_target(repo_facts, choice) {
+    let target = match kinds::chosen_target(repo_facts, choice) {
         Ok(target) => target,
         Err(reason) => {
             reasons.push(reason);
@@ -117,6 +106,8 @@ fn facts(
             target: target.target.repo.clone(),
         });
     }
+    // A head branch in another Repo (or a deleted one) is fetched as the PR
+    // ref from the target's remote (#13).
     let base = if pr.head_repo.as_ref() == Some(repo) {
         BaseRef::HeadBranch(pr.head_ref.clone())
     } else {
@@ -126,53 +117,18 @@ fn facts(
         Some(step) if reasons.is_empty() => Ok(Facts {
             step,
             target: target.target,
-            number: *number,
-            head_branch: pr.head_ref.clone(),
-            head_commit: pr.head_commit.clone(),
+            number: Some(*number),
             base,
+            base_commit: Some(pr.head_commit.clone()),
+            branch: pr.head_ref.clone(),
+            fresh: false,
         }),
         _ => Err(Refusal { reasons }),
     }
 }
 
-struct ChosenTarget {
-    target: Target,
-    archived: bool,
-}
-
-/// The target `choice` names for a Work Item in `repo`: the Repo itself, or
-/// (for a fork) its Upstream. Never a silent substitute.
-fn chosen_target(repo: &Repo, choice: TargetChoice) -> Result<ChosenTarget, RefusalReason> {
-    let (target, upstream_of) = match choice {
-        TargetChoice::OwnRepo => (repo, None),
-        TargetChoice::Upstream if !repo.is_fork => {
-            return Err(RefusalReason::NotAFork {
-                repo: repo.id.clone(),
-            });
-        }
-        TargetChoice::Upstream => match repo.upstream() {
-            Some(upstream) => (upstream, Some(repo.id.clone())),
-            None => {
-                return Err(RefusalReason::UpstreamUnknown {
-                    fork: repo.id.clone(),
-                });
-            }
-        },
-    };
-    Ok(ChosenTarget {
-        target: Target {
-            repo: target.id.clone(),
-            url: target.url.clone(),
-            is_fork: target.is_fork,
-            upstream_of,
-            default_branch: target.default_branch.clone(),
-        },
-        archived: target.is_archived,
-    })
-}
-
 /// What to inspect for launching `decision`'s Work Item, or why den won't even
-/// look (no Next Step, not a PR, archived, …).
+/// look (no Next Step, archived, …).
 pub fn inspect_request(
     decision: &Decision,
     observation: &Observation,
@@ -192,14 +148,22 @@ pub fn inspect_request(
         target_url: facts.target.url.clone(),
         configured_clone,
         search_root,
-        worktree_name: names::worktree_name(&facts.head_branch),
-        branch: facts.head_branch,
+        worktree_name: names::worktree_name(&facts.branch),
+        base_branch: facts
+            .base_commit
+            .is_none()
+            .then(|| facts.base.branch().map(str::to_owned))
+            .flatten(),
+        branch: facts.branch,
+        item: decision.item.id.clone(),
+        fresh: facts.fresh,
     })
 }
 
 /// Plans the launch, or refuses with every reason found.
 pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     let facts = facts(input.decision, input.observation, input.choice)?;
+    let item = &input.decision.item.id;
     let view = input.view;
     let mut reasons = Vec::new();
 
@@ -222,101 +186,80 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     }
 
     let found = main_clone(&facts, view)
-        .map_err(|reason| reasons.push(reason))
+        .map_err(|why| reasons.extend(why))
         .ok();
-    let state = found.as_ref().and_then(|(clone, _)| {
-        let chosen = view.chosen.as_ref().filter(|c| c.path == clone.path);
-        if chosen.is_none() {
-            reasons.push(RefusalReason::InspectionFailed {
-                error: format!("{} was not inspected", clone.path.display()),
+
+    // The worktree name: suffixed when other Work Items' Jobs have it.
+    let wanted = names::worktree_name(&facts.branch);
+    let records = view.jobs.as_ref().map_or(&[][..], Vec::as_slice);
+    let named = found.as_ref().and_then(|(clone, _)| {
+        let free = names::free_worktree_name(&wanted, &clone.path, item, facts.fresh, records);
+        if free.is_none() {
+            reasons.push(RefusalReason::NoFreeWorktreeName {
+                wanted: wanted.clone(),
             });
         }
-        chosen
+        free
     });
+    let worktree_name = named
+        .as_ref()
+        .map_or_else(|| wanted.clone(), |(name, _)| name.clone());
+    let branch_name = if facts.fresh {
+        worktree_name.clone()
+    } else {
+        facts.branch.clone()
+    };
 
-    let worktree_name = names::worktree_name(&facts.head_branch);
+    let base_commit = found
+        .as_ref()
+        .and_then(|(clone, remote)| base_commit(&facts, view, clone, remote, &mut reasons));
+
     let mut branch_start = None;
     let mut writable = Writability::Unknown("not inspected".to_owned());
-    if let (Some((clone, remote)), Some(state)) = (&found, state) {
-        match &state.state {
-            PathState::Exists { writable: w } => {
-                if *w == Writability::NotWritable {
-                    reasons.push(RefusalReason::MainCloneNotWritable {
-                        path: clone.path.clone(),
-                    });
+    match &found {
+        Some((clone, remote)) if matches!(clone.source, CloneSource::ToClone { .. }) => {
+            // A fresh clone has no worktrees and no local branches yet.
+            writable = clone.writable.clone();
+            branch_start = Some(new_branch_start(&facts, remote));
+        }
+        Some((clone, remote)) => {
+            let chosen = view.chosen.as_ref().filter(|c| c.path == clone.path);
+            match chosen {
+                Some(state) if state.worktree_name == worktree_name => {
+                    let checked = Checked {
+                        facts: &facts,
+                        item,
+                        view,
+                        clone,
+                        remote,
+                        branch: &branch_name,
+                        worktree: worktree_path(&clone.path, &worktree_name),
+                        base_commit: base_commit.as_deref(),
+                    };
+                    writable = check_clone(&checked, state, &mut reasons);
+                    branch_start = check_branch(&checked, state, &mut reasons);
                 }
-                writable = w.clone();
+                Some(state) => reasons.push(RefusalReason::InspectionFailed {
+                    error: format!(
+                        "the worktree name {worktree_name} was not inspected ({} was)",
+                        state.worktree_name
+                    ),
+                }),
+                None => reasons.push(RefusalReason::InspectionFailed {
+                    error: format!("{} was not inspected", clone.path.display()),
+                }),
             }
-            PathState::Missing => reasons.push(RefusalReason::MainCloneMissing {
-                path: clone.path.clone(),
-            }),
-            PathState::Unknown(error) => reasons.push(RefusalReason::MainCloneUnknown {
-                path: clone.path.clone(),
-                error: error.clone(),
-            }),
         }
-        let worktree = worktree_path(&clone.path, &worktree_name);
-        let registered = match &state.worktrees {
-            Ok(registered) => registered.as_slice(),
-            Err(error) => {
-                reasons.push(RefusalReason::InspectionFailed {
-                    error: error.clone(),
-                });
-                &[]
-            }
-        };
-        match &state.worktree {
-            // Gone from disk but still registered: git would refuse the path.
-            PathState::Missing if registered.iter().any(|w| w.path == worktree) => {
-                reasons.push(RefusalReason::WorktreeRegistered {
-                    path: worktree.clone(),
-                });
-            }
-            PathState::Missing => {}
-            PathState::Exists { .. } => reasons.push(RefusalReason::WorktreeExists {
-                job: recorded_job(view, &input.decision.item.id, &worktree),
-                path: worktree,
-            }),
-            PathState::Unknown(error) => reasons.push(RefusalReason::WorktreeUnknown {
-                path: worktree,
-                error: error.clone(),
-            }),
-        }
-        match &state.local_branch {
-            Ok(None) => {
-                branch_start = Some(match &facts.base {
-                    BaseRef::HeadBranch(head) => BranchStart::New {
-                        tracking: format!("{}/{head}", remote.name),
-                    },
-                    BaseRef::PullHead { .. } => BranchStart::NewUntracked,
-                });
-            }
-            Ok(Some(commit)) if *commit == facts.head_commit => {
-                match registered
-                    .iter()
-                    .find(|w| w.branch.as_deref() == Some(facts.head_branch.as_str()))
-                {
-                    Some(elsewhere) => reasons.push(RefusalReason::BranchCheckedOut {
-                        branch: facts.head_branch.clone(),
-                        worktree: elsewhere.path.clone(),
-                    }),
-                    None => branch_start = Some(BranchStart::Existing),
-                }
-            }
-            Ok(Some(commit)) => reasons.push(RefusalReason::LocalBranchDiffers {
-                branch: facts.head_branch.clone(),
-                commit: commit.clone(),
-                base: facts.head_commit.clone(),
-            }),
-            Err(error) => reasons.push(RefusalReason::InspectionFailed {
-                error: error.clone(),
-            }),
-        }
+        None => {}
     }
 
-    let (Some((mut clone, remote)), Some(prompts), Some(start), true) =
-        (found, prompts, branch_start, reasons.is_empty())
-    else {
+    let (Some((mut clone, remote)), Some(prompts), Some(start), Some(commit), true) = (
+        found,
+        prompts,
+        branch_start,
+        base_commit,
+        reasons.is_empty(),
+    ) else {
         return Err(Refusal { reasons });
     };
     clone.writable = writable;
@@ -326,13 +269,16 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         facts.step,
         &PromptFields {
             repo: facts.target.repo.to_string(),
-            number: Some(facts.number),
+            number: facts.number,
             url: decision.item.url.clone(),
             title: decision.item.title.clone(),
-            branch: facts.head_branch.clone(),
+            branch: branch_name.clone(),
         },
     );
-    let session = names::pr_session_name(&facts.target.repo, facts.number, facts.step);
+    let session = names::session_name(item, facts.step);
+    let renamed = named
+        .filter(|(name, _)| *name != wanted)
+        .map(|(_, taken_by)| Renamed { wanted, taken_by });
     let mut plan = LaunchPlan {
         work_item: decision.item.id.clone(),
         title: decision.item.title.clone(),
@@ -343,13 +289,14 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         remote,
         base: Base {
             reference: facts.base,
-            commit: facts.head_commit,
+            commit,
         },
         branch: JobBranch {
-            name: facts.head_branch,
+            name: branch_name,
             start,
         },
         worktree,
+        renamed,
         session,
         prompt,
         window: view.window.clone(),
@@ -359,8 +306,213 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     Ok(plan)
 }
 
-/// The Main Clone and its remote for the target, or why there is none.
-fn main_clone(facts: &Facts, view: &WorkspaceView) -> Result<(MainClone, Remote), RefusalReason> {
+/// The commit the Job starts on: the PR head GitHub reported, or where the
+/// remote said the base branch is.
+fn base_commit(
+    facts: &Facts,
+    view: &WorkspaceView,
+    clone: &MainClone,
+    remote: &Remote,
+    reasons: &mut Vec<RefusalReason>,
+) -> Option<String> {
+    if let Some(commit) = &facts.base_commit {
+        return Some(commit.clone());
+    }
+    let from = match &clone.source {
+        CloneSource::ToClone { url, .. } => url.clone(),
+        _ => remote.name.clone(),
+    };
+    let Some(branch) = facts.base.branch().map(str::to_owned) else {
+        reasons.push(RefusalReason::InspectionFailed {
+            error: format!("den has no commit for {}", facts.base.remote_ref()),
+        });
+        return None;
+    };
+    match &view.base_tip {
+        Some(Ok(Some(commit))) => return Some(commit.clone()),
+        Some(Ok(None)) => reasons.push(RefusalReason::BaseBranchGone { from, branch }),
+        Some(Err(error)) => reasons.push(RefusalReason::BaseUnreadable {
+            from,
+            branch,
+            error: error.clone(),
+        }),
+        None => reasons.push(RefusalReason::InspectionFailed {
+            error: format!("den didn't ask {from} where {branch} is"),
+        }),
+    }
+    None
+}
+
+/// A local branch the Job creates: a fresh `<type>_<slug>` branch tracking
+/// nothing, the target's branch tracked under its remote, or a cross-Repo PR
+/// head (a PR ref) tracking nothing.
+fn new_branch_start(facts: &Facts, remote: &Remote) -> BranchStart {
+    match facts.base.branch() {
+        _ if facts.fresh => BranchStart::Fresh,
+        Some(branch) => BranchStart::New {
+            tracking: format!("{}/{branch}", remote.name),
+        },
+        None => BranchStart::NewUntracked,
+    }
+}
+
+/// What the existing-clone checks look at.
+struct Checked<'a> {
+    facts: &'a Facts,
+    item: &'a WorkItemId,
+    view: &'a WorkspaceView,
+    clone: &'a MainClone,
+    remote: &'a Remote,
+    /// The Job's local branch name (suffixed for a fresh branch).
+    branch: &'a str,
+    worktree: PathBuf,
+    /// `None` when it couldn't be established (already a reason).
+    base_commit: Option<&'a str>,
+}
+
+/// The Main Clone and the worktree path are usable; returns the clone's writability.
+fn check_clone(
+    checked: &Checked<'_>,
+    state: &ChosenClone,
+    reasons: &mut Vec<RefusalReason>,
+) -> Writability {
+    let clone = checked.clone;
+    let writable = match &state.state {
+        PathState::Exists { writable } => {
+            if *writable == Writability::NotWritable {
+                reasons.push(RefusalReason::MainCloneNotWritable {
+                    path: clone.path.clone(),
+                });
+            }
+            writable.clone()
+        }
+        PathState::Missing => {
+            reasons.push(RefusalReason::MainCloneMissing {
+                path: clone.path.clone(),
+            });
+            Writability::Unknown("not inspected".to_owned())
+        }
+        PathState::Unknown(error) => {
+            reasons.push(RefusalReason::MainCloneUnknown {
+                path: clone.path.clone(),
+                error: error.clone(),
+            });
+            Writability::Unknown("not inspected".to_owned())
+        }
+    };
+    let worktree = &checked.worktree;
+    let registered = registered(state, reasons);
+    match &state.worktree {
+        // Gone from disk but still registered: git would refuse the path.
+        PathState::Missing if registered.iter().any(|w| &w.path == worktree) => {
+            reasons.push(RefusalReason::WorktreeRegistered {
+                path: worktree.clone(),
+            });
+        }
+        PathState::Missing => {}
+        PathState::Exists { .. } => reasons.push(RefusalReason::WorktreeExists {
+            job: recorded_job(checked.view, checked.item, worktree),
+            path: worktree.clone(),
+        }),
+        PathState::Unknown(error) => reasons.push(RefusalReason::WorktreeUnknown {
+            path: worktree.clone(),
+            error: error.clone(),
+        }),
+    }
+    writable
+}
+
+fn registered<'a>(
+    state: &'a ChosenClone,
+    reasons: &mut Vec<RefusalReason>,
+) -> &'a [RegisteredWorktree] {
+    match &state.worktrees {
+        Ok(registered) => registered.as_slice(),
+        Err(error) => {
+            reasons.push(RefusalReason::InspectionFailed {
+                error: error.clone(),
+            });
+            &[]
+        }
+    }
+}
+
+/// How the Job's local branch starts, given what is there locally.
+fn check_branch(
+    checked: &Checked<'_>,
+    state: &ChosenClone,
+    reasons: &mut Vec<RefusalReason>,
+) -> Option<BranchStart> {
+    let branch = checked.branch;
+    match &state.local_branch {
+        Ok(None) => Some(new_branch_start(checked.facts, checked.remote)),
+        Ok(Some(commit)) if Some(commit.as_str()) == checked.base_commit => {
+            // Already reported when the list couldn't be read.
+            let registered = state.worktrees.as_deref().unwrap_or_default();
+            match registered
+                .iter()
+                .find(|w| w.branch.as_deref() == Some(branch))
+            {
+                Some(elsewhere) => {
+                    reasons.push(RefusalReason::BranchCheckedOut {
+                        branch: branch.to_owned(),
+                        worktree: elsewhere.path.clone(),
+                    });
+                    None
+                }
+                None => Some(BranchStart::Existing),
+            }
+        }
+        Ok(Some(commit)) => {
+            if let Some(base) = checked.base_commit {
+                reasons.push(RefusalReason::LocalBranchDiffers {
+                    branch: branch.to_owned(),
+                    commit: commit.clone(),
+                    base_name: base_name(checked.facts, checked.remote),
+                    base: base.to_owned(),
+                });
+            }
+            None
+        }
+        Err(error) => {
+            reasons.push(RefusalReason::InspectionFailed {
+                error: error.clone(),
+            });
+            None
+        }
+    }
+}
+
+/// The base in words, for refusals: "the PR head", "upstream/main".
+fn base_name(facts: &Facts, remote: &Remote) -> String {
+    match facts.base.branch() {
+        Some(branch) if facts.base_commit.is_none() => format!("{}/{branch}", remote.name),
+        _ => "the PR head".to_owned(),
+    }
+}
+
+/// The Main Clone and its remote for the target (one den will clone, when
+/// none qualifies), or why there is none.
+fn main_clone(
+    facts: &Facts,
+    view: &WorkspaceView,
+) -> Result<(MainClone, Remote), Vec<RefusalReason>> {
+    found_clone(facts, view).or_else(|no_clone| match (&no_clone, &view.new_clone) {
+        (
+            RefusalReason::NoMainClone {
+                search_error: None, ..
+            },
+            Some(folders),
+        ) => {
+            // Name the near misses too, so the user sees why none qualified.
+            to_clone(&facts.target, folders).map_err(|why| vec![no_clone, why])
+        }
+        _ => Err(vec![no_clone]),
+    })
+}
+
+/// The existing Main Clone and its remote for the target, or why there is none.
+fn found_clone(facts: &Facts, view: &WorkspaceView) -> Result<(MainClone, Remote), RefusalReason> {
     let target = &facts.target;
     let unknown = Writability::Unknown("not inspected".to_owned());
     match &view.clones {
@@ -416,6 +568,26 @@ fn main_clone(facts: &Facts, view: &WorkspaceView) -> Result<(MainClone, Remote)
             near_misses: Vec::new(),
         }),
     }
+}
+
+/// No Main Clone: the one den will clone, from the target's URL.
+fn to_clone(target: &Target, folders: &NewCloneView) -> Result<(MainClone, Remote), RefusalReason> {
+    let spot = cloning::choose(folders, &target.repo)?;
+    Ok((
+        MainClone {
+            path: spot.path,
+            source: CloneSource::ToClone {
+                url: target.url.clone(),
+                root: folders.root.clone(),
+                taken: spot.taken,
+            },
+            writable: spot.writable,
+        },
+        Remote {
+            name: cloning::CLONE_REMOTE.to_owned(),
+            url: target.url.clone(),
+        },
+    ))
 }
 
 fn near_misses(candidates: &[Candidate], facts: &Facts) -> Vec<(PathBuf, Vec<Remote>)> {

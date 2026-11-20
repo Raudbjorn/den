@@ -381,6 +381,7 @@ fn plan_for(clone: &Path, url: &str, head: &str) -> LaunchPlan {
             },
         },
         worktree,
+        renamed: None,
         session: "app-pr7-address-review".to_owned(),
         prompt: "/gh-resolve https://github.com/octo/app/pull/7".to_owned(),
         window: WindowMode::Kitty,

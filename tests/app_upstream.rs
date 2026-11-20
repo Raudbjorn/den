@@ -423,7 +423,7 @@ fn a_cross_repo_pr_head_is_fetched_by_its_pr_ref_from_the_target_repos_remote() 
             add: WorktreeAdd {
                 path: "/home/me/dev/app/.claude/worktrees/feature-7".into(),
                 branch: "feature-7".to_owned(),
-                start: WorktreeStart::NewBranchAt {
+                start: WorktreeStart::NewBranch {
                     start: "refs/remotes/origin/pr/7".to_owned()
                 },
             },

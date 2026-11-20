@@ -7,8 +7,10 @@
 //! `den --dump COLSxROWS` runs one survey and prints the frame as plain text
 //! instead (a debugging aid).
 //!
-//! `den --launch OWNER/REPO#N [--prompt TEXT] [--yes]` drives the launch sheet
-//! without the TUI (for manual runs): it surveys, selects that PR, presses `c`,
+//! `den --launch ITEM [--prompt TEXT] [--yes]` drives the launch sheet without
+//! the TUI (for manual runs). ITEM is `OWNER/REPO#N` (an Issue or a PR),
+//! `OWNER/REPO:BRANCH` or `OWNER/REPO@WORKFLOW` (a workflow file such as
+//! `ci.yml`). It surveys, selects that Work Item, presses `c`,
 //! optionally replaces the prompt by typing it into the sheet's field, and
 //! prints the sheet. Only with `--yes` does it press `Enter` and launch.
 //!
@@ -54,7 +56,7 @@ use std::{
 
 const EXIT_FAILURE: u8 = 1;
 const EXIT_USAGE: u8 = 2;
-const USAGE: &str = "usage: den [--dump COLSxROWS | --launch OWNER/REPO#N [--switch-target] [--prompt TEXT] [--yes]]";
+const USAGE: &str = "usage: den [--dump COLSxROWS | --launch OWNER/REPO#N|OWNER/REPO:BRANCH|OWNER/REPO@WORKFLOW [--switch-target] [--prompt TEXT] [--yes]]";
 /// The terminal size `--launch` lays the sheet out for, in cells.
 const LAUNCH_DUMP_SIZE: (u16, u16) = (160, 45);
 /// The largest `--dump` width or height, in cells. The dump buffer holds
@@ -103,7 +105,7 @@ enum Mode {
         rows: u16,
     },
     Launch {
-        item: WorkItemId,
+        item: LaunchTarget,
         prompt: Option<String>,
         confirm: bool,
         /// Press `u` on the sheet: a fork's Work Item targets the other of
@@ -136,21 +138,84 @@ fn parse_args(args: &[String]) -> Result<Mode, DenError> {
     }
 }
 
+/// The Work Item `--launch` names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LaunchTarget {
+    /// `OWNER/REPO#N`: the Issue or PR numbered N.
+    Numbered { repo: RepoId, number: u64 },
+    /// `OWNER/REPO:BRANCH`.
+    Branch { repo: RepoId, name: String },
+    /// `OWNER/REPO@WORKFLOW`: a workflow by its file name or path.
+    Workflow { repo: RepoId, workflow: String },
+}
+
+impl LaunchTarget {
+    fn parse(item: &str) -> Option<Self> {
+        let split = item.find(['#', ':', '@'])?;
+        let (repo, rest) = item.split_at(split);
+        let (owner, name) = repo.split_once('/')?;
+        if owner.is_empty() || name.is_empty() {
+            return None;
+        }
+        let repo = RepoId::new(owner, name);
+        let (marker, what) = rest.split_at(1);
+        if what.is_empty() {
+            return None;
+        }
+        match marker {
+            "#" => Some(Self::Numbered {
+                repo,
+                number: what.parse().ok()?,
+            }),
+            ":" => Some(Self::Branch {
+                repo,
+                name: what.to_owned(),
+            }),
+            _ => Some(Self::Workflow {
+                repo,
+                workflow: what.to_owned(),
+            }),
+        }
+    }
+
+    fn matches(&self, id: &WorkItemId) -> bool {
+        match (self, id) {
+            (
+                Self::Numbered { repo, number },
+                WorkItemId::Issue { repo: r, number: n }
+                | WorkItemId::PullRequest { repo: r, number: n },
+            ) => repo == r && number == n,
+            (Self::Branch { repo, name }, WorkItemId::Branch { repo: r, name: n }) => {
+                repo == r && name == n
+            }
+            (
+                Self::Workflow { repo, workflow },
+                WorkItemId::Run {
+                    repo: r,
+                    workflow: w,
+                },
+            ) => repo == r && (w.0 == *workflow || w.0.ends_with(&format!("/{workflow}"))),
+            _ => false,
+        }
+    }
+}
+
+impl std::fmt::Display for LaunchTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Numbered { repo, number } => write!(f, "{repo}#{number}"),
+            Self::Branch { repo, name } => write!(f, "{repo}:{name}"),
+            Self::Workflow { repo, workflow } => write!(f, "{repo}@{workflow}"),
+        }
+    }
+}
+
 fn parse_launch(item: &str, rest: &[String]) -> Result<Mode, DenError> {
-    let item = item
-        .split_once('#')
-        .and_then(|(repo, number)| {
-            let (owner, name) = repo.split_once('/')?;
-            Some(WorkItemId::PullRequest {
-                repo: RepoId::new(owner, name),
-                number: number.parse().ok()?,
-            })
-        })
-        .ok_or_else(|| {
-            DenError::Usage(format!(
-                "--launch expects OWNER/REPO#N such as Raudbjorn/den#12, got {item:?}"
-            ))
-        })?;
+    let item = LaunchTarget::parse(item).ok_or_else(|| {
+        DenError::Usage(format!(
+            "--launch expects OWNER/REPO#N, OWNER/REPO:BRANCH or OWNER/REPO@WORKFLOW such as Raudbjorn/den#12, got {item:?}"
+        ))
+    })?;
     let mut prompt = None;
     let mut confirm = false;
     let mut switch_target = false;
@@ -381,7 +446,7 @@ fn run(args: &[String]) -> Result<(), DenError> {
 
 /// What `--launch` was asked for.
 struct LaunchArgs<'a> {
-    item: &'a WorkItemId,
+    item: &'a LaunchTarget,
     prompt: Option<&'a str>,
     confirm: bool,
     switch_target: bool,
@@ -407,16 +472,16 @@ fn run_launch(
         now: Timestamp::now(),
     };
     let (mut view, _) = runtime::settle(&mut app, started, ports);
-    // Select the PR the way a user would: ↓ until it is the selected row.
+    // Select the Work Item the way a user would: ↓ until it is the selected row.
     for _ in 0..view.list.rows.len() {
         let selected = view.list.selected.and_then(|i| view.list.rows.get(i));
-        if selected.is_some_and(|row| &row.id == item) {
+        if selected.is_some_and(|row| item.matches(&row.id)) {
             break;
         }
         view = app.handle(Event::Key(Key::Down)).0;
     }
     let selected = view.list.selected.and_then(|i| view.list.rows.get(i));
-    if selected.is_none_or(|row| &row.id != item) {
+    if selected.is_none_or(|row| !item.matches(&row.id)) {
         let why = view
             .list
             .empty
