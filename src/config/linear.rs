@@ -28,7 +28,7 @@
 
 use super::{Location, location_of};
 use crate::domain::{
-    LinearSourceKind, LinearWorkflowPolicy, RepoId, ReviewPolicy, StartPolicy, TeamRef, facts,
+    LinearSourceKind, LinearWorkflowPolicy, RepoId, ReviewPolicy, StartPolicy, TeamRef,
     ids::{is_valid_login, is_valid_repo_name},
 };
 use serde::Deserialize;
@@ -95,14 +95,7 @@ impl LinearWorkflow {
             review: Some(ReviewPolicy {
                 exact_head_approval: self.exact_head_approval,
                 comment_reviews_need_rereview: self.comment_reviews_need_rereview,
-                reviewers: self
-                    .reviewers
-                    .iter()
-                    .map(|reviewer| match reviewer {
-                        Reviewer::User(login) => facts::Reviewer::User(login.clone()),
-                        Reviewer::Team(team) => facts::Reviewer::Team(team.clone()),
-                    })
-                    .collect(),
+                reviewers: self.reviewers.clone(),
             }),
             held_repos: self.held_repos.clone(),
         }
@@ -137,12 +130,9 @@ impl LinearWorkflow {
     }
 }
 
-/// A configured reviewer: a GitHub login or a team.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Reviewer {
-    User(String),
-    Team(TeamRef),
-}
+/// A configured reviewer is the domain's: a GitHub login or a team, parsed
+/// from `"login"` or `"org/team"` (`reviewer`).
+pub use crate::domain::facts::Reviewer;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
