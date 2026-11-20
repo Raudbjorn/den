@@ -81,10 +81,6 @@ pub struct LinearWorkflow {
     pub comment_reviews_need_rereview: bool,
 }
 
-/// A configured reviewer is the domain's: a GitHub login or a team, parsed
-/// from `"login"` or `"org/team"` (`reviewer`).
-pub use crate::domain::facts::Reviewer;
-
 impl LinearWorkflow {
     /// The decision engine's policy for this workflow's Owner: which
     /// unassigned Linear Issues it offers to Start (#33), its review rules
@@ -137,6 +133,10 @@ impl LinearWorkflow {
         .filter_map(|(setting, name)| name.map(|n| (setting, n)))
     }
 }
+
+/// A configured reviewer is the domain's: a GitHub login or a team, parsed
+/// from `"login"` or `"org/team"` (`reviewer`).
+pub use crate::domain::facts::Reviewer;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

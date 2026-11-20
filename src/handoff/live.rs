@@ -17,14 +17,15 @@
 //! and nothing is ever deleted.
 
 use super::{
-    PathState, Refusal, RefusalReason, RegisteredWorktree, WORKTREES_DIR, WindowMode,
-    command::{self, SessionStart, WindowCommand},
+    PathState, ProjectSettings, Refusal, RefusalReason, RegisteredWorktree, WORKTREES_DIR,
+    WindowMode,
+    command::{self, PermissionMode, SessionStart, WindowCommand},
     execute::{LaunchOutcome, LaunchReport, LaunchStep},
     inspect::WorkspaceView,
     names,
 };
 use crate::{
-    domain::WorkItemId,
+    domain::{LinearWorkflowPolicy, WorkItemId},
     jobs::JobRecord,
     ports::{Launcher, Workspace},
 };
@@ -230,6 +231,12 @@ pub fn fresh_suffix(view: &WorkspaceView, worktree_name: &str, branch: &str) -> 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReopenPlan {
     pub job: JobRecord,
+    /// Decided again on reopening, from the survey den shows then
+    /// ([`super::trust::for_reopen`]): a resumed session runs hooks too.
+    pub project_settings: ProjectSettings,
+    /// The mode the session is resumed in ([`JobRecord::reopen_mode`] for the
+    /// Job's Owner's Linear Workflow policy).
+    pub permission_mode: Option<PermissionMode>,
     pub window: WindowMode,
     /// The exact command, as shown on the sheet.
     pub command: String,
@@ -237,7 +244,7 @@ pub struct ReopenPlan {
 
 impl ReopenPlan {
     /// What the window runs: `claude --resume <session>` in the Job's
-    /// worktree, in the Job's permission mode ([`JobRecord::reopen_mode`]).
+    /// worktree, in the Job's permission mode ([`Self::permission_mode`]).
     /// Claude Code would otherwise restore the mode the session ended in, or a
     /// settings file's `defaultMode`, so a coordination Job passes its mode
     /// again.
@@ -247,7 +254,8 @@ impl ReopenPlan {
             session: self.job.session.clone(),
             prompt: String::new(),
             start: SessionStart::Resume,
-            permission_mode: self.job.reopen_mode(),
+            permission_mode: self.permission_mode,
+            setting_sources: self.project_settings.sources(),
         }
     }
 }
@@ -264,7 +272,16 @@ fn session_usable(session: &str) -> bool {
 /// Plans reopening `check`'s Job, or refuses: it must be a Live Job, its
 /// worktree must be inside the Main Clone's `.claude/worktrees/` (never the
 /// Main Clone itself), and its session name must be one den would make.
-pub fn plan_reopen(check: &JobCheck, view: &WorkspaceView) -> Result<ReopenPlan, Refusal> {
+/// `policy` is the Job's Owner's Linear Workflow policy (the empty one
+/// without a workflow): a record without a mode reopens in the mode its
+/// Next Step launches in for that Owner.
+/// `project_settings` is [`super::trust::for_reopen`]'s for the Job.
+pub fn plan_reopen(
+    check: &JobCheck,
+    view: &WorkspaceView,
+    policy: &LinearWorkflowPolicy,
+    project_settings: ProjectSettings,
+) -> Result<ReopenPlan, Refusal> {
     let job = &check.job;
     let mut reasons = Vec::new();
     if !is_job_worktree_path(job) {
@@ -297,6 +314,8 @@ pub fn plan_reopen(check: &JobCheck, view: &WorkspaceView) -> Result<ReopenPlan,
     }
     let mut plan = ReopenPlan {
         job: job.clone(),
+        project_settings,
+        permission_mode: job.reopen_mode(policy),
         window: view.window.clone(),
         command: String::new(),
     };

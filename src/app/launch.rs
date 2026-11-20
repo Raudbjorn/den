@@ -31,6 +31,12 @@
 //! the user never edited follows the Decision's suggestions when a survey
 //! changes them.
 //!
+//! Every ready sheet lists the slash commands its prompt invokes, as den
+//! found them in the user's and the target Repo's Claude command and skill
+//! directories, or "not found" with where den looked (#41). The inspection
+//! reads the directories once; an edited prompt is checked against the same
+//! read.
+//!
 //! `Enter` plans again from the current Decision. When a survey that landed
 //! while the sheet was open changed what decides the Job (its Next Step, and
 //! so its permission mode and prompt template; its reviewers; den's prompt),
@@ -46,12 +52,14 @@ use super::{
 };
 use crate::{
     decide::Decision,
-    domain::{NextStep, Observation, RepoId, WorkItemId, facts::Reviewer},
+    domain::{LinearWorkflowPolicy, NextStep, Observation, RepoId, WorkItemId, facts::Reviewer},
     handoff::{
         self, InspectRequest, JobCheck, LaunchOutcome, LaunchPlan, LaunchReport, LaunchSettings,
-        PlanInput, Refusal, RefusalReason, ReopenPlan, TargetChoice, WorkspaceView, WorktreeState,
-        check_prompt, live, names, reviewers, short_commit,
+        PlanInput, ProjectSettings, Refusal, RefusalReason, ReopenPlan, TargetChoice,
+        WorkspaceView, WorktreeState, check_prompt, live, names, reviewers, short_commit, trust,
+        workflows::WorkflowDirs,
     },
+    jobs::JobRecord,
 };
 
 /// One open launch sheet.
@@ -95,6 +103,9 @@ pub(super) struct Sheet {
     pub launch_refused: Option<Refusal>,
     /// Request review (#39): the reviewers the Job will ask, editable with `r`.
     pub reviewers: Option<ReviewersField>,
+    /// The Claude directories the last inspection read (#41): the sheet
+    /// checks whatever prompt it shows, edited or not, against them.
+    pub workflows: Option<WorkflowDirs>,
 }
 
 /// A Request review sheet's reviewers (#39).
@@ -226,6 +237,7 @@ impl App {
             launch_refused: None,
             reviewers: (decision.next_step == Some(NextStep::RequestReview))
                 .then(|| ReviewersField::new(decision)),
+            workflows: None,
         };
         let effects = self.inspect_for(&mut sheet, "opened");
         self.overlay = Some(OverlayState::Launch(Box::new(sheet)));
@@ -249,8 +261,7 @@ impl App {
         let Some(decision) = self.decision_of(&sheet.item) else {
             return gone(sheet);
         };
-        let settings =
-            LaunchSettings::from_config(self.config.as_ref().ok(), self.default_clone_root.clone());
+        let settings = self.launch_settings();
         sheet.launch_refused = None;
         let request = match handoff::inspect_request(decision, observation, sheet.choice, &settings)
         {
@@ -391,7 +402,9 @@ impl App {
             (Key::Enter, SheetState::Ready { .. }) => effects = self.launch(&mut sheet),
             (Key::Char('o'), SheetState::LiveJob { check, view }) => {
                 let (check, view) = (check.clone(), view.clone());
-                effects = open_existing(&mut sheet, &check, &view);
+                let settings = self.reopen_settings(&check.job);
+                let policy = self.policies.for_owner(check.job.owner());
+                effects = open_existing(&mut sheet, &check, &view, policy, settings);
             }
             (
                 Key::Char('f'),
@@ -404,6 +417,18 @@ impl App {
                     effects = self.start_fresh(&mut sheet, check, &view);
                 }
             },
+            (Key::Enter, SheetState::ReopenReady { plan })
+                if plan.project_settings != self.reopen_settings(&plan.job) =>
+            {
+                let mut plan = plan.clone();
+                plan.project_settings = self.reopen_settings(&plan.job);
+                plan.command = handoff::command::display(&plan.window, &plan.window_command());
+                sheet.state = SheetState::ReopenReady { plan };
+                sheet.notice = Some(
+                    "Not reopened: project settings changed; check the command and press Enter again"
+                        .to_owned(),
+                );
+            }
             (Key::Enter, SheetState::ReopenReady { plan }) => {
                 let plan = plan.clone();
                 effects = vec![
@@ -512,10 +537,7 @@ impl App {
                     .as_ref()
                     .map(|s| &s.observation)
                     .ok_or_else(gone)?;
-                let settings = LaunchSettings::from_config(
-                    self.config.as_ref().ok(),
-                    self.default_clone_root.clone(),
-                );
+                let settings = self.launch_settings();
                 handoff::inspect_request(decision, observation, sheet.choice, &settings)
             })
             .and_then(|request| {
@@ -617,6 +639,31 @@ impl App {
         Vec::new()
     }
 
+    /// The Linear Workflow of `item`'s Owner, if it has one.
+    fn linear_workflow_of(&self, item: &WorkItemId) -> Option<&crate::config::LinearWorkflow> {
+        let repo = item.repo()?;
+        self.config.as_ref().ok()?.linear_workflow(&repo.owner)
+    }
+
+    /// Whether reopening `job` loads the worktree's project settings, decided
+    /// again from the survey shown now ([`trust::for_reopen`]).
+    fn reopen_settings(&self, job: &JobRecord) -> ProjectSettings {
+        trust::for_reopen(
+            job,
+            self.shown.as_ref().map(|s| &s.observation),
+            self.policies.for_owner(job.owner()),
+        )
+    }
+
+    /// Where to look for Main Clones and the user's Claude directory.
+    fn launch_settings(&self) -> LaunchSettings {
+        LaunchSettings::from_config(
+            self.config.as_ref().ok(),
+            self.default_clone_root.clone(),
+            self.claude_dir.clone(),
+        )
+    }
+
     /// The current Decision for `item`, if it is still surveyed.
     fn decision_of(&self, item: &WorkItemId) -> Option<&Decision> {
         self.ordered.iter().find(|d| &d.item.id == item)
@@ -637,11 +684,8 @@ impl App {
             .as_ref()
             .map(|s| &s.observation)
             .ok_or_else(gone)?;
-        let slack_channel = sheet
-            .item
-            .repo()
-            .and_then(|repo| self.config.as_ref().ok()?.linear_workflow(&repo.owner))
-            .and_then(|workflow| workflow.slack_channel.as_deref());
+        let workflow = self.linear_workflow_of(&sheet.item);
+        let slack_channel = workflow.and_then(|workflow| workflow.slack_channel.as_deref());
         let plan = handoff::plan(&PlanInput {
             decision,
             observation,
@@ -651,6 +695,7 @@ impl App {
             fresh: sheet.fresh.as_ref().map(|(n, _)| *n),
             reviewers,
             slack_channel,
+            policy: self.policies.for_owner(sheet.item.owner()),
         })?;
         Ok(match &sheet.accepted_head {
             Some(commit) => plan.on_commit(commit),
@@ -667,6 +712,7 @@ impl App {
             return vec![stale(id, "inspection")];
         };
         self.remember_checks(&sheet.item, &view.job_checks);
+        sheet.workflows = Some(view.workflows.clone());
         let existing = live::most_telling(&view.job_checks, &sheet.item)
             .filter(|_| sheet.fresh.is_none())
             .cloned();
@@ -802,6 +848,12 @@ fn sync_reviewers(sheet: &mut Sheet, decision: Option<&Decision>) {
     match sheet.reviewers.as_mut() {
         Some(field) => {
             if field.follows_suggestions() {
+                // A target switch may still hold prompt edits for the old list.
+                if field.suggested != suggested && sheet.edited_prompt.take().is_some() {
+                    sheet.notice = Some(
+                        "The reviewers changed, so den rebuilt the prompt from its template; your edits to the prompt were replaced".to_owned(),
+                    );
+                }
                 field.editor = PromptEditor::new(&reviewers::spell_list(&suggested));
             }
             field.suggested = suggested;
@@ -826,10 +878,15 @@ fn what_changed(
             shown.next_step.label()
         ));
     }
-    // Equal while the mode follows the Next Step alone (`coordination_mode`);
-    // kept for modes that depend on more (#41).
+    // The mode follows the Next Step and the Owner's Linear Workflow policy
+    // (`job_permission_mode`, #41); the policy comes from the config, so in
+    // practice only the Next Step moves it.
     if shown.permission_mode != now.permission_mode {
         return Some("the permission mode changed".to_owned());
+    }
+    // The viewer or the PR's author can differ in a newer survey.
+    if shown.project_settings != now.project_settings {
+        return Some("whether the repo's settings load changed".to_owned());
     }
     match (&shown.review_request, &now.review_request) {
         (Some(before), Some(after)) if before.reviewers != after.reviewers => {
@@ -934,8 +991,15 @@ fn live_job_request(
 }
 
 /// `o` on a Live Job: plans the reopen, or refuses (never in the Main Clone).
-fn open_existing(sheet: &mut Sheet, check: &JobCheck, view: &WorkspaceView) -> Vec<Effect> {
-    match live::plan_reopen(check, view) {
+/// `policy` is the Job's Owner's Linear Workflow policy.
+fn open_existing(
+    sheet: &mut Sheet,
+    check: &JobCheck,
+    view: &WorkspaceView,
+    policy: &LinearWorkflowPolicy,
+    settings: ProjectSettings,
+) -> Vec<Effect> {
+    match live::plan_reopen(check, view, policy, settings) {
         Ok(plan) => {
             sheet.state = SheetState::ReopenReady {
                 plan: Box::new(plan),

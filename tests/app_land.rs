@@ -11,7 +11,10 @@
 mod support;
 
 use den::{
-    app::{Effect, Event, Key, view_model::DetailContent},
+    app::{
+        Effect, Event, Key,
+        view_model::{DetailContent, LaunchStatus, Overlay},
+    },
     config::Config,
     domain::{
         Coverage, LinearPart, LinearSourceKind, RepoId, Source, SourceKind, SourceState,
@@ -436,6 +439,37 @@ fn owners_without_a_linear_workflow_never_read_member_states() {
             .effects
             .iter()
             .any(|e| matches!(e, Effect::ReadMemberStates { .. }))
+    );
+}
+
+/// Integration (#37 + #39): Land is a coordination step (#39's
+/// `job_permission_mode` gives it the approval-required mode), but a Land
+/// Decision is a Linear Issue's, and `c` on a Linear Issue still refuses
+/// before reading the workspace (until #40's Land Job), naming the Linear
+/// Issue.
+#[test]
+fn c_on_a_land_linear_issue_refuses_without_touching_the_workspace() {
+    let mut harness = harness();
+    harness.start();
+    detail_of(&mut harness, "TEAM-2");
+    let effects = harness.key(Key::Char('c'));
+    assert!(
+        effects
+            .iter()
+            .all(|e| !matches!(e, Effect::InspectLaunch { .. } | Effect::Launch { .. })),
+        "{effects:#?}"
+    );
+    let Some(Overlay::LaunchSheet(sheet)) = &harness.view.overlay else {
+        panic!("a sheet: {:?}", harness.view.overlay);
+    };
+    assert_eq!(sheet.status, LaunchStatus::Refused);
+    assert!(
+        sheet
+            .messages
+            .iter()
+            .any(|m| m.text.contains("Linear Issue")),
+        "{:?}",
+        sheet.messages
     );
 }
 

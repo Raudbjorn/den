@@ -421,6 +421,7 @@ fn run(args: &[String]) -> Result<(), DenError> {
     }
     let mut app = App::new(config)
         .with_launch_settings(prompts, paths.default_clone_root.clone())
+        .with_claude_dir(paths.claude_dir.clone())
         .with_upstreams(upstreams);
     let ports = Ports {
         github: Arc::new(GhSource::new(GhCli::new())),
