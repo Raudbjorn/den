@@ -634,7 +634,7 @@ fn live_job_request(
     observation: &Observation,
 ) -> Option<InspectRequest> {
     let check = live::most_telling(checks, item).filter(|c| c.is_live())?;
-    InspectRequest::for_job(&check.job, observation)
+    InspectRequest::for_job(&check.job, item, observation)
 }
 
 /// `o` on a Live Job: plans the reopen, or refuses (never in the Main Clone).

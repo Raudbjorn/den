@@ -256,27 +256,55 @@ fn workflow(owner: &str, raw: RawLinearWorkflow, text: &str) -> Result<LinearWor
     })
 }
 
-/// Validates each entry and refuses duplicates (compared case-insensitively).
-fn unique<T: PartialEq>(
+/// Validates each entry and refuses duplicates. Entries are compared once
+/// validated, case-insensitively, so two spellings of one value (`api` and
+/// `acme/api`) are a duplicate too.
+fn unique<T: Folded>(
     entries: Vec<Spanned<String>>,
     field: &str,
     check: impl Fn(Spanned<String>) -> Result<T, Invalid>,
 ) -> Result<Vec<T>, Invalid> {
-    let mut seen: Vec<String> = Vec::new();
+    let mut seen: Vec<String> = Vec::with_capacity(entries.len());
     let mut values = Vec::with_capacity(entries.len());
     for entry in entries {
         let span = entry.span();
-        let folded = entry.get_ref().to_ascii_lowercase();
+        let written = entry.get_ref().clone();
+        let value = check(entry)?;
+        let folded = value.folded();
         if seen.contains(&folded) {
-            return Err((
-                span,
-                format!("{:?} is listed twice in `{field}`", entry.get_ref()),
-            ));
+            return Err((span, format!("{written:?} is listed twice in `{field}`")));
         }
         seen.push(folded);
-        values.push(check(entry)?);
+        values.push(value);
     }
     Ok(values)
+}
+
+/// A validated list entry's identity for the duplicate check: GitHub and
+/// Linear compare these names case-insensitively.
+trait Folded {
+    fn folded(&self) -> String;
+}
+
+impl Folded for String {
+    fn folded(&self) -> String {
+        self.to_ascii_lowercase()
+    }
+}
+
+impl Folded for RepoId {
+    fn folded(&self) -> String {
+        self.to_string().to_ascii_lowercase()
+    }
+}
+
+impl Folded for Reviewer {
+    fn folded(&self) -> String {
+        match self {
+            Self::User(login) => login.to_ascii_lowercase(),
+            Self::Team(team) => format!("{}/{}", team.org, team.slug).to_ascii_lowercase(),
+        }
+    }
 }
 
 fn workspace(value: Spanned<String>) -> Result<String, Invalid> {

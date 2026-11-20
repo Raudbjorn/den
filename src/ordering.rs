@@ -72,6 +72,22 @@ impl Scope {
         }
     }
 
+    /// Whether this Scope can hold Linear Issues, and so whether its Owner's
+    /// Linear sources bear on its coverage (a Linear source den could not
+    /// read may hide work only where Linear Issues can appear).
+    ///
+    /// The Owner and All Owners Scopes hold them. A Repo Scope holds none
+    /// until Landing Groups (#35) put the Linear Issues with a member PR
+    /// there into it; whatever makes a Repo Scope hold them must turn this
+    /// on with it, for every Repo of the Owner (which Repo a Linear Issue's
+    /// member is in can't be known from a Linear source den couldn't read).
+    pub fn holds_linear_issues(&self) -> bool {
+        match self {
+            Self::AllOwners | Self::Owner(_) => true,
+            Self::Repo(_) => false,
+        }
+    }
+
     /// Whether two Scopes name the same thing. GitHub logins and Repo names are
     /// case-insensitive, so a refresh that returns a different casing keeps the
     /// sidebar cursor and the current Scope on their row.
@@ -109,34 +125,9 @@ pub fn same_repo(a: &RepoId, b: &RepoId) -> bool {
     same_login(&a.owner, &b.owner) && a.name.eq_ignore_ascii_case(&b.name)
 }
 
-/// Whether two ids name the same Work Item: the Repo compared as GitHub does
-/// (case-insensitively), the rest exactly (Branch names are case-sensitive).
+/// Whether two ids name the same Work Item ([`WorkItemId::same`]).
 pub fn same_work_item(a: &WorkItemId, b: &WorkItemId) -> bool {
-    let rest_matches = match (a, b) {
-        (WorkItemId::Issue { number: x, .. }, WorkItemId::Issue { number: y, .. })
-        | (WorkItemId::PullRequest { number: x, .. }, WorkItemId::PullRequest { number: y, .. }) => {
-            x == y
-        }
-        (WorkItemId::Branch { name: x, .. }, WorkItemId::Branch { name: y, .. }) => x == y,
-        (WorkItemId::Run { workflow: x, .. }, WorkItemId::Run { workflow: y, .. }) => x == y,
-        // Workspace + Linear's ID; the Owner folds like a login.
-        (
-            WorkItemId::LinearIssue {
-                owner: x_owner,
-                issue: x,
-            },
-            WorkItemId::LinearIssue {
-                owner: y_owner,
-                issue: y,
-            },
-        ) => return x == y && same_login(x_owner, y_owner),
-        _ => false,
-    };
-    rest_matches
-        && match (a.repo(), b.repo()) {
-            (Some(x), Some(y)) => same_repo(x, y),
-            _ => false,
-        }
+    a.same(b)
 }
 
 /// Where a Decision's Next Step falls in the kind order; lower comes first.

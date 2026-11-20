@@ -29,7 +29,7 @@ use super::{CachedObservation, Carried, source_owner};
 use crate::{
     domain::{
         Coverage, LinearPart, LinearSourceKind, Observation, RepoId, Source, SourceKind,
-        SourceState, WorkItemId, ids::same_login,
+        SourceState, ids::same_login,
     },
     ports::LinearSurvey,
 };
@@ -65,7 +65,7 @@ pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> Cac
         previous_observation.repos,
         |reading, r| reading.keeps_repo_fact(&r.id, SourceKind::Repos),
         |r| &mut r.id.owner,
-        |r| fold_repo(&r.id),
+        |r| r.id.folded(),
     );
     let mut pull_requests = std::mem::take(&mut merged.pull_requests);
     keep_unread(
@@ -74,7 +74,7 @@ pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> Cac
         previous_observation.pull_requests,
         |reading, i| reading.keeps_repo_fact(&i.repo, SourceKind::PullRequests),
         |i| &mut i.repo.owner,
-        |i| fold_item(i.id()),
+        |i| i.id().folded(),
     );
     let mut issues = std::mem::take(&mut merged.issues);
     keep_unread(
@@ -83,7 +83,7 @@ pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> Cac
         previous_observation.issues,
         |reading, i| reading.keeps_repo_fact(&i.repo, SourceKind::Issues),
         |i| &mut i.repo.owner,
-        |i| fold_item(i.id()),
+        |i| i.id().folded(),
     );
     let mut branches = std::mem::take(&mut merged.branches);
     keep_unread(
@@ -92,7 +92,7 @@ pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> Cac
         previous_observation.branches,
         |reading, i| reading.keeps_repo_fact(&i.repo, SourceKind::Branches),
         |i| &mut i.repo.owner,
-        |i| fold_item(i.id()),
+        |i| i.id().folded(),
     );
     // A workflow has many Runs; each Run attempt is its own fact.
     let mut runs = std::mem::take(&mut merged.runs);
@@ -102,7 +102,7 @@ pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> Cac
         previous_observation.runs,
         |reading, i| reading.keeps_repo_fact(&i.repo, SourceKind::Runs),
         |i| &mut i.repo.owner,
-        |i| (fold_repo(&i.repo), i.run_id, i.attempt),
+        |i| (i.repo.folded(), i.run_id, i.attempt),
     );
     merged.repos = repos;
     merged.pull_requests = pull_requests;
@@ -187,7 +187,7 @@ pub fn merge_linear(previous: CachedObservation, survey: LinearSurvey) -> Cached
         earlier.issues,
         |reading, i| reading.keeps_owner_fact(&i.owner, SourceKind::Linear(i.listed_by)),
         |i| &mut i.owner,
-        |i| fold_item(i.work_item_id()),
+        |i| i.work_item_id().folded(),
     );
     // #33's team states: one list per Owner, keyed by Linear's team ID. A
     // team-states source that failed on a config mismatch still carries the
@@ -336,7 +336,7 @@ impl Reading {
         if !self.owners.iter().any(|o| same_login(o, &repo.owner)) {
             return false;
         }
-        let repo = fold_repo(repo);
+        let repo = repo.folded();
         let owner_source = Source::Owner {
             owner: repo.owner.clone(),
             kind,
@@ -402,6 +402,9 @@ fn keep_unread<T, K: Eq + Hash>(
 /// while its facts are still kept, even when the refresh recorded nothing for that
 /// Repo (its Owner's query failed before reaching it). Otherwise it would fall
 /// back to the Owner's age and read as newer than it is.
+///
+/// Linear sources are never carried: [`merge`] keeps no earlier Linear data
+/// (#34 adds that), so a failed Linear source has nothing kept to date.
 fn carried_sources(
     previous: &CachedObservation,
     fresh: &Observation,
@@ -410,6 +413,7 @@ fn carried_sources(
     let mut carried: Vec<Carried> = fresh
         .coverage
         .incomplete()
+        .filter(|entry| !entry.source.is_linear())
         .filter_map(|entry| {
             data_age(previous, &entry.source).map(|observed_at| Carried {
                 source: entry.source.clone(),
@@ -476,14 +480,6 @@ fn observed_at(previous: &CachedObservation, source: &Source) -> Timestamp {
     }
 }
 
-/// A Repo's case-insensitive identity.
-fn fold_repo(repo: &RepoId) -> RepoId {
-    RepoId::new(
-        repo.owner.to_ascii_lowercase(),
-        repo.name.to_ascii_lowercase(),
-    )
-}
-
 /// A source's case-insensitive identity.
 fn fold_source(source: &Source) -> Source {
     match source {
@@ -493,35 +489,8 @@ fn fold_source(source: &Source) -> Source {
             kind: *kind,
         },
         Source::Repo { repo, kind } => Source::Repo {
-            repo: fold_repo(repo),
+            repo: repo.folded(),
             kind: *kind,
-        },
-    }
-}
-
-/// A Work Item's identity with its Repo folded. Branch and workflow names stay
-/// as they are: git branch names are case-sensitive.
-fn fold_item(id: WorkItemId) -> WorkItemId {
-    match id {
-        WorkItemId::Issue { repo, number } => WorkItemId::Issue {
-            repo: fold_repo(&repo),
-            number,
-        },
-        WorkItemId::PullRequest { repo, number } => WorkItemId::PullRequest {
-            repo: fold_repo(&repo),
-            number,
-        },
-        WorkItemId::Branch { repo, name } => WorkItemId::Branch {
-            repo: fold_repo(&repo),
-            name,
-        },
-        WorkItemId::Run { repo, workflow } => WorkItemId::Run {
-            repo: fold_repo(&repo),
-            workflow,
-        },
-        WorkItemId::LinearIssue { owner, issue } => WorkItemId::LinearIssue {
-            owner: owner.to_ascii_lowercase(),
-            issue,
         },
     }
 }
