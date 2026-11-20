@@ -144,6 +144,12 @@ impl PrBuilder {
         self
     }
 
+    /// Some review requests could not be read.
+    pub fn review_requests_truncated(mut self) -> Self {
+        self.details().review_requests.complete = false;
+        self
+    }
+
     /// GitHub listed more review threads than den read.
     pub fn threads_truncated(mut self) -> Self {
         self.details().threads_complete = false;

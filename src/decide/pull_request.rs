@@ -6,8 +6,8 @@
 //! 4. changes requested, or unresolved review threads → Address review
 //! 5. review requested → Review
 //! 6. approved (or, where the base branch requires no review, nobody asked
-//!    for changes), no unresolved threads, every check passing, known
-//!    mergeable, not queued → Merge
+//!    for changes), no unresolved threads and every review request read, every
+//!    check passing, known mergeable, not queued → Merge
 //!
 //! A rule whose facts den could not establish neither holds nor is ruled out:
 //! later rules may still win, and the Explanation says which earlier rule
@@ -287,8 +287,8 @@ fn merge(pr: &PullRequest, approval: &Approval, blockers: &[String]) -> Finding 
 
 /// Everything that stops Merge. Empty means Merge holds: approved (or no
 /// review required), no unresolved review threads and all threads read, every
-/// check (required or advisory) passing and all read, known mergeable, not a
-/// draft, not in a merge queue.
+/// review request read, every check (required or advisory) passing and all
+/// read, known mergeable, not a draft, not in a merge queue.
 fn merge_blockers(pr: &PullRequest, approval: &Approval) -> Vec<String> {
     let mut blockers = Vec::new();
     if pr.is_draft {
@@ -306,6 +306,10 @@ fn merge_blockers(pr: &PullRequest, approval: &Approval) -> Vec<String> {
                 blockers.push("unresolved review threads".to_owned());
             } else if !details.threads_complete {
                 blockers.push("not every review thread was read".to_owned());
+            }
+            // An unread request could be a pending review, which comes before Merge.
+            if !details.review_requests.complete {
+                blockers.push("not every review request was read".to_owned());
             }
             let checks = &details.checks.items;
             if checks.iter().any(|c| c.outcome == CheckOutcome::Failing) {

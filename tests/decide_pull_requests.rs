@@ -458,6 +458,17 @@ fn pr_rule_deck() -> Vec<(&'static str, PrBuilder, Expect)> {
             expect(None, Nobody, "does not recognise", "no Next Step")
                 .unknown(&["check odd reported \"WEIRD\""]),
         ),
+        (
+            "review requests not all read, none seen: no Merge",
+            ready(1).author(ME).review_requests_truncated(),
+            expect(
+                None,
+                Nobody,
+                "not every review request was read",
+                "no Next Step",
+            )
+            .unknown(&["some review requests could not be read"]),
+        ),
         // ── Unknown facts ────────────────────────────────────────────────
         (
             "unknown mergeability with a failing check: Fix CI, conflicts not ruled out",
