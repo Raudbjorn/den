@@ -215,6 +215,13 @@ pub fn fetch(session: &Session<'_>, owner: &str) -> Result<KindFetch<PullRequest
                     &mut found_prs,
                     &mut out.coverage,
                 )?;
+            } else {
+                // All of this Repo's PRs came on this page, so its own coverage
+                // is this page's: a later Owner page lost does not touch it.
+                out.coverage.push(CoverageEntry {
+                    source: repo_source(&repo),
+                    state: page_state.clone(),
+                });
             }
         }
         if !pager.advance(repos.page_info.has_next_page, repos.page_info.end_cursor) {

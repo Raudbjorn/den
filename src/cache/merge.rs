@@ -35,7 +35,7 @@ pub fn merge(previous: Option<CachedObservation>, fresh: Observation) -> CachedO
         &mut repos,
         previous_observation.repos,
         SourceKind::Repos,
-        |r| &r.id,
+        |r| &mut r.id,
         |r| fold_repo(&r.id),
     );
     let mut pull_requests = std::mem::take(&mut merged.pull_requests);
@@ -44,7 +44,7 @@ pub fn merge(previous: Option<CachedObservation>, fresh: Observation) -> CachedO
         &mut pull_requests,
         previous_observation.pull_requests,
         SourceKind::PullRequests,
-        |i| &i.repo,
+        |i| &mut i.repo,
         |i| fold_item(i.id()),
     );
     let mut issues = std::mem::take(&mut merged.issues);
@@ -53,7 +53,7 @@ pub fn merge(previous: Option<CachedObservation>, fresh: Observation) -> CachedO
         &mut issues,
         previous_observation.issues,
         SourceKind::Issues,
-        |i| &i.repo,
+        |i| &mut i.repo,
         |i| fold_item(i.id()),
     );
     let mut branches = std::mem::take(&mut merged.branches);
@@ -62,7 +62,7 @@ pub fn merge(previous: Option<CachedObservation>, fresh: Observation) -> CachedO
         &mut branches,
         previous_observation.branches,
         SourceKind::Branches,
-        |i| &i.repo,
+        |i| &mut i.repo,
         |i| fold_item(i.id()),
     );
     // A workflow has many Runs; each Run attempt is its own fact.
@@ -72,7 +72,7 @@ pub fn merge(previous: Option<CachedObservation>, fresh: Observation) -> CachedO
         &mut runs,
         previous_observation.runs,
         SourceKind::Runs,
-        |i| &i.repo,
+        |i| &mut i.repo,
         |i| (fold_repo(&i.repo), i.run_id, i.attempt),
     );
     merged.repos = repos;
@@ -126,6 +126,14 @@ impl Reading {
     /// read completely, its facts are all there even if a later page of its
     /// Owner's list was lost. A Repo with no source of its own was read (or not)
     /// as part of its Owner's list, so only a complete Owner says it is all there.
+    /// The refresh's spelling of `owner`, when it still watches that Owner.
+    fn owner_as_watched(&self, owner: &str) -> Option<&str> {
+        self.owners
+            .iter()
+            .find(|o| same_login(o, owner))
+            .map(String::as_str)
+    }
+
     fn keeps(&self, repo: &RepoId, kind: SourceKind) -> bool {
         if !self.owners.iter().any(|o| same_login(o, &repo.owner)) {
             return false;
@@ -152,13 +160,29 @@ fn keep_unread<T, K: Eq + Hash>(
     fresh: &mut Vec<T>,
     previous: Vec<T>,
     kind: SourceKind,
-    repo_of: impl Fn(&T) -> &RepoId,
+    repo_of: impl Fn(&mut T) -> &mut RepoId,
     key_of: impl Fn(&T) -> K,
 ) {
     let seen: HashSet<K> = fresh.iter().map(&key_of).collect();
     let kept: Vec<T> = previous
         .into_iter()
-        .filter(|item| !seen.contains(&key_of(item)) && reading.keeps(repo_of(item), kind))
+        .filter_map(|mut item| {
+            if seen.contains(&key_of(&item)) {
+                return None;
+            }
+            let repo = repo_of(&mut item);
+            if !reading.keeps(repo, kind) {
+                return None;
+            }
+            // A kept fact takes the Owner's casing from the refresh, so it is
+            // the same Repo as the refresh's facts wherever den groups by Repo
+            // (a newer Run of its workflow supersedes it, the sidebar shows one
+            // Repo).
+            if let Some(owner) = reading.owner_as_watched(&repo.owner) {
+                owner.clone_into(&mut repo.owner);
+            }
+            Some(item)
+        })
         .collect();
     fresh.extend(kept);
 }

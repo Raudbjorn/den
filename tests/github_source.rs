@@ -664,3 +664,78 @@ fn other_gh_failures_are_values_with_context() {
         assert!(check(&error), "{script}: {error:?}");
     }
 }
+
+/// Branches are read Repo by Repo from the Owner's Repo list, so a list that
+/// failed means the Owner's Branches were not read (as for Runs); a merge must
+/// not take them as complete and drop the Branches it already shows.
+#[test]
+fn branches_of_repos_that_could_not_be_listed_are_not_complete() {
+    let gql = ScriptedGraphQl::new(|request| {
+        if let Some(answer) = viewer_answers(request).or_else(|| only_default_branches(request)) {
+            return answer;
+        }
+        match operation(request).as_str() {
+            "OwnerRepos" => Ok(GraphQlResponse {
+                data: None,
+                errors: vec![GraphQlError {
+                    message: "repos down".to_owned(),
+                    kind: None,
+                }],
+            }),
+            "OwnerPullRequests" | "OwnerIssueCounts" => {
+                Ok(data(json!({ "repositoryOwner": { "repositories": {
+                    "pageInfo": page_info(None), "nodes": []
+                }}})))
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    });
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    assert_eq!(
+        state(&observation, owner_source(SourceKind::Branches)),
+        SourceState::Failed {
+            error: "the Owner's Repos could not be listed, so no Branches were read: repos down"
+                .to_owned()
+        }
+    );
+}
+
+/// A Repo whose PRs all came on a clean Owner page was read completely, even
+/// if a later Owner page was lost: its own coverage says so, so a merge can
+/// drop its closed PRs.
+#[test]
+fn a_repo_read_whole_on_a_clean_owner_page_is_complete_when_a_later_page_is_lost() {
+    let gql = ScriptedGraphQl::new(|request| {
+        if let Some(answer) = viewer_answers(request).or_else(|| only_default_branches(request)) {
+            return answer;
+        }
+        match (operation(request).as_str(), after(request).as_deref()) {
+            ("OwnerRepos", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": [repo_node("app")]
+            }}}))),
+            ("OwnerPullRequests", None) => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(Some("p2")),
+                "nodes": [ { "name": "app", "pullRequests": { "pageInfo": page_info(None), "nodes": [pr_node(1, false)] } } ]
+            }}}))),
+            ("OwnerPullRequests", Some("p2")) => Err(TransportError::TimedOut {
+                after: Duration::from_secs(30),
+            }),
+            ("OwnerIssueCounts", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": []
+            }}}))),
+            other => panic!("unexpected {other:?}"),
+        }
+    });
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    assert!(!state(&observation, owner_source(SourceKind::PullRequests)).is_complete());
+    assert_eq!(
+        state(
+            &observation,
+            Source::Repo {
+                repo: repo_id("octo/app"),
+                kind: SourceKind::PullRequests,
+            }
+        ),
+        SourceState::Complete
+    );
+}

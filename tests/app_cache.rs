@@ -15,7 +15,7 @@ use den::{
 };
 use std::path::PathBuf;
 use support::{
-    build::{ME, ObservationBuilder, now, pr, ts},
+    build::{ME, ObservationBuilder, now, pr, run, ts},
     fakes::FakeCache,
     harness::{Harness, config},
 };
@@ -695,4 +695,54 @@ fn data_kept_for_an_owner_whose_casing_changed_still_shows_its_failure_and_age()
         harness.key(Key::Down);
     }
     panic!("alpha/app#1 was never selected");
+}
+
+#[test]
+fn r_refreshes_with_the_sidebar_focused_too() {
+    let mut harness = after_earlier_survey();
+    harness.key(Key::Tab);
+    assert!(harness.view.sidebar.focused);
+    assert!(harness.view.footer.hints.iter().any(|h| h.key == "r"));
+
+    let effects = harness.key(Key::Char('r'));
+
+    assert!(
+        effects.iter().any(|e| matches!(e, Effect::Survey { .. })),
+        "the advertised refresh runs: {effects:?}"
+    );
+}
+
+/// A Run kept from an earlier survey under the Owner's old casing is the same
+/// workflow as a newer Run under the new casing, so the newer one supersedes it.
+#[test]
+fn a_kept_run_under_an_owner_s_old_casing_is_superseded_by_a_newer_run() {
+    let mut harness = Harness::with_owners(&["alpha"]);
+    harness.answer(Ok(ObservationBuilder::new()
+        .observed_at(EARLIER)
+        .fully_read_owner("alpha")
+        .repo("alpha/app")
+        .run(run("alpha/app", "ci.yml", 1).failed().by(ME))
+        .build()));
+    harness.start();
+    assert_eq!(
+        references(&harness.view).len(),
+        1,
+        "the failed Run is shown"
+    );
+
+    // The config now says "Alpha"; its Runs were read only in part, so the
+    // earlier failed Run is kept beside the newer, successful one.
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("Alpha")
+        .owner_coverage("Alpha", SourceKind::Runs, rate_limited(None))
+        .repo("Alpha/app")
+        .run(run("Alpha/app", "ci.yml", 2).by(ME))
+        .build()));
+    refresh(&mut harness);
+
+    assert!(
+        references(&harness.view).is_empty(),
+        "the newer success supersedes the kept failure: {:?}",
+        references(&harness.view)
+    );
 }
