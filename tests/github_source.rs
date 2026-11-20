@@ -369,6 +369,60 @@ fn errors_alongside_data_on_several_pages_are_all_kept() {
     );
 }
 
+/// The Repo's first PR page arrives inside the Owner's page, so an error on
+/// that page may have nulled some of its PRs. Its own later pages reading
+/// cleanly must not make the Repo complete: a merge trusts a complete Repo
+/// and would drop cached PRs the first page lost.
+#[test]
+fn errors_on_the_owner_page_make_a_repo_read_on_its_own_pages_partial() {
+    let gql = ScriptedGraphQl::new(|request| {
+        if let Some(viewer) = viewer_answers(request) {
+            return viewer;
+        }
+        match (operation(request).as_str(), after(request).as_deref()) {
+            ("OwnerRepos", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": [repo_node("app")]
+            }}}))),
+            ("OwnerPullRequests", None) => Ok(GraphQlResponse {
+                data: Some(json!({ "repositoryOwner": { "repositories": {
+                    "pageInfo": page_info(None),
+                    "nodes": [ { "name": "app", "pullRequests": { "pageInfo": page_info(Some("a2")), "nodes": [pr_node(1, false), null] } } ]
+                }}})),
+                errors: vec![GraphQlError {
+                    message: "first page error".to_owned(),
+                    kind: None,
+                }],
+            }),
+            ("RepoPullRequests", Some("a2")) => Ok(data(json!({ "repository": { "pullRequests": {
+                "pageInfo": page_info(None), "nodes": [pr_node(3, false)]
+            }}}))),
+            ("OwnerIssueCounts", _) => Ok(data(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(None), "nodes": []
+            }}}))),
+            other => panic!("unexpected {other:?}"),
+        }
+    });
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    assert_eq!(observation.pull_requests.len(), 2);
+    let first_page_error = SourceState::Partial(Incompleteness::ErrorsAlongsideData {
+        errors: vec!["first page error".to_owned()],
+    });
+    assert_eq!(
+        state(
+            &observation,
+            Source::Repo {
+                repo: repo_id("octo/app"),
+                kind: SourceKind::PullRequests,
+            }
+        ),
+        first_page_error
+    );
+    assert_eq!(
+        state(&observation, owner_source(SourceKind::PullRequests)),
+        first_page_error
+    );
+}
+
 #[test]
 fn a_page_lost_mid_pagination_makes_the_list_partial() {
     let gql = ScriptedGraphQl::new(|request| {
