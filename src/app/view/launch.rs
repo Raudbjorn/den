@@ -223,6 +223,15 @@ fn add_linear(view: &mut LaunchSheet, sheet: &Sheet, linear: &LinearLaunch) {
     fields.append(&mut view.fields);
     view.fields = fields;
     view.linear_writes = writes.planned();
+    // The writes were made, then the launch didn't happen: never "nothing
+    // was done".
+    if writes.finished && matches!(view.status, LaunchStatus::Refused | LaunchStatus::Failed) {
+        view.headline = format!(
+            "{}; den's Linear writes above were made and stay",
+            view.headline
+                .replace(": nothing was done", ": nothing launched")
+        );
+    }
     let mut messages = result_messages(writes);
     if writes.pending() && matches!(sheet.state, SheetState::Ready { .. }) {
         messages.push(message(NO_COMPARE_AND_SET, Tone::Muted));

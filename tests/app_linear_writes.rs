@@ -617,6 +617,37 @@ fn assign_done_then_move_failed_stops_reports_and_neither_launches_nor_unassigns
     assert!(harness.view.overlay.is_none());
 }
 
+/// The writes were made, then re-verification refused the launch (the Main
+/// Clone lost its remote): the sheet never says nothing was done.
+#[test]
+fn a_launch_refused_after_the_writes_says_the_writes_stand() {
+    let mut harness = started(workflow(false));
+    open(&mut harness, "TEAM-8");
+    harness.linear.push_reread(reread(None, todo()));
+    harness.linear_writer.push_outcome(done(Some(me()), todo()));
+    harness
+        .linear_writer
+        .push_outcome(done(Some(me()), in_progress()));
+    harness.workspace.add_clone(API_CLONE, &[]);
+    let effects = enter(&mut harness);
+    assert_eq!(acts(&effects), ["re-read", "assign", "move", "launch"]);
+    let refused = sheet(&harness);
+    assert_eq!(
+        refused.status,
+        LaunchStatus::Refused,
+        "{}",
+        messages(refused)
+    );
+    assert!(
+        refused.headline.contains("nothing launched")
+            && refused.headline.contains("Linear writes above were made"),
+        "{}",
+        refused.headline
+    );
+    assert!(!refused.headline.contains("nothing was done"));
+    assert!(messages(refused).contains("assigned TEAM-8"));
+}
+
 #[test]
 fn an_unknown_write_outcome_is_followed_by_a_reread_and_never_retried() {
     let mut harness = started(workflow(false));
