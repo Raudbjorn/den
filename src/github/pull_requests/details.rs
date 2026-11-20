@@ -149,17 +149,19 @@ fn record_truncated<'a>(
     }
 }
 
-/// The names of a PR's lists that were not read in full.
+/// The names of a PR's lists that were not read in full, as Repo coverage.
+///
+/// `latest_reviews_with_comments` (GitHub's `latestReviews`) is left out on
+/// purpose: only the Linear Workflow's review rules read it, and this source
+/// doesn't know which Owners have one. Its truncation stays a per-PR fact
+/// (`Listed::complete`) that the workflow rules turn into an unknown in the
+/// Explanation, so an Owner without a workflow keeps milestone 1's coverage.
 fn truncated_lists(details: &PrDetails) -> Vec<&'static str> {
     [
         (!details.checks.complete, "checks"),
         (!details.threads_complete, "review threads"),
         (!details.review_requests.complete, "review requests"),
         (!details.latest_reviews.complete, "reviews"),
-        (
-            !details.latest_reviews_with_comments.complete,
-            "latest reviews",
-        ),
     ]
     .into_iter()
     .filter_map(|(truncated, name)| truncated.then_some(name))
