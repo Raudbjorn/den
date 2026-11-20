@@ -619,3 +619,46 @@ fn a_cache_write_failure_is_logged_and_nothing_else_changes() {
     ));
     assert_eq!(harness.view, before);
 }
+
+#[test]
+fn data_kept_for_an_owner_whose_casing_changed_still_shows_its_failure_and_age() {
+    let mut harness = after_earlier_survey();
+    // The config now says "Alpha", and Alpha's PR query fails: alpha/app#1 (as
+    // the earlier survey spelled it) is kept, under coverage spelled "Alpha".
+    harness.answer(Ok(ObservationBuilder::new()
+        .observed_at("2026-11-19T11:00:00Z")
+        .fully_read_owner("Alpha")
+        .fully_read_owner("beta")
+        .owner_coverage("Alpha", SourceKind::PullRequests, failed("gh timed out"))
+        .repo("Alpha/app")
+        .repo("beta/lib")
+        .pull_request(pr("beta/lib", 2).title("Old beta PR"))
+        .build()));
+    refresh(&mut harness);
+    let kept = harness
+        .view
+        .list
+        .rows
+        .iter()
+        .find(|r| r.reference == "#1")
+        .unwrap_or_else(|| panic!("#1 not kept: {:?}", references(&harness.view)));
+    assert!(kept.incomplete, "the kept row is marked incomplete");
+
+    let rows = harness.view.list.rows.len();
+    for _ in 0..rows {
+        let selected = harness.view.detail.content.clone().expect("selected");
+        if selected.reference.ends_with("/app#1") {
+            assert!(
+                selected
+                    .coverage
+                    .iter()
+                    .any(|c| c.contains("gh timed out") && c.contains("10:00 UTC")),
+                "the failure and the kept data's age: {:?}",
+                selected.coverage
+            );
+            return;
+        }
+        harness.key(Key::Down);
+    }
+    panic!("alpha/app#1 was never selected");
+}
