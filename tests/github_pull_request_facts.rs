@@ -353,26 +353,33 @@ fn details_map_checks_threads_requests_and_reviews() {
 }
 
 #[test]
-fn more_latest_reviews_than_read_mark_the_pr_details_partial() {
-    let mut node = no_details();
-    node["latestReviews"] = json!({ "pageInfo": page_info(true), "nodes": [
+fn more_latest_reviews_than_read_stay_a_per_pr_fact_and_leave_coverage_alone() {
+    let survey_with = |latest_reviews: Value| {
+        let mut node = no_details();
+        node["latestReviews"] = latest_reviews;
+        let gql = octo(
+            vec![pr_node(1, "MERGEABLE", Value::Null, false)],
+            each(node),
+        );
+        survey(&gql, &["octo".to_owned()], now()).expect("survey")
+    };
+    let carol = json!([
         { "state": "COMMENTED", "author": { "__typename": "User", "login": "carol" },
           "commit": { "oid": "abc" } }
-    ]});
-    let gql = octo(
-        vec![pr_node(1, "MERGEABLE", Value::Null, false)],
-        each(node),
-    );
-    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
-    let details = the_pr(&observation, 1).details.clone().expect("details");
+    ]);
+    let truncated = survey_with(json!({ "pageInfo": page_info(true), "nodes": carol }));
+    let complete = survey_with(json!({ "pageInfo": page_info(false), "nodes": carol }));
+
+    let details = the_pr(&truncated, 1).details.clone().expect("details");
     assert!(!details.latest_reviews_with_comments.complete);
     assert_eq!(details.latest_reviews_with_comments.items.len(), 1);
-    assert_eq!(
-        app_details_state(&observation),
-        Some(SourceState::Partial(Incompleteness::FollowUpTruncated {
-            what: "#1 (latest reviews)".to_owned()
-        }))
-    );
+    // Was `Partial(FollowUpTruncated { "#1 (latest reviews)" })`. Changed on
+    // purpose (#51 review): only the Linear Workflow's rules read
+    // `latestReviews`, and this source doesn't know which Owners have one, so
+    // its truncation is a per-PR fact (above) the workflow rules report, never
+    // Repo coverage that would make an Owner without a workflow partial.
+    assert_eq!(app_details_state(&truncated), Some(SourceState::Complete));
+    assert_eq!(truncated.coverage, complete.coverage);
 }
 
 #[test]
