@@ -372,11 +372,13 @@ dependencies = [
  "raudbjorn-tui",
  "serde",
  "serde_json",
+ "signal-hook",
  "tempfile",
  "thiserror 2.0.21",
  "toml",
  "tracing",
  "tracing-subscriber",
+ "unicode-width",
 ]
 
 [[package]]

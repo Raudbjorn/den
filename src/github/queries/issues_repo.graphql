@@ -1,0 +1,12 @@
+# One page of one Repo's open Issues, newest first. Ordered by creation time,
+# which never changes: ordered by update time, an Issue on an unread page that
+# is updated mid-read jumps ahead of the cursor and is skipped.
+query RepoIssues($owner: String!, $name: String!, $after: String) {
+  rateLimit { remaining resetAt }
+  repository(owner: $owner, name: $name) {
+    issues(states: [OPEN], first: 50, after: $after, orderBy: {field: CREATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes { ...IssueFacts }
+    }
+  }
+}

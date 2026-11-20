@@ -4,9 +4,11 @@
 //! tickets add `issue.rs`, `branch.rs` and `run.rs` beside it, plus a slot method
 //! on [`ObservationBuilder`].
 
+pub mod issue;
 pub mod pull_request;
 pub mod run;
 
+pub use issue::{IssueBuilder, issue};
 pub use pull_request::{PrBuilder, pr};
 pub use run::{RunBuilder, run};
 
@@ -72,14 +74,18 @@ impl ObservationBuilder {
         self
     }
 
-    /// Adds a watched Owner whose Repos and Pull Requests were read completely
-    /// (other kinds: not yet fetched, as the real source reports today).
+    /// Adds a watched Owner whose Repos, Pull Requests and Issues were read
+    /// completely (other kinds: not yet fetched, as the real source reports today).
     pub fn owner(mut self, owner: &str) -> Self {
         self.observation.owners.push(owner.to_owned());
-        for kind in [SourceKind::Repos, SourceKind::PullRequests] {
+        for kind in [
+            SourceKind::Repos,
+            SourceKind::PullRequests,
+            SourceKind::Issues,
+        ] {
             self = self.owner_coverage(owner, kind, SourceState::Complete);
         }
-        for kind in [SourceKind::Issues, SourceKind::Branches, SourceKind::Runs] {
+        for kind in [SourceKind::Branches, SourceKind::Runs] {
             self = self.owner_coverage(owner, kind, SourceState::NotYetFetched);
         }
         self
@@ -120,6 +126,11 @@ impl ObservationBuilder {
 
     pub fn run(mut self, run: RunBuilder) -> Self {
         self.observation.runs.push(run.build());
+        self
+    }
+
+    pub fn issue(mut self, issue: IssueBuilder) -> Self {
+        self.observation.issues.push(issue.build());
         self
     }
 
