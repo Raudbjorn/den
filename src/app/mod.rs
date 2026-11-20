@@ -935,7 +935,10 @@ fn members_to_read(observation: &Observation) -> Vec<crate::domain::facts::PullR
     let mut wanted: Vec<crate::domain::facts::PullRequestRef> = Vec::new();
     for issue in &observation.linear.issues {
         for member in correlation.for_issue(&issue.id).members {
-            let unsettled = matches!(member.status, MemberStatus::NotOpen | MemberStatus::Closed);
+            let unsettled = matches!(
+                member.status,
+                MemberStatus::NotOpen | MemberStatus::OpenAgain | MemberStatus::Closed
+            );
             if unsettled
                 && !wanted
                     .iter()

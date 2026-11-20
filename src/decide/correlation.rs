@@ -16,7 +16,9 @@
 //!   Repo and didn't find isn't open: merged or closed. The survey reads open
 //!   Pull Requests only, so den says which only once it has read that
 //!   member's state by number (`Observation.member_states`, #37): **merged**,
-//!   **closed** without merging, or still "merged or closed" until then.
+//!   **closed** without merging, or still "merged or closed" until then. One
+//!   GitHub reports open at that read is **open again**: open, but not in
+//!   the survey, so den hasn't read its facts.
 //!
 //! Pull Requests are identified by Owner, Repo and number, compared as GitHub
 //! does (case-insensitively), so two Owners' `api#42` never meet; Linear
@@ -119,9 +121,12 @@ pub enum MemberStatus {
     /// Open, and in the survey: its own Decision says what it needs.
     Open { draft: bool },
     /// Its Repo's open Pull Requests were read completely and it isn't among
-    /// them: merged or closed, and den hasn't read which (or GitHub reported
-    /// it open again when den asked).
+    /// them: merged or closed, and den hasn't read which.
     NotOpen,
+    /// Missing from its Repo's open Pull Requests, but GitHub reported it
+    /// open when den read its state after the survey (#37): open, and den
+    /// hasn't read its facts. Until a survey lists it, it can't be judged.
+    OpenAgain,
     /// Not open, and GitHub reported it merged when den read its state (#37).
     Merged { merged_at: Option<Timestamp> },
     /// Not open, and GitHub reported it closed without merging (#37).
@@ -131,13 +136,14 @@ pub enum MemberStatus {
 }
 
 impl MemberStatus {
-    /// "open", "draft", "merged or closed", "merged", "closed without
-    /// merging", "member not surveyed".
+    /// "open", "draft", "merged or closed", "open again", "merged", "closed
+    /// without merging", "member not surveyed".
     pub fn label(&self) -> &'static str {
         match self {
             Self::Open { draft: false } => "open",
             Self::Open { draft: true } => "draft",
             Self::NotOpen => "merged or closed",
+            Self::OpenAgain => "open again",
             Self::Merged { .. } => "merged",
             Self::Closed => "closed without merging",
             Self::NotSurveyed(_) => "member not surveyed",
@@ -147,6 +153,11 @@ impl MemberStatus {
     /// Not open, whether or not den has read how it ended.
     pub fn is_not_open(&self) -> bool {
         matches!(self, Self::NotOpen | Self::Merged { .. } | Self::Closed)
+    }
+
+    /// Open: in the survey, or reported open again after it.
+    pub fn is_open(&self) -> bool {
+        matches!(self, Self::Open { .. } | Self::OpenAgain)
     }
 
     /// The label and, when den can't see the member, why.
@@ -410,8 +421,10 @@ fn status(observation: &Observation, owner: &str, pr: &PullRequestRef) -> Member
             merged_at: *merged_at,
         },
         Some(PullRequestState::Closed) => MemberStatus::Closed,
-        // Open again, or not read yet: den can't say how it ended.
-        Some(PullRequestState::Open) | None => MemberStatus::NotOpen,
+        // Reopened since the survey listed the Repo's open Pull Requests.
+        Some(PullRequestState::Open) => MemberStatus::OpenAgain,
+        // Not read yet: den can't say how it ended.
+        None => MemberStatus::NotOpen,
     }
 }
 

@@ -12,9 +12,11 @@
 //! withholds a step. The rules, in order (spec 0002, "Next Step rules:
 //! Linear Issues"):
 //!
-//! 1. Open members → the group decides (#37). Every open member outside a
-//!    Held Repo would Merge (its own Decision "lands with" this issue), none
-//!    is ambiguous, no member is unseen ("not surveyed"), none is in a merge
+//! 1. Open members (in the survey, or reported **open again** when den read
+//!    their state after it) → the group decides (#37). Every open member
+//!    outside a Held Repo would Merge (its own Decision "lands with" this
+//!    issue; one open again has no Decision yet, so it blocks), none is
+//!    ambiguous, no member is unseen ("not surveyed"), none is in a merge
 //!    queue, and den read every attachment and every such member's facts
 //!    completely → **Land**, Waiting On the Linear assignee. Otherwise no
 //!    Next Step: its Pull Requests carry the work, and the Explanation names
@@ -57,11 +59,13 @@ use super::{
 };
 use crate::domain::{
     NextStep, Source, SourceKind, StartPolicy, WaitingOn, WorkItemId,
-    facts::{Attachment, AttachmentsRead, LinearIssue, LinearStateKind, PullRequestState},
+    facts::{Attachment, AttachmentsRead, LinearIssue, LinearStateKind},
     ids::same_login,
 };
 
 const ASSIGNEE_ROLE: &str = "the Linear assignee";
+/// Why a member reported open again after the survey can't be judged.
+const OPEN_AGAIN: &str = "GitHub reported it open again when den read its state after the survey, which didn't list it, so den hasn't read its facts; refresh to see it";
 /// The unknown that withholds Start and Implement (spec 0002, rule 4).
 pub const PR_EXISTENCE_UNKNOWN: &str = "couldn't establish whether a PR exists";
 /// What Mark for release's Explanation says about what it doesn't claim
@@ -205,7 +209,7 @@ fn group_rules(
     let open: Vec<&Member> = landing
         .members
         .iter()
-        .filter(|m| matches!(m.status, MemberStatus::Open { .. }))
+        .filter(|m| m.status.is_open())
         .collect();
     if !open.is_empty() {
         return land(ctx, issue, landing, &open, pull_requests);
@@ -342,8 +346,18 @@ fn blocking_reasons(
             return reasons;
         }
         MemberStatus::Open { .. } => {}
+        // Open, but not in the survey: den can't judge it. A held one would
+        // never be landed, so it doesn't block.
+        MemberStatus::OpenAgain => {
+            if !held {
+                reasons.push(OPEN_AGAIN.to_owned());
+            }
+            return reasons;
+        }
         // Not open: it won't be landed, so it doesn't block.
-        _ => return reasons,
+        MemberStatus::NotOpen | MemberStatus::Merged { .. } | MemberStatus::Closed => {
+            return reasons;
+        }
     }
     if member.ambiguous() {
         let others: Vec<&str> = member
@@ -405,6 +419,7 @@ fn blocking_reasons(
 /// Resolve conflicts)".
 fn held_line(member: &Member, own: Option<&Decision>) -> String {
     let own_step = match own {
+        None if member.status == MemberStatus::OpenAgain => OPEN_AGAIN.to_owned(),
         Some(d) => match (&d.next_step, &d.held_back) {
             (Some(step), _) => format!("its own Next Step {}", step.label()),
             (None, Some(held)) => held.label(),
@@ -516,15 +531,8 @@ fn mark_for_release(ctx: &Context<'_>, issue: &LinearIssue, landing: &Landing) -
 
 /// Why den doesn't know how a not-open member ended.
 fn why_unread(ctx: &Context<'_>, member: &Member) -> String {
-    let observation = ctx.observation;
-    let reopened = observation
-        .member_states
-        .iter()
-        .any(|m| m.pr.is(&member.pr.repo, member.pr.number) && m.state == PullRequestState::Open);
-    if reopened {
-        return "GitHub reported it open again when den read its state after the survey; refresh to see it".to_owned();
-    }
-    let source = observation
+    let source = ctx
+        .observation
         .coverage
         .entries()
         .iter()

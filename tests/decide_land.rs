@@ -660,3 +660,59 @@ fn a_merge_pr_says_when_den_could_not_establish_its_landing_group() {
     assert_eq!(merge.next_step, Some(NextStep::Merge));
     assert!(merge.explanation.unknowns.is_empty(), "{merge:?}");
 }
+
+/// A member GitHub reported open again when den read its state after the
+/// survey is open, though the survey didn't list it: den hasn't read its
+/// facts. It keeps the issue from Mark for release (no open member may
+/// remain) and blocks Land (it can't be judged ready), and is named.
+#[test]
+fn a_member_reported_open_again_blocks_mark_for_release_and_land() {
+    let merged_and_reopened = acme_owner()
+        .member_state("acme/api", 1, PullRequestState::Merged { merged_at: None })
+        .member_state("acme/app", 2, PullRequestState::Open)
+        .linear_issue(
+            linear_issue("acme", "id-1", "TEAM-1")
+                .attached("acme/api", 1)
+                .attached("acme/app", 2),
+        )
+        .build();
+    let decisions = decide_all(&merged_and_reopened, &acme());
+    let issue = linear(&decisions, "TEAM-1");
+    assert_eq!(issue.next_step, None, "{issue:#?}");
+    assert_eq!(issue.landing.members[1].status, MemberStatus::OpenAgain);
+    assert_says(
+        issue,
+        &["blocking: acme/app #2: GitHub reported it open again"],
+    );
+
+    let ready_and_reopened = acme_owner()
+        .pull_request(ready("acme/api", 1))
+        .member_state("acme/app", 2, PullRequestState::Open)
+        .linear_issue(
+            linear_issue("acme", "id-1", "TEAM-1")
+                .attached("acme/api", 1)
+                .attached("acme/app", 2),
+        )
+        .build();
+    let decisions = decide_all(&ready_and_reopened, &acme());
+    let issue = linear(&decisions, "TEAM-1");
+    assert_eq!(issue.next_step, None, "{issue:#?}");
+    assert_says(
+        issue,
+        &["blocking: acme/app #2: GitHub reported it open again"],
+    );
+
+    // Held: reported open again in a Held Repo, it never blocks Land, but it
+    // is open, so it still keeps the issue from Mark for release.
+    let held_reopened = acme_owner()
+        .pull_request(ready("acme/api", 1))
+        .member_state("acme/web", 3, PullRequestState::Open)
+        .linear_issue(
+            linear_issue("acme", "id-1", "TEAM-1")
+                .attached("acme/api", 1)
+                .attached("acme/web", 3),
+        )
+        .build();
+    let decisions = decide_all(&held_reopened, &acme());
+    assert_eq!(linear(&decisions, "TEAM-1").next_step, Some(NextStep::Land));
+}

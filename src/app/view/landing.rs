@@ -131,7 +131,11 @@ fn member_line(
     LandingLine {
         text: parts.join(&format!(" {SEPARATOR} ")),
         job,
-        caution: member.ambiguous() || matches!(member.status, MemberStatus::NotSurveyed(_)),
+        caution: member.ambiguous()
+            || matches!(
+                member.status,
+                MemberStatus::NotSurveyed(_) | MemberStatus::OpenAgain
+            ),
     }
 }
 
