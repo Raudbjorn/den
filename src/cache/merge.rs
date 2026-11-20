@@ -24,9 +24,10 @@ pub fn merge(previous: Option<CachedObservation>, fresh: Observation) -> CachedO
     let Some(previous) = previous.filter(|p| p.observation.viewer.is(&fresh.viewer.login)) else {
         return CachedObservation::fresh(fresh);
     };
-    let reading = Reading::of(&fresh);
-    let carried = carried_sources(&previous, &fresh, &reading);
     let mut merged = fresh;
+    // Borrows the refresh's coverage; the merge below only moves other fields.
+    let reading = Reading::of(merged.owners.clone(), &merged.coverage);
+    let carried = carried_sources(&previous, &merged, &reading);
     let previous_observation = previous.observation;
 
     let mut repos = std::mem::take(&mut merged.repos);
@@ -98,20 +99,29 @@ pub fn merge(previous: Option<CachedObservation>, fresh: Observation) -> CachedO
 }
 
 /// What the refresh read completely.
-struct Reading {
+struct Reading<'f> {
     owners: Vec<String>,
     /// The refresh's coverage.
-    coverage: Coverage,
+    coverage: &'f Coverage,
     viewer_read: bool,
 }
 
-impl Reading {
-    fn of(fresh: &Observation) -> Self {
+impl<'f> Reading<'f> {
+    /// What a refresh of `owners` that recorded `coverage` read.
+    fn of(owners: Vec<String>, coverage: &'f Coverage) -> Self {
         Self {
-            owners: fresh.owners.clone(),
-            coverage: fresh.coverage.clone(),
-            viewer_read: fresh.coverage.get(&Source::Viewer) == Some(&SourceState::Complete),
+            owners,
+            coverage,
+            viewer_read: coverage.get(&Source::Viewer) == Some(&SourceState::Complete),
         }
+    }
+
+    /// The refresh's spelling of `owner`, when it still watches that Owner.
+    fn owner_as_watched(&self, owner: &str) -> Option<&str> {
+        self.owners
+            .iter()
+            .find(|o| same_login(o, owner))
+            .map(String::as_str)
     }
 
     /// Should an earlier fact of this Repo and kind, absent from the refresh, be
@@ -121,14 +131,6 @@ impl Reading {
     /// "Read completely" is [`Coverage::read_completely`]: a Repo the refresh
     /// recorded a source for is judged by that source alone, any other by its
     /// Owner's. The Landing Groups' "merged or closed" uses the same rule.
-    /// The refresh's spelling of `owner`, when it still watches that Owner.
-    fn owner_as_watched(&self, owner: &str) -> Option<&str> {
-        self.owners
-            .iter()
-            .find(|o| same_login(o, owner))
-            .map(String::as_str)
-    }
-
     fn keeps(&self, repo: &RepoId, kind: SourceKind) -> bool {
         if !self.owners.iter().any(|o| same_login(o, &repo.owner)) {
             return false;
@@ -140,7 +142,7 @@ impl Reading {
 /// Appends to `fresh` the `previous` facts it lacks whose source the refresh
 /// could not read completely.
 fn keep_unread<T, K: Eq + Hash>(
-    reading: &Reading,
+    reading: &Reading<'_>,
     fresh: &mut Vec<T>,
     previous: Vec<T>,
     kind: SourceKind,
@@ -184,7 +186,7 @@ fn keep_unread<T, K: Eq + Hash>(
 fn carried_sources(
     previous: &CachedObservation,
     fresh: &Observation,
-    reading: &Reading,
+    reading: &Reading<'_>,
 ) -> Vec<Carried> {
     let mut carried: Vec<Carried> = fresh
         .coverage
