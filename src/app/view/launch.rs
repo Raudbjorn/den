@@ -252,26 +252,33 @@ fn fields(sheet: &Sheet, plan: &LaunchPlan, moved_from: Option<&str>) -> Vec<She
         ),
         None => field("BASE", base, base_note, Tone::Plain),
     });
+    let mut branch_note = match &plan.branch.start {
+        BranchStart::New { tracking } => format!("new, tracking {tracking}"),
+        BranchStart::NewUntracked => {
+            "new, tracking nothing (its head lives in another Repo)".to_owned()
+        }
+        BranchStart::Existing if plan.work_item.kind() == WorkItemKind::PullRequest => {
+            "existing local branch, already at the PR head".to_owned()
+        }
+        BranchStart::Existing => "existing local branch, already at the base".to_owned(),
+        BranchStart::Fresh => format!(
+            "new, from {}; tracks nothing until pushed",
+            plan.base
+                .reference
+                .branch()
+                .map_or_else(|| base_words(plan), |b| format!("{}/{b}", plan.remote.name))
+        ),
+    };
+    if let Some(from) = &plan.branch.renamed_from {
+        branch_note.push_str(&format!(
+            "; {from} is taken in the Main Clone, so den names it {}",
+            plan.branch.name
+        ));
+    }
     fields.push(field(
         "BRANCH",
         plan.branch.name.clone(),
-        Some(match &plan.branch.start {
-            BranchStart::New { tracking } => format!("new, tracking {tracking}"),
-            BranchStart::NewUntracked => {
-                "new, tracking nothing (its head lives in another Repo)".to_owned()
-            }
-            BranchStart::Existing if plan.work_item.kind() == WorkItemKind::PullRequest => {
-                "existing local branch, already at the PR head".to_owned()
-            }
-            BranchStart::Existing => "existing local branch, already at the base".to_owned(),
-            BranchStart::Fresh => format!(
-                "new, from {}; tracks nothing until pushed",
-                plan.base
-                    .reference
-                    .branch()
-                    .map_or_else(|| base_words(plan), |b| format!("{}/{b}", plan.remote.name))
-            ),
-        }),
+        Some(branch_note),
         Tone::Plain,
     ));
     fields.push(match &plan.renamed {

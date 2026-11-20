@@ -50,6 +50,12 @@ impl PrBuilder {
         self
     }
 
+    /// The head branch's name (default `feature-<n>`).
+    pub fn head_ref(mut self, branch: &str) -> Self {
+        branch.clone_into(&mut self.pr.head_ref);
+        self
+    }
+
     pub fn draft(mut self) -> Self {
         self.pr.is_draft = true;
         self

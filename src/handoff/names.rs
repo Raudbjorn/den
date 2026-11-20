@@ -227,6 +227,18 @@ pub fn free_worktree_name(
     })
 }
 
+/// The local branch for a cross-Repo PR head whose own name would clash in
+/// the Main Clone (its default branch, or a branch already there):
+/// `pr-<n>-<head>`, the head branch slugged (`pr-7-main`, `pr-12-fix-login`).
+pub fn pr_head_branch(number: u64, head: &str) -> String {
+    let slug = slug(head);
+    if slug.is_empty() {
+        format!("pr-{number}")
+    } else {
+        format!("pr-{number}-{slug}")
+    }
+}
+
 /// The Next Step as a lower-case slug: "Address review" → `address-review`.
 pub fn step_slug(step: NextStep) -> String {
     step.label().to_ascii_lowercase().replace(' ', "-")

@@ -149,6 +149,7 @@ pub fn inspect_request(
         (Some(_), None) => PathBuf::new(),
         (None, None) => return Err(Refusal::one(RefusalReason::NoSearchRoot)),
     };
+    let clash_branch = clash_branch(&facts);
     Ok(InspectRequest {
         target: facts.target.repo.clone(),
         target_url: facts.target.url.clone(),
@@ -163,6 +164,7 @@ pub fn inspect_request(
         branch: facts.branch,
         item: decision.item.id.clone(),
         new_branch: facts.new_branch,
+        clash_branch,
     })
 }
 
@@ -228,6 +230,23 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         fresh(facts.branch.clone(), names::MAX_BRANCH_NAME_CHARS)
     };
 
+    // A cross-Repo PR head named like the Main Clone's default branch or a
+    // branch already there gets `pr-<n>-<head>` instead (decision d).
+    let chosen = found
+        .as_ref()
+        .and_then(|(clone, _)| view.chosen.as_ref().filter(|c| c.path == clone.path));
+    let clashing = clash_branch(&facts)
+        .map(|name| fresh(name, names::MAX_BRANCH_NAME_CHARS))
+        .filter(|_| {
+            let is_default = facts.target.default_branch.as_deref() == Some(branch_name.as_str());
+            let is_there = chosen.is_some_and(|c| matches!(c.local_branch, Ok(Some(_))));
+            is_default || is_there
+        });
+    let (branch_name, renamed_from) = match clashing {
+        Some(name) => (name, Some(branch_name)),
+        None => (branch_name, None),
+    };
+
     let base_commit = found
         .as_ref()
         .and_then(|(clone, remote)| base_commit(&facts, view, clone, remote, &mut reasons));
@@ -240,34 +259,42 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             writable = clone.writable.clone();
             branch_start = Some(new_branch_start(&facts, remote));
         }
-        Some((clone, remote)) => {
-            let chosen = view.chosen.as_ref().filter(|c| c.path == clone.path);
-            match chosen {
-                Some(state) if state.worktree_name == worktree_name => {
-                    let checked = Checked {
-                        facts: &facts,
-                        item,
-                        view,
-                        clone,
-                        remote,
-                        branch: &branch_name,
-                        worktree: worktree_path(&clone.path, &worktree_name),
-                        base_commit: base_commit.as_deref(),
-                    };
-                    writable = check_clone(&checked, state, &mut reasons);
-                    branch_start = check_branch(&checked, state, &mut reasons);
-                }
-                Some(state) => reasons.push(RefusalReason::InspectionFailed {
-                    error: format!(
-                        "the worktree name {worktree_name} was not inspected ({} was)",
-                        state.worktree_name
-                    ),
-                }),
-                None => reasons.push(RefusalReason::InspectionFailed {
-                    error: format!("{} was not inspected", clone.path.display()),
-                }),
+        Some((clone, remote)) => match chosen {
+            Some(state) if state.worktree_name == worktree_name => {
+                let checked = Checked {
+                    facts: &facts,
+                    item,
+                    view,
+                    clone,
+                    remote,
+                    branch: &branch_name,
+                    worktree: worktree_path(&clone.path, &worktree_name),
+                    base_commit: base_commit.as_deref(),
+                };
+                writable = check_clone(&checked, state, &mut reasons);
+                let local = match (&renamed_from, &state.clash_branch) {
+                    (None, _) => Some(&state.local_branch),
+                    (Some(_), Some(local)) => Some(local),
+                    (Some(_), None) => {
+                        reasons.push(RefusalReason::InspectionFailed {
+                            error: format!("the local branch {branch_name} was not inspected"),
+                        });
+                        None
+                    }
+                };
+                branch_start =
+                    local.and_then(|local| check_branch(&checked, local, state, &mut reasons));
             }
-        }
+            Some(state) => reasons.push(RefusalReason::InspectionFailed {
+                error: format!(
+                    "the worktree name {worktree_name} was not inspected ({} was)",
+                    state.worktree_name
+                ),
+            }),
+            None => reasons.push(RefusalReason::InspectionFailed {
+                error: format!("{} was not inspected", clone.path.display()),
+            }),
+        },
         None => {}
     }
 
@@ -331,6 +358,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         branch: JobBranch {
             name: branch_name,
             start,
+            renamed_from,
         },
         worktree,
         renamed,
@@ -341,6 +369,17 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     };
     plan.command = command::display(&plan.window, &plan.window_command());
     Ok(plan)
+}
+
+/// For a cross-Repo PR head (decision d): the local branch den uses when the
+/// head's own name clashes in the Main Clone, before any fresh-start suffix.
+fn clash_branch(facts: &Facts) -> Option<String> {
+    match (&facts.base, facts.number) {
+        (BaseRef::PullHead { .. }, Some(number)) => {
+            Some(names::pr_head_branch(number, &facts.branch))
+        }
+        _ => None,
+    }
 }
 
 /// A fresh start's local branch (`feature-7-2`) tracks a branch of another
@@ -488,14 +527,16 @@ fn registered<'a>(
     }
 }
 
-/// How the Job's local branch starts, given what is there locally.
+/// How the Job's local branch starts, given what is there locally (`local`:
+/// the commit of the local branch named like it, if any).
 fn check_branch(
     checked: &Checked<'_>,
+    local: &Result<Option<String>, String>,
     state: &ChosenClone,
     reasons: &mut Vec<RefusalReason>,
 ) -> Option<BranchStart> {
     let branch = checked.branch;
-    match &state.local_branch {
+    match local {
         Ok(None) => Some(new_branch_start(checked.facts, checked.remote)),
         Ok(Some(commit)) if Some(commit.as_str()) == checked.base_commit => {
             // Already reported when the list couldn't be read.

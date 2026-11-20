@@ -209,6 +209,7 @@ fn clone_plan(root: &Path, url: &str, tip: &str) -> LaunchPlan {
         branch: JobBranch {
             name: "fix-ci_ci".to_owned(),
             start: BranchStart::Fresh,
+            renamed_from: None,
         },
         worktree: handoff::worktree_path(&clone, "fix-ci_ci"),
         renamed: None,

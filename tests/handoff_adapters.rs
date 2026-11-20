@@ -380,6 +380,7 @@ fn plan_for(clone: &Path, url: &str, head: &str) -> LaunchPlan {
             start: BranchStart::New {
                 tracking: "upstream/feature/x".to_owned(),
             },
+            renamed_from: None,
         },
         worktree,
         renamed: None,

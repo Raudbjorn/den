@@ -252,6 +252,10 @@ pub enum BranchStart {
 pub struct JobBranch {
     pub name: String,
     pub start: BranchStart,
+    /// The name it would have had, when that clashed in the Main Clone: a
+    /// cross-Repo PR head named like the default branch or a branch already
+    /// there is checked out as `pr-<n>-<head>` instead.
+    pub renamed_from: Option<String>,
 }
 
 /// Everything a launch will do, decided before anything is done.

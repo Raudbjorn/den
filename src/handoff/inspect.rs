@@ -37,6 +37,10 @@ pub struct InspectRequest {
     pub new_branch: bool,
     /// Ask the target's remote where this branch is (GitHub's facts don't say).
     pub base_branch: Option<String>,
+    /// A cross-Repo PR head: the local branch den uses instead of `branch`
+    /// when that name clashes in the Main Clone (`pr-<n>-<head>`); den looks
+    /// at it too.
+    pub clash_branch: Option<String>,
 }
 
 impl InspectRequest {
@@ -48,6 +52,9 @@ impl InspectRequest {
         self.worktree_name =
             names::suffixed(&self.worktree_name, n, names::MAX_WORKTREE_NAME_CHARS);
         self.branch = names::suffixed(&self.branch, n, names::MAX_BRANCH_NAME_CHARS);
+        self.clash_branch = self
+            .clash_branch
+            .map(|branch| names::suffixed(&branch, n, names::MAX_BRANCH_NAME_CHARS));
         self
     }
 }
@@ -83,6 +90,8 @@ pub struct ChosenClone {
     pub worktree: PathState,
     /// The commit of the local branch named like the Job's branch, if it exists.
     pub local_branch: Result<Option<String>, String>,
+    /// The same for the request's `clash_branch`, when it has one.
+    pub clash_branch: Option<Result<Option<String>, String>>,
     /// The worktrees git has registered for the clone.
     pub worktrees: Result<Vec<RegisteredWorktree>, String>,
 }
@@ -210,6 +219,11 @@ fn look_at_clone(
         local_branch: workspace
             .resolve(path, &format!("refs/heads/{branch}"))
             .map_err(|e| e.to_string()),
+        clash_branch: request.clash_branch.as_ref().map(|branch| {
+            workspace
+                .resolve(path, &format!("refs/heads/{branch}"))
+                .map_err(|e| e.to_string())
+        }),
         worktrees: workspace.worktrees(path).map_err(|e| e.to_string()),
         path: path.to_path_buf(),
         worktree_name,

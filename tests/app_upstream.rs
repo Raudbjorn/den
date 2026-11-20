@@ -686,6 +686,145 @@ fn a_cross_repo_pr_head_with_no_main_clone_is_cloned_then_fetched_by_its_pr_ref(
     assert_eq!(sheet(&harness).status, LaunchStatus::Launched);
 }
 
+/// octo/app (not a fork) with PR #7, mine, whose head branch `head` lives
+/// in someone's fork.
+fn cross_repo_pr(head: &str) -> Observation {
+    ObservationBuilder::new()
+        .owner("octo")
+        .repo("octo/app")
+        .pull_request(
+            pr("octo/app", 7)
+                .author(ME)
+                .changes_requested()
+                .head_from("someone/app")
+                .head_ref(head),
+        )
+        .build()
+}
+
+#[test]
+fn a_cross_repo_head_named_like_the_default_branch_is_checked_out_as_pr_n_head() {
+    // Decision d: someone's fork opened PR #7 from their `main`; the Main
+    // Clone has its own `main`, so the Job's branch is `pr-7-main`.
+    let store = Arc::new(FakeUpstreams::default());
+    let mut harness = started_with(&store, cross_repo_pr("main"));
+    harness
+        .workspace
+        .add_clone(CLONE, &[("origin", "https://github.com/octo/app")]);
+    harness
+        .workspace
+        .set_local_branch(CLONE, "main", UPSTREAM_MAIN);
+    harness
+        .workspace
+        .set_remote_pull_head(CLONE, "origin", 7, HEAD_7);
+
+    press(&mut harness, Key::Char('c'));
+    let ready = sheet(&harness).clone();
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    let branch = ready.fields.iter().find(|f| f.label == "BRANCH").unwrap();
+    assert_eq!(branch.value, "pr-7-main");
+    assert!(
+        branch
+            .note
+            .as_deref()
+            .unwrap()
+            .ends_with("main is taken in the Main Clone, so den names it pr-7-main"),
+        "{:?}",
+        branch.note
+    );
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].branch.name, "pr-7-main");
+    assert_eq!(plans[0].branch.renamed_from.as_deref(), Some("main"));
+    assert_eq!(plans[0].branch.start, BranchStart::NewUntracked);
+    let add = harness
+        .workspace
+        .calls()
+        .into_iter()
+        .find_map(|c| match c {
+            WorkspaceCall::AddWorktree { add, .. } => Some(add),
+            _ => None,
+        })
+        .expect("a worktree added");
+    assert_eq!(add.branch, "pr-7-main");
+    assert_eq!(sheet(&harness).status, LaunchStatus::Launched);
+    // `main` itself was never touched.
+    assert_eq!(harness.jobs.records()[0].branch, "pr-7-main");
+}
+
+#[test]
+fn a_cross_repo_head_whose_name_is_already_a_branch_here_is_slugged_into_pr_n_head() {
+    // Decision d: any name already present in the Main Clone clashes too; the
+    // head branch is slugged (`Fix/Login Page` → `fix-login-page`).
+    let store = Arc::new(FakeUpstreams::default());
+    let mut harness = started_with(&store, cross_repo_pr("Fix/Login_Page"));
+    harness
+        .workspace
+        .add_clone(CLONE, &[("origin", "https://github.com/octo/app")]);
+    harness
+        .workspace
+        .set_local_branch(CLONE, "Fix/Login_Page", UPSTREAM_MAIN);
+    harness
+        .workspace
+        .set_remote_pull_head(CLONE, "origin", 7, HEAD_7);
+
+    press(&mut harness, Key::Char('c'));
+    let ready = sheet(&harness).clone();
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans[0].branch.name, "pr-7-fix-login-page");
+    assert_eq!(
+        plans[0].branch.renamed_from.as_deref(),
+        Some("Fix/Login_Page")
+    );
+    assert_eq!(sheet(&harness).status, LaunchStatus::Launched);
+}
+
+#[test]
+fn a_cross_repo_head_that_clashes_with_nothing_keeps_its_name() {
+    // The boundary: `feature-7` is neither the default branch nor present.
+    let store = Arc::new(FakeUpstreams::default());
+    let mut harness = started_with(&store, cross_repo_pr("feature-7"));
+    harness
+        .workspace
+        .add_clone(CLONE, &[("origin", "https://github.com/octo/app")]);
+    harness
+        .workspace
+        .set_local_branch(CLONE, "main", UPSTREAM_MAIN);
+    harness
+        .workspace
+        .set_remote_pull_head(CLONE, "origin", 7, HEAD_7);
+    press(&mut harness, Key::Char('c'));
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans[0].branch.name, "feature-7");
+    assert_eq!(plans[0].branch.renamed_from, None);
+}
+
+#[test]
+fn a_cross_repo_head_named_like_the_default_branch_is_renamed_in_a_clone_den_makes_too() {
+    // No Main Clone: the clone den makes checks out the default branch, so
+    // `main` clashes there too before anything is inspected locally.
+    let store = Arc::new(FakeUpstreams::default());
+    let mut harness = started_with(&store, cross_repo_pr("main"));
+    harness
+        .workspace
+        .add_existing("/home/me/dev/other/notes.txt");
+    harness
+        .workspace
+        .host_pull_head("https://github.com/octo/app", 7, HEAD_7);
+    press(&mut harness, Key::Char('c'));
+    let ready = sheet(&harness).clone();
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans[0].branch.name, "pr-7-main");
+    assert!(plans[0].clones());
+    assert_eq!(sheet(&harness).status, LaunchStatus::Launched);
+}
+
 #[test]
 fn a_cross_repo_pr_ref_missing_from_the_target_remote_refuses_at_launch_doing_nothing() {
     let store = Arc::new(FakeUpstreams::default());
