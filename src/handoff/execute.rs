@@ -113,7 +113,7 @@ fn run(
 
     // 2. Clone the Main Clone when there is none yet.
     if let CloneSource::ToClone { url, .. } = &plan.main_clone.source {
-        if let Err(e) = workspace.clone_repo(url, clone_path) {
+        if let Err(e) = workspace.clone_repo(url, &plan.remote.name, clone_path) {
             return failed(LaunchStep::Clone, e.to_string());
         }
         done.push(format!("cloned {url} into {}", clone_path.display()));

@@ -305,9 +305,10 @@ impl Workspace for GitWorkspace {
         }))
     }
 
-    fn clone_repo(&self, url: &str, into: &Path) -> Result<(), WorkspaceError> {
+    fn clone_repo(&self, url: &str, remote: &str, into: &Path) -> Result<(), WorkspaceError> {
         let operation = || format!("git clone {url} {}", into.display());
         let url = checked_url(url, operation)?;
+        let remote = checked_remote(remote, operation)?;
         // git would clone into an empty folder that exists; den never does.
         match fs::symlink_metadata(into) {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -330,7 +331,12 @@ impl Workspace for GitWorkspace {
                 detail: "it has no parent folder".to_owned(),
             });
         };
-        let invocation = self.git(parent).args(["clone", "--", url]).arg(into);
+        // `--origin` names the remote, overriding the user's
+        // `clone.defaultRemoteName`.
+        let invocation = self
+            .git(parent)
+            .args(["clone", "--origin", remote, "--", url])
+            .arg(into);
         self.run_ok(&invocation, operation, GIT_CLONE_TIMEOUT_SECS)
             .map(|_| ())
     }

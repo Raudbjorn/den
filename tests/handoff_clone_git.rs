@@ -109,19 +109,21 @@ fn the_git_adapter_clones_only_into_a_folder_that_does_not_exist() {
     // An empty folder git itself would happily clone into: den refuses.
     let empty = root.join("empty");
     std::fs::create_dir(&empty).unwrap();
-    let error = workspace.clone_repo(&url, &empty).expect_err("refused");
+    let error = workspace
+        .clone_repo(&url, "origin", &empty)
+        .expect_err("refused");
     assert!(error.detail.contains("already exists"), "{error}");
     assert_eq!(std::fs::read_dir(&empty).unwrap().count(), 0);
 
     assert!(
         workspace
-            .clone_repo("-oProxyCommand=x", &root.join("x"))
+            .clone_repo("-oProxyCommand=x", "origin", &root.join("x"))
             .is_err()
     );
     assert!(!root.join("x").exists());
 
     let into = root.join("app");
-    workspace.clone_repo(&url, &into).expect("cloned");
+    workspace.clone_repo(&url, "origin", &into).expect("cloned");
     assert_eq!(git(&into, &["rev-parse", "HEAD"]), tip);
     assert_eq!(
         workspace.remotes(&into).expect("remotes"),
@@ -132,6 +134,34 @@ fn the_git_adapter_clones_only_into_a_folder_that_does_not_exist() {
     );
     // The new clone is found as a Main Clone next time.
     assert_eq!(workspace.find_clones(&root).expect("search"), [into]);
+}
+
+#[test]
+fn the_git_adapter_names_the_clones_remote_as_asked() {
+    let (_temp, root, url, _tip) = hosted_repo();
+    let workspace = GitWorkspace::new();
+
+    // Not git's default name: the remote is the one den asks for, so a user's
+    // `clone.defaultRemoteName` can't leave the executor fetching from a
+    // remote that doesn't exist.
+    let into = root.join("app");
+    workspace
+        .clone_repo(&url, "upstream", &into)
+        .expect("cloned");
+    assert_eq!(
+        workspace.remotes(&into).expect("remotes"),
+        [Remote {
+            name: "upstream".to_owned(),
+            url: url.clone()
+        }]
+    );
+
+    assert!(
+        workspace
+            .clone_repo(&url, "--upload-pack=x", &root.join("x"))
+            .is_err()
+    );
+    assert!(!root.join("x").exists());
 }
 
 /// A launcher that records the window instead of opening one.

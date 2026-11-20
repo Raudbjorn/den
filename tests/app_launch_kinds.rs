@@ -451,6 +451,7 @@ fn a_missing_main_clone_plans_a_clone_into_the_repos_name_under_the_root() {
         [
             WorkspaceCall::Clone {
                 url: URL.to_owned(),
+                remote: "origin".to_owned(),
                 into: CLONE.into(),
             },
             WorkspaceCall::Fetch {
@@ -507,6 +508,7 @@ fn a_missing_main_clone_falls_back_to_owner_dash_repo_when_the_repos_name_is_tak
         harness.workspace.calls()[0],
         WorkspaceCall::Clone {
             url: URL.to_owned(),
+            remote: "origin".to_owned(),
             into: OWNER_CLONE.into(),
         }
     );
@@ -648,6 +650,7 @@ fn a_pr_with_no_main_clone_is_cloned_too_and_starts_on_its_head() {
         calls[0],
         WorkspaceCall::Clone {
             url: URL.to_owned(),
+            remote: "origin".to_owned(),
             into: CLONE.into()
         }
     );

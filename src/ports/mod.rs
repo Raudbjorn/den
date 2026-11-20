@@ -110,8 +110,10 @@ pub trait Workspace: Send + Sync {
     /// has no such branch.
     fn url_branch_head(&self, url: &str, branch: &str) -> Result<Option<String>, WorkspaceError>;
     /// Clones the Repo at `url` into `into`, a folder that must not exist yet:
-    /// the adapter refuses rather than clone into anything already there.
-    fn clone_repo(&self, url: &str, into: &Path) -> Result<(), WorkspaceError>;
+    /// the adapter refuses rather than clone into anything already there. The
+    /// clone's remote for `url` is named `remote`, whatever the user's git
+    /// config would name it, so the fetch that follows finds it.
+    fn clone_repo(&self, url: &str, remote: &str, into: &Path) -> Result<(), WorkspaceError>;
 }
 
 /// A worktree to add: where, on which branch, starting how.
