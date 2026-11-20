@@ -63,7 +63,12 @@ fn config(slack: Option<&str>) -> Config {
 /// acme/api: #2 approved only at an older head (Request review), #3 with an
 /// unresolved thread (Address review), #4 approved at its head (Merge).
 fn started(slack: Option<&str>) -> Harness {
-    let mut harness = Harness::new(Ok(config(slack)));
+    started_with(config(slack), surveyed(pr_2(), pr_4()))
+}
+
+/// Started with `config`, its first survey seeing `observation`.
+fn started_with(config: Config, observation: Observation) -> Harness {
+    let mut harness = Harness::new(Ok(config));
     harness
         .workspace
         .add_clone(CLONE, &[("origin", "git@github.com:acme/api.git")]);
@@ -75,9 +80,16 @@ fn started(slack: Option<&str>) -> Harness {
             &format!("{n:040x}"),
         );
     }
-    harness.answer(Ok(surveyed(pr_2(), pr_4())));
+    harness.answer(Ok(observation));
     harness.start();
     harness
+}
+
+/// [`config`] without a Slack channel, its Linear Workflow naming `reviewers`.
+fn config_with_reviewers(reviewers: Vec<config::Reviewer>) -> Config {
+    let mut config = config(None);
+    config.linear[0].reviewers = reviewers;
+    config
 }
 
 /// #2 as [`started`] sees it: approved only at an older head, so Request review.
@@ -834,6 +846,173 @@ fn an_edited_reviewer_list_is_kept_when_the_suggestions_change() {
         Some(vec![user("alice"), user("dave")])
     );
     assert_eq!(plans[0].prompt, prompt_without_slack("alice, dave"));
+}
+
+/// Codex review on #50: a Merge that becomes a Request review with nobody to
+/// suggest gets an empty list. Enter shows the Request review plan first, so
+/// the reviewers field the refusal points at is on the sheet.
+#[test]
+fn a_merge_that_becomes_request_review_with_nobody_suggested_is_shown_before_its_empty_list_is_refused()
+ {
+    let mut harness = started_with(config_with_reviewers(Vec::new()), surveyed(pr_2(), pr_4()));
+    let survey = refresh_pending(
+        &mut harness,
+        "#4",
+        surveyed(
+            pr_2(),
+            pr("acme/api", 4)
+                .author(ME)
+                .passing("ci")
+                .approved()
+                .review_on("alice", ReviewVerdict::Approved, "0ld"),
+        ),
+    );
+    land(&mut harness, &survey);
+
+    press(&mut harness, Key::Enter);
+    let asked = sheet(&harness).clone();
+    assert_eq!(asked.next_step, "Request review", "{}", messages(&asked));
+    assert!(
+        messages(&asked).contains("the Next Step is now Request review (was Merge)"),
+        "{}",
+        messages(&asked)
+    );
+    assert_eq!(field(&asked, "SUGGESTED").map(|f| f.0), Some("none"));
+    assert_eq!(
+        asked.reviewers.as_ref().map(|r| r.text.as_str()),
+        Some(""),
+        "the field the next refusal points at is drawn"
+    );
+    assert!(
+        prompt(&asked).contains("Request reviews on GitHub from exactly these reviewers"),
+        "{}",
+        prompt(&asked)
+    );
+
+    press(&mut harness, Key::Enter);
+    assert!(launch_plans(&harness).is_empty());
+    assert!(
+        messages(sheet(&harness)).contains("no reviewers chosen")
+            && messages(sheet(&harness)).contains("edit the reviewers with r"),
+        "{}",
+        messages(sheet(&harness))
+    );
+
+    edit_reviewers(&mut harness, "dave");
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1, "{}", messages(sheet(&harness)));
+    assert_eq!(
+        plans[0]
+            .review_request
+            .as_ref()
+            .map(|r| r.reviewers.clone()),
+        Some(vec![user("dave")])
+    );
+}
+
+/// Review on #50: suggestions that empty while the sheet is open (alice
+/// approved the head, which still needs another approval) empty an unedited
+/// list. Enter shows that, and says the suggestions changed, before it says
+/// nobody is chosen; the prompt never still names alice.
+#[test]
+fn suggestions_that_empty_while_the_sheet_is_open_are_shown_before_the_empty_list_is_refused() {
+    let needs_review = || pr("acme/api", 2).author(ME).passing("ci");
+    let mut harness = started_with(
+        config_with_reviewers(vec![config::Reviewer::User("alice".to_owned())]),
+        surveyed(needs_review(), pr_4()),
+    );
+    let survey = refresh_pending(
+        &mut harness,
+        "#2",
+        surveyed(
+            needs_review().review_at_head("alice", ReviewVerdict::Approved),
+            pr_4(),
+        ),
+    );
+    assert_eq!(prompt(sheet(&harness)), prompt_without_slack("alice"));
+    land(&mut harness, &survey);
+
+    press(&mut harness, Key::Enter);
+    assert!(launch_plans(&harness).is_empty());
+    let asked = sheet(&harness).clone();
+    assert_eq!(asked.next_step, "Request review");
+    assert!(
+        messages(&asked).contains("the suggested reviewers changed"),
+        "{}",
+        messages(&asked)
+    );
+    assert_eq!(field(&asked, "SUGGESTED").map(|f| f.0), Some("none"));
+    assert_eq!(asked.reviewers.as_ref().map(|r| r.text.as_str()), Some(""));
+    assert_eq!(prompt(&asked), prompt_without_slack(""));
+
+    press(&mut harness, Key::Enter);
+    assert!(launch_plans(&harness).is_empty());
+    assert!(
+        messages(sheet(&harness)).contains("no reviewers chosen"),
+        "{}",
+        messages(sheet(&harness))
+    );
+}
+
+/// Review on #50: editing the reviewers checks the shown plan as Enter does.
+/// A Request review that became a Merge is shown as one, with what changed;
+/// the next Enter launches the Merge the user has now seen.
+#[test]
+fn editing_the_reviewers_after_the_next_step_changed_shows_the_new_plan_and_says_so() {
+    let mut harness = started(None);
+    let survey = refresh_pending(
+        &mut harness,
+        "#2",
+        surveyed(
+            pr_2().review_at_head("alice", ReviewVerdict::Approved),
+            pr_4(),
+        ),
+    );
+    land(&mut harness, &survey);
+
+    edit_reviewers(&mut harness, "bob");
+    assert!(launch_plans(&harness).is_empty());
+    let asked = sheet(&harness).clone();
+    assert_eq!(asked.next_step, "Merge");
+    assert!(
+        messages(&asked).contains("the Next Step is now Merge (was Request review)"),
+        "{}",
+        messages(&asked)
+    );
+    assert_eq!(asked.reviewers, None, "a Merge asks no reviewers");
+    assert_eq!(field(&asked, "PERMISSIONS"), None);
+
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1, "{plans:?}");
+    assert_eq!(plans[0].next_step, NextStep::Merge);
+}
+
+/// An edited list that doesn't parse is explained as such when the
+/// suggestions change underneath it: it plans with the reviewers the sheet
+/// shows, so the new suggestions never read as a change on Enter.
+#[test]
+fn a_malformed_edited_list_is_explained_not_read_as_new_suggestions() {
+    let mut harness = started(None);
+    let survey = refresh_pending(&mut harness, "#2", alice_approved_carol_awaiting());
+    edit_reviewers(&mut harness, "alice not/a/team");
+    land(&mut harness, &survey);
+
+    press(&mut harness, Key::Enter);
+    assert!(launch_plans(&harness).is_empty());
+    let after = sheet(&harness);
+    assert!(
+        messages(after).contains("\"not/a/team\" is not a GitHub login or an org/team"),
+        "{}",
+        messages(after)
+    );
+    assert!(
+        !messages(after).contains("Not launched"),
+        "{}",
+        messages(after)
+    );
+    assert_eq!(prompt(after), prompt_without_slack("alice, acme/backend"));
 }
 
 // ---- Live Jobs ----
