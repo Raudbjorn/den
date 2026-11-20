@@ -15,12 +15,14 @@ pub enum SourceKind {
     /// Checks, reviews and threads of PRs already enumerated by PullRequests.
     PullRequestDetails,
     Issues,
+    /// Linked PRs of Issues already enumerated by Issues.
+    IssueDetails,
     Branches,
     Runs,
 }
 
 impl SourceKind {
-    /// The lists that yield Work Items, excluding Repo metadata and PR details.
+    /// The lists that yield Work Items, excluding Repo metadata and nested details.
     pub const WORK_ITEMS: [Self; 4] =
         [Self::PullRequests, Self::Issues, Self::Branches, Self::Runs];
 
@@ -39,6 +41,7 @@ impl SourceKind {
             Self::PullRequests => "Pull Requests",
             Self::PullRequestDetails => "Pull Request details",
             Self::Issues => "Issues",
+            Self::IssueDetails => "Issue details",
             Self::Branches => "Branches",
             Self::Runs => "Runs",
         }
@@ -324,7 +327,12 @@ impl Coverage {
         let repo = item.repo();
         let kind = SourceKind::for_work_item(item.kind());
         let relevant = |k: SourceKind| {
-            k == kind || (kind == SourceKind::PullRequests && k == SourceKind::PullRequestDetails)
+            k == kind
+                || matches!(
+                    (kind, k),
+                    (SourceKind::PullRequests, SourceKind::PullRequestDetails)
+                        | (SourceKind::Issues, SourceKind::IssueDetails)
+                )
         };
         self.entries
             .iter()

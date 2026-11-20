@@ -137,6 +137,7 @@ impl App {
                 Vec::new()
             }
             Event::Key(key) => self.key(key),
+            Event::EffectRejected { effect, reason } => self.effect_rejected(*effect, reason),
             Event::Resized { cols, rows } => self.resized(TerminalSize { cols, rows }),
             Event::SurveyFinished { id, outcome, now } => {
                 self.now = Some(now);
@@ -199,6 +200,41 @@ impl App {
             }
             Err(error) => vec![Effect::log(LogLevel::Error, format!("config: {error}"))],
         }
+    }
+
+    fn effect_rejected(&mut self, effect: Effect, reason: String) -> Vec<Effect> {
+        let operation = match effect {
+            Effect::Survey { id, .. } => {
+                if self.running == Some(id) {
+                    self.running = None;
+                    self.failure = Some(SurveyFailure::Interrupted {
+                        detail: reason.clone(),
+                    });
+                }
+                "survey"
+            }
+            Effect::InspectLaunch { id, .. }
+            | Effect::Launch { id, .. }
+            | Effect::Reopen { id, .. } => {
+                self.launch_not_queued(id, reason.clone());
+                "launch request"
+            }
+            Effect::StoreUpstreams { .. } => {
+                self.upstream_problem = Some(format!(
+                    "Upstream choice not saved, so it lasts until den quits: {reason}"
+                ));
+                "save Upstream choices"
+            }
+            Effect::LoadCache => "read cache",
+            Effect::StoreCache { .. } => "save cache",
+            Effect::CheckJobs => "check Jobs",
+            Effect::Quit => "quit",
+            Effect::Log(_) => "log",
+        };
+        vec![Effect::log(
+            LogLevel::Error,
+            format!("could not queue {operation}: {reason}"),
+        )]
     }
 
     fn begin_survey(&mut self, request: SurveyRequest) -> Vec<Effect> {

@@ -392,3 +392,41 @@ fn a_pr_on_the_default_branch_can_launch_from_a_clone_created_for_it() {
     assert_eq!(launcher.windows.lock().unwrap().len(), 1);
     assert_eq!(jobs.load().unwrap().len(), 1);
 }
+
+#[test]
+fn a_cross_repo_pr_from_main_launches_in_a_new_clone_without_changing_its_main() {
+    let (temp, root, url, main_tip) = hosted_repo();
+    let seed = temp.path().join("seed");
+    git(&seed, &["checkout", "-b", "fork-main"]);
+    git(&seed, &["commit", "--allow-empty", "-m", "fork change"]);
+    let head = git(&seed, &["rev-parse", "HEAD"]);
+    git(&seed, &["push", "origin", "HEAD:refs/pull/7/head"]);
+    let mut plan = clone_plan(&root, &url, &head);
+    plan.work_item = WorkItemId::PullRequest {
+        repo: RepoId::new("octo", "app"),
+        number: 7,
+    };
+    plan.base.reference = BaseRef::PullHead { number: 7 };
+    plan.branch.name = handoff::names::pr_head_branch(7, "main");
+    plan.branch.start = BranchStart::NewUntracked;
+    plan.worktree = handoff::worktree_path(&plan.main_clone.path, "main");
+    let launcher = RecordingLauncher::default();
+    let jobs = FileJobStore::new(temp.path().join("state/jobs.json"));
+    let report = handoff::execute(
+        &plan,
+        &GitWorkspace::new(),
+        &launcher,
+        &jobs,
+        "2026-11-20T10:00:00Z".parse().unwrap(),
+    );
+    assert!(
+        matches!(report.outcome, LaunchOutcome::Launched { .. }),
+        "{report:?}"
+    );
+    assert_eq!(git(&plan.worktree, &["rev-parse", "HEAD"]), head);
+    assert_eq!(git(&plan.main_clone.path, &["rev-parse", "main"]), main_tip);
+    assert_eq!(
+        git(&plan.main_clone.path, &["branch", "--show-current"]),
+        "main"
+    );
+}

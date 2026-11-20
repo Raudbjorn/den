@@ -44,7 +44,7 @@ impl GitHubSource for HeldSurvey {
 /// ends: quitting does not wait for the worker, so a choice queued behind the
 /// survey would be lost.
 #[test]
-fn an_upstream_choice_is_stored_at_once_even_while_a_survey_runs() {
+fn an_upstream_choice_is_stored_at_once_even_while_the_worker_queue_is_full() {
     let (started_tx, started_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let upstreams = Arc::new(FakeUpstreams::default());
@@ -68,6 +68,18 @@ fn an_upstream_choice_is_stored_at_once_even_while_a_survey_runs() {
     started_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("the survey started on the worker");
+
+    // Exceed the worker's 16-slot queue while its survey is held.
+    let saturated = dispatch(vec![Effect::CheckJobs; 64], &worker, &ports);
+    assert!(!saturated.events.is_empty(), "the queue must be full");
+    assert!(
+        saturated.events.iter().all(|event| matches!(event,
+            Event::EffectRejected { effect, reason }
+                if **effect == Effect::CheckJobs && reason.contains("still busy")
+        )),
+        "rejected operations must reach the App: {:?}",
+        saturated.events
+    );
 
     let chosen = UpstreamTargets::new([repo_id("octo/app")]);
     let dispatched = dispatch(

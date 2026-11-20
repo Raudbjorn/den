@@ -18,6 +18,7 @@ use crate::{
     config::Config,
     decide::Decision,
     domain::{Observation, WorkItemId},
+    ordering::same_work_item,
 };
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -114,7 +115,7 @@ fn facts(
     }
     // A head branch in another Repo (or a deleted one) is fetched as the PR
     // ref from the target's remote (#13).
-    let base = if pr.head_repo.as_ref() == Some(repo) {
+    let base = if pr.head_repo.as_ref().is_some_and(|head| head.same(repo)) {
         BaseRef::HeadBranch(pr.head_ref.clone())
     } else {
         BaseRef::PullHead { number: *number }
@@ -703,6 +704,6 @@ fn recorded_job(
         .ok()?
         .iter()
         .rev()
-        .find(|job| &job.work_item == item && job.worktree == worktree)
+        .find(|job| same_work_item(&job.work_item, item) && job.worktree == worktree)
         .map(|job| (job.session.clone(), job.launched_at))
 }

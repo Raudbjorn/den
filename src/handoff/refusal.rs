@@ -153,6 +153,9 @@ pub enum RefusalReason {
     LocalBranchChanged {
         branch: String,
     },
+    RequestNotQueued {
+        error: String,
+    },
     InspectionFailed {
         error: String,
     },
@@ -368,6 +371,7 @@ impl fmt::Display for RefusalReason {
                 f,
                 "the local branch {branch} changed since the sheet opened; open the sheet again"
             ),
+            Self::RequestNotQueued { error } => write!(f, "the request was not queued: {error}; reopen the sheet to retry"),
             Self::InspectionFailed { error } => {
                 write!(f, "den couldn't inspect the workspace: {error}")
             }

@@ -334,11 +334,11 @@ fn more_links_than_read_or_unreadable_links_mark_the_links_incomplete() {
 }
 
 /// GitHub says there are more linked PRs than den asked for, with no error at
-/// all: den stopped reading them on purpose, so the Repo's Issues are partial,
+/// all: den stopped reading them on purpose, so the Repo's Issue details are partial,
 /// naming the Issues whose links were cut short (an unread open PR could take
 /// the Issue's Next Step away).
 #[test]
-fn links_cut_short_without_any_error_make_the_repos_issues_partial() {
+fn truncated_issue_links_stay_visible_without_retaining_closed_issues() {
     let gql = ScriptedGraphQl::new(|request| {
         if let Some(answer) = non_issue_answers(request) {
             return answer;
@@ -365,11 +365,40 @@ fn links_cut_short_without_any_error_make_the_repos_issues_partial() {
         }
     });
     let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    let mut previous = observation.clone();
+    previous
+        .issues
+        .push(support::build::issue("octo/app", 99).build());
+    let merged = den::cache::merge(
+        Some(den::cache::CachedObservation::fresh(previous)),
+        observation.clone(),
+    );
+    assert!(
+        !merged.observation.issues.iter().any(|i| i.number == 99),
+        "a complete open-Issue list must remove closed Issues despite truncated links"
+    );
     assert!(!find(&observation, "octo/app", 1).linked_prs_complete);
     assert!(find(&observation, "octo/app", 3).linked_prs_complete);
     assert!(!find(&observation, "octo/app", 5).linked_prs_complete);
+    // Enumeration is complete even though nested details are partial: only enumeration controls cache retention.
     assert_eq!(
         state(&observation, issues_of("octo/app")),
+        SourceState::Complete
+    );
+    let details = Source::Repo {
+        repo: repo_id("octo/app"),
+        kind: SourceKind::IssueDetails,
+    };
+    assert!(
+        observation
+            .coverage
+            .applicable_to(&find(&observation, "octo/app", 1).id())
+            .iter()
+            .any(|entry| entry.source == details && !entry.state.is_complete())
+    );
+    assert!(!observation.coverage.is_complete());
+    assert_eq!(
+        state(&observation, details),
         SourceState::Partial(Incompleteness::PaginationStopped {
             pages_read: 1,
             reason: "more linked PRs than den reads on #1, #5".to_owned(),

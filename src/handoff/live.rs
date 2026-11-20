@@ -26,6 +26,7 @@ use super::{
 use crate::{
     domain::WorkItemId,
     jobs::JobRecord,
+    ordering::same_work_item,
     ports::{Launcher, Workspace},
 };
 use std::{
@@ -147,7 +148,18 @@ fn latest(jobs: &[JobRecord]) -> Vec<&JobRecord> {
     let mut seen = BTreeSet::new();
     sorted
         .into_iter()
-        .filter(|job| seen.insert((job.work_item.to_string(), job.worktree.clone())))
+        .filter(|job| {
+            let mut item = job.work_item.clone();
+            let repo = match &mut item {
+                WorkItemId::Issue { repo, .. }
+                | WorkItemId::PullRequest { repo, .. }
+                | WorkItemId::Branch { repo, .. }
+                | WorkItemId::Run { repo, .. } => repo,
+            };
+            repo.owner.make_ascii_lowercase();
+            repo.name.make_ascii_lowercase();
+            seen.insert((item, job.worktree.clone()))
+        })
         .collect()
 }
 
@@ -192,7 +204,11 @@ pub fn check_jobs(jobs: &[JobRecord], workspace: &dyn Workspace, budget: Duratio
 /// The check that says most about `item`'s Jobs: its newest Live Job, else
 /// its newest unknown one, else its newest missing one; `None` without Jobs.
 pub fn most_telling<'a>(checks: &'a [JobCheck], item: &WorkItemId) -> Option<&'a JobCheck> {
-    let mine = || checks.iter().filter(|c| &c.job.work_item == item);
+    let mine = || {
+        checks
+            .iter()
+            .filter(|c| same_work_item(&c.job.work_item, item))
+    };
     mine()
         .find(|c| c.is_live())
         .or_else(|| mine().find(|c| matches!(c.state, WorktreeState::Unknown(_))))

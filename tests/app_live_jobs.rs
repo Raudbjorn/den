@@ -817,3 +817,173 @@ fn fresh_push_instructions_preserve_shell_metacharacters_in_remote_and_branch() 
         );
     }
 }
+
+#[test]
+fn repo_casing_changes_preserve_live_markers_and_reopening() {
+    for no_next_step in [false, true] {
+        let pr = pr("OCTO/App", 7).author(ME);
+        let pr = if no_next_step {
+            pr.pending("ci")
+        } else {
+            pr.changes_requested()
+        };
+        let observed = ObservationBuilder::new()
+            .owner("OCTO")
+            .repo("OCTO/App")
+            .pull_request(pr);
+        let mut harness = harness_observing(observed, |h| live_job(h, 7));
+        assert_eq!(harness.view.list.rows[0].job, Some(JobMarker::Live));
+        press(&mut harness, Key::Char('c'));
+        assert_eq!(
+            sheet(&harness).status,
+            LaunchStatus::LiveJob,
+            "{}",
+            messages(sheet(&harness))
+        );
+        press(&mut harness, Key::Char('o'));
+        press(&mut harness, Key::Enter);
+        assert_eq!(sheet(&harness).status, LaunchStatus::Reopened);
+        assert_eq!(harness.launcher.windows()[0].session, SESSION_7);
+        assert!(harness.workspace.calls().is_empty());
+    }
+}
+
+#[test]
+fn rejected_inspections_launches_and_reopens_leave_the_pending_state() {
+    for reopen in [false, true] {
+        let mut harness = harness_with(|h| {
+            if reopen {
+                live_job(h, 7);
+            }
+        });
+        select(&mut harness, 7);
+        let effects = harness.send(Event::Key(Key::Char('c')));
+        let inspect = effects
+            .into_iter()
+            .find(|e| matches!(e, Effect::InspectLaunch { .. }))
+            .unwrap();
+        assert_eq!(sheet(&harness).status, LaunchStatus::Inspecting);
+        harness.send(Event::EffectRejected {
+            effect: Box::new(inspect),
+            reason: "worker busy".into(),
+        });
+        assert_eq!(sheet(&harness).status, LaunchStatus::Refused);
+        assert!(messages(sheet(&harness)).contains("worker busy"));
+        press(&mut harness, Key::Esc);
+        press(&mut harness, Key::Char('c'));
+        if reopen {
+            press(&mut harness, Key::Char('o'));
+        }
+        let effects = harness.send(Event::Key(Key::Enter));
+        let launch = effects
+            .into_iter()
+            .find(|e| matches!(e, Effect::Launch { .. } | Effect::Reopen { .. }))
+            .unwrap();
+        harness.send(Event::EffectRejected {
+            effect: Box::new(launch),
+            reason: "worker stopped".into(),
+        });
+        assert_eq!(sheet(&harness).status, LaunchStatus::Refused);
+        assert!(messages(sheet(&harness)).contains("worker stopped"));
+        assert!(harness.launcher.windows().is_empty());
+        assert!(harness.workspace.calls().is_empty());
+        press(&mut harness, Key::Esc);
+        press(&mut harness, Key::Char('c'));
+        assert_eq!(
+            sheet(&harness).status,
+            if reopen {
+                LaunchStatus::LiveJob
+            } else {
+                LaunchStatus::Ready
+            }
+        );
+    }
+}
+
+#[test]
+fn repo_casing_does_not_create_a_collision_but_branch_casing_still_does() {
+    use den::handoff::{JobCheck, WorktreeState, live, names};
+    let mut recorded = job(7);
+    recorded.work_item = WorkItemId::Branch {
+        repo: RepoId::new("octo", "app"),
+        name: "Feature".into(),
+    };
+    let checks = [JobCheck {
+        job: recorded.clone(),
+        state: WorktreeState::Present,
+    }];
+    for (name, same) in [("Feature", true), ("feature", false)] {
+        let current = WorkItemId::Branch {
+            repo: RepoId::new("OCTO", "App"),
+            name: name.into(),
+        };
+        assert_eq!(live::most_telling(&checks, &current).is_some(), same);
+        let free = names::free_worktree_name(
+            "feature-7",
+            &PathBuf::from(CLONE),
+            &current,
+            false,
+            &[recorded.clone()],
+        )
+        .unwrap();
+        assert_eq!(free.name, if same { "feature-7" } else { "feature-7-2" });
+    }
+}
+
+#[test]
+fn casing_changes_keep_only_the_latest_record_for_each_job_worktree() {
+    let harness = harness_with(|h| live_job(h, 7));
+    let old = job(7);
+    let mut latest = old.clone();
+    latest.work_item = WorkItemId::PullRequest {
+        repo: RepoId::new("OCTO", "App"),
+        number: 7,
+    };
+    latest.session = "newer-session".into();
+    let checked = den::handoff::live::check_jobs(
+        &[old, latest.clone()],
+        harness.workspace.as_ref(),
+        std::time::Duration::from_secs(1),
+    );
+    assert_eq!(checked.checks.len(), 1);
+    assert_eq!(checked.checks[0].job, latest);
+}
+
+#[test]
+fn fresh_push_instructions_preserve_literal_remote_and_branch_arguments_in_a_shell() {
+    for branch in ["fix/$USER", "fix/it's;$(printf-expanded)"] {
+        let remote = "up$stream";
+        let observed = ObservationBuilder::new()
+            .owner("octo")
+            .repo("octo/app")
+            .pull_request(
+                pr("octo/app", 7)
+                    .author(ME)
+                    .changes_requested()
+                    .head_ref(branch),
+            );
+        let mut harness = harness_observing(observed, |h| {
+            h.workspace
+                .add_clone(CLONE, &[(remote, "git@github.com:octo/app.git")]);
+            live_job(h, 7);
+        });
+        press(&mut harness, Key::Char('c'));
+        press(&mut harness, Key::Char('f'));
+        let ready = sheet(&harness);
+        assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(ready));
+        let prompt = &ready.prompt.as_ref().unwrap().text;
+        let (_, instruction) = prompt.split_once("Push with: ").unwrap();
+        // A shell function captures argv without pushing or accessing a network.
+        let script = format!("git() {{ printf '%s\\n' \"$@\"; }}; {instruction}");
+        let output = std::process::Command::new("sh")
+            .args(["-c", &script])
+            .env("USER", "expanded")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output);
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!("push\n{remote}\nHEAD:{branch}\n")
+        );
+    }
+}
