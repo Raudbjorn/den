@@ -117,7 +117,7 @@ fn run(
 
     // 2. Clone the Main Clone when there is none yet.
     if let CloneSource::ToClone { url, .. } = &plan.main_clone.source {
-        if let Err(e) = workspace.clone_repo(url, clone_path) {
+        if let Err(e) = workspace.clone_repo(url, &plan.remote.name, clone_path) {
             return failed(LaunchStep::Clone, e.to_string());
         }
         done.push(format!("cloned {url} into {}", clone_path.display()));
@@ -150,7 +150,18 @@ fn run(
 
     // 4. Add the worktree with git itself (not Claude Code's worktree options).
     let start = match &plan.branch.start {
-        BranchStart::New { .. } => WorktreeStart::NewBranchTracking { start: tracking },
+        BranchStart::New { .. }
+            if matches!(plan.main_clone.source, CloneSource::ToClone { .. }) =>
+        {
+            WorktreeStart::ClonedBranchTracking {
+                start: tracking,
+                remote: plan.remote.name.clone(),
+            }
+        }
+        BranchStart::New { .. } => WorktreeStart::NewBranchTracking {
+            start: tracking,
+            remote: plan.remote.name.clone(),
+        },
         BranchStart::Existing => WorktreeStart::ExistingBranch,
         BranchStart::NewUntracked | BranchStart::Fresh => {
             WorktreeStart::NewBranch { start: tracking }
@@ -266,6 +277,13 @@ fn verify(plan: &LaunchPlan, workspace: &dyn Workspace) -> Result<(), Verificati
         return Err(refused(RefusalReason::LocalBranchChanged {
             branch: plan.branch.name.clone(),
         }));
+    }
+    if matches!(plan.branch.start, BranchStart::Existing)
+        && let BaseRef::HeadBranch(branch) = &plan.base.reference
+    {
+        workspace
+            .check_tracking(clone_path, &plan.branch.name, &plan.remote.name, branch)
+            .map_err(|e| Verification::Failed(e.to_string()))?;
     }
     let remote = &plan.remote.name;
     let tip = match &plan.base.reference {

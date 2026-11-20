@@ -11,7 +11,7 @@ use super::{
     names, worktree_path,
 };
 use crate::{
-    domain::{RepoId, WorkItemId},
+    domain::{Observation, RepoId, WorkItemId},
     jobs::JobRecord,
     ports::{JobStore, Launcher, Workspace},
 };
@@ -56,6 +56,30 @@ impl InspectRequest {
             .clash_branch
             .map(|branch| names::suffixed(&branch, n, names::MAX_BRANCH_NAME_CHARS));
         self
+    }
+
+    /// The inspection for reopening `job` alone (#14), when a fresh launch is
+    /// refused (for example, the PR has no Next Step while its checks run). It
+    /// looks at the Job's own Main Clone, worktree and branch, so it needs no
+    /// Main Clone search and no launch facts. `None` when den has no facts
+    /// about the Job's target Repo or the worktree path has no folder name.
+    pub fn for_job(job: &JobRecord, observation: &Observation) -> Option<Self> {
+        let target = observation.repo(&job.target)?;
+        let worktree_name = job.worktree.file_name()?.to_string_lossy().into_owned();
+        Some(Self {
+            item: job.work_item.clone(),
+            target: job.target.clone(),
+            target_url: target.url.clone(),
+            configured_clone: Some(job.main_clone.clone()),
+            // The Job's Main Clone is known: nothing is searched.
+            search_root: PathBuf::new(),
+            worktree_name,
+            branch: job.branch.clone(),
+            // The Job's branch already exists; nothing is asked of the remote.
+            new_branch: false,
+            clash_branch: None,
+            base_branch: None,
+        })
     }
 }
 

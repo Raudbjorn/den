@@ -255,7 +255,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     let mut writable = Writability::Unknown("not inspected".to_owned());
     match &found {
         Some((clone, remote)) if matches!(clone.source, CloneSource::ToClone { .. }) => {
-            // A fresh clone has no worktrees and no local branches yet.
+            // Execution reuses a branch created by cloning, detaching only the new Main Clone.
             writable = clone.writable.clone();
             branch_start = Some(new_branch_start(&facts, remote));
         }
@@ -390,7 +390,11 @@ fn clash_branch(facts: &Facts) -> Option<String> {
 fn with_push_line(prompt: String, facts: &Facts, local: &str, remote: &Remote) -> String {
     match &facts.base {
         BaseRef::HeadBranch(branch) if !facts.new_branch && local != branch => {
-            format!("{prompt} {PUSH_LINE_PREFIX} {} HEAD:{branch}", remote.name)
+            format!(
+                "{prompt} {PUSH_LINE_PREFIX} {} {}",
+                command::shell_quote(&remote.name),
+                command::shell_quote(&format!("HEAD:{branch}"))
+            )
         }
         _ => prompt,
     }

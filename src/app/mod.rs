@@ -73,6 +73,9 @@ pub struct App {
     /// Where to search for Main Clones when the config sets no `main_clone_root`.
     default_clone_root: Option<PathBuf>,
     next_launch: u64,
+    /// The recorded Jobs' worktree states (#14), newest first; refreshed at
+    /// start, on `r`, after a launch, and per Work Item by a sheet's inspection.
+    job_checks: Vec<JobCheck>,
     /// The forks whose target is their Upstream (#13).
     upstreams: UpstreamTargets,
     /// Why the stored Upstream choices couldn't be read at startup, if they
@@ -80,9 +83,6 @@ pub struct App {
     upstreams_unreadable: Option<String>,
     /// The last thing that went wrong with a `u` (not saved, Upstream not visible).
     upstream_problem: Option<String>,
-    /// The recorded Jobs' worktree states (#14), newest first; refreshed at
-    /// start, on `r`, after a launch, and per Work Item by a sheet's inspection.
-    job_checks: Vec<JobCheck>,
 }
 
 impl App {
@@ -104,10 +104,10 @@ impl App {
             prompts: Ok(Prompts::default()),
             default_clone_root: None,
             next_launch: 0,
+            job_checks: Vec::new(),
             upstreams: UpstreamTargets::default(),
             upstreams_unreadable: None,
             upstream_problem: None,
-            job_checks: Vec::new(),
         }
     }
 
@@ -131,6 +131,7 @@ impl App {
             }
             Event::Tick { now } => {
                 self.now = Some(now);
+                self.decide_shown(now);
                 Vec::new()
             }
             Event::Key(key) => self.key(key),
@@ -143,8 +144,8 @@ impl App {
             Event::CacheStored { outcome } => cache_stored(outcome),
             Event::LaunchInspected { id, view } => self.launch_inspected(id, view),
             Event::LaunchFinished { id, report } => self.launch_finished(id, report),
-            Event::UpstreamsStored { outcome } => self.upstreams_stored(outcome),
             Event::JobsChecked { outcome } => self.jobs_checked(outcome),
+            Event::UpstreamsStored { outcome } => self.upstreams_stored(outcome),
         };
         (self.view(), effects)
     }
@@ -167,9 +168,9 @@ impl App {
             now: self.now,
             layout: Layout::for_size(self.size),
             overlay: self.overlay.as_ref(),
+            job_checks: &self.job_checks,
             upstreams: &self.upstreams,
             upstream_note: self.upstream_note(),
-            job_checks: &self.job_checks,
         })
     }
 

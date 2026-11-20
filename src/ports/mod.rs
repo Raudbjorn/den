@@ -95,6 +95,14 @@ pub trait Workspace: Send + Sync {
     /// The commit `reference` (a full ref name such as `refs/heads/x`) points
     /// at in the clone; `Ok(None)` when it doesn't exist.
     fn resolve(&self, clone: &Path, reference: &str) -> Result<Option<String>, WorkspaceError>;
+    /// Refuses reuse unless the branch tracks the selected remote and branch.
+    fn check_tracking(
+        &self,
+        clone: &Path,
+        branch: &str,
+        remote: &str,
+        remote_branch: &str,
+    ) -> Result<(), WorkspaceError>;
     /// The commit `branch` points at on `remote` right now (asks the remote,
     /// changes nothing locally); `Ok(None)` when the remote has no such branch.
     fn remote_branch_head(
@@ -128,8 +136,10 @@ pub trait Workspace: Send + Sync {
     /// a Repo den is about to clone); `Ok(None)` when it has no such ref.
     fn url_pull_head(&self, url: &str, number: u64) -> Result<Option<String>, WorkspaceError>;
     /// Clones the Repo at `url` into `into`, a folder that must not exist yet:
-    /// the adapter refuses rather than clone into anything already there.
-    fn clone_repo(&self, url: &str, into: &Path) -> Result<(), WorkspaceError>;
+    /// the adapter refuses rather than clone into anything already there. The
+    /// clone's remote for `url` is named `remote`, whatever the user's git
+    /// config would name it, so the fetch that follows finds it.
+    fn clone_repo(&self, url: &str, remote: &str, into: &Path) -> Result<(), WorkspaceError>;
 }
 
 /// A worktree to add: where, on which branch, starting how.
@@ -142,8 +152,11 @@ pub struct WorktreeAdd {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorktreeStart {
-    /// Create `branch` at `start` (a remote-tracking ref), tracking it.
-    NewBranchTracking { start: String },
+    /// Create `branch` at `start` on `remote`, tracking it even when the local name differs.
+    NewBranchTracking { start: String, remote: String },
+    /// Like NewBranchTracking, but a clone just created by this launch may
+    /// already have this branch checked out; detach that clone and reuse it.
+    ClonedBranchTracking { start: String, remote: String },
     /// Check out the existing local `branch`.
     ExistingBranch,
     /// Create `branch` at `start` tracking nothing: a new `<type>_<slug>`

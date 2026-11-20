@@ -376,11 +376,11 @@ fn plan_for(clone: &Path, url: &str, head: &str) -> LaunchPlan {
             commit: head.to_owned(),
         },
         branch: JobBranch {
+            renamed_from: None,
             name: "feature/x".to_owned(),
             start: BranchStart::New {
                 tracking: "upstream/feature/x".to_owned(),
             },
-            renamed_from: None,
         },
         worktree,
         renamed: None,
@@ -595,7 +595,7 @@ fn a_cross_repo_head_is_fetched_by_its_pr_ref_and_the_branch_tracks_nothing() {
         "{report:#?}"
     );
     assert_eq!(
-        git(&clone, &["rev-parse", "refs/remotes/upstream/pr/7"]),
+        git(&clone, &["rev-parse", "refs/den/pull/upstream/7"]),
         head
     );
     assert_eq!(git(&plan.worktree, &["rev-parse", "HEAD"]), head);
@@ -658,4 +658,221 @@ fn dens_appending_job_records_at_once_keep_every_record() {
         .collect();
     numbers.sort_unstable();
     assert_eq!(numbers, (0..WRITERS * RECORDS_EACH).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_fetched_pr_head_never_overwrites_a_remote_branch_named_like_it() {
+    // The target has a real branch `pr/7`, already fetched; a cross-Repo PR #7
+    // must not be force-fetched over its remote-tracking ref.
+    let (temp, _dev, clone, url, head) = temp_repos();
+    let remote = temp.path().join("remote.git");
+    git(&remote, &["update-ref", "refs/pull/7/head", &head]);
+    git(&remote, &["update-ref", "-d", "refs/heads/feature/x"]);
+    let branch_tip = git(&remote, &["rev-parse", "refs/heads/main"]);
+    git(&remote, &["update-ref", "refs/heads/pr/7", &branch_tip]);
+    git(&clone, &["fetch", "upstream"]);
+    assert_eq!(
+        git(&clone, &["rev-parse", "refs/remotes/upstream/pr/7"]),
+        branch_tip
+    );
+
+    let workspace = GitWorkspace::new();
+    let mut plan = plan_for(&clone, &url, &head);
+    plan.base.reference = BaseRef::PullHead { number: 7 };
+    plan.branch.start = BranchStart::NewUntracked;
+    let launcher = RecordingLauncher::default();
+    let jobs = FileJobStore::new(temp.path().join("state").join("jobs.json"));
+    let report = handoff::execute(
+        &plan,
+        &workspace,
+        &launcher,
+        &jobs,
+        "2026-11-20T10:00:00Z".parse().unwrap(),
+    );
+    assert!(
+        matches!(report.outcome, LaunchOutcome::Launched { .. }),
+        "{report:#?}"
+    );
+    assert_eq!(
+        git(&clone, &["rev-parse", "refs/remotes/upstream/pr/7"]),
+        branch_tip,
+        "the branch pr/7's remote-tracking ref is untouched"
+    );
+    assert_eq!(git(&plan.worktree, &["rev-parse", "HEAD"]), head);
+}
+
+#[test]
+fn a_record_that_exceeds_the_read_limit_keeps_the_existing_history_readable() {
+    use den::jobs::{JOBS_FORMAT, MAX_JOBS_BYTES};
+    let temp = tempfile::tempdir().unwrap();
+    let store = FileJobStore::new(temp.path().join("jobs.json"));
+    let mut job = JobRecord {
+        work_item: WorkItemId::PullRequest {
+            repo: RepoId::new("octo", "app"),
+            number: 7,
+        },
+        next_step: NextStep::Review,
+        target: RepoId::new("octo", "app"),
+        main_clone: "/c".into(),
+        worktree: "/w".into(),
+        branch: "feature".into(),
+        session: String::new(),
+        launched_at: "2026-11-20T10:00:00Z".parse().unwrap(),
+    };
+    let overhead =
+        serde_json::to_vec_pretty(&serde_json::json!({"format": JOBS_FORMAT, "jobs": [&job]}))
+            .unwrap()
+            .len();
+    job.session = "s".repeat(MAX_JOBS_BYTES as usize - overhead);
+    store.record(&job).expect("exactly the limit is readable");
+    let before = std::fs::read(store.path()).unwrap();
+    assert_eq!(before.len() as u64, MAX_JOBS_BYTES);
+    assert_eq!(store.load().unwrap(), [job.clone()]);
+    job.session = "another".into();
+    assert!(
+        store
+            .record(&job)
+            .expect_err("would exceed the limit")
+            .to_string()
+            .contains("records limit")
+    );
+    assert_eq!(std::fs::read(store.path()).unwrap(), before);
+    assert_eq!(store.load().unwrap().len(), 1);
+}
+
+#[test]
+fn single_branch_clones_can_launch_other_pr_branches_with_persistent_tracking() {
+    // A fresh Job has a different local name but must track the original remote branch.
+    for local in ["feature/x", "feature/x-2"] {
+        let (temp, root, _, url, head) = temp_repos();
+        let clone = root.join("single");
+        git(
+            &root,
+            &[
+                "clone",
+                "--single-branch",
+                "--branch",
+                "main",
+                "--origin",
+                "upstream",
+                &url,
+                clone.to_str().unwrap(),
+            ],
+        );
+        let mut plan = plan_for(&clone, &url, &head);
+        plan.branch.name = local.to_owned();
+        let launcher = RecordingLauncher::default();
+        let jobs = FileJobStore::new(temp.path().join("state/jobs.json"));
+        let report = handoff::execute(
+            &plan,
+            &GitWorkspace::new(),
+            &launcher,
+            &jobs,
+            "2026-11-20T10:00:00Z".parse().unwrap(),
+        );
+        assert!(
+            matches!(report.outcome, LaunchOutcome::Launched { .. }),
+            "{report:?}"
+        );
+        assert_eq!(git(&plan.worktree, &["rev-parse", "HEAD"]), head);
+        assert_eq!(
+            git(
+                &plan.worktree,
+                &["rev-parse", "--abbrev-ref", "@{upstream}"]
+            ),
+            "upstream/feature/x"
+        );
+        assert!(
+            git(&clone, &["config", "--get-all", "remote.upstream.fetch"])
+                .contains("+refs/heads/main:refs/remotes/upstream/main")
+        );
+    }
+}
+
+#[test]
+fn reusing_a_branch_requires_the_selected_remote_and_branch_before_any_launch_changes() {
+    let (temp, _, clone, url, head) = temp_repos();
+    git(&clone, &["remote", "add", "parent", &url]);
+    git(&clone, &["fetch", "parent"]);
+    git(
+        &clone,
+        &["branch", "--track", "feature/x", "parent/feature/x"],
+    );
+    let mut plan = plan_for(&clone, &url, &head);
+    plan.branch.start = BranchStart::Existing;
+    let launcher = RecordingLauncher::default();
+    let jobs = FileJobStore::new(temp.path().join("state/jobs.json"));
+    for (remote, merge) in [
+        ("parent", "refs/heads/feature/x"),
+        ("upstream", "refs/heads/main"),
+        ("", ""),
+    ] {
+        if remote.is_empty() {
+            git(&clone, &["config", "--unset", "branch.feature/x.remote"]);
+            git(&clone, &["config", "--unset", "branch.feature/x.merge"]);
+        } else {
+            git(&clone, &["config", "branch.feature/x.remote", remote]);
+            git(&clone, &["config", "branch.feature/x.merge", merge]);
+        }
+        let report = handoff::execute(
+            &plan,
+            &GitWorkspace::new(),
+            &launcher,
+            &jobs,
+            "2026-11-20T10:00:00Z".parse().unwrap(),
+        );
+        assert!(
+            matches!(
+                report.outcome,
+                LaunchOutcome::Failed {
+                    step: handoff::LaunchStep::Verify,
+                    ..
+                }
+            ),
+            "{report:?}"
+        );
+        assert!(report.done.is_empty());
+        assert!(!plan.worktree.exists());
+        assert!(launcher.windows.lock().unwrap().is_empty());
+        assert!(jobs.load().unwrap().is_empty());
+        assert_eq!(
+            git(
+                &clone,
+                &[
+                    "config",
+                    "--default",
+                    "",
+                    "--get",
+                    "branch.feature/x.remote"
+                ]
+            ),
+            remote
+        );
+    }
+    git(
+        &clone,
+        &[
+            "branch",
+            "--set-upstream-to=upstream/feature/x",
+            "feature/x",
+        ],
+    );
+    let report = handoff::execute(
+        &plan,
+        &GitWorkspace::new(),
+        &launcher,
+        &jobs,
+        "2026-11-20T10:00:00Z".parse().unwrap(),
+    );
+    assert!(
+        matches!(report.outcome, LaunchOutcome::Launched { .. }),
+        "{report:?}"
+    );
+    assert_eq!(
+        git(
+            &plan.worktree,
+            &["rev-parse", "--abbrev-ref", "@{upstream}"]
+        ),
+        "upstream/feature/x"
+    );
 }

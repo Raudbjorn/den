@@ -17,7 +17,7 @@ use den::{
 };
 use std::{
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     sync::Mutex,
 };
 
@@ -102,20 +102,6 @@ fn the_git_adapter_asks_a_url_for_a_branch_without_a_clone() {
 }
 
 #[test]
-fn the_git_adapter_asks_a_url_for_a_pr_ref_without_a_clone() {
-    // A cross-Repo PR head in a Repo den is about to clone (#12 with #13).
-    let (_temp, _root, url, tip) = hosted_repo();
-    git(Path::new(&url), &["update-ref", "refs/pull/7/head", &tip]);
-    let workspace = GitWorkspace::new();
-    assert_eq!(
-        workspace.url_pull_head(&url, 7).expect("ls-remote"),
-        Some(tip)
-    );
-    assert_eq!(workspace.url_pull_head(&url, 8).expect("ls-remote"), None);
-    assert!(workspace.url_pull_head("--upload-pack=x", 7).is_err());
-}
-
-#[test]
 fn the_git_adapter_clones_only_into_a_folder_that_does_not_exist() {
     let (_temp, root, url, tip) = hosted_repo();
     let workspace = GitWorkspace::new();
@@ -123,19 +109,21 @@ fn the_git_adapter_clones_only_into_a_folder_that_does_not_exist() {
     // An empty folder git itself would happily clone into: den refuses.
     let empty = root.join("empty");
     std::fs::create_dir(&empty).unwrap();
-    let error = workspace.clone_repo(&url, &empty).expect_err("refused");
+    let error = workspace
+        .clone_repo(&url, "origin", &empty)
+        .expect_err("refused");
     assert!(error.detail.contains("already exists"), "{error}");
     assert_eq!(std::fs::read_dir(&empty).unwrap().count(), 0);
 
     assert!(
         workspace
-            .clone_repo("-oProxyCommand=x", &root.join("x"))
+            .clone_repo("-oProxyCommand=x", "origin", &root.join("x"))
             .is_err()
     );
     assert!(!root.join("x").exists());
 
     let into = root.join("app");
-    workspace.clone_repo(&url, &into).expect("cloned");
+    workspace.clone_repo(&url, "origin", &into).expect("cloned");
     assert_eq!(git(&into, &["rev-parse", "HEAD"]), tip);
     assert_eq!(
         workspace.remotes(&into).expect("remotes"),
@@ -146,6 +134,66 @@ fn the_git_adapter_clones_only_into_a_folder_that_does_not_exist() {
     );
     // The new clone is found as a Main Clone next time.
     assert_eq!(workspace.find_clones(&root).expect("search"), [into]);
+}
+
+#[test]
+fn the_git_adapter_names_the_clones_remote_as_asked() {
+    let (_temp, root, url, _tip) = hosted_repo();
+    let workspace = GitWorkspace::new();
+
+    // Not git's default name: the remote is the one den asks for, so a user's
+    // `clone.defaultRemoteName` can't leave the executor fetching from a
+    // remote that doesn't exist.
+    let into = root.join("app");
+    workspace
+        .clone_repo(&url, "upstream", &into)
+        .expect("cloned");
+    assert_eq!(
+        workspace.remotes(&into).expect("remotes"),
+        [Remote {
+            name: "upstream".to_owned(),
+            url: url.clone()
+        }]
+    );
+
+    assert!(
+        workspace
+            .clone_repo(&url, "--upload-pack=x", &root.join("x"))
+            .is_err()
+    );
+    assert!(!root.join("x").exists());
+}
+
+/// Set (to the hosted Repo's URL) when this test binary runs the relative
+/// clone as a child, in a working directory of the parent's choosing.
+const RELATIVE_CLONE_URL_ENV: &str = "DEN_TEST_RELATIVE_CLONE_URL";
+const RELATIVE_CLONE_TEST: &str = "the_git_adapter_clones_a_relative_destination_where_it_points";
+
+#[test]
+fn the_git_adapter_clones_a_relative_destination_where_it_points() {
+    // A relative `main_clone_root` ("dev") gives a relative destination
+    // ("dev/app"), relative to den's working directory. The child runs the
+    // clone from the temp folder, so the test never changes its own process's
+    // working directory.
+    if let Ok(url) = std::env::var(RELATIVE_CLONE_URL_ENV) {
+        GitWorkspace::new()
+            .clone_repo(&url, "origin", Path::new("dev/app"))
+            .expect("cloned");
+        return;
+    }
+    let (temp, root, url, tip) = hosted_repo();
+    let status = Command::new(std::env::current_exe().expect("test binary"))
+        .args(["--exact", RELATIVE_CLONE_TEST, "--test-threads=1"])
+        .env(RELATIVE_CLONE_URL_ENV, &url)
+        .current_dir(temp.path())
+        .stdout(Stdio::null())
+        .status()
+        .expect("child test runs");
+    assert!(status.success(), "the relative clone failed");
+    // Where the plan said, not `dev/dev/app`: git got the folder's name, not
+    // the relative path a second time from inside `dev`.
+    assert_eq!(git(&root.join("app"), &["rev-parse", "HEAD"]), tip);
+    assert!(!root.join("dev").exists());
 }
 
 /// A launcher that records the window instead of opening one.
@@ -294,4 +342,53 @@ fn a_default_branch_that_moved_before_cloning_is_reported_and_nothing_is_cloned(
     );
     assert!(report.done.is_empty());
     assert!(!root.join("app").exists());
+}
+
+#[test]
+fn a_pr_on_the_default_branch_can_launch_from_a_clone_created_for_it() {
+    let (temp, root, url, tip) = hosted_repo();
+    let mut plan = clone_plan(&root, &url, &tip);
+    plan.work_item = WorkItemId::PullRequest {
+        repo: RepoId::new("octo", "app"),
+        number: 7,
+    };
+    plan.base.reference = BaseRef::HeadBranch("main".into());
+    plan.branch = JobBranch {
+        name: "main".into(),
+        renamed_from: None,
+        start: BranchStart::New {
+            tracking: "origin/main".into(),
+        },
+    };
+    plan.worktree = handoff::worktree_path(&plan.main_clone.path, "main");
+    let launcher = RecordingLauncher::default();
+    let jobs = FileJobStore::new(temp.path().join("state/jobs.json"));
+    let report = handoff::execute(
+        &plan,
+        &GitWorkspace::new(),
+        &launcher,
+        &jobs,
+        "2026-11-20T10:00:00Z".parse().unwrap(),
+    );
+    assert!(
+        matches!(report.outcome, LaunchOutcome::Launched { .. }),
+        "{report:?}"
+    );
+    assert_eq!(git(&plan.worktree, &["rev-parse", "HEAD"]), tip);
+    assert_eq!(
+        git(
+            &plan.worktree,
+            &["rev-parse", "--abbrev-ref", "@{upstream}"]
+        ),
+        "origin/main"
+    );
+    assert_eq!(
+        git(
+            &plan.main_clone.path,
+            &["rev-parse", "--abbrev-ref", "HEAD"]
+        ),
+        "HEAD"
+    );
+    assert_eq!(launcher.windows.lock().unwrap().len(), 1);
+    assert_eq!(jobs.load().unwrap().len(), 1);
 }

@@ -613,13 +613,14 @@ fn a_cross_repo_pr_head_is_fetched_by_its_pr_ref_from_the_target_repos_remote() 
     assert_eq!(plans[0].remote.name, "origin");
     assert_eq!(plans[0].base.reference, BaseRef::PullHead { number: 7 });
     assert_eq!(plans[0].branch.start, BranchStart::NewUntracked);
+    // PR refs use their own namespace so a remote branch named pr/7 is preserved.
     let calls = harness.workspace.calls();
     assert_eq!(
         calls[0],
         WorkspaceCall::Fetch {
             clone: CLONE.into(),
             remote: "origin".to_owned(),
-            refspec: "+refs/pull/7/head:refs/remotes/origin/pr/7".to_owned(),
+            refspec: "+refs/pull/7/head:refs/den/pull/origin/7".to_owned(),
         }
     );
     assert_eq!(
@@ -630,7 +631,7 @@ fn a_cross_repo_pr_head_is_fetched_by_its_pr_ref_from_the_target_repos_remote() 
                 path: "/home/me/dev/app/.claude/worktrees/feature-7".into(),
                 branch: "feature-7".to_owned(),
                 start: WorktreeStart::NewBranch {
-                    start: "refs/remotes/origin/pr/7".to_owned()
+                    start: "refs/den/pull/origin/7".to_owned()
                 },
             },
         }
@@ -668,18 +669,20 @@ fn a_cross_repo_pr_head_with_no_main_clone_is_cloned_then_fetched_by_its_pr_ref(
     assert_eq!(base.value, "PR ref refs/pull/7/head @ 0000000");
     press(&mut harness, Key::Enter);
 
+    // PR refs use their own namespace so a remote branch named pr/7 is preserved.
     let calls = harness.workspace.calls();
     assert_eq!(
         calls[..2],
         [
             WorkspaceCall::Clone {
+                remote: "origin".to_owned(),
                 url: "https://github.com/octo/app".to_owned(),
                 into: CLONE.into(),
             },
             WorkspaceCall::Fetch {
                 clone: CLONE.into(),
                 remote: "origin".to_owned(),
-                refspec: "+refs/pull/7/head:refs/remotes/origin/pr/7".to_owned(),
+                refspec: "+refs/pull/7/head:refs/den/pull/origin/7".to_owned(),
             },
         ]
     );
@@ -980,4 +983,116 @@ fn a_choice_that_could_not_be_saved_says_so() {
         row(&harness.view, &repo_scope(FORK)).upstream.as_deref(),
         Some(UPSTREAM)
     );
+}
+
+fn prompt_text(harness: &Harness) -> String {
+    sheet(harness)
+        .prompt
+        .as_ref()
+        .unwrap_or_else(|| panic!("no prompt: {:#?}", sheet(harness)))
+        .text
+        .clone()
+}
+
+#[test]
+fn an_edited_prompt_survives_a_target_round_trip_and_an_undone_edit_stays_undone() {
+    let store = Arc::new(FakeUpstreams::default());
+    let mut harness = started_with(&store, forked());
+    fork_clone(&harness);
+    press(&mut harness, Key::Char('c'));
+    let default_prompt = prompt_text(&harness);
+
+    // Edit: append `!`.
+    for key in [Key::Char('e'), Key::End, Key::Char('!'), Key::Esc] {
+        press(&mut harness, key);
+    }
+    let edited_prompt = format!("{default_prompt}!");
+    assert_eq!(prompt_text(&harness), edited_prompt);
+
+    // To the Upstream and back: the edit is still there.
+    press(&mut harness, Key::Char('u'));
+    press(&mut harness, Key::Char('u'));
+    assert_eq!(sheet(&harness).status, LaunchStatus::Ready);
+    assert_eq!(prompt_text(&harness), edited_prompt);
+
+    // Undo the edit by hand, then round-trip again: the default stays, and
+    // the discarded `!` does not come back.
+    for key in [Key::Char('e'), Key::End, Key::Backspace, Key::Esc] {
+        press(&mut harness, key);
+    }
+    assert_eq!(prompt_text(&harness), default_prompt);
+    press(&mut harness, Key::Char('u'));
+    press(&mut harness, Key::Char('u'));
+    assert_eq!(sheet(&harness).status, LaunchStatus::Ready);
+    assert_eq!(prompt_text(&harness), default_prompt);
+}
+
+#[test]
+fn an_edited_prompt_survives_a_moved_head_and_then_a_target_round_trip() {
+    let store = Arc::new(FakeUpstreams::default());
+    let mut harness = started_with(&store, forked());
+    fork_clone(&harness);
+    press(&mut harness, Key::Char('c'));
+    for key in [Key::Char('e'), Key::End, Key::Char('!'), Key::Esc] {
+        press(&mut harness, key);
+    }
+    let edited_prompt = prompt_text(&harness);
+    assert!(edited_prompt.ends_with('!'));
+
+    // The head moves before the launch: the sheet asks again, and the plan it
+    // holds now carries the edited prompt.
+    harness
+        .workspace
+        .set_remote_head(CLONE, "origin", "feature-7", &"1".repeat(40));
+    press(&mut harness, Key::Enter);
+    assert_eq!(sheet(&harness).status, LaunchStatus::HeadMoved);
+    assert_eq!(prompt_text(&harness), edited_prompt);
+
+    // To the Upstream and back: the edit is still the user's, not dropped as
+    // if it were the default.
+    press(&mut harness, Key::Char('u'));
+    press(&mut harness, Key::Char('u'));
+    assert_eq!(prompt_text(&harness), edited_prompt);
+}
+
+#[test]
+fn starting_fresh_beside_a_live_job_keeps_the_sheets_upstream_target() {
+    // The fork targets its Upstream; an Issue in the fork starts from the
+    // Upstream's default branch.
+    let store = Arc::new(FakeUpstreams::holding(targets(&[FORK])));
+    let observation = ObservationBuilder::new()
+        .owner("octo")
+        .fork(FORK, Some(UPSTREAM))
+        .issue(issue(FORK, 9).assignee(ME).label("feature"))
+        .build();
+    let mut harness = started_with(&store, observation);
+    fork_clone(&harness);
+    harness
+        .workspace
+        .set_remote_head(CLONE, "upstream", "main", UPSTREAM_MAIN);
+
+    open_sheet(&mut harness, "octo/app#9");
+    let first = sheet(&harness).clone();
+    assert_eq!(first.status, LaunchStatus::Ready, "{}", messages(&first));
+    assert_eq!(target(&first).0, format!("upstream → {UPSTREAM}"));
+    press(&mut harness, Key::Enter);
+    assert_eq!(sheet(&harness).status, LaunchStatus::Launched);
+    press(&mut harness, Key::Esc);
+
+    // Again: a Live Job. `f` starts fresh for the sheet's target, the Upstream,
+    // not for the default target (the fork itself).
+    open_sheet(&mut harness, "octo/app#9");
+    assert_eq!(sheet(&harness).status, LaunchStatus::LiveJob);
+    press(&mut harness, Key::Char('f'));
+    let fresh = sheet(&harness).clone();
+    assert_eq!(fresh.status, LaunchStatus::Ready, "{}", messages(&fresh));
+    assert_eq!(target(&fresh).0, format!("upstream → {UPSTREAM}"));
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 2);
+    assert_eq!(plans[1].target.repo, repo_id(UPSTREAM));
+    assert_eq!(plans[1].remote.name, "upstream");
+    assert_eq!(plans[1].base.commit, UPSTREAM_MAIN);
+    assert_ne!(plans[1].worktree, plans[0].worktree);
+    assert_ne!(plans[1].branch.name, plans[0].branch.name);
 }

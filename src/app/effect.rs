@@ -41,15 +41,15 @@ pub enum Effect {
     },
     /// Carry out a confirmed LaunchPlan; answered by `Event::LaunchFinished`.
     Launch { id: LaunchId, plan: Box<LaunchPlan> },
-    /// Save which forks target their Upstream (#13); answered by
-    /// `Event::UpstreamsStored`.
-    StoreUpstreams { upstreams: UpstreamTargets },
     /// Check every recorded Job's worktree (reads only, bounded; #14);
     /// answered by `Event::JobsChecked`.
     CheckJobs,
     /// Open a Live Job's window again, resuming its session (#14); answered by
     /// `Event::LaunchFinished`.
     Reopen { id: LaunchId, plan: Box<ReopenPlan> },
+    /// Save which forks target their Upstream (#13); answered by
+    /// `Event::UpstreamsStored`.
+    StoreUpstreams { upstreams: UpstreamTargets },
     /// Leave den.
     Quit,
     /// Write to den's structured log.

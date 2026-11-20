@@ -77,13 +77,13 @@ pub enum Event {
         id: LaunchId,
         report: Box<LaunchReport>,
     },
-    /// The Upstream choices were saved, or why not.
-    UpstreamsStored {
-        outcome: Result<(), UpstreamStoreError>,
-    },
     /// The recorded Jobs' worktrees were checked (#14), or why the Job records
     /// couldn't be read.
     JobsChecked {
         outcome: Result<Box<JobsCheck>, String>,
+    },
+    /// The Upstream choices were saved, or why not.
+    UpstreamsStored {
+        outcome: Result<(), UpstreamStoreError>,
     },
 }

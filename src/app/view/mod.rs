@@ -49,12 +49,12 @@ pub struct State<'a> {
     pub now: Option<Timestamp>,
     pub layout: Layout,
     pub overlay: Option<&'a OverlayState>,
+    /// The recorded Jobs' worktree states (#14).
+    pub job_checks: &'a [JobCheck],
     /// The forks whose target is their Upstream (#13).
     pub upstreams: &'a UpstreamTargets,
     /// Something wrong with the Upstream choices, for the header.
     pub upstream_note: Option<String>,
-    /// The recorded Jobs' worktree states (#14).
-    pub job_checks: &'a [JobCheck],
 }
 
 pub fn build(state: &State<'_>) -> ViewModel {

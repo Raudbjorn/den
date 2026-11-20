@@ -133,7 +133,7 @@ fn own_step(ctx: &Context<'_>, issue: &Issue) -> OwnStep {
         (_, assignees) => OwnStep {
             step: NextStep::Implement,
             rule: format!("the Issue is assigned to {}", assignees.join(", ")),
-            attribution: Attribution::any_of(ctx.viewer, assignees, &[], ASSIGNEES_ROLE),
+            attribution: Attribution::any_of(ctx.viewer, assignees, &[], ASSIGNEES_ROLE, &[]),
         },
     }
 }

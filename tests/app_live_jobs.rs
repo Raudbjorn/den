@@ -71,6 +71,11 @@ fn observation() -> ObservationBuilder {
 /// A harness with a Main Clone of octo/app (remote `upstream`); `arrange`
 /// sets up Jobs and worktrees before den starts.
 fn harness_with(arrange: impl FnOnce(&Harness)) -> Harness {
+    harness_observing(observation(), arrange)
+}
+
+/// [`harness_with`], surveying `observed` instead.
+fn harness_observing(observed: ObservationBuilder, arrange: impl FnOnce(&Harness)) -> Harness {
     let config = Config {
         owners: vec!["octo".to_owned()],
         main_clone_root: Some(PathBuf::from(ROOT)),
@@ -89,7 +94,7 @@ fn harness_with(arrange: impl FnOnce(&Harness)) -> Harness {
         );
     }
     arrange(&harness);
-    harness.answer(Ok(observation().build()));
+    harness.answer(Ok(observed.build()));
     harness.start();
     harness
 }
@@ -263,8 +268,7 @@ fn each_way_den_cannot_inspect_a_worktree_is_unknown_never_missing() {
         h.workspace.add_existing(&worktree(8));
         // The path can't be inspected.
         h.jobs.holding(job(9));
-        h.workspace
-            .make_uninspectable(&worktree(9), "permission denied");
+        h.workspace.make_unknown(&worktree(9), "permission denied");
         // A record pointing at the Main Clone itself, not a Job's worktree.
         h.jobs.holding(JobRecord {
             worktree: CLONE.into(),
@@ -494,7 +498,7 @@ fn start_fresh_plans_a_distinct_worktree_branch_and_session_and_leaves_the_old_o
         .into_iter()
         .filter_map(|c| match c {
             WorkspaceCall::AddWorktree { add, .. } => Some(add.path),
-            // A clone (#12) would touch a new folder too: it must not happen here.
+            // A clone makes a folder too: it would count as touched.
             WorkspaceCall::Clone { into, .. } => Some(into),
             WorkspaceCall::Fetch { .. } => None,
         })
@@ -612,6 +616,93 @@ fn an_unknown_worktree_is_explained_offers_no_deletion_and_never_relaunches_sile
     );
 }
 
+/// octo/app with PR 7 waiting for its checks: no rule matches, so it has no
+/// Next Step (spec, "Next Step rules").
+fn waiting_for_checks() -> ObservationBuilder {
+    ObservationBuilder::new()
+        .owner("octo")
+        .repo("octo/app")
+        .pull_request(pr("octo/app", 7).author(ME).pending("ci"))
+}
+
+#[test]
+fn a_live_job_stays_reopenable_while_its_pr_has_no_next_step() {
+    let mut harness = harness_observing(waiting_for_checks(), |h| live_job(h, 7));
+    select(&mut harness, 7);
+    assert_eq!(marker(&harness.view, 7), Some(JobMarker::Live));
+
+    press(&mut harness, Key::Char('c'));
+    let asked = sheet(&harness).clone();
+    assert_eq!(asked.next_step, "none");
+    assert_eq!(asked.status, LaunchStatus::LiveJob, "{}", messages(&asked));
+    assert_eq!(
+        asked.headline,
+        "This Work Item has a Live Job: open existing?"
+    );
+    assert_eq!(field(&asked, "SESSION").0, SESSION_7);
+    // A fresh launch needs a Next Step, so `f` is not offered, and the sheet says why.
+    assert_eq!(hints(&harness.view), ["o open existing", "esc cancel"]);
+    assert!(
+        messages(&asked)
+            .contains("Starting fresh isn't possible: this Work Item has no Next Step to hand off"),
+        "{}",
+        messages(&asked)
+    );
+
+    // `f` anyway: refused with the reason, and the question stays open.
+    let effects = harness.key(Key::Char('f'));
+    assert_eq!(launches_or_reopens(&effects), 0);
+    let still = sheet(&harness).clone();
+    assert_eq!(still.status, LaunchStatus::LiveJob);
+    assert!(
+        messages(&still).contains("can't start fresh: this Work Item has no Next Step"),
+        "{}",
+        messages(&still)
+    );
+
+    press(&mut harness, Key::Char('o'));
+    assert_eq!(sheet(&harness).status, LaunchStatus::ReopenReady);
+    press(&mut harness, Key::Enter);
+    assert_eq!(
+        harness.launcher.windows(),
+        [WindowCommand {
+            directory: worktree(7).into(),
+            session: SESSION_7.to_owned(),
+            prompt: String::new(),
+            start: SessionStart::Resume,
+        }]
+    );
+    assert_eq!(sheet(&harness).status, LaunchStatus::Reopened);
+    // Nothing fetched or added, no new Job recorded.
+    assert!(harness.workspace.calls().is_empty());
+    assert_eq!(harness.jobs.records(), [job(7)]);
+}
+
+#[test]
+fn without_a_next_step_a_job_that_is_no_longer_live_is_refused_as_before() {
+    let mut harness = harness_observing(waiting_for_checks(), |h| live_job(h, 7));
+    select(&mut harness, 7);
+    // The worktree goes after den last checked the Jobs: the sheet's own
+    // inspection finds it missing, so only the fresh launch's refusal is left.
+    harness.workspace.remove_existing(&worktree(7));
+
+    press(&mut harness, Key::Char('c'));
+    let refused = sheet(&harness);
+    assert_eq!(
+        refused.status,
+        LaunchStatus::Refused,
+        "{}",
+        messages(refused)
+    );
+    assert!(
+        messages(refused).contains("this Work Item has no Next Step to hand off"),
+        "{}",
+        messages(refused)
+    );
+    assert!(harness.launcher.windows().is_empty());
+    assert!(harness.workspace.calls().is_empty());
+}
+
 #[test]
 fn a_job_whose_worktree_is_gone_launches_as_usual() {
     let mut harness = harness_with(|h| h.jobs.holding(job(7)));
@@ -680,4 +771,49 @@ fn the_live_job_marker_is_a_teal_glyph_before_the_title_and_unknown_is_amber() {
         .expect("listed")
         .title;
     assert!(text.contains(&format!("* {title_7}")), "{text}");
+}
+
+#[test]
+fn fresh_push_instructions_preserve_shell_metacharacters_in_remote_and_branch() {
+    for branch in [
+        "fix/$USER",
+        "fix/quote'",
+        "fix/$(whoami)",
+        "fix/semicolon;name",
+    ] {
+        let remote = "up$stream";
+        let observed = ObservationBuilder::new()
+            .owner("octo")
+            .repo("octo/app")
+            .pull_request(
+                pr("octo/app", 7)
+                    .author(ME)
+                    .changes_requested()
+                    .head_ref(branch),
+            );
+        let mut harness = harness_observing(observed, |h| {
+            h.workspace
+                .add_clone(CLONE, &[(remote, "git@github.com:octo/app.git")]);
+            h.workspace.set_remote_head(CLONE, remote, branch, HEAD_7);
+            live_job(h, 7);
+        });
+        press(&mut harness, Key::Char('c'));
+        press(&mut harness, Key::Char('f'));
+        let ready = sheet(&harness);
+        assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(ready));
+        let prompt = &ready.prompt.as_ref().unwrap().text;
+        let command = prompt.split_once("Push with: ").unwrap().1;
+        // Parse the displayed instruction with a real shell, replacing git with an argv recorder.
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("git() {{ printf '%s\\n' \"$@\"; }}; {command}"))
+            .env("USER", "unexpected-expansion")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{command}: {output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!("push\n{remote}\nHEAD:{branch}\n")
+        );
+    }
 }

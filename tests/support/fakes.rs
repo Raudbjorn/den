@@ -91,6 +91,7 @@ pub enum WorkspaceCall {
     },
     Clone {
         url: String,
+        remote: String,
         into: PathBuf,
     },
 }
@@ -100,8 +101,7 @@ struct WorkspaceState {
     clones: BTreeMap<PathBuf, FakeClone>,
     /// Other paths that exist (worktrees added, folders in the way).
     existing: BTreeSet<PathBuf>,
-    /// Operation name ("fetch", "add_worktree", "ls-remote", "clone",
-    /// "worktree-list") → error.
+    /// Operation name ("fetch", "add_worktree", "ls-remote", "clone") → error.
     failures: BTreeMap<String, String>,
     /// Paths den can't inspect, with the error.
     unknown: BTreeMap<PathBuf, String>,
@@ -218,15 +218,6 @@ impl FakeWorkspace {
             worktree.locked = locked;
             worktree.prunable = prunable;
         });
-    }
-
-    /// den can't inspect `path` (`path_state` answers unknown).
-    pub fn make_uninspectable(&self, path: &str, why: &str) {
-        self.state
-            .lock()
-            .expect("lock")
-            .unknown
-            .insert(path.into(), why.to_owned());
     }
 
     /// Something at `path` is gone (a folder removed by hand).
@@ -386,6 +377,10 @@ impl Workspace for FakeWorkspace {
             .cloned())
     }
 
+    fn check_tracking(&self, _: &Path, _: &str, _: &str, _: &str) -> Result<(), WorkspaceError> {
+        Self::failure(&self.state.lock().expect("lock"), "check_tracking")
+    }
+
     /// Like `git worktree list`: the clone's own checkout first.
     fn worktrees(&self, clone: &Path) -> Result<Vec<RegisteredWorktree>, WorkspaceError> {
         let state = self.state.lock().expect("lock");
@@ -412,7 +407,7 @@ impl Workspace for FakeWorkspace {
         Self::failure(&state, "fetch")?;
         let fake = state.clones.get_mut(clone).ok_or_else(|| no_clone(clone))?;
         // `+refs/heads/<b>:refs/remotes/<r>/<b>`, or a PR ref
-        // `+refs/pull/<n>/head:refs/remotes/<r>/pr/<n>` (kept whole as the key).
+        // `+refs/pull/<n>/head:refs/den/pull/<r>/<n>` (kept whole as the key).
         let (source, destination) = refspec
             .trim_start_matches('+')
             .split_once(':')
@@ -436,8 +431,9 @@ impl Workspace for FakeWorkspace {
         });
         Self::failure(&state, "add_worktree")?;
         let fake = state.clones.get_mut(clone).ok_or_else(|| no_clone(clone))?;
-        if let WorktreeStart::NewBranchTracking { start } | WorktreeStart::NewBranch { start } =
-            &add.start
+        if let WorktreeStart::NewBranchTracking { start, .. }
+        | WorktreeStart::ClonedBranchTracking { start, .. }
+        | WorktreeStart::NewBranch { start } = &add.start
         {
             let commit = fake.refs.get(start).cloned().expect("the start ref exists");
             fake.refs
@@ -473,12 +469,13 @@ impl Workspace for FakeWorkspace {
         Ok(hosted.get(&pull_ref(number)).cloned())
     }
 
-    /// Makes a clone at `into` whose `origin` is `url`, with the hosted
-    /// Repo's branches as remote-tracking refs.
-    fn clone_repo(&self, url: &str, into: &Path) -> Result<(), WorkspaceError> {
+    /// Makes a clone at `into` whose remote `remote` is `url`, with the
+    /// hosted Repo's branches as remote-tracking refs.
+    fn clone_repo(&self, url: &str, remote: &str, into: &Path) -> Result<(), WorkspaceError> {
         let mut state = self.state.lock().expect("lock");
         state.calls.push(WorkspaceCall::Clone {
             url: url.to_owned(),
+            remote: remote.to_owned(),
             into: into.to_owned(),
         });
         Self::failure(&state, "clone")?;
@@ -491,17 +488,17 @@ impl Workspace for FakeWorkspace {
         let branches = state.hosted.get(url).cloned().unwrap_or_default();
         let clone = FakeClone {
             remotes: vec![Remote {
-                name: "origin".to_owned(),
+                name: remote.to_owned(),
                 url: url.to_owned(),
             }],
             refs: branches
                 .iter()
                 .filter(|(b, _)| !b.starts_with("refs/"))
-                .map(|(b, c)| (format!("refs/remotes/origin/{b}"), c.clone()))
+                .map(|(b, c)| (format!("refs/remotes/{remote}/{b}"), c.clone()))
                 .collect(),
             remote_heads: branches
                 .iter()
-                .map(|(b, c)| (("origin".to_owned(), b.clone()), c.clone()))
+                .map(|(b, c)| ((remote.to_owned(), b.clone()), c.clone()))
                 .collect(),
             ..FakeClone::default()
         };

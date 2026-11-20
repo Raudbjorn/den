@@ -223,7 +223,11 @@ fn parse_launch(item: &str, rest: &[String]) -> Result<Mode, DenError> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--prompt" => match args.next() {
-                Some(text) => prompt = Some(text.clone()),
+                Some(text) => {
+                    den::handoff::check_prompt(text)
+                        .map_err(|e| DenError::Usage(format!("--prompt: {e}")))?;
+                    prompt = Some(text.clone());
+                }
                 None => return Err(DenError::Usage("--prompt needs the prompt text".to_owned())),
             },
             "--yes" => confirm = true,
@@ -610,5 +614,29 @@ fn exit_code(error: &DenError) -> ExitCode {
             .map_or(ExitCode::from(EXIT_FAILURE), ExitCode::from),
         DenError::RestoreAfter { outcome, .. } => exit_code(outcome),
         _ => ExitCode::from(EXIT_FAILURE),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_prompts_are_validated_before_the_editor_can_truncate_them() {
+        for character in ["x", "界"] {
+            let limit = character.repeat(den::handoff::MAX_PROMPT_CHARS);
+            let args = vec!["--prompt".to_owned(), limit.clone(), "--yes".to_owned()];
+            assert!(
+                matches!(parse_launch("octo/app#7", &args), Ok(Mode::Launch { prompt: Some(p), confirm: true, .. }) if p == limit)
+            );
+            let args = vec![
+                "--prompt".to_owned(),
+                format!("{limit}{character}"),
+                "--yes".to_owned(),
+            ];
+            assert!(
+                matches!(parse_launch("octo/app#7", &args), Err(DenError::Usage(e)) if e.contains("longer than 8000 characters"))
+            );
+        }
     }
 }

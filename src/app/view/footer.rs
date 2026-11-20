@@ -76,12 +76,23 @@ fn launch_hints(sheet: &Sheet) -> Vec<KeyHint> {
             .chain(switch)
             .chain([hint("esc", "cancel")])
             .collect(),
-        SheetState::LiveJob { .. } => vec![
-            hint("o", "open existing"),
-            hint("f", "start fresh"),
-            hint("esc", "cancel"),
-        ],
-        SheetState::JobUnknown { .. } => vec![hint("f", "start fresh"), hint("esc", "cancel")],
+        SheetState::LiveJob { .. } if sheet.launch_refused.is_some() => {
+            [hint("o", "open existing")]
+                .into_iter()
+                .chain(switch)
+                .chain([hint("esc", "cancel")])
+                .collect()
+        }
+        SheetState::LiveJob { .. } => [hint("o", "open existing"), hint("f", "start fresh")]
+            .into_iter()
+            .chain(switch)
+            .chain([hint("esc", "cancel")])
+            .collect(),
+        SheetState::JobUnknown { .. } => [hint("f", "start fresh")]
+            .into_iter()
+            .chain(switch)
+            .chain([hint("esc", "cancel")])
+            .collect(),
         SheetState::ReopenReady { .. } => vec![hint("⏎", "open"), hint("esc", "cancel")],
         SheetState::Inspecting => switch.into_iter().chain([hint("esc", "cancel")]).collect(),
         SheetState::Launching { .. } | SheetState::Reopening { .. } => Vec::new(),

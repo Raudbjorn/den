@@ -45,9 +45,6 @@ pub fn perform(effect: &Effect, ports: &Ports) -> Vec<Event> {
                 ports.clock.now(),
             )),
         }],
-        Effect::StoreUpstreams { upstreams } => vec![Event::UpstreamsStored {
-            outcome: ports.upstreams.store(upstreams),
-        }],
         Effect::CheckJobs => vec![Event::JobsChecked {
             outcome: ports
                 .jobs
@@ -68,6 +65,9 @@ pub fn perform(effect: &Effect, ports: &Ports) -> Vec<Event> {
                 ports.workspace.as_ref(),
                 ports.launcher.as_ref(),
             )),
+        }],
+        Effect::StoreUpstreams { upstreams } => vec![Event::UpstreamsStored {
+            outcome: ports.upstreams.store(upstreams),
         }],
         Effect::Quit | Effect::Log(_) => Vec::new(),
     }

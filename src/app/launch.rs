@@ -15,6 +15,11 @@
 //! a window resuming the Job's session (`Enter` opens it); start fresh inspects
 //! again for suffixed names and continues as a normal launch. A Job whose
 //! worktree state is unknown is explained; only an explicit `f` launches.
+//! A Live Job stays reopenable when a fresh launch is refused (for example,
+//! the PR has no Next Step while its checks run): the sheet then inspects the
+//! Job's own worktree and offers only `o`. `u` works on the question too (a
+//! fork's Upstream target refused, a fresh start on the fork wanted): switching
+//! the target forgets a fresh start, so the question is asked again for it.
 
 use super::{
     App, Effect, Key, LogLevel, OverlayState,
@@ -22,10 +27,10 @@ use super::{
     event::LaunchId,
 };
 use crate::{
-    domain::{NextStep, RepoId, WorkItemId},
+    domain::{NextStep, Observation, RepoId, WorkItemId},
     handoff::{
-        self, JobCheck, LaunchOutcome, LaunchPlan, LaunchReport, LaunchSettings, PlanInput,
-        Refusal, RefusalReason, ReopenPlan, TargetChoice, WorkspaceView, WorktreeState,
+        self, InspectRequest, JobCheck, LaunchOutcome, LaunchPlan, LaunchReport, LaunchSettings,
+        PlanInput, Refusal, RefusalReason, ReopenPlan, TargetChoice, WorkspaceView, WorktreeState,
         check_prompt, live, names, short_commit,
     },
 };
@@ -59,9 +64,16 @@ pub(super) struct Sheet {
     /// The prompt the user edited before switching the target with `u`; kept
     /// instead of the new target's default prompt.
     pub edited_prompt: Option<String>,
+    /// The current target's default prompt, as the last inspection planned it.
+    /// A launch attempt puts the edited prompt into the plan, so the plan's
+    /// own prompt can't tell an edit from the default.
+    pub default_prompt: Option<String>,
     /// Start fresh (#14): the suffix for the new worktree, branch and session,
     /// and the Job it starts beside.
     pub fresh: Option<(u32, Box<JobCheck>)>,
+    /// Why a fresh launch can't happen, when the sheet was opened only to
+    /// reopen the Work Item's Live Job (#14). `f` is not offered then.
+    pub launch_refused: Option<Refusal>,
 }
 
 /// The two targets a Work Item in a fork can have.
@@ -152,7 +164,9 @@ impl App {
             fork_choice,
             fork,
             edited_prompt: None,
+            default_prompt: None,
             fresh: None,
+            launch_refused: None,
         };
         let effects = self.inspect_for(&mut sheet, "opened");
         self.overlay = Some(OverlayState::Launch(Box::new(sheet)));
@@ -160,7 +174,9 @@ impl App {
     }
 
     /// Asks to inspect the workspace for the sheet's Work Item and target, or
-    /// refuses straight away when den won't even look.
+    /// refuses straight away when den won't even look. A refused launch still
+    /// inspects the Work Item's Live Job when den last saw one (#14), so it
+    /// stays reopenable.
     fn inspect_for(&self, sheet: &mut Sheet, what: &str) -> Vec<Effect> {
         let gone = |sheet: &mut Sheet| {
             let refusal = Refusal::one(handoff::RefusalReason::WorkItemGone);
@@ -176,24 +192,35 @@ impl App {
         };
         let settings =
             LaunchSettings::from_config(self.config.as_ref().ok(), self.default_clone_root.clone());
-        // A fresh start (#14) keeps its suffix when `u` switches the target.
-        let request = handoff::inspect_request(decision, observation, sheet.choice, &settings).map(
-            |request| match &sheet.fresh {
-                Some((n, _)) => request.fresh(*n),
-                None => request,
+        sheet.launch_refused = None;
+        let request = match handoff::inspect_request(decision, observation, sheet.choice, &settings)
+        {
+            Ok(request) => Ok((
+                format!(
+                    "launch sheet {} {what} for {}, targeting {}",
+                    sheet.id.0, sheet.item, request.target
+                ),
+                request,
+            )),
+            // A fresh launch is refused, but a Live Job stays reopenable: the
+            // sheet inspects the Job's own worktree and offers only `o`.
+            Err(refusal) => match live_job_request(&self.job_checks, &sheet.item, observation) {
+                Some(request) => {
+                    let log = format!(
+                        "launch sheet {} {what} for {} to reopen its Live Job; a fresh launch is refused: {refusal}",
+                        sheet.id.0, sheet.item
+                    );
+                    sheet.launch_refused = Some(refusal);
+                    Ok((log, request))
+                }
+                None => Err(refusal),
             },
-        );
+        };
         match request {
-            Ok(request) => {
+            Ok((log, request)) => {
                 sheet.state = SheetState::Inspecting;
                 vec![
-                    Effect::log(
-                        LogLevel::Info,
-                        format!(
-                            "launch sheet {} {what} for {}, targeting {}",
-                            sheet.id.0, sheet.item, request.target
-                        ),
-                    ),
+                    Effect::log(LogLevel::Info, log),
                     Effect::InspectLaunch {
                         id: sheet.id,
                         request: Box::new(request),
@@ -226,13 +253,16 @@ impl App {
             return Vec::new();
         }
         if let SheetState::Ready { plan, .. } = &sheet.state {
+            // The prompt as it stands now wins: an edit undone back to the
+            // default clears the saved one, so it can't come back later.
             let text = sheet.prompt.text();
-            if text != plan.prompt {
-                sheet.edited_prompt = Some(text);
-            }
+            let default = sheet.default_prompt.as_deref().unwrap_or(&plan.prompt);
+            sheet.edited_prompt = (text != default).then_some(text);
         }
         sheet.choice = sheet.choice.flipped();
         sheet.accepted_head = None;
+        // A fresh start was picked for the old target's names: ask again.
+        sheet.fresh = None;
         // A new id: an inspection still running for the old target is ignored.
         sheet.id = LaunchId(self.next_launch);
         self.next_launch += 1;
@@ -270,7 +300,11 @@ impl App {
             (Key::Char('e') | Key::Tab, SheetState::Ready { .. }) => sheet.editing = true,
             (
                 Key::Char('u'),
-                SheetState::Ready { .. } | SheetState::Refused(_) | SheetState::Inspecting,
+                SheetState::Ready { .. }
+                | SheetState::Refused(_)
+                | SheetState::Inspecting
+                | SheetState::LiveJob { .. }
+                | SheetState::JobUnknown { .. },
             ) => effects = self.switch_target(&mut sheet),
             (Key::Enter, SheetState::Ready { .. }) => effects = self.launch(&mut sheet),
             (Key::Char('o'), SheetState::LiveJob { check, view }) => {
@@ -280,10 +314,14 @@ impl App {
             (
                 Key::Char('f'),
                 SheetState::LiveJob { check, view } | SheetState::JobUnknown { check, view },
-            ) => {
-                let (check, view) = (check.clone(), view.clone());
-                effects = self.start_fresh(&mut sheet, check, &view);
-            }
+            ) => match &sheet.launch_refused {
+                // Opened only to reopen: say why, and keep the question open.
+                Some(refusal) => sheet.notice = Some(format!("can't start fresh: {refusal}")),
+                None => {
+                    let (check, view) = (check.clone(), view.clone());
+                    effects = self.start_fresh(&mut sheet, check, &view);
+                }
+            },
             (Key::Enter, SheetState::ReopenReady { plan }) => {
                 let plan = plan.clone();
                 effects = vec![
@@ -463,9 +501,9 @@ impl App {
         let existing = live::most_telling(&view.job_checks, &sheet.item)
             .filter(|_| sheet.fresh.is_none())
             .cloned();
-        let effects = match existing {
+        let effects = match (existing, sheet.launch_refused.clone()) {
             // A Live Job: ask, never launch a second one silently.
-            Some(check) if check.is_live() => {
+            (Some(check), _) if check.is_live() => {
                 let log = asking_log(id, &sheet.item, "a Live Job", &check);
                 sheet.state = SheetState::LiveJob {
                     check: Box::new(check),
@@ -473,8 +511,15 @@ impl App {
                 };
                 vec![log]
             }
+            // Opened only to reopen, and the Job is no longer live: the fresh
+            // launch's refusal stands.
+            (_, Some(refusal)) => {
+                let log = refused_log(id, &sheet.item, &refusal);
+                sheet.state = SheetState::Refused(refusal);
+                vec![log]
+            }
             // Unknown: explain; never treated as gone, never relaunched silently.
-            Some(check) if matches!(check.state, WorktreeState::Unknown(_)) => {
+            (Some(check), None) if matches!(check.state, WorktreeState::Unknown(_)) => {
                 let log = asking_log(
                     id,
                     &sheet.item,
@@ -492,6 +537,7 @@ impl App {
                 Ok(plan) => {
                     sheet.prompt =
                         PromptEditor::new(sheet.edited_prompt.as_deref().unwrap_or(&plan.prompt));
+                    sheet.default_prompt = Some(plan.prompt.clone());
                     sheet.state = SheetState::Ready {
                         plan: Box::new(plan),
                         view,
@@ -567,6 +613,17 @@ impl App {
             }
         }
     }
+}
+
+/// The inspection for reopening `item`'s Live Job alone, when den last saw
+/// one (`checks`); `None` when it has none to reopen.
+fn live_job_request(
+    checks: &[JobCheck],
+    item: &WorkItemId,
+    observation: &Observation,
+) -> Option<InspectRequest> {
+    let check = live::most_telling(checks, item).filter(|c| c.is_live())?;
+    InspectRequest::for_job(&check.job, observation)
 }
 
 /// `o` on a Live Job: plans the reopen, or refuses (never in the Main Clone).

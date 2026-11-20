@@ -22,7 +22,7 @@
 //! first change. A worktree name another Work Item's Job already has gets a
 //! numeric suffix ([`names::free_worktree_name`], [`LaunchPlan::renamed`]).
 //!
-//! Where #13 and #14 plug in:
+//! Extension points for later tickets:
 //! - #13 (done): [`TargetChoice::Upstream`] targets a fork's Upstream (the
 //!   fork's setting, or `u` on the sheet for one Job); [`Target::upstream_of`]
 //!   says so and [`Target::default_branch`] is the branch new `<type>_<slug>`
@@ -348,15 +348,16 @@ impl LaunchPlan {
     }
 
     /// The ref the base is fetched into: `refs/remotes/<remote>/<branch>` for
-    /// a head branch, `refs/remotes/<remote>/pr/<n>` for a PR ref (GitHub's
-    /// documented layout for fetched PR heads).
+    /// a branch, `refs/den/pull/<remote>/<n>` for a PR ref. A PR head is kept
+    /// out of `refs/remotes/`: the forced fetch would otherwise overwrite the
+    /// remote-tracking ref of a real branch named `pr/<n>`.
     pub fn tracking_ref(&self) -> String {
         match &self.base.reference {
             BaseRef::HeadBranch(branch) | BaseRef::DefaultBranch(branch) => {
                 format!("refs/remotes/{}/{branch}", self.remote.name)
             }
             BaseRef::PullHead { number } => {
-                format!("refs/remotes/{}/pr/{number}", self.remote.name)
+                format!("refs/den/pull/{}/{number}", self.remote.name)
             }
         }
     }
