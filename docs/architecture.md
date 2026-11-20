@@ -157,13 +157,13 @@ PR list coverage (`PullRequests`) and follow-up coverage (`PullRequestDetails`)
 are separate. Missing checks or reviews still mark the item incomplete, but a
 fully read open-PR list can remove closed PRs from the cache. Successful Branch
 and Run reads record complete per-Repo entries even when the Owner list is
-partial. Cache format 11 (milestone 2's merged shape: the Linear part with
+partial. Cache format 12 (milestone 2's merged shape: the Linear part with
 Linear viewers, Linear Issues with their listing source and attachments, team
 states and its own survey time; reviews with their commit and author kind, PR
 details with the head they were read at; Linear errors alongside data with a
-count of those not kept; #37's Landing Group member states) rejects older
+count of those not kept; #37's Landing Group member states and unanswered-read attempts) rejects older
 snapshots, milestone 1's format 4, the per-ticket format 7s, the merged 8,
-feat/37's 9 and integrate/m2-wave3's 10 included, and rebuilds them with a
+feat/37's 9, integrate/m2-wave3's 10 and format 11 included, and rebuilds them with a
 fresh survey. Job records are format 3 (a `JobSubject`, stored under a pinned name such
 as `"github"`, and #39's optional `permission_mode`) and still read format 2
 (format-2 files from before the pin, which stored `"GitHub"`, included) and

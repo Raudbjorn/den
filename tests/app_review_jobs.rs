@@ -362,6 +362,7 @@ fn reopening_a_review_job_recorded_without_a_mode_in_a_linear_workflow_asks_firs
         "{:#?}",
         reopen.fields
     );
+    // Resumed coordination Jobs must also suppress project hooks.
     let command = reopen.command.as_deref().unwrap();
     assert!(
         command.contains(
