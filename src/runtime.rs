@@ -48,6 +48,41 @@ pub fn settle(app: &mut App, event: Event, ports: &Ports) -> (ViewModel, Vec<Eff
     (view, emitted)
 }
 
+/// What [`dispatch`] leaves for the UI thread.
+#[derive(Debug, Default)]
+pub struct Dispatched {
+    /// `Effect::Quit` was among the Effects.
+    pub quit: bool,
+    /// The Events of Effects performed at once, for the App next.
+    pub events: Vec<Event>,
+}
+
+/// Effects performed on the UI thread instead of queued: small local writes the
+/// user expects done once the screen says so. On the worker they would wait
+/// behind a survey, and quitting does not wait for the worker.
+fn performs_at_once(effect: &Effect) -> bool {
+    matches!(effect, Effect::StoreUpstreams { .. })
+}
+
+/// Sends the App's Effects where they run: Quit and Log on the UI thread, local
+/// setting writes at once ([`performs_at_once`]), everything else to `worker`.
+pub fn dispatch(effects: Vec<Effect>, worker: &Worker, ports: &Ports) -> Dispatched {
+    let mut out = Dispatched::default();
+    for effect in effects {
+        match effect {
+            Effect::Quit => out.quit = true,
+            Effect::Log(record) => log(&record),
+            other if performs_at_once(&other) => out.events.extend(perform(&other, ports)),
+            other => {
+                if let Err(error) = worker.submit(other) {
+                    tracing::error!(%error, "could not queue an effect");
+                }
+            }
+        }
+    }
+    out
+}
+
 /// A background thread that performs Effects and sends back their Events.
 pub struct Worker {
     effects: SyncSender<Effect>,

@@ -29,7 +29,8 @@
 //!   branches start from (the Upstream's when it is the target). A PR's head in
 //!   another Repo is [`BaseRef::PullHead`], fetched as `refs/pull/<n>/head` from
 //!   the target's remote. A PR is only ever fetched from the Repo it is in: an
-//!   Upstream target for a fork's PR is [`RefusalReason::PullRequestNotInTarget`].
+//!   Upstream target for a fork's PR is [`RefusalReason::PullRequestNotInTarget`],
+//!   and for a fork's Branch [`RefusalReason::BranchNotInTarget`].
 //! - #14 (Live Jobs): the Job records are in the WorkspaceView; a worktree that
 //!   exists and belongs to this Work Item's Job is reported with that Job.
 

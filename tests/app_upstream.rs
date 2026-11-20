@@ -658,3 +658,64 @@ fn an_edited_prompt_survives_a_moved_head_and_then_a_target_round_trip() {
     press(&mut harness, Key::Char('u'));
     assert_eq!(prompt_text(&harness), edited_prompt);
 }
+
+/// A Branch Work Item is work in the fork; the same name in the Upstream is
+/// other work (or nothing). So, like a PR, it is fetched only from the Repo it
+/// is in, and an Upstream target refuses instead of substituting.
+#[test]
+fn a_fork_s_branch_is_never_fetched_from_its_upstream() {
+    let store = Arc::new(FakeUpstreams::holding(targets(&[FORK])));
+    // Surveyed with the fork targeting its Upstream: my-fix was compared there.
+    let observation = ObservationBuilder::new()
+        .owner("octo")
+        .fork(FORK, Some(UPSTREAM))
+        .branch(
+            branch(FORK, "my-fix")
+                .compared_against(UPSTREAM, "main")
+                .author(ME),
+        )
+        .build();
+    let mut harness = started_with(&store, observation);
+    fork_clone(&harness);
+    harness
+        .workspace
+        .set_remote_head(CLONE, "origin", "my-fix", HEAD_7);
+    harness
+        .workspace
+        .set_remote_head(CLONE, "upstream", "my-fix", &"9".repeat(40));
+    let index = harness
+        .view
+        .list
+        .rows
+        .iter()
+        .position(|r| r.id.to_string().ends_with(":my-fix"))
+        .expect("the my-fix row");
+    while harness.view.list.selected != Some(index) {
+        press(&mut harness, Key::Down);
+    }
+
+    press(&mut harness, Key::Char('c'));
+    let upstream_sheet = sheet(&harness).clone();
+    assert_eq!(upstream_sheet.status, LaunchStatus::Refused);
+    assert!(
+        messages(&upstream_sheet).contains(
+            "the branch my-fix is in octo/app, not in upstream-org/app: den fetches a branch only from the Repo it is in"
+        ),
+        "{}",
+        messages(&upstream_sheet)
+    );
+
+    // `u`: this Job targets the fork, whose remote has the branch.
+    press(&mut harness, Key::Char('u'));
+    assert_eq!(
+        sheet(&harness).status,
+        LaunchStatus::Ready,
+        "{}",
+        messages(sheet(&harness))
+    );
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].remote.name, "origin");
+    assert_eq!(plans[0].base.commit, HEAD_7);
+}

@@ -115,6 +115,16 @@ pub(super) fn facts(
         return Err(Refusal { reasons });
     };
     let start = match item {
+        // A Branch is work in the Repo it is in, fetched only from there: the
+        // same name in another target (a fork's Upstream) is other work.
+        WorkItemId::Branch { repo, name } if &target.target.repo != repo => {
+            reasons.push(RefusalReason::BranchNotInTarget {
+                repo: repo.clone(),
+                branch: name.clone(),
+                target: target.target.repo.clone(),
+            });
+            None
+        }
         WorkItemId::Branch { name, .. } => {
             Some((BaseRef::HeadBranch(name.clone()), name.clone(), false))
         }

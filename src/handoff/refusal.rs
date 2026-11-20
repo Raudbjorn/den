@@ -59,6 +59,13 @@ pub enum RefusalReason {
         number: u64,
         target: RepoId,
     },
+    /// A Branch is fetched from the Repo it is in; the same name in another
+    /// target (a fork's Upstream) is other work, or none.
+    BranchNotInTarget {
+        repo: RepoId,
+        branch: String,
+        target: RepoId,
+    },
     PromptsUnusable {
         error: String,
     },
@@ -230,6 +237,14 @@ impl fmt::Display for RefusalReason {
             } => write!(
                 f,
                 "PR #{number} is in {repo}, not in {target}: den fetches a PR only from the Repo it is in, and #{number} in {target} would be another PR; press u to target {repo} for this Job"
+            ),
+            Self::BranchNotInTarget {
+                repo,
+                branch,
+                target,
+            } => write!(
+                f,
+                "the branch {branch} is in {repo}, not in {target}: den fetches a branch only from the Repo it is in, and {branch} in {target} would be other work; press u to target {repo} for this Job"
             ),
             Self::PromptsUnusable { error } => write!(f, "the prompts file is unusable: {error}"),
             Self::JobRecordsUnreadable { error } => write!(

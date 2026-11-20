@@ -24,7 +24,7 @@
 use crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use den::{
     app::view_model::{LaunchStatus, Overlay},
-    app::{App, Effect, Event, Key, ViewModel},
+    app::{App, Event, Key, ViewModel},
     cache::FileCache,
     config,
     domain::{RepoId, WorkItemId},
@@ -269,40 +269,17 @@ fn translate_key(key: &KeyEvent) -> Option<Key> {
     }
 }
 
-/// What the loop should do after a batch of Effects.
-enum Flow {
-    Continue,
-    Quit,
-}
-
-/// Hands Effects to the worker (or the log); reports whether one asked to quit.
-fn dispatch(effects: Vec<Effect>, worker: &Worker) -> Flow {
-    let mut flow = Flow::Continue;
-    for effect in effects {
-        match effect {
-            Effect::Quit => flow = Flow::Quit,
-            Effect::Log(record) => runtime::log(&record),
-            other => {
-                if let Err(error) = worker.submit(other) {
-                    tracing::error!(%error, "could not queue an effect");
-                }
-            }
-        }
-    }
-    flow
-}
-
 fn run_interactive(
     theme: &Theme,
     mut app: App,
     ports: Ports,
     graphics: Option<Graphics>,
 ) -> Result<(), DenError> {
-    let worker = Worker::start(ports);
+    let worker = Worker::start(ports.clone());
     let mut session = TerminalSession::start()?;
     // Before any input is read: the terminal answers the query on stdin.
     let mut bear = BearArt::detect(theme.profile(), graphics);
-    let outcome = event_loop(&mut session, theme, &mut app, &worker, &mut bear);
+    let outcome = event_loop(&mut session, theme, &mut app, (&worker, &ports), &mut bear);
     let restored = session.finish();
     match (outcome, restored) {
         (Ok(()), Ok(())) => Ok(()),
@@ -319,7 +296,7 @@ fn event_loop(
     session: &mut TerminalSession,
     theme: &Theme,
     app: &mut App,
-    worker: &Worker,
+    (worker, ports): (&Worker, &Ports),
     bear: &mut BearArt,
 ) -> Result<(), DenError> {
     let size = session.terminal().size()?;
@@ -330,9 +307,12 @@ fn event_loop(
     let (mut view, effects) = app.handle(Event::Started {
         now: Timestamp::now(),
     });
-    if let Flow::Quit = dispatch(effects, worker) {
+    let dispatched = runtime::dispatch(effects, worker, ports);
+    if dispatched.quit {
         return Ok(());
     }
+    // Events of Effects performed at once, handled on the next turn.
+    let mut performed = dispatched.events;
     let mut dirty = true;
     let mut last_tick = Instant::now();
     loop {
@@ -344,7 +324,8 @@ fn event_loop(
         if let Some(signal) = session.termination_signal() {
             return Err(DenError::Signalled(signal));
         }
-        let mut incoming: Vec<Event> = worker.finished().collect();
+        let mut incoming: Vec<Event> = std::mem::take(&mut performed);
+        incoming.extend(worker.finished());
         if last_tick.elapsed() >= Duration::from_secs(TICK_SECS) {
             last_tick = Instant::now();
             incoming.push(Event::Tick {
@@ -362,9 +343,11 @@ fn event_loop(
             let (next_view, effects) = app.handle(event);
             view = next_view;
             dirty = true;
-            if let Flow::Quit = dispatch(effects, worker) {
+            let dispatched = runtime::dispatch(effects, worker, ports);
+            if dispatched.quit {
                 return Ok(());
             }
+            performed.extend(dispatched.events);
         }
     }
 }

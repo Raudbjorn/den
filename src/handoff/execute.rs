@@ -102,7 +102,7 @@ fn run(
             plan.target.repo,
             short_commit(&plan.base.commit)
         )),
-        Err(Verification::Refused(reason)) => return LaunchOutcome::Refused(Refusal::one(reason)),
+        Err(Verification::Refused(reason)) => return LaunchOutcome::Refused(Refusal::one(*reason)),
         Err(Verification::Moved(to)) => {
             return LaunchOutcome::HeadMoved {
                 from: plan.base.commit.clone(),
@@ -211,9 +211,16 @@ fn run(
 }
 
 enum Verification {
-    Refused(RefusalReason),
+    /// Boxed: a refusal reason is large, and this is the error of every check.
+    Refused(Box<RefusalReason>),
     Moved(String),
     Failed(String),
+}
+
+impl Verification {
+    fn refused(reason: RefusalReason) -> Self {
+        Self::Refused(Box::new(reason))
+    }
 }
 
 /// Just before anything changes: the Main Clone still has a remote whose URL is
@@ -234,7 +241,7 @@ fn verify(plan: &LaunchPlan, workspace: &dyn Workspace) -> Result<(), Verificati
         .iter()
         .any(|r| r.name == plan.remote.name && clone::same_repo(&r.url, &plan.target.url));
     if !still_points_at_target {
-        return Err(Verification::Refused(RefusalReason::NoRemoteForTarget {
+        return Err(Verification::refused(RefusalReason::NoRemoteForTarget {
             clone: clone_path.clone(),
             target: plan.target.repo.clone(),
             remotes,
@@ -243,13 +250,13 @@ fn verify(plan: &LaunchPlan, workspace: &dyn Workspace) -> Result<(), Verificati
     match workspace.path_state(&plan.worktree) {
         PathState::Missing => {}
         PathState::Exists { .. } => {
-            return Err(Verification::Refused(RefusalReason::WorktreeExists {
+            return Err(Verification::refused(RefusalReason::WorktreeExists {
                 path: plan.worktree.clone(),
                 job: None,
             }));
         }
         PathState::Unknown(error) => {
-            return Err(Verification::Refused(RefusalReason::WorktreeUnknown {
+            return Err(Verification::refused(RefusalReason::WorktreeUnknown {
                 path: plan.worktree.clone(),
                 error,
             }));
@@ -264,7 +271,7 @@ fn verify(plan: &LaunchPlan, workspace: &dyn Workspace) -> Result<(), Verificati
         _ => false,
     };
     if !as_planned {
-        return Err(Verification::Refused(RefusalReason::LocalBranchChanged {
+        return Err(Verification::refused(RefusalReason::LocalBranchChanged {
             branch: plan.branch.name.clone(),
         }));
     }
@@ -295,12 +302,12 @@ fn verify_new_clone(
     match workspace.path_state(folder) {
         PathState::Missing => {}
         PathState::Exists { .. } => {
-            return Err(Verification::Refused(RefusalReason::CloneFolderAppeared {
+            return Err(Verification::refused(RefusalReason::CloneFolderAppeared {
                 path: folder.clone(),
             }));
         }
         PathState::Unknown(error) => {
-            return Err(Verification::Refused(RefusalReason::CloneFolderUnknown {
+            return Err(Verification::refused(RefusalReason::CloneFolderUnknown {
                 path: folder.clone(),
                 error,
             }));
@@ -319,7 +326,7 @@ fn verify_new_clone(
 /// The base's tip (as `from` reports it) is the commit the sheet showed.
 fn still_at_base(plan: &LaunchPlan, tip: Option<String>, from: &str) -> Result<(), Verification> {
     match tip {
-        None => Err(Verification::Refused(base_gone(plan, from))),
+        None => Err(Verification::refused(base_gone(plan, from))),
         Some(commit) if commit == plan.base.commit => Ok(()),
         Some(commit) => Err(Verification::Moved(commit)),
     }
