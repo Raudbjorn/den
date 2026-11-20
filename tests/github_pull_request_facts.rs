@@ -1,5 +1,6 @@
 //! The real GitHub source's PR facts over a scripted GraphQL transport:
-//! mergeability, review decision and merge queue from the PR list; checks
+//! mergeability, review decision and merge queue from the PR list (a null
+//! decision on a page with errors is unknown); checks
 //! (required / advisory, passing / failing / pending), review threads, review
 //! requests (users and teams) and latest reviews from the batched details
 //! query; and what coverage says when that follow-up query is lost or not
@@ -111,6 +112,15 @@ fn rich_details() -> Value {
 /// Owner "octo" with one Repo "app" holding `prs`; the details query is
 /// answered by `details`.
 fn octo(prs: Vec<Value>, details: Box<DetailsAnswer>) -> ScriptedGraphQl {
+    octo_with_list_errors(prs, Vec::new(), details)
+}
+
+/// As [`octo`], with `list_errors` alongside the PR list's data.
+fn octo_with_list_errors(
+    prs: Vec<Value>,
+    list_errors: Vec<GraphQlError>,
+    details: Box<DetailsAnswer>,
+) -> ScriptedGraphQl {
     let prs = Arc::new(prs);
     ScriptedGraphQl::new(move |request| match operation(request).as_str() {
         "Viewer" => Ok(data(json!({
@@ -125,10 +135,13 @@ fn octo(prs: Vec<Value>, details: Box<DetailsAnswer>) -> ScriptedGraphQl {
             "nodes": [{ "name": "app", "url": "https://github.com/octo/app", "isFork": false,
                         "isArchived": false, "defaultBranchRef": { "name": "main" }, "parent": null }]
         }}}))),
-        "OwnerPullRequests" => Ok(data(json!({ "repositoryOwner": { "repositories": {
-            "pageInfo": page_info(false),
-            "nodes": [{ "name": "app", "pullRequests": { "pageInfo": page_info(false), "nodes": *prs } }]
-        }}}))),
+        "OwnerPullRequests" => Ok(GraphQlResponse {
+            data: Some(json!({ "repositoryOwner": { "repositories": {
+                "pageInfo": page_info(false),
+                "nodes": [{ "name": "app", "pullRequests": { "pageInfo": page_info(false), "nodes": *prs } }]
+            }}})),
+            errors: list_errors.clone(),
+        }),
         "PullRequestDetails" => details(request),
         other => panic!("unexpected {other}"),
     })
@@ -184,11 +197,12 @@ fn list_facts_map_mergeability_review_decision_and_merge_queue() {
             pr_node(2, "CONFLICTING", json!("CHANGES_REQUESTED"), false),
             pr_node(3, "UNKNOWN", json!("REVIEW_REQUIRED"), true),
             pr_node(4, "SOMETHING_NEW", Value::Null, false),
+            pr_node(5, "MERGEABLE", json!("SOMETHING_NEW"), false),
         ],
         each(no_details()),
     );
     let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
-    let facts: Vec<(Mergeability, Option<ReviewDecision>, bool)> = (1..=4)
+    let facts: Vec<(Mergeability, ReviewDecision, bool)> = (1..=5)
         .map(|n| {
             let pr = the_pr(&observation, n);
             (pr.mergeability, pr.review_decision, pr.in_merge_queue)
@@ -197,25 +211,20 @@ fn list_facts_map_mergeability_review_decision_and_merge_queue() {
     assert_eq!(
         facts,
         [
-            (
-                Mergeability::Mergeable,
-                Some(ReviewDecision::Approved),
-                false
-            ),
+            (Mergeability::Mergeable, ReviewDecision::Approved, false),
             (
                 Mergeability::Conflicting,
-                Some(ReviewDecision::ChangesRequested),
+                ReviewDecision::ChangesRequested,
                 false
             ),
-            (
-                Mergeability::Unknown,
-                Some(ReviewDecision::ReviewRequired),
-                true
-            ),
-            (Mergeability::Unknown, None, false),
+            (Mergeability::Unknown, ReviewDecision::ReviewRequired, true),
+            // A null decision on a page without errors: no review required.
+            (Mergeability::Unknown, ReviewDecision::NotRequired, false),
+            // A decision den doesn't know is unknown, never "not required".
+            (Mergeability::Mergeable, ReviewDecision::Unknown, false),
         ]
     );
-    for n in 1..=4 {
+    for n in 1..=5 {
         let details = the_pr(&observation, n).details.as_ref().expect("details");
         assert!(details.checks.items.is_empty() && details.checks.complete);
     }
@@ -315,6 +324,31 @@ fn more_pages_or_unreadable_entries_mark_a_list_incomplete() {
 }
 
 #[test]
+fn a_null_review_decision_on_a_page_with_errors_is_unknown() {
+    let gql = octo_with_list_errors(
+        vec![
+            pr_node(1, "MERGEABLE", Value::Null, false),
+            pr_node(2, "MERGEABLE", json!("APPROVED"), false),
+        ],
+        vec![GraphQlError {
+            message: "Something went wrong while executing your query".to_owned(),
+            kind: None,
+        }],
+        each(no_details()),
+    );
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    // The error may have nulled PR #1's decision, so it is not "not required".
+    assert_eq!(
+        the_pr(&observation, 1).review_decision,
+        ReviewDecision::Unknown
+    );
+    assert_eq!(
+        the_pr(&observation, 2).review_decision,
+        ReviewDecision::Approved
+    );
+}
+
+#[test]
 fn a_null_check_rollup_alongside_errors_is_checks_not_read() {
     let gql = octo(
         vec![pr_node(1, "MERGEABLE", json!("APPROVED"), false)],
@@ -397,7 +431,7 @@ fn a_lost_details_query_keeps_the_prs_and_marks_their_repo_partial() {
     );
     assert_eq!(
         the_pr(&observation, 1).review_decision,
-        Some(ReviewDecision::Approved)
+        ReviewDecision::Approved
     );
     assert_eq!(owner_prs_state(&observation), Some(SourceState::Complete));
     match app_prs_state(&observation) {

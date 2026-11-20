@@ -469,6 +469,34 @@ fn pr_rule_deck() -> Vec<(&'static str, PrBuilder, Expect)> {
             )
             .unknown(&["some review requests could not be read"]),
         ),
+        (
+            "review decision unknown, green and mergeable: no Merge",
+            pr("o/r", 1)
+                .author(ME)
+                .decision(ReviewDecision::Unknown)
+                .passing("build"),
+            expect(
+                None,
+                Nobody,
+                "approval could not be established",
+                "no Next Step",
+            )
+            .unknown(&["approval could not be established"]),
+        ),
+        (
+            "review decision unknown, changes requested in a latest review: Address review",
+            pr("o/r", 1)
+                .author(ME)
+                .passing("build")
+                .reviewed("bob", ReviewVerdict::ChangesRequested)
+                .decision(ReviewDecision::Unknown),
+            expect(
+                Some(AddressReview),
+                Me,
+                "changes requested by bob",
+                "PR author",
+            ),
+        ),
         // ── Unknown facts ────────────────────────────────────────────────
         (
             "unknown mergeability with a failing check: Fix CI, conflicts not ruled out",

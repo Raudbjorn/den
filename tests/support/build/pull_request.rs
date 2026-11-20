@@ -32,7 +32,7 @@ pub fn pr(repo: &str, number: u64) -> PrBuilder {
             created_at: ts(DEFAULT_UPDATED),
             updated_at: ts(DEFAULT_UPDATED),
             mergeability: Mergeability::Mergeable,
-            review_decision: Some(ReviewDecision::ReviewRequired),
+            review_decision: ReviewDecision::ReviewRequired,
             in_merge_queue: false,
             details: Some(PrDetails::default()),
         },
@@ -82,14 +82,13 @@ impl PrBuilder {
     }
 
     pub fn decision(mut self, decision: ReviewDecision) -> Self {
-        self.pr.review_decision = Some(decision);
+        self.pr.review_decision = decision;
         self
     }
 
     /// GitHub reports no review decision: the base branch requires no review.
-    pub fn no_review_required(mut self) -> Self {
-        self.pr.review_decision = None;
-        self
+    pub fn no_review_required(self) -> Self {
+        self.decision(ReviewDecision::NotRequired)
     }
 
     /// GitHub's review decision is APPROVED.
@@ -183,7 +182,7 @@ impl PrBuilder {
     /// A latest review by `login`, on a Repo that requires no review (so
     /// GitHub reports no decision and den reads the reviews itself).
     pub fn reviewed(mut self, login: &str, verdict: ReviewVerdict) -> Self {
-        self.pr.review_decision = None;
+        self.pr.review_decision = ReviewDecision::NotRequired;
         self.details().latest_reviews.items.push(Review {
             author: Some(login.to_owned()),
             verdict,

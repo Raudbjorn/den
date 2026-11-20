@@ -30,9 +30,8 @@ pub struct PullRequest {
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub mergeability: Mergeability,
-    /// GitHub's own review decision. `None` when the base branch requires no
-    /// review (GitHub then reports none even if someone reviewed).
-    pub review_decision: Option<ReviewDecision>,
+    /// GitHub's own review decision.
+    pub review_decision: ReviewDecision,
     pub in_merge_queue: bool,
     /// Checks and reviews; `None` when den could not read them.
     pub details: Option<PrDetails>,
@@ -61,6 +60,12 @@ pub enum ReviewDecision {
     Approved,
     ChangesRequested,
     ReviewRequired,
+    /// GitHub reported no decision: the base branch requires no review (GitHub
+    /// then reports none even if someone reviewed).
+    NotRequired,
+    /// den could not tell: the decision came back null in a response that
+    /// carried errors (which can null a field), or in a form den does not know.
+    Unknown,
 }
 
 /// The facts read by the follow-up query. The default is "read completely,

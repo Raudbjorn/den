@@ -393,22 +393,31 @@ fn unrecognised_checks(details: Option<&PrDetails>) -> Vec<String> {
 
 fn approval(pr: &PullRequest) -> Approval {
     match pr.review_decision {
-        Some(ReviewDecision::Approved) => Approval::Approved,
-        Some(ReviewDecision::ChangesRequested) => Approval::NotApproved("changes requested"),
-        Some(ReviewDecision::ReviewRequired) => {
+        ReviewDecision::Approved => Approval::Approved,
+        ReviewDecision::ChangesRequested => Approval::NotApproved("changes requested"),
+        ReviewDecision::ReviewRequired => {
             Approval::NotApproved("not approved: a review is required")
         }
-        None => {
+        // Without GitHub's decision, a latest review asking for changes still
+        // counts; nothing else can establish approval.
+        ReviewDecision::Unknown if latest_review_requests_changes(pr) => {
+            Approval::NotApproved("changes requested")
+        }
+        ReviewDecision::Unknown => Approval::Unknown,
+        ReviewDecision::NotRequired => {
             let Some(details) = &pr.details else {
                 return Approval::Unknown;
             };
             let reviews = &details.latest_reviews;
-            let verdicts = || reviews.items.iter().map(|r| r.verdict);
-            if verdicts().any(|v| v == ReviewVerdict::ChangesRequested) {
+            if latest_review_requests_changes(pr) {
                 Approval::NotApproved("changes requested")
             } else if !reviews.complete {
                 Approval::Unknown
-            } else if verdicts().any(|v| v == ReviewVerdict::Approved) {
+            } else if reviews
+                .items
+                .iter()
+                .any(|r| r.verdict == ReviewVerdict::Approved)
+            {
                 Approval::Approved
             } else {
                 Approval::NoReviewRequired
@@ -420,14 +429,18 @@ fn approval(pr: &PullRequest) -> Approval {
 /// GitHub's decision when it gives one; otherwise anyone's latest review.
 fn changes_requested(pr: &PullRequest) -> bool {
     match pr.review_decision {
-        Some(decision) => decision == ReviewDecision::ChangesRequested,
-        None => pr.details.as_ref().is_some_and(|d| {
-            d.latest_reviews
-                .items
-                .iter()
-                .any(|r| r.verdict == ReviewVerdict::ChangesRequested)
-        }),
+        ReviewDecision::NotRequired | ReviewDecision::Unknown => latest_review_requests_changes(pr),
+        decision => decision == ReviewDecision::ChangesRequested,
     }
+}
+
+fn latest_review_requests_changes(pr: &PullRequest) -> bool {
+    pr.details.as_ref().is_some_and(|d| {
+        d.latest_reviews
+            .items
+            .iter()
+            .any(|r| r.verdict == ReviewVerdict::ChangesRequested)
+    })
 }
 
 fn changes_requested_by(details: Option<&PrDetails>) -> String {
