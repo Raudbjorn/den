@@ -9,18 +9,25 @@
 
 use super::{CacheError, CachedObservation};
 use crate::{files, ports::ObservationCache};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
+    io::Read,
     path::{Path, PathBuf},
 };
 
 /// The cache directory, under den's state directory (`$XDG_STATE_HOME/den/`).
 pub const CACHE_SUBDIR: &str = "cache";
-/// The cache file format. Bump it when a change to the cached types would make
-/// older files decode wrongly (not merely fail to decode: that is caught anyway).
-/// Format 2: a fork's Upstream is a Repo (URL, default branch), not just its id.
-pub const CACHE_FORMAT: u32 = 2;
+/// The cache file format. Bump it when the stored shape of the cached types
+/// changes, so an older file is refused by its version rather than half-decoded
+/// (one that would merely fail to decode is caught anyway, as unreadable).
+///
+/// 2: an Issue says whether its labels and assignees were read completely; a
+/// PR carries GitHub's merge state, and its review decision is always present
+/// (`NotRequired` and `Unknown` instead of null).
+/// 3: a fork's Upstream is a Repo (URL, default branch), not just its id.
+pub const CACHE_FORMAT: u32 = 3;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// Names the viewer whose cache startup shows.
@@ -46,6 +53,22 @@ struct FormatOnly {
 struct EnvelopeIn {
     viewer: String,
     cached: CachedObservation,
+}
+
+/// Just enough of a stored cache to tell how old it is.
+#[derive(Deserialize)]
+struct StoredAge {
+    cached: StoredCached,
+}
+
+#[derive(Deserialize)]
+struct StoredCached {
+    observation: StoredObservation,
+}
+
+#[derive(Deserialize)]
+struct StoredObservation {
+    observed_at: Timestamp,
 }
 
 /// The real cache, in a directory of its own.
@@ -95,24 +118,47 @@ impl FileCache {
             .join(format!("{}.{CACHE_EXTENSION}", login.to_ascii_lowercase())))
     }
 
+    /// Reads a cache file of at most `max_bytes`. Only a regular file is read
+    /// (never a device or a pipe someone linked in its place), and the read itself
+    /// is bounded, so a file that grows or lies about its size can't exhaust memory.
     fn read_bounded(&self, path: &Path) -> Result<Option<Vec<u8>>, CacheError> {
         let metadata = match fs::metadata(path) {
             Ok(m) => m,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(read_error(path, &e)),
         };
-        if metadata.len() > self.max_bytes {
+        // Checked before opening: opening a pipe would block.
+        if !metadata.is_file() {
+            return Err(not_a_file(path));
+        }
+        let file = match fs::File::open(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(read_error(path, &e)),
+        };
+        // Checked again on the open handle, in case the path was swapped meanwhile.
+        let opened = file.metadata().map_err(|e| read_error(path, &e))?;
+        if !opened.is_file() {
+            return Err(not_a_file(path));
+        }
+        self.check_size(path, opened.len())?;
+        let mut bytes = Vec::new();
+        file.take(self.max_bytes.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|e| read_error(path, &e))?;
+        self.check_size(path, u64::try_from(bytes.len()).unwrap_or(u64::MAX))?;
+        Ok(Some(bytes))
+    }
+
+    fn check_size(&self, path: &Path, bytes: u64) -> Result<(), CacheError> {
+        if bytes > self.max_bytes {
             return Err(CacheError::TooLarge {
                 path: path.to_owned(),
-                bytes: metadata.len(),
+                bytes,
                 limit: self.max_bytes,
             });
         }
-        match fs::read(path) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(read_error(path, &e)),
-        }
+        Ok(())
     }
 
     fn decode(path: &Path, bytes: &[u8]) -> Result<EnvelopeIn, CacheError> {
@@ -133,8 +179,19 @@ impl FileCache {
         serde_json::from_slice::<EnvelopeIn>(bytes).map_err(unreadable)
     }
 
+    /// Creates the cache directory, owner-only. A directory that already exists
+    /// is made owner-only too: its mode is only set by `create` when it is new.
     fn ensure_dir(&self) -> Result<(), CacheError> {
         files::ensure_private_dir(&self.dir).map_err(|e| write_error(&self.dir, &e))
+    }
+
+    /// When the Observation already stored at `path` was made; `None` when there
+    /// is none, or it can't be read (an unreadable file is overwritten anyway).
+    fn stored_observed_at(&self, path: &Path) -> Option<Timestamp> {
+        let bytes = self.read_bounded(path).ok()??;
+        serde_json::from_slice::<StoredAge>(&bytes)
+            .ok()
+            .map(|stored| stored.cached.observation.observed_at)
     }
 }
 
@@ -175,6 +232,20 @@ impl ObservationCache for FileCache {
             path: path.clone(),
             detail: format!("could not encode the Observation: {e}"),
         })?;
+        // A file den would refuse to read back is not worth writing.
+        self.check_size(&path, u64::try_from(body.len()).unwrap_or(u64::MAX))?;
+        // Another den sharing this state directory may have stored a newer survey
+        // while this one ran: never replace it with an older one.
+        let offered = cached.observation.observed_at;
+        if let Some(stored) = self.stored_observed_at(&path)
+            && stored > offered
+        {
+            return Err(CacheError::Superseded {
+                path,
+                stored,
+                offered,
+            });
+        }
         self.ensure_dir()?;
         write_atomically(&path, &body)?;
         write_atomically(&self.dir.join(LAST_VIEWER_FILE), login.as_bytes())
@@ -183,6 +254,13 @@ impl ObservationCache for FileCache {
 
 fn write_atomically(path: &Path, body: &[u8]) -> Result<(), CacheError> {
     files::write_atomically(path, body).map_err(|e| write_error(path, &e))
+}
+
+fn not_a_file(path: &Path) -> CacheError {
+    CacheError::Read {
+        path: path.to_owned(),
+        detail: "not a regular file".to_owned(),
+    }
 }
 
 fn read_error(path: &Path, error: &io::Error) -> CacheError {

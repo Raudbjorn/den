@@ -615,3 +615,47 @@ fn a_cross_repo_head_is_fetched_by_its_pr_ref_and_the_branch_tracks_nothing() {
         String::from_utf8_lossy(&tracking.stdout)
     );
 }
+
+#[test]
+fn dens_appending_job_records_at_once_keep_every_record() {
+    const WRITERS: u64 = 4;
+    const RECORDS_EACH: u64 = 10;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("state").join("jobs.json");
+    let job = |n: u64| JobRecord {
+        work_item: WorkItemId::PullRequest {
+            repo: RepoId::new("octo", "app"),
+            number: n,
+        },
+        next_step: NextStep::Review,
+        target: RepoId::new("octo", "app"),
+        main_clone: "/c".into(),
+        worktree: format!("/c/.claude/worktrees/{n}").into(),
+        branch: format!("b{n}"),
+        session: format!("s{n}"),
+        launched_at: "2026-11-20T10:00:00Z".parse().unwrap(),
+    };
+    // Each writer has its own store and its own lock file handle, as two den
+    // processes would.
+    std::thread::scope(|scope| {
+        for writer in 0..WRITERS {
+            let store = FileJobStore::new(path.clone());
+            scope.spawn(move || {
+                for i in 0..RECORDS_EACH {
+                    store.record(&job(writer * RECORDS_EACH + i)).unwrap();
+                }
+            });
+        }
+    });
+    let mut numbers: Vec<u64> = FileJobStore::new(path)
+        .load()
+        .unwrap()
+        .iter()
+        .map(|r| match &r.work_item {
+            WorkItemId::PullRequest { number, .. } => *number,
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect();
+    numbers.sort_unstable();
+    assert_eq!(numbers, (0..WRITERS * RECORDS_EACH).collect::<Vec<_>>());
+}

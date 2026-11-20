@@ -5,7 +5,7 @@ use crate::{
     app::{
         Focus, OverlayState,
         launch::{Sheet, SheetState},
-        view_model::{Footer, KeyHint},
+        view_model::{ENTER_KEY, Footer, KeyHint},
     },
     handoff::TargetChoice,
     ordering::{Scope, same_repo},
@@ -20,7 +20,7 @@ pub fn build(state: &State<'_>) -> Footer {
     let mut hints = Vec::new();
     if state.scope.focus == Focus::Sidebar {
         hints.push(hint("↑↓", "move"));
-        hints.push(hint("↵", "scope to"));
+        hints.push(hint(&ENTER_KEY.to_string(), "scope to"));
         if let Some(label) = sidebar_upstream_hint(state) {
             hints.push(hint("u", label));
         }
@@ -34,7 +34,7 @@ pub fn build(state: &State<'_>) -> Footer {
             && !state.layout.has_detail_pane()
             && state.selected.is_some() =>
         {
-            hints.push(hint("⏎", "detail"));
+            hints.push(hint(&ENTER_KEY.to_string(), "detail"));
         }
         _ => {}
     }

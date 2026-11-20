@@ -76,12 +76,58 @@ pub enum Incompleteness {
     /// The list was read, but a follow-up query for some of its items' facts
     /// was lost (for example a PR's checks and reviews).
     FollowUpLost { what: String, reason: String },
+    /// A follow-up query was read, but some of its lists were not read in
+    /// full: GitHub had more than den reads in one query, or some entries
+    /// came back unreadable (for example a PR's checks or review threads).
+    FollowUpTruncated { what: String },
     /// The Owner's Repo list was not read completely, so Work Items in the
     /// Repos den missed may be missing too (whatever this kind's own fetch said).
     RepoListIncomplete { owner: String },
 }
 
 impl Incompleteness {
+    /// Ranks reasons so that combining two keeps the more telling one: a rate
+    /// limit (which also stops pagination, and says when it resets) over whole
+    /// items missing (a stopped pagination, or a Repo list read only in part)
+    /// over facts missing from items den has (errors alongside data, a lost or
+    /// truncated follow-up query).
+    fn rank(&self) -> u8 {
+        match self {
+            Self::ErrorsAlongsideData { .. }
+            | Self::FollowUpLost { .. }
+            | Self::FollowUpTruncated { .. } => 0,
+            Self::PaginationStopped { .. } | Self::RepoListIncomplete { .. } => 1,
+            Self::RateLimited { .. } => 2,
+        }
+    }
+
+    /// Combines two reasons for one source. Errors alongside data from several
+    /// responses are all kept; of two rate limits the later known reset is kept;
+    /// otherwise the higher-ranked reason wins (the first one wins a tie).
+    fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (
+                Self::ErrorsAlongsideData { mut errors },
+                Self::ErrorsAlongsideData { errors: more },
+            ) => {
+                errors.extend(more);
+                Self::ErrorsAlongsideData { errors }
+            }
+            (Self::RateLimited { resets_at: first }, Self::RateLimited { resets_at: second }) => {
+                Self::RateLimited {
+                    resets_at: first.max(second),
+                }
+            }
+            (first, second) => {
+                if second.rank() > first.rank() {
+                    second
+                } else {
+                    first
+                }
+            }
+        }
+    }
+
     pub fn describe(&self) -> String {
         match self {
             Self::ErrorsAlongsideData { errors } => match errors.as_slice() {
@@ -102,9 +148,10 @@ impl Incompleteness {
                 format!("stopped after {pages_read} page(s): {reason}")
             }
             Self::FollowUpLost { what, reason } => format!("{what} could not be read: {reason}"),
+            Self::FollowUpTruncated { what } => format!("not every entry was read: {what}"),
             Self::RepoListIncomplete { owner } => {
                 format!(
-                    "the Repo list of {owner} was only partly read, so some of its Repos may be missing"
+                    "the Repo list of {owner} was not read completely, so some of its Repos may be missing"
                 )
             }
         }
@@ -135,12 +182,19 @@ impl SourceState {
         }
     }
 
-    /// The worse of two states (the first one wins a tie).
+    /// The worse of two states (the first one wins a tie). Two partial states
+    /// combine their reasons (see [`Incompleteness`]), so a later rate limit is
+    /// not lost behind an earlier page's errors.
     pub fn worst(self, other: Self) -> Self {
-        if other.severity() > self.severity() {
-            other
-        } else {
-            self
+        match (self, other) {
+            (Self::Partial(first), Self::Partial(second)) => Self::Partial(first.combine(second)),
+            (first, second) => {
+                if second.severity() > first.severity() {
+                    second
+                } else {
+                    first
+                }
+            }
         }
     }
 

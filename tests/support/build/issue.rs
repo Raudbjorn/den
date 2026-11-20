@@ -17,7 +17,9 @@ pub fn issue(repo: &str, number: u64) -> IssueBuilder {
             number,
             title: format!("Issue {number}"),
             labels: Vec::new(),
+            labels_complete: true,
             assignees: Vec::new(),
+            assignees_complete: true,
             updated_at: ts(DEFAULT_UPDATED),
             linked_prs: Vec::new(),
             linked_prs_complete: true,
@@ -64,6 +66,18 @@ impl IssueBuilder {
             number,
             state,
         });
+        self
+    }
+
+    /// GitHub's labels for the Issue could not all be read.
+    pub fn labels_unread(mut self) -> Self {
+        self.issue.labels_complete = false;
+        self
+    }
+
+    /// GitHub's assignees for the Issue could not all be read.
+    pub fn assignees_unread(mut self) -> Self {
+        self.issue.assignees_complete = false;
         self
     }
 

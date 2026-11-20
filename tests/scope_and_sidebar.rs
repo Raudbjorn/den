@@ -134,7 +134,7 @@ fn a_repo_known_only_from_its_work_items_still_gets_a_sidebar_row() {
 }
 
 #[test]
-fn arrow_keys_step_the_scope_through_owners_filtering_the_list_and_naming_it_in_the_header() {
+fn arrow_keys_step_the_scope_through_owners_narrowing_the_list_and_naming_it_in_the_header() {
     let mut harness = started(two_owners());
     assert_eq!(references(&harness).len(), 4);
     assert!(harness.view.header.scope.starts_with("All Owners"));
@@ -366,4 +366,115 @@ fn the_sidebar_cursor_follows_its_row_across_a_refresh() {
     );
     assert!(harness.view.sidebar.focused);
     assert_eq!(cursor_label(&harness), "fork");
+}
+
+#[test]
+fn enter_scopes_to_the_row_shown_under_the_cursor_when_a_refresh_removed_its_repo() {
+    let mut harness = started(two_owners());
+    harness.key(Key::Right); // Owner octo: the Scope's row stays after the refresh.
+    harness.key(Key::Tab);
+    harness.key(Key::Down); // From octo down to app.
+    let cursor = harness.view.sidebar.cursor.expect("a cursor");
+    assert_eq!(harness.view.sidebar.rows[cursor].label, "app");
+
+    // `octo/app` is gone: neither listed nor carrying a Work Item.
+    refresh(
+        &mut harness,
+        ObservationBuilder::new()
+            .owner("octo")
+            .owner("beta")
+            .fork("octo/fork", Some("upstream/fork"))
+            .pull_request(pr("octo/fork", 3).draft().author(ME))
+            .build(),
+    );
+    let cursor = harness.view.sidebar.cursor.expect("a cursor");
+    assert_eq!(
+        harness.view.sidebar.rows[cursor].label, "octo",
+        "the cursor falls back to the Scope's row"
+    );
+
+    harness.key(Key::Enter);
+    assert_eq!(
+        harness.view.header.scope, "Owner · octo",
+        "Enter scopes to the row drawn under the cursor, not the removed Repo"
+    );
+    assert_eq!(references(&harness), ["octo/fork#3"]);
+}
+
+#[test]
+fn a_refresh_that_changes_a_repos_casing_keeps_the_scope_cursor_and_selection() {
+    let mut harness = started(two_owners());
+    harness.key(Key::Tab);
+    for _ in 0..3 {
+        harness.key(Key::Down); // All Owners → octo → app → fork.
+    }
+    harness.key(Key::Enter); // Scope: Repo octo/fork.
+    harness.key(Key::Tab);
+    assert_eq!(selected(&harness).as_deref(), Some("octo/fork#3"));
+
+    // GitHub now spells the Owner and the Repo with capitals.
+    refresh(
+        &mut harness,
+        ObservationBuilder::new()
+            .owner("octo")
+            .owner("beta")
+            .repo("Octo/app")
+            .fork("Octo/Fork", Some("upstream/fork"))
+            .pull_request(pr("Octo/Fork", 3).draft().author(ME))
+            .pull_request(pr("Octo/Fork", 7).draft().author(ME))
+            .build(),
+    );
+    let fork = row(&harness.view, &Scope::Repo(repo_id("Octo/Fork")));
+    assert!(fork.current, "the current-Scope mark stays on the Repo");
+    let cursor = harness.view.sidebar.cursor.expect("a cursor");
+    assert_eq!(harness.view.sidebar.rows[cursor].label, "Fork");
+    assert_eq!(
+        selected(&harness).as_deref(),
+        Some("Octo/Fork#3"),
+        "the same Pull Request stays selected"
+    );
+}
+
+#[test]
+fn a_failed_refresh_shows_its_details_in_an_empty_narrowed_scope() {
+    let mut harness = started(two_owners());
+    harness.key(Key::Left); // Owner beta: no Work Items.
+    assert_eq!(harness.view.header.scope, "Owner · beta");
+    harness.answer(Err(den::ports::SurveyFailure::NotLoggedIn {
+        detail: "token expired".to_owned(),
+    }));
+    harness.settle(Event::Started { now: now() });
+
+    let empty = harness.view.list.empty.clone().expect("an empty state");
+    assert_eq!(empty.title, "gh is not logged in");
+    assert!(
+        empty.detail.contains("gh auth login") && empty.detail.contains("token expired"),
+        "the recovery details are shown: {empty:?}"
+    );
+}
+
+#[test]
+fn an_empty_narrowed_scope_does_not_rule_out_other_scopes_when_coverage_is_incomplete() {
+    // Nothing anywhere, and beta's Pull Requests failed to load.
+    let mut harness = started(
+        ObservationBuilder::new()
+            .owner("octo")
+            .owner("beta")
+            .repo("octo/app")
+            .owner_coverage(
+                "beta",
+                SourceKind::PullRequests,
+                SourceState::Failed {
+                    error: "timeout".to_owned(),
+                },
+            )
+            .build(),
+    );
+    harness.key(Key::Right); // Owner octo.
+    let empty = harness.view.list.empty.clone().expect("an empty state");
+    assert!(
+        !empty.detail.contains("Nothing in any other Scope"),
+        "zero known Work Items elsewhere is not nothing elsewhere: {empty:?}"
+    );
+    assert!(empty.detail.contains("incomplete"), "{empty:?}");
 }

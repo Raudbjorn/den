@@ -6,8 +6,9 @@
 //! 4. changes requested, or unresolved review threads → Address review
 //! 5. review requested → Review
 //! 6. approved (or, where the base branch requires no review, nobody asked
-//!    for changes), no unresolved threads, every check passing, known
-//!    mergeable, not queued → Merge
+//!    for changes), no unresolved threads and every review request read, every
+//!    check passing, known mergeable, not queued, and GitHub itself reporting
+//!    the PR ready to merge → Merge
 //!
 //! A rule whose facts den could not establish neither holds nor is ruled out:
 //! later rules may still win, and the Explanation says which earlier rule
@@ -22,8 +23,8 @@ use super::{Attribution, Context, Decision, Explanation, WorkItem};
 use crate::domain::{
     NextStep, Viewer,
     facts::{
-        Check, CheckOutcome, Mergeability, PrDetails, PullRequest, ReviewDecision, ReviewVerdict,
-        Reviewer,
+        Check, CheckOutcome, MergeState, Mergeability, PrDetails, PullRequest, ReviewDecision,
+        ReviewVerdict, Reviewer,
     },
 };
 
@@ -110,6 +111,10 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
     unknowns.extend(unrecognised_checks(pr.details.as_ref()));
     if matches!(approval, Approval::Unknown) {
         unknowns.push("approval could not be established".to_owned());
+    }
+    // Unknown mergeability already says this, through the conflicts rule.
+    if pr.merge_state == MergeState::Unknown && pr.mergeability != Mergeability::Unknown {
+        unknowns.push("merge state not computed yet by GitHub".to_owned());
     }
     unknowns.dedup();
 
@@ -287,8 +292,9 @@ fn merge(pr: &PullRequest, approval: &Approval, blockers: &[String]) -> Finding 
 
 /// Everything that stops Merge. Empty means Merge holds: approved (or no
 /// review required), no unresolved review threads and all threads read, every
-/// check (required or advisory) passing and all read, known mergeable, not a
-/// draft, not in a merge queue.
+/// review request read, every check (required or advisory) passing and all
+/// read, known mergeable, not a draft, not in a merge queue, and GitHub's own
+/// merge state agreeing.
 fn merge_blockers(pr: &PullRequest, approval: &Approval) -> Vec<String> {
     let mut blockers = Vec::new();
     if pr.is_draft {
@@ -306,6 +312,10 @@ fn merge_blockers(pr: &PullRequest, approval: &Approval) -> Vec<String> {
                 blockers.push("unresolved review threads".to_owned());
             } else if !details.threads_complete {
                 blockers.push("not every review thread was read".to_owned());
+            }
+            // An unread request could be a pending review, which comes before Merge.
+            if !details.review_requests.complete {
+                blockers.push("not every review request was read".to_owned());
             }
             let checks = &details.checks.items;
             if checks.iter().any(|c| c.outcome == CheckOutcome::Failing) {
@@ -339,7 +349,38 @@ fn merge_blockers(pr: &PullRequest, approval: &Approval) -> Vec<String> {
     if pr.in_merge_queue {
         blockers.push("already in the merge queue".to_owned());
     }
+    // Only when den's own facts allow Merge: GitHub's merge state then catches
+    // rules den does not read. Otherwise den's reasons already say more.
+    if blockers.is_empty()
+        && let Some(blocker) = merge_state_blocker(pr)
+    {
+        blockers.push(blocker);
+    }
     blockers
+}
+
+/// Why GitHub's own merge state disagrees with Merge, if it does.
+fn merge_state_blocker(pr: &PullRequest) -> Option<String> {
+    let base = &pr.base_ref;
+    match pr.merge_state {
+        MergeState::Clean | MergeState::HasHooks => None,
+        MergeState::Blocked => Some(
+            "GitHub reports merging blocked by a rule den does not read \
+             (for example a required check that has not reported)"
+                .to_owned(),
+        ),
+        MergeState::Behind => Some(format!(
+            "behind {base}, which must be merged in before this PR can merge"
+        )),
+        MergeState::Unstable => Some("GitHub reports a check that is not passing".to_owned()),
+        MergeState::Dirty => Some(format!(
+            "GitHub reports it cannot merge cleanly into {base}"
+        )),
+        MergeState::Draft => Some("GitHub reports the PR as a draft".to_owned()),
+        MergeState::Unknown => {
+            Some("waiting for GitHub to compute whether it can merge".to_owned())
+        }
+    }
 }
 
 /// Context that is not itself a rule: checks still running, merge queue,
@@ -389,22 +430,31 @@ fn unrecognised_checks(details: Option<&PrDetails>) -> Vec<String> {
 
 fn approval(pr: &PullRequest) -> Approval {
     match pr.review_decision {
-        Some(ReviewDecision::Approved) => Approval::Approved,
-        Some(ReviewDecision::ChangesRequested) => Approval::NotApproved("changes requested"),
-        Some(ReviewDecision::ReviewRequired) => {
+        ReviewDecision::Approved => Approval::Approved,
+        ReviewDecision::ChangesRequested => Approval::NotApproved("changes requested"),
+        ReviewDecision::ReviewRequired => {
             Approval::NotApproved("not approved: a review is required")
         }
-        None => {
+        // Without GitHub's decision, a latest review asking for changes still
+        // counts; nothing else can establish approval.
+        ReviewDecision::Unknown if latest_review_requests_changes(pr) => {
+            Approval::NotApproved("changes requested")
+        }
+        ReviewDecision::Unknown => Approval::Unknown,
+        ReviewDecision::NotRequired => {
             let Some(details) = &pr.details else {
                 return Approval::Unknown;
             };
             let reviews = &details.latest_reviews;
-            let verdicts = || reviews.items.iter().map(|r| r.verdict);
-            if verdicts().any(|v| v == ReviewVerdict::ChangesRequested) {
+            if latest_review_requests_changes(pr) {
                 Approval::NotApproved("changes requested")
             } else if !reviews.complete {
                 Approval::Unknown
-            } else if verdicts().any(|v| v == ReviewVerdict::Approved) {
+            } else if reviews
+                .items
+                .iter()
+                .any(|r| r.verdict == ReviewVerdict::Approved)
+            {
                 Approval::Approved
             } else {
                 Approval::NoReviewRequired
@@ -416,14 +466,18 @@ fn approval(pr: &PullRequest) -> Approval {
 /// GitHub's decision when it gives one; otherwise anyone's latest review.
 fn changes_requested(pr: &PullRequest) -> bool {
     match pr.review_decision {
-        Some(decision) => decision == ReviewDecision::ChangesRequested,
-        None => pr.details.as_ref().is_some_and(|d| {
-            d.latest_reviews
-                .items
-                .iter()
-                .any(|r| r.verdict == ReviewVerdict::ChangesRequested)
-        }),
+        ReviewDecision::NotRequired | ReviewDecision::Unknown => latest_review_requests_changes(pr),
+        decision => decision == ReviewDecision::ChangesRequested,
     }
+}
+
+fn latest_review_requests_changes(pr: &PullRequest) -> bool {
+    pr.details.as_ref().is_some_and(|d| {
+        d.latest_reviews
+            .items
+            .iter()
+            .any(|r| r.verdict == ReviewVerdict::ChangesRequested)
+    })
 }
 
 fn changes_requested_by(details: Option<&PrDetails>) -> String {

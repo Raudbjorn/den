@@ -105,6 +105,8 @@ fn survey_owner(
     let issues = issues::fetch(session, owner, &repos.items)?;
     let comparison = |repo: &Repo| comparison_branch(repo, upstreams);
     let branches = branches::fetch_against(session, owner, &repos.items, &comparison)?;
+    // Each kind is never more complete than the Repo list: Coverage::record
+    // applies that when the Owner's coverage is recorded.
     let runs = runs::fetch(session, owner, &repos.items)?;
     let coverage = [
         repos.coverage,

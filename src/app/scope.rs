@@ -48,7 +48,7 @@ impl ScopeState {
             (Key::Char('q' | 'r') | Key::Interrupt, _) => Outcome::Unhandled,
             (Key::Tab, Focus::List) => {
                 self.focus = Focus::Sidebar;
-                if !entries.contains(&self.cursor) {
+                if !entries.iter().any(|e| e.same(&self.cursor)) {
                     self.cursor = self.scope.clone();
                 }
                 Outcome::Moved
@@ -60,16 +60,18 @@ impl ScopeState {
             (Key::Left, _) => self.set(step_segment(&self.scope, owners, Direction::Back)),
             (Key::Right, _) => self.set(step_segment(&self.scope, owners, Direction::Forward)),
             (Key::Up, Focus::Sidebar) => {
-                self.cursor = step_cursor(&self.cursor, entries, Direction::Back);
+                self.cursor = step_cursor(&self.shown_cursor(entries), entries, Direction::Back);
                 Outcome::Moved
             }
             (Key::Down, Focus::Sidebar) => {
-                self.cursor = step_cursor(&self.cursor, entries, Direction::Forward);
+                self.cursor = step_cursor(&self.shown_cursor(entries), entries, Direction::Forward);
                 Outcome::Moved
             }
+            // The row the user sees under the cursor, not a cursor a refresh
+            // left pointing at a Repo that no longer has a row.
             (Key::Enter, Focus::Sidebar) => {
                 self.focus = Focus::List;
-                self.set(self.cursor.clone())
+                self.set(self.shown_cursor(entries))
             }
             // `u` switches the fork under the cursor between targeting itself
             // and its Upstream (#13); the App handles it.
@@ -82,19 +84,30 @@ impl ScopeState {
 
     fn set(&mut self, scope: Scope) -> Outcome {
         self.cursor = scope.clone();
-        if scope == self.scope {
+        if scope.same(&self.scope) {
             return Outcome::Moved;
         }
         self.scope = scope;
         Outcome::Changed
     }
 
-    /// The cursor's row index in `entries`, falling back to the Scope's row.
+    /// The cursor's row index in `entries`, falling back to the Scope's row,
+    /// then to the first row (All Owners) when neither has a row any more.
     pub fn cursor_index(&self, entries: &[Scope]) -> Option<usize> {
         entries
             .iter()
-            .position(|e| e == &self.cursor)
-            .or_else(|| entries.iter().position(|e| e == &self.scope))
+            .position(|e| e.same(&self.cursor))
+            .or_else(|| entries.iter().position(|e| e.same(&self.scope)))
+            .or_else(|| (!entries.is_empty()).then_some(0))
+    }
+
+    /// The Scope of the row drawn under the cursor (see [`Self::cursor_index`]).
+    /// With no rows at all the cursor stays where it was.
+    fn shown_cursor(&self, entries: &[Scope]) -> Scope {
+        self.cursor_index(entries)
+            .and_then(|i| entries.get(i))
+            .unwrap_or(&self.cursor)
+            .clone()
     }
 }
 
@@ -138,7 +151,7 @@ fn step_cursor(cursor: &Scope, entries: &[Scope], direction: Direction) -> Scope
     let Some(last) = entries.len().checked_sub(1) else {
         return cursor.clone();
     };
-    let index = match (entries.iter().position(|e| e == cursor), direction) {
+    let index = match (entries.iter().position(|e| e.same(cursor)), direction) {
         (None, _) => 0,
         (Some(i), Direction::Forward) => (i + 1).min(last),
         (Some(i), Direction::Back) => i.saturating_sub(1),

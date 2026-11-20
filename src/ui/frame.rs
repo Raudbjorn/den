@@ -10,7 +10,9 @@
 use super::{
     Theme, UiError,
     bear::{BearArt, EMPTY_BEAR_MAX_ROWS, EMPTY_BEAR_MIN_ROWS, Placement, SPLASH_BEAR_MAX_ROWS},
-    detail, footer, glyphs, header, launch, list, sidebar, templates,
+    detail, footer,
+    glyphs::{self, Glyphs},
+    header, launch, list, sidebar, templates,
 };
 use crate::{
     app::{ViewModel, view_model::Overlay},
@@ -213,7 +215,8 @@ pub fn draw(
             OXIDE_TRUECOLOR.mark_bg,
         );
     }
-    let empty_bear = empty_bear_area(view, r.list, bear);
+    let glyphs = glyphs::for_profile(theme.profile().glyphs);
+    let empty_bear = empty_bear_area(view, r.list, bear, &glyphs);
     if uncovered(empty_bear) {
         bear.draw(frame, Placement::Empty, empty_bear, OXIDE_TRUECOLOR.bg);
     }
@@ -243,8 +246,8 @@ fn header_bear_area(header: Rect, bear: &BearArt) -> Rect {
 }
 
 /// The large bear above the empty state's text, when there is room for it.
-fn empty_bear_area(view: &ViewModel, list_area: Rect, bear: &BearArt) -> Rect {
-    let Some(text_top) = list::empty_text_top(&view.list, list_area) else {
+fn empty_bear_area(view: &ViewModel, list_area: Rect, bear: &BearArt, glyphs: &Glyphs) -> Rect {
+    let Some(text_top) = list::empty_text_top(&view.list, list_area, glyphs) else {
         return Rect::default();
     };
     let top = list_area.y + LIST_LABEL_ROWS + EMPTY_BEAR_MARGIN_ROWS;
@@ -274,10 +277,11 @@ fn draw_splash(
         Some(empty) => (empty.title.as_str(), empty.detail.as_str()),
         None => (view.header.status.as_str(), ""),
     };
+    let glyphs = glyphs::for_profile(theme.profile().glyphs);
     let mut ctx = TemplateContext::default();
     ctx.set("brand", BRAND)
-        .set("title", title)
-        .set("detail", detail);
+        .set("title", glyphs.text(title).as_ref())
+        .set("detail", glyphs.text(detail).as_ref());
     theme.draw(frame, templates::SPLASH, &ctx, plate)?;
     footer::draw(frame, theme, &view.footer, footer_area)?;
     let zone = Rect {
