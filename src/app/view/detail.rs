@@ -4,7 +4,10 @@ use super::{State, coverage, format, jobs};
 use crate::{
     app::view_model::{Detail, DetailContent, DetailFacts},
     decide::Decision,
-    domain::{WorkItemId, facts::LinearIssue},
+    domain::{
+        WorkItemId,
+        facts::{LinearIssue, Reviewer},
+    },
 };
 
 const LABEL: &str = "D E T A I L";
@@ -25,10 +28,11 @@ pub fn build(state: &State<'_>) -> Detail {
                 reference: reference(decision),
                 title: decision.item.title.clone(),
                 url: decision.item.url.clone(),
-                next_step: decision
-                    .next_step
-                    .map_or("none", |step| step.label())
-                    .to_owned(),
+                next_step: match (decision.next_step, &decision.held_back) {
+                    (Some(step), _) => step.label().to_owned(),
+                    (None, Some(held)) => format!("none ({})", held.label()),
+                    (None, None) => "none".to_owned(),
+                },
                 waiting_on: if decision.unattributed {
                     format!("{} (unattributed)", decision.waiting_on.label())
                 } else {
@@ -49,7 +53,9 @@ pub fn build(state: &State<'_>) -> Detail {
                     coverage::item_observed_at(state, &decision.coverage, decision.observed_at),
                 ),
                 job: jobs::detail(state.job_checks, &decision.item.id),
-                facts: linear_issue(state, &decision.item.id).map(linear_facts),
+                facts: linear_issue(state, &decision.item.id)
+                    .map(linear_facts)
+                    .or_else(|| workflow_facts(decision)),
             }
         });
     Detail {
@@ -113,4 +119,37 @@ fn linear_facts(issue: &LinearIssue) -> DetailFacts {
                 .map_or_else(|| "no cycle".to_owned(), |c| c.describe()),
         ],
     }
+}
+
+/// A PR of an Owner with a Linear Workflow (#36): the hold, if any, and the
+/// suggested reviewers (configured plus awaiting re-review, minus fresh
+/// approvers, pending requests and the author), with what den did not read
+/// to filter them, if anything.
+fn workflow_facts(decision: &Decision) -> Option<DetailFacts> {
+    let suggested = decision.suggested_reviewers.as_ref()?;
+    let mut lines = Vec::new();
+    if let Some(held) = &decision.held_back {
+        lines.push(held.label());
+    }
+    lines.push(if suggested.is_empty() {
+        "suggested reviewers: none".to_owned()
+    } else {
+        let names: Vec<String> = suggested
+            .iter()
+            .map(|reviewer| match reviewer {
+                Reviewer::User(login) => login.clone(),
+                Reviewer::Team(team) => format!("team {}/{}", team.org, team.slug),
+            })
+            .collect();
+        format!("suggested reviewers: {}", names.join(", "))
+    });
+    if let Some(unread) = &decision.suggested_reviewers_unread {
+        lines.push(format!(
+            "(may include someone already asked or approved: {unread})"
+        ));
+    }
+    Some(DetailFacts {
+        label: "LINEAR WORKFLOW".to_owned(),
+        lines,
+    })
 }

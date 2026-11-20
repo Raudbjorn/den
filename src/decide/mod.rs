@@ -20,7 +20,8 @@ pub use attribution::Attribution;
 
 use crate::domain::{
     CoverageEntry, LinearWorkflowPolicy, NextStep, Observation, Policies, UpstreamTargets, Viewers,
-    WaitingOn, WorkItemId, facts::LinearPriority,
+    WaitingOn, WorkItemId,
+    facts::{LinearPriority, Reviewer},
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -80,6 +81,40 @@ pub struct Decision {
     /// Step, which order by update time alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_order: Option<StartOrder>,
+    /// Set when the Work Item would Merge but is held back, so it has no Next
+    /// Step (#36). `None` otherwise, and always for Owners without a Linear
+    /// Workflow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_back: Option<HeldBack>,
+    /// For a PR of an Owner with a Linear Workflow: who to ask on Request
+    /// review (#36). The configured reviewers plus those awaiting re-review,
+    /// minus approvers at the current head, pending requests and the author. `None` for
+    /// every other Work Item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_reviewers: Option<Vec<Reviewer>>,
+    /// Set when [`Self::suggested_reviewers`] could not be filtered in full,
+    /// saying what den did not read ("not every review request was read"):
+    /// someone listed may already have approved or been asked. `None` when
+    /// the set is exact, and for every Work Item without suggested reviewers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_reviewers_unread: Option<String>,
+}
+
+/// Why a PR that would Merge has no Next Step (spec 0002: "would Merge" is
+/// then filtered). Each reads in monochrome by its own text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HeldBack {
+    /// The PR is in a Held Repo: it is held for a release, not merged (#36).
+    ForRelease,
+}
+
+impl HeldBack {
+    /// The marker shown instead of a Next Step, e.g. "held for release".
+    pub fn label(&self) -> String {
+        match self {
+            Self::ForRelease => "held for release".to_owned(),
+        }
+    }
 }
 
 /// Where a **Start** falls among Starts (spec 0002, "Ordering": priority, then
@@ -131,6 +166,9 @@ impl Decision {
             coverage,
             observed_at: ctx.observation.observed_at,
             start_order: None,
+            held_back: None,
+            suggested_reviewers: None,
+            suggested_reviewers_unread: None,
         }
     }
 }

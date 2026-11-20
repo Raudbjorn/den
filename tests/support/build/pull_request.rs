@@ -4,7 +4,7 @@ use super::{repo_id, ts};
 use den::domain::{
     TeamRef,
     facts::{
-        Check, CheckOutcome, MergeState, Mergeability, PrDetails, PullRequest, Review,
+        ActorKind, Check, CheckOutcome, MergeState, Mergeability, PrDetails, PullRequest, Review,
         ReviewDecision, ReviewVerdict, Reviewer,
     },
 };
@@ -14,9 +14,11 @@ const DEFAULT_UPDATED: &str = "2026-11-18T12:00:00Z";
 
 /// A ready, non-draft PR in `repo` ("owner/name"), authored by "someone":
 /// mergeable (and GitHub's merge state clean), review required by GitHub but
-/// none given, no checks, no review requests, not queued, details read. No rule holds for it (it is not approved).
+/// none given, no checks, no review requests, not queued, details read (at
+/// the same head). No rule holds for it (it is not approved).
 pub fn pr(repo: &str, number: u64) -> PrBuilder {
     let repo = repo_id(repo);
+    let head_commit = format!("{number:040x}");
     PrBuilder {
         pr: PullRequest {
             url: format!("https://github.com/{repo}/pull/{number}"),
@@ -28,14 +30,17 @@ pub fn pr(repo: &str, number: u64) -> PrBuilder {
             is_draft: false,
             base_ref: "main".to_owned(),
             head_ref: format!("feature-{number}"),
-            head_commit: format!("{number:040x}"),
+            details: Some(PrDetails {
+                head_commit: Some(head_commit.clone()),
+                ..PrDetails::default()
+            }),
+            head_commit,
             created_at: ts(DEFAULT_UPDATED),
             updated_at: ts(DEFAULT_UPDATED),
             mergeability: Mergeability::Mergeable,
             merge_state: MergeState::Clean,
             review_decision: ReviewDecision::ReviewRequired,
             in_merge_queue: false,
-            details: Some(PrDetails::default()),
         },
     }
 }
@@ -202,15 +207,99 @@ impl PrBuilder {
     /// GitHub reports no decision and den reads the reviews itself).
     pub fn reviewed(mut self, login: &str, verdict: ReviewVerdict) -> Self {
         self.pr.review_decision = ReviewDecision::NotRequired;
-        self.details().latest_reviews.items.push(Review {
+        let commit = self.pr.head_commit.clone();
+        self.latest_review(login, ActorKind::User, verdict, &commit)
+    }
+
+    /// The head commit (default: the PR number as 40 hex digits), as both
+    /// the PR list and the details query read it.
+    pub fn head(mut self, commit: &str) -> Self {
+        commit.clone_into(&mut self.pr.head_commit);
+        if let Some(details) = &mut self.pr.details {
+            details.head_commit = Some(commit.to_owned());
+        }
+        self
+    }
+
+    /// Someone pushed `commit` between the PR list and the details query:
+    /// the details (reviews included) were read at `commit`.
+    pub fn details_read_at(mut self, commit: &str) -> Self {
+        self.details().head_commit = Some(commit.to_owned());
+        self
+    }
+
+    /// A user's latest review, given on the current head. GitHub's review
+    /// decision is left as it is.
+    pub fn review_at_head(self, login: &str, verdict: ReviewVerdict) -> Self {
+        let commit = self.pr.head_commit.clone();
+        self.latest_review(login, ActorKind::User, verdict, &commit)
+    }
+
+    /// A user's latest review, given on `commit` (an older head, say).
+    pub fn review_on(self, login: &str, verdict: ReviewVerdict, commit: &str) -> Self {
+        self.latest_review(login, ActorKind::User, verdict, commit)
+    }
+
+    /// A bot's latest review, given on the current head.
+    pub fn bot_review_at_head(self, login: &str, verdict: ReviewVerdict) -> Self {
+        let commit = self.pr.head_commit.clone();
+        self.latest_review(login, ActorKind::Bot, verdict, &commit)
+    }
+
+    /// A latest review as GitHub lists it: it becomes `login`'s latest review
+    /// of any kind (`latestReviews`), and, unless it only comments, also the
+    /// verdict that stands (`latestOpinionatedReviews`).
+    pub fn latest_review(
+        mut self,
+        login: &str,
+        kind: ActorKind,
+        verdict: ReviewVerdict,
+        commit: &str,
+    ) -> Self {
+        let review = Review {
             author: Some(login.to_owned()),
+            author_kind: kind,
             verdict,
-        });
+            commit: Some(commit.to_owned()),
+        };
+        let details = self.details();
+        let by = |r: &Review| r.author.as_deref() == Some(login);
+        details
+            .latest_reviews_with_comments
+            .items
+            .retain(|r| !by(r));
+        details
+            .latest_reviews_with_comments
+            .items
+            .push(review.clone());
+        if verdict != ReviewVerdict::Commented {
+            details.latest_reviews.items.retain(|r| !by(r));
+            details.latest_reviews.items.push(review);
+        }
+        self
+    }
+
+    /// GitHub listed more reviews than den read.
+    pub fn reviews_truncated(mut self) -> Self {
+        let details = self.details();
+        details.latest_reviews.complete = false;
+        details.latest_reviews_with_comments.complete = false;
+        self
+    }
+
+    /// GitHub listed more latest reviews of any kind (`latestReviews`) than
+    /// den read; the standing verdicts were read in full.
+    pub fn latest_reviews_truncated(mut self) -> Self {
+        self.details().latest_reviews_with_comments.complete = false;
         self
     }
 
     fn details(&mut self) -> &mut PrDetails {
-        self.pr.details.get_or_insert_with(PrDetails::default)
+        let head = self.pr.head_commit.clone();
+        self.pr.details.get_or_insert_with(|| PrDetails {
+            head_commit: Some(head),
+            ..PrDetails::default()
+        })
     }
 
     pub fn build(self) -> PullRequest {

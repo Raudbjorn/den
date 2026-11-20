@@ -251,6 +251,54 @@ fn owners_without_a_linear_workflow_get_the_empty_policy() {
     assert_eq!(github_only.policies(), den::domain::Policies::default());
 }
 
+/// #33 and #36 share one mapping: Start settings, review rules and Held Repos
+/// must all reach the decision engine together, as configured.
+#[test]
+fn a_linear_workflows_review_settings_become_its_owners_policy() {
+    use den::domain::{
+        LinearWorkflowPolicy, RepoId, ReviewPolicy, StartPolicy, TeamRef, facts::Reviewer,
+    };
+    let config = parse(FULL_WORKFLOW).expect("valid");
+    assert_eq!(
+        config.policies().for_owner("ACME"),
+        &LinearWorkflowPolicy {
+            start: StartPolicy {
+                teams: vec!["TEAM".to_owned(), "OPS".to_owned()],
+                include_backlog: true,
+                active_cycle_only: true,
+            },
+            review: Some(ReviewPolicy {
+                exact_head_approval: false,
+                comment_reviews_need_rereview: false,
+                reviewers: vec![
+                    Reviewer::User("alice".to_owned()),
+                    Reviewer::Team(TeamRef {
+                        org: "acme".to_owned(),
+                        slug: "backend".to_owned(),
+                    }),
+                ],
+            }),
+            held_repos: vec![RepoId::new("acme", "app")],
+        }
+    );
+    // The config's defaults: both switches on.
+    let minimal =
+        parse("owners = [\"acme\"]\n[linear.acme]\nworkspace = \"acme\"\napi_key_env = \"K\"\n")
+            .expect("valid");
+    let policies = minimal.policies();
+    let review = policies
+        .for_owner("acme")
+        .review
+        .as_ref()
+        .expect("review rules");
+    assert!(review.exact_head_approval && review.comment_reviews_need_rereview);
+    assert!(review.reviewers.is_empty());
+    // The empty policy keeps every switch off and holds nothing.
+    let empty = LinearWorkflowPolicy::default();
+    assert_eq!(empty.review, None);
+    assert!(empty.held_repos.is_empty());
+}
+
 #[test]
 fn linear_workflow_errors_name_the_file_and_line() {
     let base = "owners = [\"acme\", \"octo\"]\n";
