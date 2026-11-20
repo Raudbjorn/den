@@ -2,14 +2,14 @@
 //! Request belongs to, or is possibly for; and a Linear Issue's members, each
 //! with its Repo, number, state, own Next Step and Job.
 
-use super::{State, jobs};
+use super::{State, detail::linear_issue, jobs};
 use crate::{
     app::view_model::{JobMarker, LandingDetail, LandingLine, RowLanding, SEPARATOR},
     decide::{
         Decision,
         correlation::{Member, MemberStatus},
     },
-    domain::WorkItemId,
+    domain::{WorkItemId, facts::AttachmentsRead},
     handoff::live,
     ordering::same_work_item,
 };
@@ -52,8 +52,18 @@ fn issue_group(state: &State<'_>, decision: &Decision) -> LandingDetail {
         .iter()
         .map(|member| member_line(state, member))
         .collect();
-    if lines.is_empty() {
-        lines.push(plain("no Pull Request attached in Linear"));
+    // den never reads a partial attachment list as "no Pull Request", so
+    // the section agrees with the Explanation's "couldn't establish whether
+    // a PR exists".
+    match unread_attachments(state, decision) {
+        Some(why) if lines.is_empty() => lines.push(caution(&format!(
+            "den couldn't read all of its attachments in Linear ({why}): it can't tell whether a Pull Request is attached"
+        ))),
+        Some(why) => lines.push(caution(&format!(
+            "den couldn't read all of its attachments in Linear ({why}): more Pull Requests may be attached"
+        ))),
+        None if lines.is_empty() => lines.push(plain("no Pull Request attached in Linear")),
+        None => {}
     }
     let identifier = decision.item.reference();
     lines.extend(landing.hints.iter().map(|hint| {
@@ -66,6 +76,17 @@ fn issue_group(state: &State<'_>, decision: &Decision) -> LandingDetail {
     LandingDetail {
         label: LABEL.to_owned(),
         lines,
+    }
+}
+
+/// Why den didn't read every attachment of the decided Linear Issue, if it
+/// didn't. An issue missing from the Observation is unread too: den can't
+/// say its list is whole.
+fn unread_attachments(state: &State<'_>, decision: &Decision) -> Option<String> {
+    match linear_issue(state, &decision.item.id).map(|issue| &issue.attachments.read) {
+        Some(AttachmentsRead::Complete) => None,
+        Some(AttachmentsRead::Incomplete { why }) => Some(why.clone()),
+        None => Some("den has no record of them".to_owned()),
     }
 }
 
@@ -156,5 +177,12 @@ fn plain(text: &str) -> LandingLine {
         text: text.to_owned(),
         job: None,
         caution: false,
+    }
+}
+
+fn caution(text: &str) -> LandingLine {
+    LandingLine {
+        caution: true,
+        ..plain(text)
     }
 }
