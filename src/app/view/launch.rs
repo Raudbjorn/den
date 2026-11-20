@@ -165,6 +165,20 @@ fn fill_plan(view: &mut LaunchSheet, sheet: &Sheet, plan: &LaunchPlan, moved_fro
         .as_ref()
         .and(sheet.reviewers.as_ref())
         .map(reviewers_field);
+    // The detail pane's caveat on the suggestions (#47), where they are used.
+    if let Some(unread) = plan
+        .review_request
+        .as_ref()
+        .and(sheet.reviewers.as_ref())
+        .and_then(|r| r.suggested_unread.as_deref())
+    {
+        view.messages.push(message(
+            &format!(
+                "The suggested reviewers may include someone already asked or approved: {unread}"
+            ),
+            Tone::Caution,
+        ));
+    }
 }
 
 fn reviewers_field(field: &ReviewersField) -> PromptField {

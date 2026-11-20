@@ -15,7 +15,7 @@ mod support;
 use den::{
     app::{
         Effect, Event, Key,
-        view_model::{LaunchSheet, LaunchStatus, Overlay},
+        view_model::{LaunchSheet, LaunchStatus, Overlay, Tone},
     },
     config::{self, Config},
     domain::{
@@ -308,6 +308,52 @@ fn c_then_enter_on_request_review_launches_a_coordination_job_on_the_pr_head_in_
         "recorded, so reopening the Job asks again"
     );
     assert_eq!(sheet(&harness).status, LaunchStatus::Launched);
+}
+
+/// The Request review sheet repeats the detail pane's caveat (#47): when den
+/// could not read every latest review (here: those with comments, which find
+/// who awaits re-review), the suggestions it starts from may name someone
+/// already asked or approved. With everything read, no caveat. (Truncated
+/// review requests can't show it: Request review is then unknown.)
+#[test]
+fn the_request_review_sheet_says_when_the_suggestions_are_not_filtered_in_full() {
+    let caveat = "may include someone already asked or approved";
+    let mut harness = started(None);
+    let ready = open_sheet(&mut harness, "#2");
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    assert!(!messages(&ready).contains(caveat), "{}", messages(&ready));
+
+    let mut harness = Harness::new(Ok(config(None)));
+    harness
+        .workspace
+        .add_clone(CLONE, &[("origin", "git@github.com:acme/api.git")]);
+    harness
+        .workspace
+        .set_remote_head(CLONE, "origin", "feature-2", &format!("{:040x}", 2));
+    let mut observation = surveyed(pr_2(), pr_4());
+    let two = observation
+        .pull_requests
+        .iter_mut()
+        .find(|p| p.number == 2)
+        .and_then(|p| p.details.as_mut())
+        .expect("#2's details");
+    two.latest_reviews_with_comments.complete = false;
+    harness.answer(Ok(observation));
+    harness.start();
+    let ready = open_sheet(&mut harness, "#2");
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    assert_eq!(ready.next_step, "Request review");
+    let line = ready
+        .messages
+        .iter()
+        .find(|m| m.text.contains(caveat))
+        .unwrap_or_else(|| panic!("no caveat: {}", messages(&ready)));
+    assert!(
+        line.text.ends_with(": not every review was read"),
+        "{}",
+        line.text
+    );
+    assert_eq!(line.tone, Tone::Caution);
 }
 
 #[test]

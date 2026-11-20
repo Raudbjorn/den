@@ -103,14 +103,20 @@ pub(super) struct ReviewersField {
     pub editing: bool,
     /// The Decision's suggested reviewers, as the sheet last planned with.
     pub suggested: Vec<Reviewer>,
+    /// What den did not read to filter the suggestions (#47's
+    /// [`Decision::suggested_reviewers_unread`]), as the sheet last planned
+    /// with: they may name someone already asked or approved.
+    pub suggested_unread: Option<String>,
 }
 
 impl ReviewersField {
-    fn new(suggested: Vec<Reviewer>) -> Self {
+    fn new(decision: &Decision) -> Self {
+        let suggested = decision.suggested_reviewers.clone().unwrap_or_default();
         Self {
             editor: PromptEditor::new(&reviewers::spell_list(&suggested)),
             editing: false,
             suggested,
+            suggested_unread: decision.suggested_reviewers_unread.clone(),
         }
     }
 
@@ -211,9 +217,8 @@ impl App {
             default_prompt: None,
             fresh: None,
             launch_refused: None,
-            reviewers: (decision.next_step == Some(NextStep::RequestReview)).then(|| {
-                ReviewersField::new(decision.suggested_reviewers.clone().unwrap_or_default())
-            }),
+            reviewers: (decision.next_step == Some(NextStep::RequestReview))
+                .then(|| ReviewersField::new(decision)),
         };
         let effects = self.inspect_for(&mut sheet, "opened");
         self.overlay = Some(OverlayState::Launch(Box::new(sheet)));
@@ -806,8 +811,9 @@ fn sync_reviewers(sheet: &mut Sheet, decision: Option<&Decision>) {
                 field.editor = PromptEditor::new(&reviewers::spell_list(&suggested));
             }
             field.suggested = suggested;
+            field.suggested_unread = decision.suggested_reviewers_unread.clone();
         }
-        None => sheet.reviewers = Some(ReviewersField::new(suggested)),
+        None => sheet.reviewers = Some(ReviewersField::new(decision)),
     }
 }
 
