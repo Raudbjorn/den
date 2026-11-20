@@ -60,6 +60,14 @@ _Avoid_: Linear user (for the viewer), Linear me
 A Linear Issue together with the Pull Requests, in any of its Owner's Repos, that implement it and land together. Each Pull Request keeps its own Next Step; the group decides when they may land.
 _Avoid_: Issue group, PR group, release
 
+**Attached**:
+How a Pull Request becomes a member of a Landing Group: Linear records it as an attachment of the Linear Issue, by a URL that names the Pull Request's Owner, Repo and number. It is the only way to be a member. A Pull Request attached to two Linear Issues is a member of both and is **ambiguous**; a member den can't see (another Owner's Repo, a Repo it didn't survey, or one whose Pull Requests it didn't read completely) is **not surveyed**, never absent.
+_Avoid_: Linked (a GitHub Issue's link to a Pull Request), associated
+
+**Hint**:
+A Pull Request whose branch name contains a Linear Issue's identifier on word boundaries (`TEAM-1` in `me/team-1-fix`, never in `team-12-fix`). Shown as "possibly for TEAM-1" and never a member: it can't hold up, authorize or withhold anything.
+_Avoid_: Guess, match, probable member
+
 **Next Step**:
 The single action a Work Item needs next to move forward, regardless of who has to take it.
 _Avoid_: Todo, task, action item

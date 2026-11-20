@@ -1,6 +1,6 @@
 //! The Next Step list and its empty states.
 
-use super::{State, format, header, jobs, scope};
+use super::{State, format, header, jobs, landing, scope};
 use crate::cache;
 use crate::{
     app::view_model::{ELLIPSIS, EmptyState, List, Row},
@@ -51,6 +51,7 @@ fn row(state: &State<'_>, decision: &Decision) -> Row {
         incomplete: decision.coverage.iter().any(|c| !c.state.is_complete()),
         age: format::age(state.now, decision.item.updated_at),
         job: live::most_telling(state.job_checks, id).map(|c| jobs::marker(&c.state)),
+        landing: landing::row(decision),
     }
 }
 

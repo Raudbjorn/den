@@ -1,9 +1,10 @@
 //! Linear Issue facts: what the Linear source observed about one Linear Issue
 //! of an Owner with a Linear Workflow (spec 0002, "Facts: Linear Issue").
-//! Nothing decided. Attachments (the PRs Linear recorded) arrive with Landing
-//! Groups (#35).
+//! Nothing decided. Its attachments are reduced to Pull Request identities
+//! (Owner, Repo, number) or kept as unrecognized links; which of them make a
+//! Landing Group is the decision engine's (`decide::correlation`, #35).
 
-use crate::domain::ids::{LinearIssueId, WorkItemId};
+use crate::domain::ids::{LinearIssueId, RepoId, WorkItemId};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +30,9 @@ pub struct LinearIssue {
     /// Linear's suggested branch name, unchecked (Start, #38, checks it
     /// against den's safe-name rules before using it).
     pub branch_name: Option<String>,
+    /// What Linear recorded as attached to it, and whether den read it all
+    /// (#35).
+    pub attachments: Attachments,
 }
 
 impl LinearIssue {
@@ -161,4 +165,161 @@ impl LinearCycle {
         let active = if self.active { ", active" } else { "" };
         format!("cycle {}{name}{active}", self.number)
     }
+}
+
+/// A Linear Issue's attachments, as den read them (#35).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachments {
+    /// In Linear's order, without repeats.
+    pub links: Vec<Attachment>,
+    /// Whether `links` is every attachment the issue has.
+    pub read: AttachmentsRead,
+}
+
+impl Attachments {
+    /// Every attachment was read: `links` is all of them.
+    pub fn complete(links: Vec<Attachment>) -> Self {
+        Self {
+            links,
+            read: AttachmentsRead::Complete,
+        }
+    }
+
+    /// Some or all attachments are missing, for `why`.
+    pub fn incomplete(links: Vec<Attachment>, why: impl Into<String>) -> Self {
+        Self {
+            links,
+            read: AttachmentsRead::Incomplete { why: why.into() },
+        }
+    }
+
+    /// The Pull Requests among them.
+    pub fn pull_requests(&self) -> impl Iterator<Item = &PullRequestRef> {
+        self.links.iter().filter_map(|link| match link {
+            Attachment::PullRequest(pr) => Some(pr),
+            Attachment::Link { .. } => None,
+        })
+    }
+}
+
+/// Whether den read every attachment of a Linear Issue. Coverage per issue:
+/// the source that listed the issue may be complete while one issue's
+/// attachments are not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AttachmentsRead {
+    Complete,
+    /// Not all of them, for `why` ("Linear returned errors alongside this
+    /// page", "more than 50 attachments").
+    Incomplete {
+        why: String,
+    },
+}
+
+/// One attachment of a Linear Issue. Raw metadata isn't carried: its keys
+/// depend on the integration that wrote it (spec 0002, "Facts: Linear Issue").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Attachment {
+    /// Its URL is a GitHub Pull Request's.
+    PullRequest(PullRequestRef),
+    /// Anything else, kept as Linear gave it.
+    Link { url: String },
+}
+
+impl Attachment {
+    /// A Pull Request when `url` parses as one, otherwise a link.
+    pub fn from_url(url: &str) -> Self {
+        PullRequestRef::from_url(url).map_or_else(
+            || Self::Link {
+                url: url.to_owned(),
+            },
+            Self::PullRequest,
+        )
+    }
+}
+
+/// A fully qualified Pull Request identity (Owner, Repo, number), as an
+/// attachment names it. Two Owners' `api#42` are different Pull Requests.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PullRequestRef {
+    pub repo: RepoId,
+    pub number: u64,
+}
+
+/// GitHub's bound on a login, in characters.
+const MAX_LOGIN_CHARS: usize = 39;
+/// GitHub's bound on a Repo name, in characters.
+const MAX_REPO_NAME_CHARS: usize = 100;
+/// GitHub's web host; Pull Request URLs on any other host are links.
+const GITHUB_HOSTS: [&str; 2] = ["github.com", "www.github.com"];
+
+impl PullRequestRef {
+    pub fn new(repo: RepoId, number: u64) -> Self {
+        Self { repo, number }
+    }
+
+    pub fn id(&self) -> WorkItemId {
+        WorkItemId::PullRequest {
+            repo: self.repo.clone(),
+            number: self.number,
+        }
+    }
+
+    /// Whether this names the Pull Request `repo` `#number` (Owner and Repo
+    /// compared as GitHub does, case-insensitively).
+    pub fn is(&self, repo: &RepoId, number: u64) -> bool {
+        self.number == number && self.repo.same(repo)
+    }
+
+    /// `https://github.com/<owner>/<repo>/pull/<number>`, optionally followed
+    /// by a sub-page (`/files`), a query or a fragment. Anything else, or any
+    /// part that isn't a valid GitHub login, Repo name or Pull Request
+    /// number, is `None`: den never guesses a membership from a URL it
+    /// doesn't fully understand.
+    pub fn from_url(url: &str) -> Option<Self> {
+        let rest = strip_prefix_ignoring_case(url, "https://")
+            .or_else(|| strip_prefix_ignoring_case(url, "http://"))?;
+        let (host, path) = rest.split_once('/')?;
+        if !GITHUB_HOSTS.iter().any(|h| host.eq_ignore_ascii_case(h)) {
+            return None;
+        }
+        let path = path.split(['?', '#']).next().unwrap_or_default();
+        let mut parts = path.split('/');
+        let owner = parts.next()?;
+        let repo = parts.next()?;
+        if parts.next()? != "pull" {
+            return None;
+        }
+        let number = parts.next()?;
+        let canonical_number = !number.is_empty()
+            && number.chars().all(|c| c.is_ascii_digit())
+            && !number.starts_with('0');
+        if !(canonical_number && is_login(owner) && is_repo_name(repo)) {
+            return None;
+        }
+        let number = number.parse::<u64>().ok()?;
+        Some(Self::new(RepoId::new(owner, repo), number))
+    }
+}
+
+fn strip_prefix_ignoring_case<'u>(text: &'u str, prefix: &str) -> Option<&'u str> {
+    let head = text.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| text.get(prefix.len()..))
+        .flatten()
+}
+
+fn is_login(login: &str) -> bool {
+    (1..=MAX_LOGIN_CHARS).contains(&login.chars().count())
+        && login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && !login.starts_with('-')
+        && !login.ends_with('-')
+}
+
+fn is_repo_name(name: &str) -> bool {
+    (1..=MAX_REPO_NAME_CHARS).contains(&name.chars().count())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        && name != "."
+        && name != ".."
 }

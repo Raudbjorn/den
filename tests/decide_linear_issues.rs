@@ -118,10 +118,12 @@ fn an_unassigned_linear_issue_has_no_next_step_yet() {
     assert_eq!(decision.waiting_on, WaitingOn::Nobody);
 }
 
-/// Until #35 reads attachments, den can't know whether a PR carries the work:
-/// it says so instead of implying there is none.
+/// #32 said, as an unknown, that a PR might exist, because it didn't read
+/// attachments. #35 reads them: with every attachment read and none a Pull
+/// Request, den knows there is no PR, and the unknown is gone. (Incomplete
+/// attachments withhold Implement instead: `decide_landing_groups.rs`.)
 #[test]
-fn a_linear_issue_says_its_pr_attachments_are_unread() {
+fn a_linear_issue_whose_attachments_were_all_read_has_no_pr_unknown() {
     let observation = ObservationBuilder::new()
         .fully_read_owner("acme")
         .linear_viewer("acme", "acme")
@@ -129,14 +131,8 @@ fn a_linear_issue_says_its_pr_attachments_are_unread() {
         .build();
     let decisions = decide_all(&observation);
     let decision = decision_for(&decisions, "TEAM-1");
-    assert!(
-        decision
-            .explanation
-            .unknowns
-            .iter()
-            .any(|u| u.contains("attachments")),
-        "{decision:?}"
-    );
+    assert_eq!(decision.next_step, Some(NextStep::Implement));
+    assert!(decision.explanation.unknowns.is_empty(), "{decision:?}");
 }
 
 /// Story 16: identity is workspace + permanent ID. The same issue moved to
@@ -216,7 +212,8 @@ fn linear_coverage_applies_to_linear_issues_only() {
 }
 
 /// Linear Issues belong to their Owner: Owner and All Owners Scopes have
-/// them; a Repo Scope doesn't until Landing Groups give them members (#35).
+/// them; a Repo Scope has only those with a member there
+/// (`decide_landing_groups.rs`), and this one has none.
 #[test]
 fn linear_issues_are_in_their_owners_scopes() {
     let observation = ObservationBuilder::new()

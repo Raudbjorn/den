@@ -36,6 +36,26 @@ pub fn draw(frame: &mut Frame, theme: &Theme, detail: &Detail, area: Rect) -> Re
                     push(line, LineStyle::Plain);
                 }
             }
+            if let Some(landing) = &content.landing {
+                push(
+                    &format!("{} {}", glyphs.linear, landing.label),
+                    LineStyle::Label,
+                );
+                for line in &landing.lines {
+                    let glyph = match line.job {
+                        Some(JobMarker::Live) => glyphs.live_job,
+                        Some(JobMarker::Missing) => glyphs.job_missing,
+                        Some(JobMarker::Unknown) => glyphs.job_unknown,
+                        None => " ",
+                    };
+                    let style = if line.caution {
+                        LineStyle::Caution
+                    } else {
+                        LineStyle::Plain
+                    };
+                    push(&glyphs.text(&format!("{glyph} {}", line.text)), style);
+                }
+            }
             push("NEXT STEP", LineStyle::Label);
             push(&content.next_step, LineStyle::Step);
             push("WAITING ON", LineStyle::Label);
