@@ -12,7 +12,6 @@
 use crate::{
     domain::{NextStep, RepoId, WorkItemId},
     files::{self, BoundedReadError},
-    ordering::same_work_item,
     ports::JobStore,
 };
 use jiff::Timestamp;
@@ -58,7 +57,7 @@ impl JobSubject {
     /// it). Repos compare case-insensitively, as on GitHub.
     pub fn covers(&self, item: &WorkItemId) -> bool {
         match self {
-            Self::GitHub(own) => same_work_item(own, item),
+            Self::GitHub(own) => own.same(item),
         }
     }
 
@@ -70,23 +69,12 @@ impl JobSubject {
         }
     }
 
-    /// The subject with its Owner and Repo names lowercased, so one Job
-    /// recorded under two casings is one subject. Branch and workflow names
-    /// keep their case: git's are case-sensitive.
+    /// The subject in its case-insensitive form ([`WorkItemId::folded`]), so
+    /// one Job recorded under two casings is one subject.
+    #[must_use]
     pub fn folded(&self) -> Self {
         match self {
-            Self::GitHub(item) => {
-                let mut item = item.clone();
-                let repo = match &mut item {
-                    WorkItemId::Issue { repo, .. }
-                    | WorkItemId::PullRequest { repo, .. }
-                    | WorkItemId::Branch { repo, .. }
-                    | WorkItemId::Run { repo, .. } => repo,
-                };
-                repo.owner.make_ascii_lowercase();
-                repo.name.make_ascii_lowercase();
-                Self::GitHub(item)
-            }
+            Self::GitHub(item) => Self::GitHub(item.folded()),
         }
     }
 }

@@ -13,7 +13,7 @@
 
 use super::{CachedObservation, Carried};
 use crate::domain::{
-    Observation, RepoId, Source, SourceKind, SourceState, WorkItemId, ids::same_login,
+    Observation, RepoId, Source, SourceKind, SourceState, ids::same_login,
 };
 use jiff::Timestamp;
 use std::{collections::HashSet, hash::Hash};
@@ -36,7 +36,7 @@ pub fn merge(previous: Option<CachedObservation>, fresh: Observation) -> CachedO
         previous_observation.repos,
         SourceKind::Repos,
         |r| &mut r.id,
-        |r| fold_repo(&r.id),
+        |r| r.id.folded(),
     );
     let mut pull_requests = std::mem::take(&mut merged.pull_requests);
     keep_unread(
@@ -45,7 +45,7 @@ pub fn merge(previous: Option<CachedObservation>, fresh: Observation) -> CachedO
         previous_observation.pull_requests,
         SourceKind::PullRequests,
         |i| &mut i.repo,
-        |i| fold_item(i.id()),
+        |i| i.id().folded(),
     );
     let mut issues = std::mem::take(&mut merged.issues);
     keep_unread(
@@ -54,7 +54,7 @@ pub fn merge(previous: Option<CachedObservation>, fresh: Observation) -> CachedO
         previous_observation.issues,
         SourceKind::Issues,
         |i| &mut i.repo,
-        |i| fold_item(i.id()),
+        |i| i.id().folded(),
     );
     let mut branches = std::mem::take(&mut merged.branches);
     keep_unread(
@@ -63,7 +63,7 @@ pub fn merge(previous: Option<CachedObservation>, fresh: Observation) -> CachedO
         previous_observation.branches,
         SourceKind::Branches,
         |i| &mut i.repo,
-        |i| fold_item(i.id()),
+        |i| i.id().folded(),
     );
     // A workflow has many Runs; each Run attempt is its own fact.
     let mut runs = std::mem::take(&mut merged.runs);
@@ -73,7 +73,7 @@ pub fn merge(previous: Option<CachedObservation>, fresh: Observation) -> CachedO
         previous_observation.runs,
         SourceKind::Runs,
         |i| &mut i.repo,
-        |i| (fold_repo(&i.repo), i.run_id, i.attempt),
+        |i| (i.repo.folded(), i.run_id, i.attempt),
     );
     merged.repos = repos;
     merged.pull_requests = pull_requests;
@@ -140,7 +140,7 @@ impl Reading {
         if !self.owners.iter().any(|o| same_login(o, &repo.owner)) {
             return false;
         }
-        let repo = fold_repo(repo);
+        let repo = repo.folded();
         let owner_source = Source::Owner {
             owner: repo.owner.clone(),
             kind,
@@ -260,14 +260,6 @@ fn data_age(previous: &CachedObservation, source: &Source) -> Option<Timestamp> 
     }
 }
 
-/// A Repo's case-insensitive identity.
-fn fold_repo(repo: &RepoId) -> RepoId {
-    RepoId::new(
-        repo.owner.to_ascii_lowercase(),
-        repo.name.to_ascii_lowercase(),
-    )
-}
-
 /// A source's case-insensitive identity.
 fn fold_source(source: &Source) -> Source {
     match source {
@@ -277,31 +269,8 @@ fn fold_source(source: &Source) -> Source {
             kind: *kind,
         },
         Source::Repo { repo, kind } => Source::Repo {
-            repo: fold_repo(repo),
+            repo: repo.folded(),
             kind: *kind,
-        },
-    }
-}
-
-/// A Work Item's identity with its Repo folded. Branch and workflow names stay
-/// as they are: git branch names are case-sensitive.
-fn fold_item(id: WorkItemId) -> WorkItemId {
-    match id {
-        WorkItemId::Issue { repo, number } => WorkItemId::Issue {
-            repo: fold_repo(&repo),
-            number,
-        },
-        WorkItemId::PullRequest { repo, number } => WorkItemId::PullRequest {
-            repo: fold_repo(&repo),
-            number,
-        },
-        WorkItemId::Branch { repo, name } => WorkItemId::Branch {
-            repo: fold_repo(&repo),
-            name,
-        },
-        WorkItemId::Run { repo, workflow } => WorkItemId::Run {
-            repo: fold_repo(&repo),
-            workflow,
         },
     }
 }
