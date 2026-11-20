@@ -34,7 +34,17 @@ impl Attribution {
     }
 
     /// The step is owed by any of several people or teams; me if I am any of them.
-    pub fn any_of(viewer: &Viewer, logins: &[String], teams: &[TeamRef], role: &str) -> Self {
+    ///
+    /// `unread` names what den could not read that might make it me (requests
+    /// it did not see, team memberships it does not know). A match to me still
+    /// counts; without one, it is unattributed rather than someone else's.
+    pub fn any_of(
+        viewer: &Viewer,
+        logins: &[String],
+        teams: &[TeamRef],
+        role: &str,
+        unread: &[String],
+    ) -> Self {
         let me_directly = logins.iter().any(|l| viewer.is(l));
         let my_team = teams.iter().find(|t| viewer.belongs_to(t));
         if me_directly {
@@ -49,6 +59,16 @@ impl Attribution {
                 waiting_on: WaitingOn::Me,
                 reason: format!("your team {}/{} is one of {role}", team.org, team.slug),
                 unattributed: false,
+            };
+        }
+        if !unread.is_empty() {
+            return Self {
+                waiting_on: WaitingOn::Nobody,
+                reason: format!(
+                    "den could not establish whether you are one of {role}: {}",
+                    unread.join("; ")
+                ),
+                unattributed: true,
             };
         }
         if logins.is_empty() && teams.is_empty() {

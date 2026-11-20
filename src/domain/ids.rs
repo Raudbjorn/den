@@ -18,6 +18,12 @@ impl RepoId {
             name: name.into(),
         }
     }
+
+    /// The same Repo on GitHub, whose Owner and Repo names are case-insensitive:
+    /// facts kept from an earlier survey may spell them as the config did then.
+    pub fn same(&self, other: &RepoId) -> bool {
+        same_login(&self.owner, &other.owner) && self.name.eq_ignore_ascii_case(&other.name)
+    }
 }
 
 impl fmt::Display for RepoId {
