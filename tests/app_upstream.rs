@@ -587,3 +587,46 @@ fn a_choice_that_could_not_be_saved_says_so() {
         Some(UPSTREAM)
     );
 }
+
+/// The prompt on the sheet, read off the view.
+fn prompt_text(harness: &Harness) -> String {
+    sheet(harness)
+        .prompt
+        .as_ref()
+        .unwrap_or_else(|| panic!("no prompt: {:#?}", sheet(harness)))
+        .text
+        .clone()
+}
+
+#[test]
+fn an_edited_prompt_survives_a_target_round_trip_and_an_undone_edit_stays_undone() {
+    let store = Arc::new(FakeUpstreams::default());
+    let mut harness = started_with(&store, forked());
+    fork_clone(&harness);
+    press(&mut harness, Key::Char('c'));
+    let default_prompt = prompt_text(&harness);
+
+    // Edit: append `!`.
+    for key in [Key::Char('e'), Key::End, Key::Char('!'), Key::Esc] {
+        press(&mut harness, key);
+    }
+    let edited_prompt = format!("{default_prompt}!");
+    assert_eq!(prompt_text(&harness), edited_prompt);
+
+    // To the Upstream and back: the edit is still there.
+    press(&mut harness, Key::Char('u'));
+    press(&mut harness, Key::Char('u'));
+    assert_eq!(sheet(&harness).status, LaunchStatus::Ready);
+    assert_eq!(prompt_text(&harness), edited_prompt);
+
+    // Undo the edit by hand, then round-trip again: the default stays, and
+    // the discarded `!` does not come back.
+    for key in [Key::Char('e'), Key::End, Key::Backspace, Key::Esc] {
+        press(&mut harness, key);
+    }
+    assert_eq!(prompt_text(&harness), default_prompt);
+    press(&mut harness, Key::Char('u'));
+    press(&mut harness, Key::Char('u'));
+    assert_eq!(sheet(&harness).status, LaunchStatus::Ready);
+    assert_eq!(prompt_text(&harness), default_prompt);
+}

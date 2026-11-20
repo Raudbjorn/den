@@ -176,10 +176,10 @@ impl App {
             return Vec::new();
         }
         if let SheetState::Ready { plan, .. } = &sheet.state {
+            // The prompt as it stands now wins: an edit undone back to the
+            // default clears the saved one, so it can't come back later.
             let text = sheet.prompt.text();
-            if text != plan.prompt {
-                sheet.edited_prompt = Some(text);
-            }
+            sheet.edited_prompt = (text != plan.prompt).then_some(text);
         }
         sheet.choice = sheet.choice.flipped();
         sheet.accepted_head = None;
