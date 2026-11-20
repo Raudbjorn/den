@@ -1,0 +1,7 @@
+# A Branch as listed: its name and when its last commit was made. Enough to
+# skip the default branch and the Branches a fork came with, before the
+# costlier candidate and comparison queries.
+fragment BranchTip on Ref {
+  name
+  target { ... on Commit { committedDate } }
+}
