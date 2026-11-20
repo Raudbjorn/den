@@ -26,8 +26,10 @@
 //!    member may be queued); but at least one member outside Held Repos must
 //!    be open for there to be anything to land.
 //! 2. No open members:
-//!    - attachments not read completely, or a member den can't see → no
-//!      Next Step: den couldn't establish whether a Pull Request exists;
+//!    - attachments not read completely, a member den can't see, or a link
+//!      that looks like a Pull Request den can't read
+//!      (`Attachment::may_be_pull_request`) → no Next Step: den couldn't
+//!      establish whether a Pull Request exists;
 //!    - in the workflow's release state → no Next Step, "release is outside
 //!      den", Waiting On nobody and unattributed (den doesn't know who
 //!      releases);
@@ -72,6 +74,9 @@ pub const PR_EXISTENCE_UNKNOWN: &str = "couldn't establish whether a PR exists";
 /// What Mark for release's Explanation says about what it doesn't claim
 /// (spec 0002, story 84).
 pub const DEPLOYMENTS_UNSEEN: &str = "den can't see deployments: Mark for release rests only on the Pull Requests having merged, not on the work having shipped";
+/// The same unknown once an open member shows a Pull Request exists: only
+/// whether more are attached is unknown (the detail's wording too).
+pub const MORE_MAY_BE_ATTACHED: &str = "more Pull Requests may be attached";
 
 /// Decides every Linear Issue. `pull_requests` are the Pull Requests' own
 /// Decisions, already made: Land reads its members' there.
@@ -241,6 +246,13 @@ fn group_rules(
         return Group::no_step(format!(
             "den {PR_EXISTENCE_UNKNOWN}: attached {} (member not surveyed)",
             references(&unseen)
+        ));
+    }
+    let unread = pull_request_like_links(issue);
+    if !unread.is_empty() {
+        return Group::no_step(format!(
+            "den {PR_EXISTENCE_UNKNOWN}: attached {} looks like a Pull Request it can't read",
+            unread.join(", ")
         ));
     }
     if ctx.policy(&issue.owner).is_release_state(&issue.state.name) {
@@ -674,11 +686,12 @@ fn group_conditions(issue: &LinearIssue, landing: &Landing) -> Vec<String> {
             hint.branch
         )
     }));
+    // A link that may be a Pull Request is an unknown, not a plain link.
     let links = issue
         .attachments
         .links
         .iter()
-        .filter(|a| matches!(a, Attachment::Link { .. }))
+        .filter(|a| matches!(a, Attachment::Link { .. }) && !a.may_be_pull_request())
         .count();
     if links > 0 {
         lines.push(format!(
@@ -690,12 +703,26 @@ fn group_conditions(issue: &LinearIssue, landing: &Landing) -> Vec<String> {
 }
 
 fn unknowns(issue: &LinearIssue, landing: &Landing) -> Vec<String> {
+    // An open member is a Pull Request that exists; then only whether more
+    // are attached is unknown, so the Explanation agrees with the no-step
+    // reason ("its Pull Request carries the work"). A member reported open
+    // again after the survey is open too (`MemberStatus::is_open`, #37).
+    let unknown = if landing.members.iter().any(|m| m.status.is_open()) {
+        MORE_MAY_BE_ATTACHED
+    } else {
+        PR_EXISTENCE_UNKNOWN
+    };
     let mut unknowns = Vec::new();
     if let AttachmentsRead::Incomplete { why } = &issue.attachments.read {
         unknowns.push(format!(
-            "{PR_EXISTENCE_UNKNOWN}: the Linear Issue's attachments weren't read completely ({why})"
+            "{unknown}: the Linear Issue's attachments weren't read completely ({why})"
         ));
     }
+    unknowns.extend(
+        pull_request_like_links(issue).into_iter().map(|url| {
+            format!("{unknown}: attached {url} looks like a Pull Request den can't read")
+        }),
+    );
     unknowns.extend(landing.members.iter().filter_map(|m| match &m.status {
         MemberStatus::NotSurveyed(why) => Some(format!(
             "attached {} is a member den can't see: {}",
@@ -705,6 +732,19 @@ fn unknowns(issue: &LinearIssue, landing: &Landing) -> Vec<String> {
         _ => None,
     }));
     unknowns
+}
+
+/// The URLs of the attachments that may be Pull Requests den can't read.
+pub fn pull_request_like_links(issue: &LinearIssue) -> Vec<&str> {
+    issue
+        .attachments
+        .links
+        .iter()
+        .filter_map(|a| match a {
+            Attachment::Link { url } if a.may_be_pull_request() => Some(url.as_str()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn references(members: &[&Member]) -> String {

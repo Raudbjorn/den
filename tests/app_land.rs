@@ -179,7 +179,8 @@ fn a_member_read_merged_after_the_surveys_gives_mark_for_release() {
         detail
             .also
             .iter()
-            .any(|l| l == "evidence: merged acme/api #1"),
+            // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+            .any(|l| l == "evidence: merged acme/api#1"),
         "{:?}",
         detail.also
     );
@@ -188,7 +189,8 @@ fn a_member_read_merged_after_the_surveys_gives_mark_for_release() {
         landing
             .lines
             .iter()
-            .any(|l| l.text.contains("acme/api #1") && l.text.contains("merged")),
+            // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+            .any(|l| l.text.contains("acme/api#1") && l.text.contains("merged")),
         "{:?}",
         landing.lines
     );
@@ -225,7 +227,8 @@ fn a_ready_member_reads_lands_with_and_its_issue_land() {
         landing
             .lines
             .iter()
-            .any(|l| l.text.contains("acme/app #2") && l.text.contains("lands with TEAM-2")),
+            // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+            .any(|l| l.text.contains("acme/app#2") && l.text.contains("lands with TEAM-2")),
         "{:?}",
         landing.lines
     );
@@ -245,7 +248,8 @@ fn a_failed_member_read_withholds_mark_for_release_and_says_so() {
         detail
             .unknowns
             .iter()
-            .any(|u| u.contains("whether acme/api #1 merged or was closed without merging")),
+            // Merge of #49: members are spelled `owner/repo#n` (was `owner/repo #n`).
+            .any(|u| u.contains("whether acme/api#1 merged or was closed without merging")),
         "{:?}",
         detail.unknowns
     );

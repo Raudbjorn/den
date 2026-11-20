@@ -372,8 +372,7 @@ fn truncated_issue_links_stay_visible_without_retaining_closed_issues() {
     let merged = den::cache::merge(
         Some(den::cache::CachedObservation::fresh(previous)),
         observation.clone(),
-    )
-    .cached;
+    );
     assert!(
         !merged.observation.issues.iter().any(|i| i.number == 99),
         "a complete open-Issue list must remove closed Issues despite truncated links"

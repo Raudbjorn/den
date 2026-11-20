@@ -42,12 +42,8 @@ pub fn draw(frame: &mut Frame, theme: &Theme, detail: &Detail, area: Rect) -> Re
                     LineStyle::Label,
                 );
                 for line in &landing.lines {
-                    let glyph = match line.job {
-                        Some(JobMarker::Live) => glyphs.live_job,
-                        Some(JobMarker::Missing) => glyphs.job_missing,
-                        Some(JobMarker::Unknown) => glyphs.job_unknown,
-                        None => " ",
-                    };
+                    // The list's own glyph, so the two can't drift apart.
+                    let glyph = super::list::job_glyph(line.job, &glyphs);
                     let style = if line.caution {
                         LineStyle::Caution
                     } else {

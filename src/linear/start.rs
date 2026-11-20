@@ -285,7 +285,9 @@ fn has_state(states: &[LinearState], name: &str) -> bool {
 /// of the Start order (the newest of the least urgent), and the partial
 /// reason says which priorities were read in full, cut, or not read. Within
 /// a cut priority, issues in the active cycle aren't read first, though the
-/// Start order puts them first.
+/// Start order puts them first. When a page is lost (an error or a rate
+/// limit), the first page's issues are kept next to what was read by
+/// priority, and the source is partial.
 pub(super) fn start_team_issues(
     session: &Session<'_>,
     workflow: &LinearWorkflow,
@@ -312,7 +314,8 @@ pub(super) fn start_team_issues(
     }
 
     // More than one page: read again by priority. The first page's issues
-    // are dropped, so that what is shown is exactly the head of the order.
+    // are dropped, so that what is shown is exactly the head of the order,
+    // unless a page is lost on the way (see below).
     let mut labels: Vec<String> = PRIORITY_BANDS
         .iter()
         .map(|&n| LinearPriority::from_linear(n).label())
@@ -337,7 +340,12 @@ pub(super) fn start_team_issues(
             ) {
                 End::Done => continue,
                 // The pager says why; the later priorities are left unread.
-                End::Stopped => break,
+                // The head of the order is then unknown anyway, so the first
+                // page's issues are kept rather than lost with it.
+                End::Stopped => {
+                    by_priority.fall_back_to(all);
+                    break;
+                }
                 End::Cut => true,
             }
         };
@@ -425,6 +433,17 @@ impl Collected {
             }
             Ok(_) => {}
             Err(e) => self.unreadable.push(e.to_string()),
+        }
+    }
+
+    /// Adds the issues of `earlier` not read already. Its unreadable nodes
+    /// aren't added: they may be the same nodes read again, and the list is
+    /// partial anyway.
+    fn fall_back_to(&mut self, earlier: Self) {
+        for issue in earlier.issues {
+            if self.seen.insert(issue.id.id.clone()) {
+                self.issues.push(issue);
+            }
         }
     }
 

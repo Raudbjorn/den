@@ -22,9 +22,7 @@ mod file;
 mod merge;
 
 pub use file::{CACHE_FORMAT, CACHE_SUBDIR, FileCache, MAX_CACHE_BYTES};
-pub use merge::{
-    GitHubMerge, LinearMerge, merge, merge_linear, merge_member_states, settle_member_states,
-};
+pub use merge::{LinearMerge, merge, merge_linear, merge_member_states, settle_member_states};
 
 use crate::domain::{
     LinearSourceKind, Observation, Source, SourceKind, SourceState, ids::same_login,
@@ -143,19 +141,12 @@ impl CachedObservation {
     /// longer reads (a fact goes with the source that listed it).
     pub fn restricted_to_linear(mut self, workflows: &[LinearReads<'_>]) -> Self {
         let workflow_of = |owner: &str| workflows.iter().find(|w| same_login(w.owner, owner));
-        let part = &self.observation.linear;
         let mut dropped: Vec<String> = Vec::new();
-        let read_elsewhere = part
-            .viewers
-            .iter()
-            .map(|v| (&v.owner, &v.workspace))
-            .chain(part.issues.iter().map(|i| (&i.owner, &i.id.workspace)))
-            .chain(part.team_states.iter().map(|t| (&t.owner, &t.workspace)));
-        for (owner, workspace) in read_elsewhere {
+        for (owner, workspace) in self.observation.linear.workspaces() {
             let fits =
                 workflow_of(owner).is_some_and(|w| w.workspace.eq_ignore_ascii_case(workspace));
             if !fits && !dropped.iter().any(|d| same_login(d, owner)) {
-                dropped.push(owner.clone());
+                dropped.push(owner.to_owned());
             }
         }
         let reads = |owner: &str, kind: LinearSourceKind| {

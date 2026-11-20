@@ -108,7 +108,8 @@ impl LinearWorkflow {
     /// a start team or a state to check against Linear; the start teams'
     /// issues when it names a start team. Every Linear source den records
     /// for the workflow comes from here, so one it no longer reads is dropped
-    /// from the cache (`CachedObservation::restricted_to_linear`).
+    /// from the cache (`CachedObservation::restricted_to_linear`,
+    /// `cache::merge_linear`).
     pub fn linear_sources(&self) -> Vec<LinearSourceKind> {
         let mut sources = vec![LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues];
         if !self.start_teams.is_empty() || self.state_names().next().is_some() {
