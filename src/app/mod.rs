@@ -465,6 +465,7 @@ impl App {
                 );
                 // The last good Observation, if any, stays on screen.
                 let mut effects = vec![log];
+                let wanted = self.settle_member_states(now);
                 match &self.shown {
                     // A Linear answer shown since the last save is saved now.
                     Some(shown) if self.linear_unsaved && has_github_viewer(shown) => {
@@ -478,6 +479,7 @@ impl App {
                 }
                 self.linear_unsaved = false;
                 self.failure = Some(failure);
+                effects.extend(self.read_member_states(id, wanted));
                 effects
             }
         }
