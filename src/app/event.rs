@@ -16,6 +16,9 @@ pub struct SurveyId(pub u64);
 pub enum Key {
     Up,
     Down,
+    Left,
+    Right,
+    Tab,
     Enter,
     Esc,
     Char(char),

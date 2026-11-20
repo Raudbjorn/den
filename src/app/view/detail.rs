@@ -1,6 +1,6 @@
 //! The detail pane: the selected item's Next Step, Waiting On and Explanation.
 
-use super::{State, coverage};
+use super::{State, coverage, format};
 use crate::app::view_model::{Detail, DetailContent};
 
 const LABEL: &str = "D E T A I L";
@@ -40,11 +40,22 @@ pub fn build(state: &State<'_>) -> Detail {
                     .filter(|c| !c.state.is_complete())
                     .map(|c| coverage::entry_line(state, c, decision.item.id.repo()))
                     .collect(),
+                observed: observed(state, decision.observed_at),
             }
         });
     Detail {
         label: LABEL.to_owned(),
         content,
         placeholder: PLACEHOLDER.to_owned(),
+    }
+}
+
+/// "12:00 UTC, 4 min ago" (without the age when the App has no time yet).
+fn observed(state: &State<'_>, at: jiff::Timestamp) -> String {
+    let ago = format::ago(state.now, at);
+    if ago.is_empty() {
+        format::clock_time(at)
+    } else {
+        format!("{}, {ago}", format::clock_time(at))
     }
 }

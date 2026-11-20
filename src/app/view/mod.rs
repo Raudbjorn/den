@@ -6,14 +6,17 @@ mod footer;
 mod format;
 mod header;
 mod list;
+mod scope;
 mod sidebar;
 
+use super::scope::ScopeState;
 use super::view_model::ViewModel;
 use crate::{
     cache::Carried,
     config::{Config, ConfigError},
     decide::Decision,
     domain::Observation,
+    ordering::Scope,
     ports::SurveyFailure,
 };
 use jiff::Timestamp;
@@ -28,7 +31,14 @@ pub struct State<'a> {
     pub carried: &'a [Carried],
     /// `observation` is the cached one; no survey has answered yet.
     pub from_cache: bool,
+    /// The Decisions in Scope, ordered: what the list shows.
     pub decisions: &'a [Decision],
+    /// Every Decision, ordered (for the sidebar's counts).
+    pub all_decisions: &'a [Decision],
+    pub owners: &'a [String],
+    pub scope: &'a ScopeState,
+    /// The sidebar's rows, as Scopes.
+    pub sidebar: Vec<Scope>,
     pub failure: Option<&'a SurveyFailure>,
     pub selected: Option<usize>,
     pub now: Option<Timestamp>,

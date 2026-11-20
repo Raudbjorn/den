@@ -1,13 +1,19 @@
 //! Open Pull Requests in an Owner's own Repos, paginated to completion: Repos
 //! page by page with each Repo's first page of PRs, then further PR pages for
-//! any Repo that has more. Owned by #4 when it adds the facts its rules need.
+//! any Repo that has more. Each PR's checks and reviews then come from
+//! [`details`], in batches.
+
+mod details;
 
 use super::{
     repos::no_such_owner,
     session::{Actor, Connection, Fetched, KindFetch, Pager, Session},
 };
 use crate::{
-    domain::{RepoId, Source, SourceKind, facts::PullRequest},
+    domain::{
+        CoverageEntry, RepoId, Source, SourceKind,
+        facts::{MergeState, Mergeability, PullRequest, ReviewDecision},
+    },
     ports::SurveyFailure,
 };
 use jiff::Timestamp;
@@ -51,6 +57,8 @@ struct RepoPrs {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PrNode {
+    /// GitHub's node ID, which the details query needs.
+    id: String,
     number: u64,
     title: String,
     url: String,
@@ -62,6 +70,10 @@ struct PrNode {
     head_ref_name: String,
     head_ref_oid: String,
     head_repository: Option<HeadRepo>,
+    mergeable: String,
+    merge_state_status: String,
+    review_decision: Option<String>,
+    is_in_merge_queue: bool,
 }
 
 #[derive(Deserialize)]
@@ -71,8 +83,11 @@ struct HeadRepo {
 }
 
 impl PrNode {
-    fn into_fact(self, repo: &RepoId) -> PullRequest {
-        PullRequest {
+    /// The PR's node ID and its facts (details not read yet). `page_complete`
+    /// is false when the page came with errors alongside data, which can null
+    /// a nullable field such as the review decision.
+    fn into_fact(self, repo: &RepoId, page_complete: bool) -> (String, PullRequest) {
+        let fact = PullRequest {
             repo: repo.clone(),
             number: self.number,
             title: self.title,
@@ -87,7 +102,70 @@ impl PrNode {
                 .map(|h| RepoId::new(h.owner.login, h.name)),
             created_at: self.created_at,
             updated_at: self.updated_at,
+            mergeability: mergeability(&self.mergeable),
+            merge_state: merge_state(&self.merge_state_status),
+            review_decision: review_decision(self.review_decision.as_deref(), page_complete),
+            in_merge_queue: self.is_in_merge_queue,
+            details: None,
+        };
+        (self.id, fact)
+    }
+}
+
+/// GitHub's `MergeableState`. Anything den doesn't recognise counts as unknown.
+fn mergeability(state: &str) -> Mergeability {
+    match state {
+        "MERGEABLE" => Mergeability::Mergeable,
+        "CONFLICTING" => Mergeability::Conflicting,
+        "UNKNOWN" => Mergeability::Unknown,
+        other => {
+            tracing::warn!(
+                state = other,
+                "unrecognised PR mergeability; treated as unknown"
+            );
+            Mergeability::Unknown
         }
+    }
+}
+
+/// GitHub's `MergeStateStatus`. Anything den doesn't recognise counts as unknown.
+fn merge_state(state: &str) -> MergeState {
+    match state {
+        "CLEAN" => MergeState::Clean,
+        "HAS_HOOKS" => MergeState::HasHooks,
+        "UNSTABLE" => MergeState::Unstable,
+        "BLOCKED" => MergeState::Blocked,
+        "BEHIND" => MergeState::Behind,
+        "DIRTY" => MergeState::Dirty,
+        "DRAFT" => MergeState::Draft,
+        "UNKNOWN" => MergeState::Unknown,
+        other => {
+            tracing::warn!(
+                state = other,
+                "unrecognised PR merge state; treated as unknown"
+            );
+            MergeState::Unknown
+        }
+    }
+}
+
+/// GitHub's `PullRequestReviewDecision`. Null means no review is required,
+/// unless the page carried errors: an error nulls the field it hits, so a null
+/// there proves nothing.
+fn review_decision(decision: Option<&str>, page_complete: bool) -> ReviewDecision {
+    match decision {
+        Some("APPROVED") => ReviewDecision::Approved,
+        Some("CHANGES_REQUESTED") => ReviewDecision::ChangesRequested,
+        Some("REVIEW_REQUIRED") => ReviewDecision::ReviewRequired,
+        Some(other) => {
+            tracing::warn!(
+                decision = other,
+                "unrecognised PR review decision; treated as unknown"
+            );
+            ReviewDecision::Unknown
+        }
+        None if page_complete => ReviewDecision::NotRequired,
+        None => ReviewDecision::Unknown,
     }
 }
 
@@ -98,6 +176,7 @@ fn with_facts(query: &str) -> String {
 pub fn fetch(session: &Session<'_>, owner: &str) -> Result<KindFetch<PullRequest>, SurveyFailure> {
     let owner_query = with_facts(OWNER_QUERY);
     let mut out = KindFetch::default();
+    let mut found_prs: Vec<(String, PullRequest)> = Vec::new();
     let mut pager = Pager::new(None);
     while pager.may_continue() {
         let (page, page_state) = match session.run::<OwnerData>(
@@ -121,11 +200,11 @@ pub fn fetch(session: &Session<'_>, owner: &str) -> Result<KindFetch<PullRequest
         for node in repos.nodes.into_iter().flatten() {
             let repo = RepoId::new(owner, node.name);
             let prs = node.pull_requests;
-            out.items.extend(
+            found_prs.extend(
                 prs.nodes
                     .into_iter()
                     .flatten()
-                    .map(|pr| pr.into_fact(&repo)),
+                    .map(|pr| pr.into_fact(&repo, page_state.is_complete())),
             );
             if prs.page_info.has_next_page {
                 fetch_rest_of_repo(
@@ -133,7 +212,8 @@ pub fn fetch(session: &Session<'_>, owner: &str) -> Result<KindFetch<PullRequest
                     &repo,
                     page_state.clone(),
                     prs.page_info.end_cursor,
-                    &mut out,
+                    &mut found_prs,
+                    &mut out.coverage,
                 )?;
             }
         }
@@ -145,6 +225,8 @@ pub fn fetch(session: &Session<'_>, owner: &str) -> Result<KindFetch<PullRequest
         owner: owner.to_owned(),
         kind: SourceKind::PullRequests,
     }));
+    details::fill(session, &mut found_prs, &mut out.coverage)?;
+    out.items = found_prs.into_iter().map(|(_, pr)| pr).collect();
     Ok(out)
 }
 
@@ -154,7 +236,8 @@ fn fetch_rest_of_repo(
     repo: &RepoId,
     first_page: crate::domain::SourceState,
     cursor: Option<String>,
-    out: &mut KindFetch<PullRequest>,
+    found_prs: &mut Vec<(String, PullRequest)>,
+    coverage: &mut Vec<CoverageEntry>,
 ) -> Result<(), SurveyFailure> {
     let query = with_facts(REPO_QUERY);
     let mut pager = Pager::new(None);
@@ -162,15 +245,16 @@ fn fetch_rest_of_repo(
     // state: an error there may have nulled some of this Repo's PRs.
     pager.page_read(first_page);
     if !pager.advance(true, cursor) {
-        out.coverage.push(pager.finish(repo_source(repo)));
+        coverage.push(pager.finish(repo_source(repo)));
         return Ok(());
     }
     while pager.may_continue() {
         let variables = json!({ "owner": repo.owner, "name": repo.name, "after": pager.cursor });
-        let page = match session.run::<RepoData>(&query, variables)? {
+        let (page, page_complete) = match session.run::<RepoData>(&query, variables)? {
             Fetched::Data { data, state } => {
+                let complete = state.is_complete();
                 pager.page_read(state);
-                data
+                (data, complete)
             }
             Fetched::Lost(state) => {
                 pager.page_lost(state);
@@ -184,13 +268,17 @@ fn fetch_rest_of_repo(
             break;
         };
         let prs = found.pull_requests;
-        out.items
-            .extend(prs.nodes.into_iter().flatten().map(|pr| pr.into_fact(repo)));
+        found_prs.extend(
+            prs.nodes
+                .into_iter()
+                .flatten()
+                .map(|pr| pr.into_fact(repo, page_complete)),
+        );
         if !pager.advance(prs.page_info.has_next_page, prs.page_info.end_cursor) {
             break;
         }
     }
-    out.coverage.push(pager.finish(repo_source(repo)));
+    coverage.push(pager.finish(repo_source(repo)));
     Ok(())
 }
 

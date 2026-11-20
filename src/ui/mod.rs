@@ -8,6 +8,7 @@ pub mod frame;
 mod glyphs;
 mod header;
 pub mod list;
+pub mod sidebar;
 pub mod templates;
 mod text;
 

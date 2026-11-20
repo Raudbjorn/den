@@ -5,6 +5,7 @@
 //! GraphQL body: then stderr says whether `gh` is logged out, rate limited, or
 //! something else failed.
 
+use super::rest::Rest;
 use crate::process::{self, ProcessError};
 use jiff::Timestamp;
 use serde::Deserialize;
@@ -77,13 +78,20 @@ pub trait GraphQl: Send + Sync {
     fn rate_limit_reset(&self) -> Option<Timestamp> {
         None
     }
+
+    /// REST through the same CLI, for facts GraphQL lacks (workflow Runs; see
+    /// `rest.rs`). `None` when this transport has no REST (GraphQL-only test
+    /// scripts): sources that need it are then recorded as not yet fetched.
+    fn rest(&self) -> Option<&dyn Rest> {
+        None
+    }
 }
 
 /// `gh api graphql --input -`, with the request body on stdin.
 #[derive(Debug, Clone)]
 pub struct GhCli {
-    program: OsString,
-    timeout: Duration,
+    pub(super) program: OsString,
+    pub(super) timeout: Duration,
 }
 
 impl GhCli {
@@ -140,6 +148,10 @@ impl GraphQl for GhCli {
             "gh api graphql"
         );
         result
+    }
+
+    fn rest(&self) -> Option<&dyn Rest> {
+        Some(self)
     }
 
     fn rate_limit_reset(&self) -> Option<Timestamp> {

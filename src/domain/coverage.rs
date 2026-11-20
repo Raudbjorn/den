@@ -83,15 +83,25 @@ pub enum Incompleteness {
     RateLimited { resets_at: Option<Timestamp> },
     /// Pagination stopped before the last page (den's page bound, or a failed page).
     PaginationStopped { pages_read: u32, reason: String },
+    /// The list was read, but a follow-up query for some of its items' facts
+    /// was lost (for example a PR's checks and reviews).
+    FollowUpLost { what: String, reason: String },
+    /// A follow-up query was read, but some of its lists were not read in
+    /// full: GitHub had more than den reads in one query, or some entries
+    /// came back unreadable (for example a PR's checks or review threads).
+    FollowUpTruncated { what: String },
 }
 
 impl Incompleteness {
     /// Ranks reasons so that combining two keeps the more telling one: a rate
     /// limit (which also stops pagination, and says when it resets) over a
-    /// stopped pagination (whole pages missing) over errors alongside data.
+    /// stopped pagination (whole pages missing) over facts missing from items
+    /// den has (errors alongside data, a lost or truncated follow-up query).
     fn rank(&self) -> u8 {
         match self {
-            Self::ErrorsAlongsideData { .. } => 0,
+            Self::ErrorsAlongsideData { .. }
+            | Self::FollowUpLost { .. }
+            | Self::FollowUpTruncated { .. } => 0,
             Self::PaginationStopped { .. } => 1,
             Self::RateLimited { .. } => 2,
         }
@@ -143,6 +153,8 @@ impl Incompleteness {
             Self::PaginationStopped { pages_read, reason } => {
                 format!("stopped after {pages_read} page(s): {reason}")
             }
+            Self::FollowUpLost { what, reason } => format!("{what} could not be read: {reason}"),
+            Self::FollowUpTruncated { what } => format!("not every entry was read: {what}"),
         }
     }
 }
