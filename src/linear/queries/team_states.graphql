@@ -1,5 +1,5 @@
-query LinearTeamStates($first: Int!, $after: String, $statesFirst: Int!) {
-  teams(first: $first, after: $after) {
+query LinearTeamStates($first: Int!, $after: String, $statesFirst: Int!, $filter: TeamFilter) {
+  teams(first: $first, after: $after, filter: $filter) {
     nodes {
       id
       key

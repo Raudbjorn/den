@@ -1,5 +1,5 @@
 query LinearStartTeamIssues($first: Int!, $after: String, $filter: IssueFilter!) {
-  issues(first: $first, after: $after, orderBy: createdAt, filter: $filter) {
+  issues(first: $first, after: $after, sort: [{ createdAt: { order: Ascending } }], filter: $filter) {
     nodes {
       id
       identifier
