@@ -362,10 +362,7 @@ mod tests {
                 cursor: 0,
                 editing: false,
             }),
-            linear_writes: vec![
-                "Linear: assign TEAM-8 to Me Myself (you, the Linear viewer)".to_owned(),
-                long,
-            ],
+            linear_writes: vec!["Linear: assign TEAM-8 to Me Myself (you)".to_owned(), long],
             command: Some("kitty --detach claude".to_owned()),
             messages: Vec::new(),
         };

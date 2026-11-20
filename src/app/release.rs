@@ -16,7 +16,7 @@ use super::{
     linear_writes::{Next, Shown, Watch, Writes},
 };
 use crate::{
-    decide::Decision,
+    decide::{DEPLOYMENTS_UNSEEN, Decision, EVIDENCE_PREFIX},
     domain::{NextStep, WorkItemId},
 };
 
@@ -74,15 +74,16 @@ impl App {
             }
             Err(why) => (None, ReleaseState::Refused(why)),
         };
-        let mut evidence: Vec<String> = decision.explanation.winning_rule.iter().cloned().collect();
-        evidence.extend(decision.explanation.other_conditions.iter().cloned());
-        evidence.extend(
-            decision
-                .explanation
-                .unknowns
-                .iter()
-                .map(|u| format!("unknown: {u}")),
-        );
+        // The members as evidence, and that den can't see deployments; the
+        // issue's own facts are the sheet's fields.
+        let explanation = &decision.explanation;
+        let evidence: Vec<String> = explanation
+            .other_conditions
+            .iter()
+            .filter(|c| c.starts_with(EVIDENCE_PREFIX) || c.as_str() == DEPLOYMENTS_UNSEEN)
+            .cloned()
+            .chain(explanation.unknowns.iter().map(|u| format!("unknown: {u}")))
+            .collect();
         let log = Effect::log(
             LogLevel::Info,
             format!(

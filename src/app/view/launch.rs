@@ -237,16 +237,12 @@ fn add_linear(view: &mut LaunchSheet, sheet: &Sheet, linear: &LinearLaunch) {
     view.messages = messages;
 }
 
-/// The LINEAR ISSUE field: who it is assigned to and its state, as the sheet
-/// showed it, and its URL.
+/// The IN LINEAR field: who the issue is assigned to and its state, as the
+/// sheet shows it (the survey's, or a re-read's after den asked again).
 fn issue_field(writes: &Writes) -> SheetField {
     field(
-        "LINEAR",
-        format!(
-            "{} {}",
-            writes.request.identifier,
-            linear_writes::describe(writes.shown.assignee.as_ref(), &writes.shown.state)
-        ),
+        "IN LINEAR",
+        linear_writes::describe(writes.shown.assignee.as_ref(), &writes.shown.state),
         None,
         Tone::Plain,
     )

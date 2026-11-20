@@ -147,11 +147,11 @@ impl Writes {
         &self.request.identifier
     }
 
-    /// Who the claim assigns the issue to, in words.
+    /// Who the claim assigns the issue to, in words: the Linear viewer.
     pub fn me(&self) -> String {
         match &self.viewer {
-            Some(viewer) => format!("{} (you, the Linear viewer)", viewer.name),
-            None => "you (the Linear viewer)".to_owned(),
+            Some(viewer) => format!("{} (you)", viewer.name),
+            None => "you".to_owned(),
         }
     }
 

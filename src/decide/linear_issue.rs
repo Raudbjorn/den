@@ -66,6 +66,10 @@ const ASSIGNEE_ROLE: &str = "the Linear assignee";
 pub const PR_EXISTENCE_UNKNOWN: &str = "couldn't establish whether a PR exists";
 /// What Mark for release's Explanation says about what it doesn't claim
 /// (spec 0002, story 84).
+/// Starts each Mark for release condition that names member PRs as evidence
+/// (the Mark for release sheet lists exactly these, #38).
+pub const EVIDENCE_PREFIX: &str = "evidence: ";
+
 pub const DEPLOYMENTS_UNSEEN: &str = "den can't see deployments: Mark for release rests only on the Pull Requests having merged, not on the work having shipped";
 
 /// Decides every Linear Issue. `pull_requests` are the Pull Requests' own
@@ -452,11 +456,11 @@ fn mark_for_release(ctx: &Context<'_>, issue: &LinearIssue, landing: &Landing) -
     let unread = with(|s| matches!(s, MemberStatus::NotOpen));
     let mut conditions = Vec::new();
     if !merged.is_empty() {
-        conditions.push(format!("evidence: merged {}", references(&merged)));
+        conditions.push(format!("{EVIDENCE_PREFIX}merged {}", references(&merged)));
     }
     if !closed.is_empty() {
         conditions.push(format!(
-            "evidence: closed without merging {}",
+            "{EVIDENCE_PREFIX}closed without merging {}",
             references(&closed)
         ));
     }

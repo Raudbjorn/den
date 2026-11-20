@@ -379,11 +379,11 @@ fn start_shows_its_two_writes_then_rereads_assigns_moves_and_launches() {
     assert_eq!(
         ready.linear_writes,
         [
-            format!("Linear: assign TEAM-8 to {LINEAR_ME_NAME} (you, the Linear viewer)"),
+            format!("Linear: assign TEAM-8 to {LINEAR_ME_NAME} (you)"),
             format!("Linear: move TEAM-8 from Todo to {IN_PROGRESS}"),
         ]
     );
-    assert_eq!(field(&ready, "LINEAR").0, "TEAM-8 unassigned, in Todo");
+    assert_eq!(field(&ready, "IN LINEAR").0, "unassigned, in Todo");
     assert_eq!(field(&ready, "MOVE").0, format!("on: to {IN_PROGRESS}"));
     assert_eq!(field(&ready, "TARGET").0, "acme/api");
     assert_eq!(
@@ -487,8 +487,8 @@ fn a_reread_showing_a_new_assignee_asks_again_and_writes_nothing() {
     let asked = sheet(&harness);
     assert_eq!(asked.status, LaunchStatus::Ready);
     assert_eq!(
-        field(asked, "LINEAR").0,
-        "TEAM-8 assigned to Someone Else, in Todo"
+        field(asked, "IN LINEAR").0,
+        "assigned to Someone Else, in Todo"
     );
     assert!(
         messages(asked).contains("TEAM-8 is now assigned to Someone Else"),
@@ -744,9 +744,7 @@ fn the_move_toggle_turns_the_move_off_and_start_still_claims() {
     assert_eq!(field(&off, "MOVE").0, "off");
     assert_eq!(
         off.linear_writes,
-        [format!(
-            "Linear: assign TEAM-8 to {LINEAR_ME_NAME} (you, the Linear viewer)"
-        )]
+        [format!("Linear: assign TEAM-8 to {LINEAR_ME_NAME} (you)")]
     );
     harness.linear.push_reread(reread(None, todo()));
     harness.linear_writer.push_outcome(done(Some(me()), todo()));
@@ -846,9 +844,56 @@ fn a_github_owners_launch_sheet_shows_no_linear_writes() {
         ready
             .fields
             .iter()
-            .all(|f| f.label != "LINEAR" && f.label != "MOVE")
+            .all(|f| f.label != "IN LINEAR" && f.label != "MOVE")
     );
     let effects = enter(&mut harness);
     assert_eq!(acts(&effects), ["launch"]);
     assert!(!harness.effects.iter().any(is_linear_write));
+}
+
+fn drawn(harness: &mut Harness, (cols, rows): (u16, u16)) -> String {
+    use den::ui::{Theme, frame};
+    use raudbjorn_tui::profile::{ColorProfile, GlyphProfile, TerminalProfile};
+    harness.send(Event::Resized { cols, rows });
+    let theme = Theme::new(TerminalProfile::new(
+        ColorProfile::Mono,
+        GlyphProfile::Unicode,
+    ))
+    .expect("theme");
+    let buffer = frame::render(&theme, &harness.view, cols, rows).expect("renders");
+    frame::buffer_text(&buffer)
+}
+
+/// The Start sheet and the Mark for release sheet draw their Linear writes
+/// as text (each one line, labelled LINEAR), at the design size and at 80×24.
+#[test]
+fn the_linear_writes_are_drawn_as_text_on_both_sheets() {
+    let mut harness = started(workflow(false));
+    open(&mut harness, "TEAM-8");
+    for size in [(160, 45), (80, 24)] {
+        let text = drawn(&mut harness, size);
+        assert!(text.contains("LINEAR"), "{text}");
+        assert!(text.contains("Linear: assign TEAM-8"), "{text}");
+    }
+    harness.settle(Event::Key(Key::Esc));
+    open(&mut harness, "TEAM-3");
+    let text = drawn(&mut harness, (160, 45));
+    assert!(text.contains("M A R K   F O R   R E L E A S E"), "{text}");
+    assert!(text.contains("Linear: move TEAM-3"), "{text}");
+}
+
+#[test]
+#[ignore = "prints the sheets for a look by eye"]
+fn print_the_linear_sheets() {
+    let mut harness = started(workflow(true));
+    open(&mut harness, "TEAM-8");
+    harness.settle(Event::Key(Key::Char('t')));
+    for size in [(160, 45), (80, 24)] {
+        println!("{}\n", drawn(&mut harness, size));
+    }
+    harness.settle(Event::Key(Key::Esc));
+    open(&mut harness, "TEAM-3");
+    for size in [(160, 45), (80, 24)] {
+        println!("{}\n", drawn(&mut harness, size));
+    }
 }
