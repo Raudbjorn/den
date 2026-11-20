@@ -2,7 +2,7 @@
 //! source"). den never estimates how many items it could not see; it says which
 //! source was incomplete and why.
 
-use super::ids::{RepoId, WorkItemId, WorkItemKind};
+use super::ids::{RepoId, WorkItemId, WorkItemKind, same_login};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -51,6 +51,20 @@ pub enum Source {
 }
 
 impl Source {
+    /// The same source on GitHub, whatever the casing of its Owner and Repo.
+    pub fn same(&self, other: &Source) -> bool {
+        match (self, other) {
+            (Self::Viewer, Self::Viewer) => true,
+            (Self::Owner { owner, kind }, Self::Owner { owner: o, kind: k }) => {
+                kind == k && same_login(owner, o)
+            }
+            (Self::Repo { repo, kind }, Self::Repo { repo: r, kind: k }) => {
+                kind == k && repo.same(r)
+            }
+            _ => false,
+        }
+    }
+
     pub fn label(&self) -> String {
         match self {
             Self::Viewer => "viewer and teams".to_owned(),
@@ -230,6 +244,8 @@ impl Coverage {
 
     /// The sources whose completeness bears on one Work Item: the viewer (for
     /// Waiting On), its kind across its Owner, and its kind for its own Repo.
+    /// Matched case-insensitively, as GitHub names are: a fact kept from an
+    /// earlier survey may spell its Owner as the config did then.
     pub fn applicable_to(&self, item: &WorkItemId) -> Vec<CoverageEntry> {
         let repo = item.repo();
         let kind = SourceKind::for_work_item(item.kind());
@@ -237,8 +253,8 @@ impl Coverage {
             .iter()
             .filter(|e| match &e.source {
                 Source::Viewer => true,
-                Source::Owner { owner, kind: k } => *k == kind && owner == &repo.owner,
-                Source::Repo { repo: r, kind: k } => *k == kind && r == repo,
+                Source::Owner { owner, kind: k } => *k == kind && same_login(owner, &repo.owner),
+                Source::Repo { repo: r, kind: k } => *k == kind && r.same(repo),
             })
             .cloned()
             .collect()

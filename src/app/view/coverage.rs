@@ -24,7 +24,7 @@ fn carried_since(state: &State<'_>, source: &Source) -> Option<Timestamp> {
     let own = state
         .carried
         .iter()
-        .find(|c| &c.source == source)
+        .find(|c| c.source.same(source))
         .map(|c| c.observed_at);
     own.or_else(|| match source {
         Source::Repo { repo, kind } => carried_since(
@@ -89,7 +89,7 @@ pub fn for_repo(state: &State<'_>, observation: &Observation, repo: &Repo) -> Re
         .iter()
         .filter(|e| match &e.source {
             Source::Owner { owner, .. } => owner.eq_ignore_ascii_case(&repo.id.owner),
-            Source::Repo { repo: r, .. } => r == &repo.id,
+            Source::Repo { repo: r, .. } => r.same(&repo.id),
             Source::Viewer => false,
         })
         .collect();
