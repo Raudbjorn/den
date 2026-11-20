@@ -14,8 +14,11 @@
 //! ran on the default branch itself. Anything den skipped or could not read is
 //! recorded as partial or failed coverage for that Repo. A rate limit, or
 //! [`MAX_TIMED_OUT_REQUESTS_PER_OWNER`] timed-out requests, stops the Owner's
-//! remaining requests and marks the Owner's Runs partial. The Owner's Runs are
-//! never more complete than the list of Repos they were read from.
+//! remaining requests and marks the Owner's Runs partial. That the Owner's Runs
+//! are never more complete than its Repo list is [`Coverage::record`]'s rule,
+//! shared by every Work Item kind.
+//!
+//! [`Coverage::record`]: crate::domain::Coverage::record
 
 use super::{
     graphql::TransportError,
@@ -219,13 +222,11 @@ impl Rest for Watched<'_> {
     }
 }
 
-/// Reads the default-branch Runs of `repos`. `repo_list` is how completely the
-/// Owner's Repos were listed: Runs of Repos missing from the list weren't read.
+/// Reads the default-branch Runs of `repos`.
 pub fn fetch(
     session: &Session<'_>,
     owner: &str,
     repos: &[Repo],
-    repo_list: &SourceState,
 ) -> Result<KindFetch<Run>, SurveyFailure> {
     let owner_source = Source::Owner {
         owner: owner.to_owned(),
@@ -329,24 +330,11 @@ pub fn fetch(
             });
         }
     }
-    let stopped = stop.owner_state().unwrap_or(SourceState::Complete);
     out.coverage.push(CoverageEntry {
         source: owner_source,
-        // On a tie the stop wins: a rate limit carries its reset time.
-        state: stopped.worst(runs_of_listed_repos_only(repo_list)),
+        state: stop.owner_state().unwrap_or(SourceState::Complete),
     });
     Ok(out)
-}
-
-/// The Owner's Runs, as far as the list of Repos limits them.
-fn runs_of_listed_repos_only(repo_list: &SourceState) -> SourceState {
-    match repo_list {
-        SourceState::Failed { error } => SourceState::Failed {
-            error: format!("the Owner's Repos could not be listed, so no Runs were read: {error}"),
-        },
-        // Partial (with the list's own reason), not yet fetched, or complete.
-        other => other.clone(),
-    }
 }
 
 /// One Repo's Runs as the phases fill them in.

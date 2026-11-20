@@ -144,7 +144,7 @@ impl Incompleteness {
             Self::FollowUpLost { what, reason } => format!("{what} could not be read: {reason}"),
             Self::RepoListIncomplete { owner } => {
                 format!(
-                    "the Repo list of {owner} was only partly read, so some of its Repos may be missing"
+                    "the Repo list of {owner} was not read completely, so some of its Repos may be missing"
                 )
             }
         }
