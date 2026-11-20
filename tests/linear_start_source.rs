@@ -23,7 +23,7 @@ use std::sync::Arc;
 use support::{
     fakes::ScriptedLinear,
     harness::linear_workflow,
-    linear_replies::{issue_node, issues_page, ok, source, viewer_body},
+    linear_replies::{attachments, issue_node, issues_page, ok, source, viewer_body},
 };
 
 /// `acme`'s workflow with start team `TEAM` and the two state names.
@@ -240,6 +240,63 @@ fn reads_team_states_and_the_start_teams_unassigned_issues() {
         request.variables["filter"].is_object(),
         "the filter is kept"
     );
+}
+
+#[test]
+fn start_attachments_keep_page_completeness_in_both_paging_paths() {
+    for priority_paging in [false, true] {
+        for partial in [false, true] {
+            let (survey, transport) = run_survey(
+                start_workflow(),
+                script(all_teams, move |request| {
+                    let priority = priority_of(request);
+                    if priority_paging && priority.is_null() {
+                        return ok(start_page(Vec::new(), Some("more")));
+                    }
+                    if priority_paging && priority != json!({"eq": 1}) {
+                        return ok(start_page(Vec::new(), None));
+                    }
+                    let mut node = start_node("id-8", "TEAM-8");
+                    node["attachments"] =
+                        attachments(&["https://github.com/acme/api/pull/4"], false);
+                    let mut body = start_page(vec![node], None);
+                    if partial {
+                        body["errors"] = json!([{"message": "attachment read failed"}]);
+                    }
+                    ok(body)
+                }),
+            );
+            let issue = survey
+                .part
+                .issues
+                .iter()
+                .find(|i| i.identifier == "TEAM-8")
+                .unwrap();
+            let members: Vec<_> = issue.attachments.pull_requests().collect();
+            assert_eq!(members.len(), 1);
+            assert_eq!(members[0].number, 4);
+            assert_eq!(
+                issue.attachments.read == AttachmentsRead::Complete,
+                !partial
+            );
+            for request in transport
+                .requests()
+                .iter()
+                .filter(|r| r.operation == "LinearStartTeamIssues")
+            {
+                assert!(request.query.contains("...LinearIssueFields"));
+                assert!(
+                    request
+                        .query
+                        .contains("fragment LinearIssueFields on Issue")
+                );
+                assert_eq!(
+                    request.variables["attachmentsPerIssue"],
+                    json!(ATTACHMENTS_PER_ISSUE)
+                );
+            }
+        }
+    }
 }
 
 /// What den asks Linear for: unassigned, the start teams by key (any case),
