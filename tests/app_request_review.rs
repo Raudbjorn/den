@@ -889,6 +889,61 @@ fn an_unedited_reviewer_list_follows_new_suggestions_and_is_shown_again_before_l
 }
 
 #[test]
+fn a_target_round_trip_discards_saved_prompt_edits_only_when_suggested_reviewers_change() {
+    let as_fork = |mut observation: Observation| {
+        let repo = observation
+            .repos
+            .iter_mut()
+            .find(|repo| repo.id == RepoId::new("acme", "api"))
+            .expect("acme/api");
+        repo.is_fork = true;
+        repo.parent = Some(Box::new(support::build::upstream_repo("octo/api")));
+        observation
+    };
+    for changed in [false, true] {
+        let before = as_fork(surveyed(pr_2(), pr_4()));
+        let after = if changed {
+            as_fork(alice_approved_carol_awaiting())
+        } else {
+            before.clone()
+        };
+        let mut harness = started_with(config(None), before);
+        let survey = refresh_pending(&mut harness, "#2", after);
+        for key in [Key::Char('e'), Key::End, Key::Char('!'), Key::Esc] {
+            press(&mut harness, key);
+        }
+        let edited = prompt(sheet(&harness)).to_owned();
+        press(&mut harness, Key::Char('u'));
+        land(&mut harness, &survey);
+        press(&mut harness, Key::Char('u'));
+
+        let ready = sheet(&harness);
+        assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(ready));
+        let reviewers = if changed {
+            "acme/backend, carol"
+        } else {
+            "alice, acme/backend"
+        };
+        assert_eq!(ready.reviewers.as_ref().unwrap().text, reviewers);
+        // Saved edits must not reintroduce reviewers the displayed plan removed.
+        let expected = if changed {
+            prompt_without_slack(reviewers)
+        } else {
+            edited
+        };
+        assert_eq!(prompt(ready), expected);
+        assert_eq!(
+            messages(ready).contains("your edits to the prompt were replaced"),
+            changed
+        );
+        press(&mut harness, Key::Enter);
+        let plans = launch_plans(&harness);
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].prompt, expected);
+    }
+}
+
+#[test]
 fn an_edited_reviewer_list_is_kept_when_the_suggestions_change() {
     let mut harness = started(None);
     let survey = refresh_pending(&mut harness, "#2", alice_approved_carol_awaiting());

@@ -819,6 +819,12 @@ fn sync_reviewers(sheet: &mut Sheet, decision: Option<&Decision>) {
     match sheet.reviewers.as_mut() {
         Some(field) => {
             if field.follows_suggestions() {
+                // A target switch may still hold prompt edits for the old list.
+                if field.suggested != suggested && sheet.edited_prompt.take().is_some() {
+                    sheet.notice = Some(
+                        "The reviewers changed, so den rebuilt the prompt from its template; your edits to the prompt were replaced".to_owned(),
+                    );
+                }
                 field.editor = PromptEditor::new(&reviewers::spell_list(&suggested));
             }
             field.suggested = suggested;
