@@ -358,6 +358,8 @@ fn plan_for(clone: &Path, url: &str, head: &str) -> LaunchPlan {
             repo: RepoId::new("octo", "app"),
             url: url.to_owned(),
             is_fork: false,
+            upstream_of: None,
+            default_branch: Some("main".to_owned()),
         },
         main_clone: MainClone {
             path: clone.to_owned(),
@@ -550,4 +552,64 @@ fn job_records_are_appended_and_an_unreadable_file_is_never_overwritten() {
     assert!(store.load().is_err());
     assert!(store.record(&job(3)).is_err());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
+}
+
+#[test]
+fn a_cross_repo_head_is_fetched_by_its_pr_ref_and_the_branch_tracks_nothing() {
+    // #13: the head branch lives in another Repo, so the target's remote has no
+    // branch of that name, only GitHub's `refs/pull/<n>/head`.
+    let (temp, _dev, clone, url, head) = temp_repos();
+    let remote = temp.path().join("remote.git");
+    git(&remote, &["update-ref", "refs/pull/7/head", &head]);
+    git(&remote, &["update-ref", "-d", "refs/heads/feature/x"]);
+    let workspace = GitWorkspace::new();
+    assert_eq!(
+        workspace
+            .remote_pull_head(&clone, "upstream", 7)
+            .expect("ls-remote"),
+        Some(head.clone())
+    );
+    assert_eq!(
+        workspace
+            .remote_pull_head(&clone, "upstream", 8)
+            .expect("ls-remote"),
+        None
+    );
+
+    let mut plan = plan_for(&clone, &url, &head);
+    plan.base.reference = BaseRef::PullHead { number: 7 };
+    plan.branch.start = BranchStart::NewUntracked;
+    let launcher = RecordingLauncher::default();
+    let jobs = FileJobStore::new(temp.path().join("state").join("jobs.json"));
+    let report = handoff::execute(
+        &plan,
+        &workspace,
+        &launcher,
+        &jobs,
+        "2026-11-20T10:00:00Z".parse().unwrap(),
+    );
+    assert!(
+        matches!(report.outcome, LaunchOutcome::Launched { .. }),
+        "{report:#?}"
+    );
+    assert_eq!(
+        git(&clone, &["rev-parse", "refs/remotes/upstream/pr/7"]),
+        head
+    );
+    assert_eq!(git(&plan.worktree, &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        git(&plan.worktree, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "feature/x"
+    );
+    let tracking = Command::new("git")
+        .arg("-C")
+        .arg(&plan.worktree)
+        .args(["rev-parse", "--abbrev-ref", "@{upstream}"])
+        .output()
+        .expect("git runs");
+    assert!(
+        !tracking.status.success(),
+        "the branch tracks nothing: {}",
+        String::from_utf8_lossy(&tracking.stdout)
+    );
 }

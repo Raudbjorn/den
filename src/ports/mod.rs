@@ -1,7 +1,7 @@
 //! Ports: den's I/O behind traits, so the App and its tests never touch the
 //! network, git, kitty or the clock directly. Real adapters live in
-//! `crate::github`, `crate::cache`, `crate::workspace`, `crate::launcher` and
-//! `crate::jobs`; fakes live with the tests (`tests/support/fakes.rs`).
+//! `crate::github`, `crate::cache`, `crate::workspace`, `crate::launcher`,
+//! `crate::jobs` and `crate::upstreams`; fakes live with the tests (`tests/support/fakes.rs`).
 
 mod perform;
 
@@ -9,9 +9,10 @@ pub use perform::perform;
 
 use crate::{
     cache::{CacheError, CachedObservation},
-    domain::Observation,
+    domain::{Observation, UpstreamTargets},
     handoff::{PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode},
     jobs::{JobRecord, JobStoreError},
+    upstreams::UpstreamStoreError,
 };
 use jiff::Timestamp;
 use std::{
@@ -23,6 +24,9 @@ use std::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurveyRequest {
     pub owners: Vec<String>,
+    /// The forks whose target is their Upstream: their Branches are compared
+    /// against the Upstream's default branch (#13).
+    pub upstreams: UpstreamTargets,
 }
 
 /// A survey that produced no Observation at all. Per-source trouble (a failed
@@ -101,6 +105,16 @@ pub trait Workspace: Send + Sync {
     ) -> Result<Option<String>, WorkspaceError>;
     /// The worktrees git has registered for the clone, its own checkout first.
     fn worktrees(&self, clone: &Path) -> Result<Vec<RegisteredWorktree>, WorkspaceError>;
+    /// The commit PR `number`'s head ref (`refs/pull/<number>/head`) points at
+    /// on `remote` right now (asks the remote, changes nothing locally);
+    /// `Ok(None)` when the remote has no such ref. Used for a PR whose head
+    /// lives in another Repo than the target (#13).
+    fn remote_pull_head(
+        &self,
+        clone: &Path,
+        remote: &str,
+        number: u64,
+    ) -> Result<Option<String>, WorkspaceError>;
     /// Fetches `refspec` from `remote`.
     fn fetch(&self, clone: &Path, remote: &str, refspec: &str) -> Result<(), WorkspaceError>;
     /// Adds a worktree to the clone.
@@ -109,6 +123,10 @@ pub trait Workspace: Send + Sync {
     /// without a clone (for a Repo den is about to clone); `Ok(None)` when it
     /// has no such branch.
     fn url_branch_head(&self, url: &str, branch: &str) -> Result<Option<String>, WorkspaceError>;
+    /// The commit PR `number`'s head (`refs/pull/<number>/head`) is at in the
+    /// Repo at `url` right now, asked without a clone (a cross-Repo PR head in
+    /// a Repo den is about to clone); `Ok(None)` when it has no such ref.
+    fn url_pull_head(&self, url: &str, number: u64) -> Result<Option<String>, WorkspaceError>;
     /// Clones the Repo at `url` into `into`, a folder that must not exist yet:
     /// the adapter refuses rather than clone into anything already there.
     fn clone_repo(&self, url: &str, into: &Path) -> Result<(), WorkspaceError>;
@@ -128,8 +146,9 @@ pub enum WorktreeStart {
     NewBranchTracking { start: String },
     /// Check out the existing local `branch`.
     ExistingBranch,
-    /// Create `branch` at `start` tracking nothing (a new `<type>_<slug>`
-    /// branch must not track the default branch it starts from).
+    /// Create `branch` at `start` tracking nothing: a new `<type>_<slug>`
+    /// branch must not track the default branch it starts from (#12), and a
+    /// PR ref whose head branch lives in another Repo has nothing to track (#13).
     NewBranch { start: String },
 }
 
@@ -167,6 +186,14 @@ pub trait JobStore: Send + Sync {
     fn record(&self, job: &JobRecord) -> Result<(), JobStoreError>;
 }
 
+/// den's own record of which forks target their Upstream (`crate::upstreams`).
+pub trait UpstreamStore: Send + Sync {
+    /// The stored choices; empty when none were ever stored.
+    fn load(&self) -> Result<UpstreamTargets, UpstreamStoreError>;
+    /// Replaces the stored choices.
+    fn store(&self, upstreams: &UpstreamTargets) -> Result<(), UpstreamStoreError>;
+}
+
 /// The current time, for events that report when something finished.
 pub trait Clock: Send + Sync {
     fn now(&self) -> Timestamp;
@@ -189,5 +216,6 @@ pub struct Ports {
     pub workspace: Arc<dyn Workspace>,
     pub launcher: Arc<dyn Launcher>,
     pub jobs: Arc<dyn JobStore>,
+    pub upstreams: Arc<dyn UpstreamStore>,
     pub clock: Arc<dyn Clock>,
 }

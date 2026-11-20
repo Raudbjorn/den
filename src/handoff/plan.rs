@@ -85,20 +85,40 @@ fn facts(
         reasons.push(RefusalReason::RepoUnknown { repo: repo.clone() });
         return Err(Refusal { reasons });
     };
-    if repo_facts.is_archived {
-        reasons.push(RefusalReason::RepoArchived { repo: repo.clone() });
-    }
-    if pr.head_repo.as_ref() != Some(repo) {
-        reasons.push(RefusalReason::CrossRepoHead {
-            head_repo: pr.head_repo.clone(),
+    let target = match kinds::chosen_target(repo_facts, choice) {
+        Ok(target) => target,
+        Err(reason) => {
+            reasons.push(reason);
+            return Err(Refusal { reasons });
+        }
+    };
+    if target.archived {
+        reasons.push(RefusalReason::RepoArchived {
+            repo: target.target.repo.clone(),
         });
     }
+    // A PR's refs live in the Repo it is in; a same-numbered PR elsewhere is
+    // another PR. So its Job targets that Repo, whatever the fork's setting.
+    if &target.target.repo != repo {
+        reasons.push(RefusalReason::PullRequestNotInTarget {
+            repo: repo.clone(),
+            number: *number,
+            target: target.target.repo.clone(),
+        });
+    }
+    // A head branch in another Repo (or a deleted one) is fetched as the PR
+    // ref from the target's remote (#13).
+    let base = if pr.head_repo.as_ref() == Some(repo) {
+        BaseRef::HeadBranch(pr.head_ref.clone())
+    } else {
+        BaseRef::PullHead { number: *number }
+    };
     match step {
         Some(step) if reasons.is_empty() => Ok(Facts {
             step,
-            target: kinds::target(repo_facts),
+            target: target.target,
             number: Some(*number),
-            base: BaseRef::HeadBranch(pr.head_ref.clone()),
+            base,
             base_commit: Some(pr.head_commit.clone()),
             branch: pr.head_ref.clone(),
             fresh: false,
@@ -132,7 +152,8 @@ pub fn inspect_request(
         base_branch: facts
             .base_commit
             .is_none()
-            .then(|| facts.base.branch().to_owned()),
+            .then(|| facts.base.branch().map(str::to_owned))
+            .flatten(),
         branch: facts.branch,
         item: decision.item.id.clone(),
         fresh: facts.fresh,
@@ -301,7 +322,12 @@ fn base_commit(
         CloneSource::ToClone { url, .. } => url.clone(),
         _ => remote.name.clone(),
     };
-    let branch = facts.base.branch().to_owned();
+    let Some(branch) = facts.base.branch().map(str::to_owned) else {
+        reasons.push(RefusalReason::InspectionFailed {
+            error: format!("den has no commit for {}", facts.base.remote_ref()),
+        });
+        return None;
+    };
     match &view.base_tip {
         Some(Ok(Some(commit))) => return Some(commit.clone()),
         Some(Ok(None)) => reasons.push(RefusalReason::BaseBranchGone { from, branch }),
@@ -318,14 +344,15 @@ fn base_commit(
 }
 
 /// A local branch the Job creates: a fresh `<type>_<slug>` branch tracking
-/// nothing, or the target's branch tracked under its remote.
+/// nothing, the target's branch tracked under its remote, or a cross-Repo PR
+/// head (a PR ref) tracking nothing.
 fn new_branch_start(facts: &Facts, remote: &Remote) -> BranchStart {
-    if facts.fresh {
-        BranchStart::Fresh
-    } else {
-        BranchStart::New {
-            tracking: format!("{}/{}", remote.name, facts.base.branch()),
-        }
+    match facts.base.branch() {
+        _ if facts.fresh => BranchStart::Fresh,
+        Some(branch) => BranchStart::New {
+            tracking: format!("{}/{branch}", remote.name),
+        },
+        None => BranchStart::NewUntracked,
     }
 }
 
@@ -458,10 +485,9 @@ fn check_branch(
 
 /// The base in words, for refusals: "the PR head", "upstream/main".
 fn base_name(facts: &Facts, remote: &Remote) -> String {
-    if facts.base_commit.is_some() {
-        "the PR head".to_owned()
-    } else {
-        format!("{}/{}", remote.name, facts.base.branch())
+    match facts.base.branch() {
+        Some(branch) if facts.base_commit.is_none() => format!("{}/{branch}", remote.name),
+        _ => "the PR head".to_owned(),
     }
 }
 

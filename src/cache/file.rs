@@ -19,7 +19,8 @@ use std::{
 pub const CACHE_SUBDIR: &str = "cache";
 /// The cache file format. Bump it when a change to the cached types would make
 /// older files decode wrongly (not merely fail to decode: that is caught anyway).
-pub const CACHE_FORMAT: u32 = 1;
+/// Format 2: a fork's Upstream is a Repo (URL, default branch), not just its id.
+pub const CACHE_FORMAT: u32 = 2;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// Names the viewer whose cache startup shows.

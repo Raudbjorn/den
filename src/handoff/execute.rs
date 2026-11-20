@@ -5,10 +5,11 @@
 //! earlier step by deleting anything.
 
 use super::{
-    BranchStart, CloneSource, LaunchPlan, PathState, Refusal, RefusalReason, WindowMode,
+    BaseRef, BranchStart, CloneSource, LaunchPlan, PathState, Refusal, RefusalReason, WindowMode,
     check_prompt, clone, command, short_commit,
 };
 use crate::{
+    domain::WorkItemKind,
     jobs::JobRecord,
     ports::{JobStore, Launcher, Workspace, WorktreeAdd, WorktreeStart},
 };
@@ -92,7 +93,7 @@ fn run(
             "re-verified: {} is free; {} has {} at {}",
             plan.main_clone.path.display(),
             plan.target.repo,
-            plan.base.reference.branch(),
+            plan.base.reference.remote_ref(),
             short_commit(&plan.base.commit)
         )),
         Ok(()) => done.push(format!(
@@ -148,7 +149,9 @@ fn run(
     let start = match &plan.branch.start {
         BranchStart::New { .. } => WorktreeStart::NewBranchTracking { start: tracking },
         BranchStart::Existing => WorktreeStart::ExistingBranch,
-        BranchStart::Fresh => WorktreeStart::NewBranch { start: tracking },
+        BranchStart::NewUntracked | BranchStart::Fresh => {
+            WorktreeStart::NewBranch { start: tracking }
+        }
     };
     let add = WorktreeAdd {
         path: plan.worktree.clone(),
@@ -251,7 +254,7 @@ fn verify(plan: &LaunchPlan, workspace: &dyn Workspace) -> Result<(), Verificati
         .resolve(clone_path, &format!("refs/heads/{}", plan.branch.name))
         .map_err(|e| Verification::Failed(e.to_string()))?;
     let as_planned = match (&plan.branch.start, &local) {
-        (BranchStart::New { .. } | BranchStart::Fresh, None) => true,
+        (BranchStart::New { .. } | BranchStart::NewUntracked | BranchStart::Fresh, None) => true,
         (BranchStart::Existing, Some(commit)) => *commit == plan.base.commit,
         _ => false,
     };
@@ -260,11 +263,15 @@ fn verify(plan: &LaunchPlan, workspace: &dyn Workspace) -> Result<(), Verificati
             branch: plan.branch.name.clone(),
         }));
     }
-    let branch = plan.base.reference.branch();
-    let tip = workspace
-        .remote_branch_head(clone_path, &plan.remote.name, branch)
-        .map_err(|e| Verification::Failed(e.to_string()))?;
-    still_at_base(plan, tip, &plan.remote.name)
+    let remote = &plan.remote.name;
+    let tip = match &plan.base.reference {
+        BaseRef::HeadBranch(branch) | BaseRef::DefaultBranch(branch) => {
+            workspace.remote_branch_head(clone_path, remote, branch)
+        }
+        BaseRef::PullHead { number } => workspace.remote_pull_head(clone_path, remote, *number),
+    }
+    .map_err(|e| Verification::Failed(e.to_string()))?;
+    still_at_base(plan, tip, remote)
 }
 
 fn verify_new_clone(
@@ -287,27 +294,44 @@ fn verify_new_clone(
             }));
         }
     }
-    let tip = workspace
-        .url_branch_head(url, plan.base.reference.branch())
-        .map_err(|e| Verification::Failed(e.to_string()))?;
+    let tip = match &plan.base.reference {
+        BaseRef::HeadBranch(branch) | BaseRef::DefaultBranch(branch) => {
+            workspace.url_branch_head(url, branch)
+        }
+        BaseRef::PullHead { number } => workspace.url_pull_head(url, *number),
+    }
+    .map_err(|e| Verification::Failed(e.to_string()))?;
     still_at_base(plan, tip, url)
 }
 
-/// The base branch's tip (as `from` reports it) is the commit the sheet showed.
+/// The base's tip (as `from` reports it) is the commit the sheet showed.
 fn still_at_base(plan: &LaunchPlan, tip: Option<String>, from: &str) -> Result<(), Verification> {
-    let branch = plan.base.reference.branch().to_owned();
     match tip {
-        None if plan.work_item.kind() == crate::domain::WorkItemKind::PullRequest => {
-            Err(Verification::Refused(RefusalReason::HeadBranchGone {
-                remote: from.to_owned(),
-                branch,
-            }))
-        }
-        None => Err(Verification::Refused(RefusalReason::BaseBranchGone {
-            from: from.to_owned(),
-            branch,
-        })),
+        None => Err(Verification::Refused(base_gone(plan, from))),
         Some(commit) if commit == plan.base.commit => Ok(()),
         Some(commit) => Err(Verification::Moved(commit)),
+    }
+}
+
+/// Why the base can't be launched on when `from` no longer has it.
+fn base_gone(plan: &LaunchPlan, from: &str) -> RefusalReason {
+    let from = from.to_owned();
+    match &plan.base.reference {
+        BaseRef::PullHead { number } => RefusalReason::PullRefGone {
+            remote: from,
+            number: *number,
+        },
+        BaseRef::HeadBranch(branch) if plan.work_item.kind() == WorkItemKind::PullRequest => {
+            RefusalReason::HeadBranchGone {
+                remote: from,
+                branch: branch.clone(),
+            }
+        }
+        BaseRef::HeadBranch(branch) | BaseRef::DefaultBranch(branch) => {
+            RefusalReason::BaseBranchGone {
+                from,
+                branch: branch.clone(),
+            }
+        }
     }
 }

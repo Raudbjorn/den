@@ -37,12 +37,45 @@ pub(super) struct Facts {
     pub fresh: bool,
 }
 
-pub(super) fn target(repo: &Repo) -> Target {
-    Target {
-        repo: repo.id.clone(),
-        url: repo.url.clone(),
-        is_fork: repo.is_fork,
-    }
+/// The target a choice names, and whether it is archived.
+pub(super) struct ChosenTarget {
+    pub target: Target,
+    pub archived: bool,
+}
+
+/// The target `choice` names for a Work Item in `repo`: the Repo itself, or
+/// (for a fork) its Upstream (#13). Never a silent substitute. The single
+/// place a choice becomes a Target.
+pub(super) fn chosen_target(
+    repo: &Repo,
+    choice: TargetChoice,
+) -> Result<ChosenTarget, RefusalReason> {
+    let (target, upstream_of) = match choice {
+        TargetChoice::OwnRepo => (repo, None),
+        TargetChoice::Upstream if !repo.is_fork => {
+            return Err(RefusalReason::NotAFork {
+                repo: repo.id.clone(),
+            });
+        }
+        TargetChoice::Upstream => match repo.upstream() {
+            Some(upstream) => (upstream, Some(repo.id.clone())),
+            None => {
+                return Err(RefusalReason::UpstreamUnknown {
+                    fork: repo.id.clone(),
+                });
+            }
+        },
+    };
+    Ok(ChosenTarget {
+        target: Target {
+            repo: target.id.clone(),
+            url: target.url.clone(),
+            is_fork: target.is_fork,
+            upstream_of,
+            default_branch: target.default_branch.clone(),
+        },
+        archived: target.is_archived,
+    })
 }
 
 /// The facts for launching an Issue, a Branch or a Run, or every reason it
@@ -50,7 +83,7 @@ pub(super) fn target(repo: &Repo) -> Target {
 pub(super) fn facts(
     decision: &Decision,
     observation: &Observation,
-    _choice: TargetChoice,
+    choice: TargetChoice,
 ) -> Result<Facts, Refusal> {
     let item = &decision.item.id;
     let mut reasons = Vec::new();
@@ -66,8 +99,17 @@ pub(super) fn facts(
         reasons.push(RefusalReason::RepoUnknown { repo: repo.clone() });
         return Err(Refusal { reasons });
     };
-    if repo_facts.is_archived {
-        reasons.push(RefusalReason::RepoArchived { repo: repo.clone() });
+    let target = match chosen_target(repo_facts, choice) {
+        Ok(target) => target,
+        Err(reason) => {
+            reasons.push(reason);
+            return Err(Refusal { reasons });
+        }
+    };
+    if target.archived {
+        reasons.push(RefusalReason::RepoArchived {
+            repo: target.target.repo.clone(),
+        });
     }
     let Some(step) = decision.next_step else {
         return Err(Refusal { reasons });
@@ -78,7 +120,7 @@ pub(super) fn facts(
         }
         WorkItemId::Issue { number, .. } => {
             let slug = names::issue_slug(*number, &decision.item.title);
-            new_branch(repo_facts, step, &slug, &mut reasons)
+            new_branch(&target.target, step, &slug, &mut reasons)
         }
         WorkItemId::Run { workflow, .. } => {
             let slug = [decision.item.title.as_str(), workflow.0.as_str()]
@@ -86,7 +128,7 @@ pub(super) fn facts(
                 .map(names::slug)
                 .find(|s| !s.is_empty())
                 .unwrap_or_else(|| FALLBACK_WORKFLOW_SLUG.to_owned());
-            new_branch(repo_facts, step, &slug, &mut reasons)
+            new_branch(&target.target, step, &slug, &mut reasons)
         }
         // PRs have their own facts (`plan::facts`); never routed here.
         WorkItemId::PullRequest { .. } => {
@@ -99,7 +141,7 @@ pub(super) fn facts(
     };
     Ok(Facts {
         step,
-        target: target(repo_facts),
+        target: target.target,
         number: match item {
             WorkItemId::Issue { number, .. } => Some(*number),
             _ => None,
@@ -111,17 +153,17 @@ pub(super) fn facts(
     })
 }
 
-/// A new `<type>_<slug>` branch from the default branch; `None` (with the
-/// reason) for an empty Repo.
+/// A new `<type>_<slug>` branch from the target's default branch (the
+/// Upstream's when it is the target); `None` (with the reason) for an empty Repo.
 fn new_branch(
-    repo: &Repo,
+    target: &Target,
     step: NextStep,
     slug: &str,
     reasons: &mut Vec<RefusalReason>,
 ) -> Option<(BaseRef, String, bool)> {
-    let Some(default) = &repo.default_branch else {
+    let Some(default) = &target.default_branch else {
         reasons.push(RefusalReason::NoDefaultBranch {
-            repo: repo.id.clone(),
+            repo: target.repo.clone(),
         });
         return None;
     };

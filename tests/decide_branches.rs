@@ -6,9 +6,10 @@
 mod support;
 
 use den::{
-    decide::{Decision, decide},
+    decide::{Decision, decide, decide_with},
     domain::{
-        Incompleteness, NextStep, Observation, SourceKind, SourceState, WaitingOn, WorkItemId,
+        Incompleteness, NextStep, Observation, SourceKind, SourceState, UpstreamTargets, WaitingOn,
+        WorkItemId,
     },
 };
 use jiff::SignedDuration;
@@ -232,16 +233,95 @@ fn a_forks_branch_is_judged_against_the_forks_own_default_branch() {
     assert!(!rule.contains("upstream"), "{rule}");
 }
 
-#[test]
-fn a_branch_compared_against_another_repo_names_it() {
-    // What #13 (Upstream) produces: the comparison branch lives in the parent.
-    let observation = ObservationBuilder::new()
+/// Decisions with `forks` targeting their Upstream (#13).
+fn decide_targeting(observation: &Observation, forks: &[&str]) -> Vec<Decision> {
+    let upstreams = UpstreamTargets::new(forks.iter().map(|f| repo_id(f)));
+    decide_with(observation, &observation.viewer, &upstreams, now())
+}
+
+/// A fork me/tool (own default `trunk`) of upstream/tool (default `main`),
+/// with one Branch `my-fix` compared against `against` ("owner/name", branch).
+fn fork_with_branch(against: (&str, &str)) -> Observation {
+    ObservationBuilder::new()
         .fully_read_owner("me")
         .with_repo(fork("me/tool", "upstream/tool", "trunk"))
-        .branch(branch("me/tool", "my-fix").compared_against("upstream/tool", "main"))
+        .branch(
+            branch("me/tool", "my-fix")
+                .compared_against(against.0, against.1)
+                .ahead(3)
+                .author(ME),
+        )
+        .build()
+}
+
+#[test]
+fn with_upstream_set_a_forks_branch_is_judged_against_the_upstreams_default_branch() {
+    // The survey, told the fork targets its Upstream, compared it there
+    // (`owner:branch` across Repos, see tests/github_branches.rs).
+    // Before #13 this test decided with no Upstream set; a comparison against
+    // the Upstream is now only right when the Upstream is the target, which
+    // the next test pins.
+    let observation = fork_with_branch(("upstream/tool", "main"));
+    let [decision] = decide_targeting(&observation, &["me/tool"])
+        .try_into()
+        .expect("one Decision");
+    assert_eq!(decision.next_step, Some(NextStep::OpenPr));
+    let rule = decision.explanation.winning_rule.expect("a rule");
+    assert!(
+        rule.contains("3 commits not on upstream/tool:main"),
+        "{rule}"
+    );
+}
+
+#[test]
+fn a_branch_compared_against_the_wrong_branch_for_its_target_waits_for_a_refresh() {
+    // Upstream set, but the Branch was counted against the fork's own default
+    // (before the switch): den won't judge it against a branch not chosen.
+    let stale = fork_with_branch(("me/tool", "trunk"));
+    let [decision] = decide_targeting(&stale, &["me/tool"])
+        .try_into()
+        .expect("one Decision");
+    assert_eq!(decision.next_step, None);
+    let reason = decision.explanation.no_step_reason.expect("a reason");
+    assert!(
+        reason.contains("counted against trunk")
+            && reason.contains("its Upstream's default branch upstream/tool:main")
+            && reason.contains("refresh (r)"),
+        "{reason}"
+    );
+    assert!(!decision.explanation.unknowns.is_empty());
+
+    // And the other way round: switched back to the fork, a Branch counted
+    // against the Upstream waits too.
+    let [back] = decide_targeting(&fork_with_branch(("upstream/tool", "main")), &[])
+        .try_into()
+        .expect("one Decision");
+    assert_eq!(back.next_step, None);
+    let reason = back.explanation.no_step_reason.expect("a reason");
+    assert!(reason.contains("its own default branch trunk"), "{reason}");
+}
+
+#[test]
+fn upstream_set_for_a_fork_whose_upstream_den_cannot_see_gives_no_next_step() {
+    let observation = ObservationBuilder::new()
+        .fully_read_owner("me")
+        .fork("me/tool", None)
+        .branch(branch("me/tool", "my-fix").author(ME))
         .build();
-    let rule = only(&observation).explanation.winning_rule.expect("a rule");
-    assert!(rule.contains("not on upstream/tool:main"), "{rule}");
+    let [decision] = decide_targeting(&observation, &["me/tool"])
+        .try_into()
+        .expect("one Decision");
+    assert_eq!(decision.next_step, None);
+    let reason = decision.explanation.no_step_reason.expect("a reason");
+    assert!(reason.contains("can't see the Upstream"), "{reason}");
+    // Upstream set for a Repo that isn't a fork means nothing: judged as usual.
+    let plain = read("me")
+        .branch(branch("me/app", "wip").author(ME))
+        .build();
+    let [own] = decide_targeting(&plain, &["me/app"])
+        .try_into()
+        .expect("one Decision");
+    assert_eq!(own.next_step, Some(NextStep::OpenPr));
 }
 
 #[test]

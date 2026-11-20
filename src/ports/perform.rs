@@ -44,6 +44,9 @@ pub fn perform(effect: &Effect, ports: &Ports) -> Vec<Event> {
                 ports.clock.now(),
             )),
         }],
+        Effect::StoreUpstreams { upstreams } => vec![Event::UpstreamsStored {
+            outcome: ports.upstreams.store(upstreams),
+        }],
         Effect::Quit | Effect::Log(_) => Vec::new(),
     }
 }

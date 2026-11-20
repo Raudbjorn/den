@@ -17,6 +17,20 @@ pub use run::{RunBuilder, run};
 use den::domain::{Observation, Repo, RepoId, Source, SourceKind, SourceState, TeamRef, Viewer};
 use jiff::Timestamp;
 
+/// A fork's Upstream ("owner/name") as GitHub describes it: on github.com,
+/// default branch `main`, not itself a fork, not archived.
+pub fn upstream_repo(full_name: &str) -> Repo {
+    let id = repo_id(full_name);
+    Repo {
+        url: format!("https://github.com/{id}"),
+        id,
+        is_fork: false,
+        is_archived: false,
+        default_branch: Some("main".to_owned()),
+        parent: None,
+    }
+}
+
 /// The fixed "now" every test uses.
 pub const NOW: &str = "2026-11-19T12:00:00Z";
 /// The default viewer's login.
@@ -117,12 +131,13 @@ impl ObservationBuilder {
         self
     }
 
-    /// A fork of `parent` ("owner/name"), or of a parent den cannot see.
+    /// A fork of `parent` ("owner/name", default branch `main`), or of a
+    /// parent den cannot see.
     pub fn fork(mut self, full_name: &str, parent: Option<&str>) -> Self {
         self = self.repo(full_name);
         if let Some(repo) = self.observation.repos.last_mut() {
             repo.is_fork = true;
-            repo.parent = parent.map(repo_id);
+            repo.parent = parent.map(|p| Box::new(upstream_repo(p)));
         }
         self
     }

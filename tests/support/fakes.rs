@@ -5,14 +5,16 @@
 
 use den::{
     cache::{CacheError, CachedObservation},
-    domain::Observation,
+    domain::{Observation, UpstreamTargets},
     github::graphql::{GraphQl, GraphQlRequest, GraphQlResponse, TransportError},
     handoff::{PathState, RegisteredWorktree, Remote, WindowCommand, WindowMode, Writability},
     jobs::{JobRecord, JobStoreError},
     ports::{
         Clock, GitHubSource, JobStore, LaunchError, Launcher, ObservationCache, Ports,
-        SurveyFailure, SurveyRequest, Workspace, WorkspaceError, WorktreeAdd, WorktreeStart,
+        SurveyFailure, SurveyRequest, UpstreamStore, Workspace, WorkspaceError, WorktreeAdd,
+        WorktreeStart,
     },
+    upstreams::UpstreamStoreError,
 };
 use jiff::Timestamp;
 use std::{
@@ -156,11 +158,31 @@ impl FakeWorkspace {
             .insert(branch.to_owned(), commit.to_owned());
     }
 
+    /// The hosted Repo at `url` has PR `number` whose head is at `commit`
+    /// (`refs/pull/<number>/head`); a clone of it can fetch that ref.
+    pub fn host_pull_head(&self, url: &str, number: u64, commit: &str) {
+        self.state
+            .lock()
+            .expect("lock")
+            .hosted
+            .entry(url.to_owned())
+            .or_default()
+            .insert(pull_ref(number), commit.to_owned());
+    }
+
     /// `branch` on `remote` points at `commit` (what `ls-remote` answers and `fetch` brings).
     pub fn set_remote_head(&self, clone: &str, remote: &str, branch: &str, commit: &str) {
         self.with_clone(clone, |c| {
             c.remote_heads
                 .insert((remote.to_owned(), branch.to_owned()), commit.to_owned());
+        });
+    }
+
+    /// PR `number`'s ref (`refs/pull/<n>/head`) on `remote` points at `commit`.
+    pub fn set_remote_pull_head(&self, clone: &str, remote: &str, number: u64, commit: &str) {
+        self.with_clone(clone, |c| {
+            c.remote_heads
+                .insert((remote.to_owned(), pull_ref(number)), commit.to_owned());
         });
     }
 
@@ -316,6 +338,21 @@ impl Workspace for FakeWorkspace {
             .cloned())
     }
 
+    fn remote_pull_head(
+        &self,
+        clone: &Path,
+        remote: &str,
+        number: u64,
+    ) -> Result<Option<String>, WorkspaceError> {
+        let state = self.state.lock().expect("lock");
+        Self::failure(&state, "ls-remote")?;
+        let clone = state.clones.get(clone).ok_or_else(|| no_clone(clone))?;
+        Ok(clone
+            .remote_heads
+            .get(&(remote.to_owned(), pull_ref(number)))
+            .cloned())
+    }
+
     fn worktrees(&self, clone: &Path) -> Result<Vec<RegisteredWorktree>, WorkspaceError> {
         let state = self.state.lock().expect("lock");
         let fake = state.clones.get(clone).ok_or_else(|| no_clone(clone))?;
@@ -331,7 +368,8 @@ impl Workspace for FakeWorkspace {
         });
         Self::failure(&state, "fetch")?;
         let fake = state.clones.get_mut(clone).ok_or_else(|| no_clone(clone))?;
-        // `+refs/heads/<b>:refs/remotes/<r>/<b>`
+        // `+refs/heads/<b>:refs/remotes/<r>/<b>`, or a PR ref
+        // `+refs/pull/<n>/head:refs/remotes/<r>/pr/<n>` (kept whole as the key).
         let (source, destination) = refspec
             .trim_start_matches('+')
             .split_once(':')
@@ -382,6 +420,16 @@ impl Workspace for FakeWorkspace {
         Ok(hosted.get(branch).cloned())
     }
 
+    fn url_pull_head(&self, url: &str, number: u64) -> Result<Option<String>, WorkspaceError> {
+        let state = self.state.lock().expect("lock");
+        Self::failure(&state, "ls-remote")?;
+        let hosted = state.hosted.get(url).ok_or_else(|| WorkspaceError {
+            operation: format!("ask {url} for PR {number}'s head"),
+            detail: "repository not found".to_owned(),
+        })?;
+        Ok(hosted.get(&pull_ref(number)).cloned())
+    }
+
     /// Makes a clone at `into` whose `origin` is `url`, with the hosted
     /// Repo's branches as remote-tracking refs.
     fn clone_repo(&self, url: &str, into: &Path) -> Result<(), WorkspaceError> {
@@ -405,6 +453,7 @@ impl Workspace for FakeWorkspace {
             }],
             refs: branches
                 .iter()
+                .filter(|(b, _)| !b.starts_with("refs/"))
                 .map(|(b, c)| (format!("refs/remotes/origin/{b}"), c.clone()))
                 .collect(),
             remote_heads: branches
@@ -577,6 +626,61 @@ impl ObservationCache for FakeCache {
     }
 }
 
+/// Upstream choices in memory: what `load` answers, and every `store`.
+#[derive(Default)]
+pub struct FakeUpstreams {
+    held: Mutex<UpstreamTargets>,
+    stored: Mutex<Vec<UpstreamTargets>>,
+    store_error: Mutex<Option<UpstreamStoreError>>,
+    load_error: Mutex<Option<UpstreamStoreError>>,
+}
+
+impl FakeUpstreams {
+    /// A store already holding `upstreams` (set in an earlier session).
+    pub fn holding(upstreams: UpstreamTargets) -> Self {
+        Self {
+            held: Mutex::new(upstreams),
+            ..Self::default()
+        }
+    }
+
+    /// Loading fails with `error` (an unreadable file).
+    pub fn failing_load(error: UpstreamStoreError) -> Self {
+        Self {
+            load_error: Mutex::new(Some(error)),
+            ..Self::default()
+        }
+    }
+
+    /// Every set of choices stored, in order.
+    pub fn stored(&self) -> Vec<UpstreamTargets> {
+        self.stored.lock().expect("lock").clone()
+    }
+
+    /// The next stores fail with `error`.
+    pub fn fail_store(&self, error: UpstreamStoreError) {
+        *self.store_error.lock().expect("lock") = Some(error);
+    }
+}
+
+impl UpstreamStore for FakeUpstreams {
+    fn load(&self) -> Result<UpstreamTargets, UpstreamStoreError> {
+        if let Some(error) = self.load_error.lock().expect("lock").clone() {
+            return Err(error);
+        }
+        Ok(self.held.lock().expect("lock").clone())
+    }
+
+    fn store(&self, upstreams: &UpstreamTargets) -> Result<(), UpstreamStoreError> {
+        if let Some(error) = self.store_error.lock().expect("lock").clone() {
+            return Err(error);
+        }
+        self.stored.lock().expect("lock").push(upstreams.clone());
+        upstreams.clone_into(&mut self.held.lock().expect("lock"));
+        Ok(())
+    }
+}
+
 pub fn ports(github: Arc<FakeGitHub>, now: Timestamp) -> Ports {
     ports_with_cache(github, Arc::new(FakeCache::default()), now)
 }
@@ -588,6 +692,7 @@ pub fn ports_with_cache(github: Arc<FakeGitHub>, cache: Arc<FakeCache>, now: Tim
         workspace: Arc::new(FakeWorkspace::default()),
         launcher: Arc::new(FakeLauncher::default()),
         jobs: Arc::new(FakeJobs::default()),
+        upstreams: Arc::new(FakeUpstreams::default()),
         clock: Arc::new(FixedClock(now)),
     }
 }
@@ -642,4 +747,9 @@ pub fn data(value: serde_json::Value) -> GraphQlResponse {
         data: Some(value),
         errors: Vec::new(),
     }
+}
+
+/// A PR ref as the fakes key it: `refs/pull/<number>/head`.
+fn pull_ref(number: u64) -> String {
+    format!("refs/pull/{number}/head")
 }
