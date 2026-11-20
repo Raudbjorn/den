@@ -26,6 +26,16 @@ impl RepoId {
     pub fn same(&self, other: &RepoId) -> bool {
         same_login(&self.owner, &other.owner) && self.name.eq_ignore_ascii_case(&other.name)
     }
+
+    /// The Repo's case-insensitive identity: Owner and Repo names lowercased,
+    /// so two spellings of one Repo are one key (the cache's merge, Job dedup).
+    #[must_use]
+    pub fn folded(&self) -> Self {
+        Self::new(
+            self.owner.to_ascii_lowercase(),
+            self.name.to_ascii_lowercase(),
+        )
+    }
 }
 
 impl fmt::Display for RepoId {
@@ -145,6 +155,67 @@ impl WorkItemId {
             Self::Branch { .. } => WorkItemKind::Branch,
             Self::Run { .. } => WorkItemKind::Run,
             Self::LinearIssue { .. } => WorkItemKind::LinearIssue,
+        }
+    }
+
+    /// Whether `other` names the same Work Item: the Repo compared as GitHub
+    /// does (case-insensitively, [`RepoId::same`]), the rest exactly (Branch
+    /// names and workflow paths are case-sensitive in git). A Linear Issue is
+    /// the same when its workspace and Linear's ID match and its Owner folds
+    /// to the same login.
+    pub fn same(&self, other: &WorkItemId) -> bool {
+        let rest_matches = match (self, other) {
+            (Self::Issue { number: x, .. }, Self::Issue { number: y, .. })
+            | (Self::PullRequest { number: x, .. }, Self::PullRequest { number: y, .. }) => x == y,
+            (Self::Branch { name: x, .. }, Self::Branch { name: y, .. }) => x == y,
+            (Self::Run { workflow: x, .. }, Self::Run { workflow: y, .. }) => x == y,
+            // Workspace + Linear's ID; the Owner folds like a login.
+            (
+                Self::LinearIssue {
+                    owner: x_owner,
+                    issue: x,
+                },
+                Self::LinearIssue {
+                    owner: y_owner,
+                    issue: y,
+                },
+            ) => return x == y && same_login(x_owner, y_owner),
+            _ => false,
+        };
+        rest_matches
+            && match (self.repo(), other.repo()) {
+                (Some(x), Some(y)) => x.same(y),
+                _ => false,
+            }
+    }
+
+    /// The Work Item's case-insensitive identity: its Repo [folded](RepoId::folded),
+    /// Branch and workflow names as they are, and a Linear Issue's Owner
+    /// lowercased (its workspace and ID as they are). Two ids are
+    /// [`WorkItemId::same`] exactly when their folded forms are equal.
+    #[must_use]
+    pub fn folded(&self) -> Self {
+        match self {
+            Self::Issue { repo, number } => Self::Issue {
+                repo: repo.folded(),
+                number: *number,
+            },
+            Self::PullRequest { repo, number } => Self::PullRequest {
+                repo: repo.folded(),
+                number: *number,
+            },
+            Self::Branch { repo, name } => Self::Branch {
+                repo: repo.folded(),
+                name: name.clone(),
+            },
+            Self::Run { repo, workflow } => Self::Run {
+                repo: repo.folded(),
+                workflow: workflow.clone(),
+            },
+            Self::LinearIssue { owner, issue } => Self::LinearIssue {
+                owner: owner.to_ascii_lowercase(),
+                issue: issue.clone(),
+            },
         }
     }
 

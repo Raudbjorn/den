@@ -58,12 +58,18 @@ impl InspectRequest {
         self
     }
 
-    /// The inspection for reopening `job` alone (#14), when a fresh launch is
-    /// refused (for example, the PR has no Next Step while its checks run). It
-    /// looks at the Job's own Main Clone, worktree and branch, so it needs no
-    /// Main Clone search and no launch facts. `None` when den has no facts
-    /// about the Job's target Repo or the worktree path has no folder name.
-    pub fn for_job(job: &JobRecord, observation: &Observation) -> Option<Self> {
+    /// The inspection for reopening `job` alone (#14) from `item`'s sheet,
+    /// when a fresh launch is refused (for example, the PR has no Next Step
+    /// while its checks run). It looks at the Job's own Main Clone, worktree
+    /// and branch, so it needs no Main Clone search and no launch facts.
+    ///
+    /// The request is `item`'s, the Work Item asked about, whatever the Job's
+    /// subject: a Job that covers `item` without being launched for it alone
+    /// (a Landing Group's, #40) reopens the same way, and the Job's checks are
+    /// found again through [`JobSubject::covers`](crate::jobs::JobSubject::covers).
+    /// `None` when den has no facts about the Job's target Repo or the
+    /// worktree path has no folder name.
+    pub fn for_job(job: &JobRecord, item: &WorkItemId, observation: &Observation) -> Option<Self> {
         let target = observation
             .repos
             .iter()
@@ -71,7 +77,7 @@ impl InspectRequest {
             .find(|repo| repo.id.same(&job.target))?;
         let worktree_name = job.worktree.file_name()?.to_string_lossy().into_owned();
         Some(Self {
-            item: job.subject.github_item()?.clone(),
+            item: item.clone(),
             target: job.target.clone(),
             target_url: target.url.clone(),
             configured_clone: Some(job.main_clone.clone()),
