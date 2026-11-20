@@ -44,9 +44,7 @@ div w-full h-full flex-row bg-[#aa0000] text-[#aa0007] px-2
   span flex-1
 
 --- SutureV
-div w-full h-full flex-col bg-[#aa0000] text-[#aa0016]
-  for row in rows
-    div h-[1] "┊"
+div w-full h-full bg-[#aa0000] text-[#aa0016] "┊"
 
 --- Chamfer
 div w-full h-full bg-[#aa0000] text-[#aa0002]

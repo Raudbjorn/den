@@ -3,11 +3,13 @@
 
 use super::{Theme, UiError, glyphs, templates};
 use crate::app::view_model::{Sidebar, SidebarEntry, SidebarRow};
-use crepuscularity_tui::{TemplateContext, TemplateValue};
+use crepuscularity_tui::TemplateContext;
 use ratatui::{Frame, layout::Rect};
 
 /// Lines above the first row: top padding, label, spacer.
 const CHROME_LINES: u16 = 3;
+/// Lines per sidebar row.
+const ROW_LINES: u16 = 1;
 /// A Repo's indent under its Owner, in columns.
 const REPO_INDENT: &str = "  ";
 
@@ -61,18 +63,6 @@ pub fn draw(
     } else {
         sidebar.rows.iter().position(|r| r.current)
     };
-    let (start, count) = window(sidebar.rows.len(), anchor, area.height);
-    let rows = sidebar
-        .rows
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(count)
-        .map(|(index, row)| {
-            let cursor = sidebar.focused && sidebar.cursor == Some(index);
-            row_context(row, cursor, shared.tick, shared.incomplete, &marks)
-        })
-        .collect();
     let repos = sidebar
         .rows
         .iter()
@@ -80,9 +70,23 @@ pub fn draw(
         .count();
     let mut ctx = TemplateContext::default();
     ctx.set("sidebar_label", sidebar.label.as_str())
-        .set("position", repos.to_string())
-        .set("rows", TemplateValue::List(rows));
-    theme.draw(frame, templates::SIDEBAR, &ctx, area)
+        .set("position", repos.to_string());
+    theme.draw(frame, templates::SIDEBAR, &ctx, area)?;
+    // One call per visible row, as in `ui::list` (the engine clones its whole
+    // context per element).
+    let (start, count) = window(sidebar.rows.len(), anchor, area.height);
+    let first_row_y = area.y.saturating_add(CHROME_LINES);
+    let rows = sidebar.rows.iter().enumerate().skip(start).take(count);
+    for (offset, (index, row)) in rows.enumerate() {
+        let row_area = super::list::row_area(area, first_row_y, offset, ROW_LINES);
+        if row_area.is_empty() {
+            break;
+        }
+        let cursor = sidebar.focused && sidebar.cursor == Some(index);
+        let ctx = row_context(row, cursor, shared.tick, shared.incomplete, &marks);
+        theme.draw(frame, templates::SIDEBAR_ROW, &ctx, row_area)?;
+    }
+    Ok(())
 }
 
 fn row_context(

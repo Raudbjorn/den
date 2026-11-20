@@ -432,3 +432,66 @@ fn the_sidebar_stays_beside_the_list_at_the_minimum_size() {
         "the header still names the Scope\n{text}"
     );
 }
+
+/// A terminal far taller than any design size, with many Work Items and Repos.
+const TALL_SIZE: (u16, u16) = (160, 400);
+/// A tall frame must draw well within this, even in a debug build. Before the
+/// list, sidebar and sutures stopped handing the template engine one element
+/// per row, a frame like this took over a second in a release build (and a
+/// 160x2200 `--dump` ran for minutes).
+const TALL_REPOS: u64 = 120;
+const TALL_WORK_ITEMS: u64 = 240;
+const TALL_FRAME_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[test]
+fn a_tall_terminal_draws_its_visible_rows_in_bounded_time() {
+    let (cols, rows) = TALL_SIZE;
+    let mut builder = ObservationBuilder::new().owner("octo");
+    for n in 0..TALL_REPOS {
+        builder = builder.repo(&format!("octo/repo-{n:03}"));
+    }
+    // More Work Items than the 198 two-line rows a 400-row list plate holds.
+    for n in 0..TALL_WORK_ITEMS {
+        builder =
+            builder.pull_request(pr(&format!("octo/repo-{:03}", n % TALL_REPOS), n + 1).draft());
+    }
+    let mut harness = Harness::with_owners(&["octo"]);
+    harness.send(Event::Resized { cols, rows });
+    harness.answer(Ok(builder.build()));
+    harness.start();
+    // The last row selected, so the list window must scroll (set on the view:
+    // 600 key presses would only slow the test down).
+    let mut view = harness.view.clone();
+    view.list.selected = Some(view.list.rows.len() - 1);
+    let theme = truecolor();
+    // The first frame at a size, when no layout is cached yet: the worst case.
+    let started = std::time::Instant::now();
+    let buffer = frame::render(&theme, &view, cols, rows).expect("renders");
+    let took = started.elapsed();
+    assert!(took < TALL_FRAME_BUDGET, "a 160x400 frame took {took:?}");
+    // And every frame after it: the layouts it needs must all stay cached.
+    let started = std::time::Instant::now();
+    frame::render(&theme, &view, cols, rows).expect("renders");
+    let took = started.elapsed();
+    assert!(
+        took < TALL_FRAME_BUDGET,
+        "the next 160x400 frame took {took:?}"
+    );
+
+    let text = frame::buffer_text(&buffer);
+    let selected = &view.list.rows[view.list.selected.expect("selected")];
+    assert!(
+        text.contains(&format!("{} {}", selected.repo, selected.reference)),
+        "the selected row is in view"
+    );
+    let first = &view.list.rows[0];
+    assert!(
+        !text.contains(&format!("{} {} ", first.repo, first.reference)),
+        "the list scrolled past its first row"
+    );
+    assert!(
+        text.contains(&format!("{TALL_WORK_ITEMS} of {TALL_WORK_ITEMS}")),
+        "the position"
+    );
+    assert!(text.contains("repo-000"), "the sidebar's first Repo");
+}

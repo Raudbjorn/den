@@ -48,12 +48,25 @@ pub const SUTURE_V: TemplateRef = section(FRAME, "SutureV");
 pub const CHAMFER: TemplateRef = section(FRAME, "Chamfer");
 pub const LIST_ROWS: TemplateRef = section(LIST, "List");
 pub const LIST_EMPTY: TemplateRef = section(LIST, "Empty");
+/// One Work Item row, drawn per visible row (see `ui::list`).
+pub const LIST_ROW: TemplateRef = section(LIST, "ListRow");
 pub const DETAIL: TemplateRef = section(DETAIL_FILE, "Detail");
 pub const SIDEBAR: TemplateRef = section(SIDEBAR_FILE, "Sidebar");
+/// One sidebar row, drawn per visible row (see `ui::sidebar`).
+pub const SIDEBAR_ROW: TemplateRef = section(SIDEBAR_FILE, "SidebarRow");
 
 /// Every section den draws.
-pub const ALL_SECTIONS: [TemplateRef; 8] = [
-    HEADER, FOOTER, SUTURE_V, CHAMFER, LIST_ROWS, LIST_EMPTY, DETAIL, SIDEBAR,
+pub const ALL_SECTIONS: [TemplateRef; 10] = [
+    HEADER,
+    FOOTER,
+    SUTURE_V,
+    CHAMFER,
+    LIST_ROWS,
+    LIST_EMPTY,
+    LIST_ROW,
+    DETAIL,
+    SIDEBAR,
+    SIDEBAR_ROW,
 ];
 
 // The responsive frame and the bear (#10).
