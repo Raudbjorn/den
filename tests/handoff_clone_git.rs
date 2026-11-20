@@ -392,3 +392,56 @@ fn a_pr_on_the_default_branch_can_launch_from_a_clone_created_for_it() {
     assert_eq!(launcher.windows.lock().unwrap().len(), 1);
     assert_eq!(jobs.load().unwrap().len(), 1);
 }
+
+/// Review on #42: a cross-Repo PR whose head branch is `main`, launched into a
+/// clone den makes of a Repo whose default branch is also `main`. Cloning makes
+/// a local `main`, so the planner names the Job's branch `pr-<n>-<head>`
+/// (decision d); with real git the clone and the worktree are then made, the
+/// worktree on the PR head and the clone's own `main` left at the target's tip.
+#[test]
+fn a_cross_repo_pr_named_like_the_default_branch_launches_from_a_new_clone_as_pr_n_head() {
+    let (temp, root, url, tip) = hosted_repo();
+    // The fork's commit, reachable on the target only as the PR ref.
+    let seed = temp.path().join("seed");
+    git(&seed, &["switch", "-c", "fork-main"]);
+    std::fs::write(seed.join("FORK"), "from the fork\n").unwrap();
+    git(&seed, &["add", "FORK"]);
+    git(&seed, &["commit", "-m", "fork"]);
+    let head = git(&seed, &["rev-parse", "HEAD"]);
+    git(&seed, &["push", "origin", "HEAD:refs/pull/7/head"]);
+    assert_ne!(head, tip);
+
+    // The plan the planner makes for it: renamed, from the PR ref, untracked.
+    let mut plan = clone_plan(&root, &url, &head);
+    plan.work_item = WorkItemId::PullRequest {
+        repo: RepoId::new("octo", "app"),
+        number: 7,
+    };
+    plan.base.reference = BaseRef::PullHead { number: 7 };
+    plan.branch = JobBranch {
+        name: "pr-7-main".into(),
+        start: BranchStart::NewUntracked,
+        renamed_from: Some("main".into()),
+    };
+    plan.worktree = handoff::worktree_path(&plan.main_clone.path, "main");
+    plan.command = command::display(&plan.window, &plan.window_command());
+
+    let report = handoff::execute(
+        &plan,
+        &GitWorkspace::new(),
+        &RecordingLauncher::default(),
+        &FileJobStore::new(temp.path().join("state/jobs.json")),
+        "2026-11-20T10:00:00Z".parse().unwrap(),
+    );
+    assert!(
+        matches!(report.outcome, LaunchOutcome::Launched { .. }),
+        "{report:#?}"
+    );
+    let clone = root.join("app");
+    assert_eq!(git(&plan.worktree, &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        git(&plan.worktree, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "pr-7-main"
+    );
+    assert_eq!(git(&clone, &["rev-parse", "refs/heads/main"]), tip);
+}
