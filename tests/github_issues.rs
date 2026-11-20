@@ -9,7 +9,7 @@ mod support;
 
 use den::{
     domain::{
-        Observation, Source, SourceKind, SourceState,
+        Incompleteness, Observation, Source, SourceKind, SourceState,
         facts::{Issue, IssueLink, LinkKind, LinkedPrState},
     },
     github::{
@@ -411,6 +411,73 @@ fn a_repo_whose_issues_cannot_be_read_fails_alone() {
         ),
         SourceState::Complete
     );
+}
+
+#[test]
+fn an_outage_stops_the_issue_reads_instead_of_timing_out_once_per_repo() {
+    // Two Repos in a row unreachable (each a whole `gh` timeout in real life):
+    // the rest are not asked about, and their coverage says why.
+    let gql = ScriptedGraphQl::new(|request| {
+        if let Some(answer) = non_issue_answers(request) {
+            return answer;
+        }
+        match (operation(request).as_str(), repo_name(request).as_str()) {
+            ("OwnerIssueCounts", _) => {
+                counts(vec![("a", 1), ("b", 1), ("c", 1), ("d", 1), ("e", 1)], None)
+            }
+            ("RepoIssues", "a" | "c" | "d") => Err(TransportError::TimedOut {
+                after: Duration::from_secs(30),
+            }),
+            ("RepoIssues", "b") => issues_page(vec![plain_issue(1)], None),
+            other => panic!("unexpected {other:?}"),
+        }
+    });
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+
+    // "a" alone is not an outage: "b" is still read, and resets the count.
+    let repos_read: Vec<String> = gql
+        .requests()
+        .iter()
+        .filter(|r| operation(r) == "RepoIssues")
+        .map(repo_name)
+        .collect();
+    assert_eq!(repos_read, ["a", "b", "c", "d"]);
+    assert_eq!(
+        state(&observation, issues_of("octo/b")),
+        SourceState::Complete
+    );
+    let skipped = state(&observation, issues_of("octo/e"));
+    assert!(
+        matches!(&skipped, SourceState::Failed { error } if error.contains("not read") && error.contains("did not answer")),
+        "{skipped:?}"
+    );
+}
+
+#[test]
+fn once_rate_limited_the_remaining_repos_are_rate_limited_not_asked() {
+    let gql = ScriptedGraphQl::new(|request| {
+        if let Some(answer) = non_issue_answers(request) {
+            return answer;
+        }
+        match operation(request).as_str() {
+            "OwnerIssueCounts" => counts(vec![("a", 1), ("b", 1), ("c", 1)], None),
+            "RepoIssues" => Err(TransportError::RateLimited {
+                detail: "API rate limit exceeded".to_owned(),
+            }),
+            other => panic!("unexpected {other}"),
+        }
+    });
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    let asked = gql
+        .requests()
+        .iter()
+        .filter(|r| operation(r) == "RepoIssues")
+        .count();
+    assert_eq!(asked, 2);
+    assert!(matches!(
+        state(&observation, issues_of("octo/c")),
+        SourceState::Partial(Incompleteness::RateLimited { .. })
+    ));
 }
 
 #[test]
