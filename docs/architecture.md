@@ -42,8 +42,12 @@ later ticket fills them in.
 
 `main` only wires: XDG paths, log, config, ports, and the terminal loop. The
 loop checks for a termination signal (SIGTERM, SIGHUP, SIGINT, SIGQUIT) before
-every input wait, so the terminal is always restored, and hands Effects to a background `runtime::Worker` thread so the UI stays
-responsive while `gh` runs; `den --dump COLSxROWS` and the tests use
+every input wait, so the terminal is always restored, and hands Effects to a background `runtime::Worker` so the UI stays
+responsive while `gh` runs. The Worker has two lanes (`runtime::lane_of`, no wildcard): a store lane for den's
+own state files (cache, Upstream choices), so a write never waits behind a survey, and a remote lane for `gh`,
+git and kitty. An Effect a full lane refuses goes back to the App as `Event::EffectRejected` before the next
+Event. On quit or a signal, `Worker::finish` waits at most `FINISH_WITHIN_SECS` for queued store writes;
+remote work still running is abandoned. `den --dump COLSxROWS` and the tests use
 `runtime::settle`, which performs Effects synchronously through the same
 `ports::perform`.
 

@@ -24,7 +24,7 @@
 use crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use den::{
     app::view_model::{LaunchStatus, Overlay},
-    app::{App, Effect, Event, Key, ViewModel},
+    app::{App, Event, Key, ViewModel},
     cache::FileCache,
     config,
     domain::{RepoId, WorkItemId},
@@ -35,7 +35,7 @@ use den::{
     logging::{self, LoggingError},
     paths::{Paths, PathsError},
     ports::{Ports, SystemClock, UpstreamStore},
-    runtime::{self, Worker},
+    runtime::{self, Flow, Worker},
     terminal::{SIGNAL_EXIT_STATUS_BASE, TerminalSession},
     ui::{
         Theme, UiError,
@@ -48,7 +48,6 @@ use den::{
 use jiff::Timestamp;
 use raudbjorn_tui::profile::{ProfileError, TerminalProfile};
 use std::{
-    collections::VecDeque,
     io::{self, Write as _},
     process::ExitCode,
     sync::Arc,
@@ -272,32 +271,6 @@ fn translate_key(key: &KeyEvent) -> Option<Key> {
     }
 }
 
-/// What the loop should do after a batch of Effects.
-enum Flow {
-    Continue,
-    Quit,
-}
-
-/// Hands Effects to the worker (or the log); reports whether one asked to quit.
-fn dispatch(effects: Vec<Effect>, worker: &Worker, app: &mut App, view: &mut ViewModel) -> Flow {
-    let mut flow = Flow::Continue;
-    let mut pending: VecDeque<_> = effects.into();
-    while let Some(effect) = pending.pop_front() {
-        match effect {
-            Effect::Quit => flow = Flow::Quit,
-            Effect::Log(record) => runtime::log(&record),
-            other => {
-                if let Err(rejected) = worker.submit(other) {
-                    let (next_view, effects) = app.handle(*rejected);
-                    *view = next_view;
-                    pending.extend(effects);
-                }
-            }
-        }
-    }
-    flow
-}
-
 fn run_interactive(
     theme: &Theme,
     mut app: App,
@@ -310,6 +283,11 @@ fn run_interactive(
     let mut bear = BearArt::detect(theme.profile(), graphics);
     let outcome = event_loop(&mut session, theme, &mut app, &worker, &mut bear);
     let restored = session.finish();
+    // After the terminal is back, on quit and on a signal alike: queued writes
+    // of den's state get a bounded time to land.
+    if let Err(error) = worker.finish(&mut app, Duration::from_secs(runtime::FINISH_WITHIN_SECS)) {
+        tracing::error!(%error, "quit");
+    }
     match (outcome, restored) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(error),
@@ -336,7 +314,7 @@ fn event_loop(
     let (mut view, effects) = app.handle(Event::Started {
         now: Timestamp::now(),
     });
-    if let Flow::Quit = dispatch(effects, worker, app, &mut view) {
+    if let Flow::Quit = worker.dispatch(app, &mut view, effects) {
         return Ok(());
     }
     let mut dirty = true;
@@ -357,7 +335,13 @@ fn event_loop(
                 now: Timestamp::now(),
             });
         }
-        if event::poll(Duration::from_millis(INPUT_POLL_MS))? {
+        // Events already waiting are handled now; input is only waited for when idle.
+        let wait = if incoming.is_empty() {
+            Duration::from_millis(INPUT_POLL_MS)
+        } else {
+            Duration::ZERO
+        };
+        if event::poll(wait)? {
             match event::read()? {
                 TermEvent::Key(key) => incoming.extend(translate_key(&key).map(Event::Key)),
                 TermEvent::Resize(cols, rows) => incoming.push(Event::Resized { cols, rows }),
@@ -368,7 +352,7 @@ fn event_loop(
             let (next_view, effects) = app.handle(event);
             view = next_view;
             dirty = true;
-            if let Flow::Quit = dispatch(effects, worker, app, &mut view) {
+            if let Flow::Quit = worker.dispatch(app, &mut view, effects) {
                 return Ok(());
             }
         }

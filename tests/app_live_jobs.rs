@@ -814,6 +814,7 @@ fn fresh_push_instructions_preserve_shell_metacharacters_in_remote_and_branch() 
         "fix/quote'",
         "fix/$(whoami)",
         "fix/semicolon;name",
+        "fix/it's;$(printf-expanded)",
     ] {
         let remote = "up$stream";
         let observed = ObservationBuilder::new()
