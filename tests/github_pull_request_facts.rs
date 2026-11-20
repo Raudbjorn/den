@@ -675,7 +675,7 @@ fn unread_details_do_not_keep_closed_prs_but_an_incomplete_list_does() {
         closed.number = 999;
         earlier.pull_requests.push(closed);
         let earlier = CachedObservation::fresh(earlier);
-        let merged = cache::merge(Some(earlier.clone()), fresh.clone()).cached;
+        let merged = cache::merge(Some(earlier.clone()), fresh.clone());
         assert_eq!(merged.observation.pull_requests.len(), 1);
         assert!(!merged.observation.coverage.is_complete());
 
@@ -690,7 +690,7 @@ fn unread_details_do_not_keep_closed_prs_but_an_incomplete_list_does() {
                 reason: "lost page".to_owned(),
             }),
         );
-        let merged = cache::merge(Some(earlier), partial).cached;
+        let merged = cache::merge(Some(earlier), partial);
         assert_eq!(
             merged.observation.pull_requests.len(),
             2,
