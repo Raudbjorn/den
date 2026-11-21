@@ -11,7 +11,9 @@ mod support;
 use den::{
     app::{
         Effect, Event, Key,
-        view_model::{JobMarker, LaunchSheet, LaunchStatus, Overlay, ViewModel},
+        view_model::{
+            JobActivity, JobActivityLine, JobMarker, LaunchSheet, LaunchStatus, Overlay, ViewModel,
+        },
     },
     config::Config,
     domain::{NextStep, RepoId, WorkItemId},
@@ -25,6 +27,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 use support::{
     build::{ME, ObservationBuilder, now, pr},
     fakes::WorkspaceCall,
+    ground_rules::{coding_rules, quoted},
     harness::Harness,
 };
 
@@ -352,8 +355,14 @@ fn open_existing_resumes_the_recorded_session_in_the_existing_worktree_with_a_wa
     assert_eq!(
         ready.command.as_deref(),
         Some(
-            "kitty --detach --hold --directory /home/me/dev/app/.claude/worktrees/feature-7 claude --resume app-pr7-address-review"
-        )
+            format!(
+                "kitty --detach --hold --directory /home/me/dev/app/.claude/worktrees/feature-7 claude --append-system-prompt {} --resume app-pr7-address-review",
+                quoted(&coding_rules("octo/app#7"))
+            )
+            .as_str()
+        ),
+        // Since #71 a resumed session gets its Ground Rules again, the same
+        // as at launch (ADR-0008).
     );
     assert!(
         messages(&ready).contains(
@@ -377,6 +386,7 @@ fn open_existing_resumes_the_recorded_session_in_the_existing_worktree_with_a_wa
             setting_sources: den::handoff::SettingSources::All,
             // No Linear Workflow configured: nothing to remove (#70).
             removed_env: Vec::new(),
+            ground_rules: support::ground_rules::coding_rules("octo/app#7"),
         }]
     );
     // Nothing fetched, no worktree added, no new Job recorded, nothing deleted.
@@ -425,7 +435,8 @@ fn reopening_rechecks_project_settings_when_a_survey_changes_the_viewer() {
             .command
             .as_ref()
             .unwrap()
-            .contains("--setting-sources user --resume")
+            // Since #71 the Ground Rules sit between them (ADR-0008).
+            .contains("--setting-sources user --append-system-prompt ")
     );
 
     press(&mut harness, Key::Enter);
@@ -450,9 +461,11 @@ fn open_existing_outside_kitty_copies_the_resume_command() {
     press(&mut harness, Key::Enter);
     assert_eq!(
         harness.launcher.clipboard(),
-        [
-            "cd /home/me/dev/app/.claude/worktrees/feature-7 && claude --resume app-pr7-address-review"
-        ]
+        // Since #71 the resume line carries the Ground Rules (ADR-0008).
+        [format!(
+            "cd /home/me/dev/app/.claude/worktrees/feature-7 && claude --append-system-prompt {} --resume app-pr7-address-review",
+            quoted(&coding_rules("octo/app#7"))
+        )]
     );
     assert!(harness.launcher.windows().is_empty());
 }
@@ -734,6 +747,7 @@ fn a_live_job_stays_reopenable_while_its_pr_has_no_next_step() {
             setting_sources: den::handoff::SettingSources::All,
             // No Linear Workflow configured: nothing to remove (#70).
             removed_env: Vec::new(),
+            ground_rules: support::ground_rules::coding_rules("octo/app#7"),
         }]
     );
     assert_eq!(sheet(&harness).status, LaunchStatus::Reopened);
@@ -1004,6 +1018,7 @@ fn repo_casing_does_not_create_a_collision_but_branch_casing_still_does() {
     let checks = [JobCheck {
         job: recorded.clone(),
         state: WorktreeState::Present,
+        activity: None,
     }];
     for (name, same) in [("Feature", true), ("feature", false)] {
         let current = WorkItemId::Branch {
@@ -1073,4 +1088,188 @@ fn a_job_milestone_1_recorded_is_still_recognised_as_a_live_job() {
     press(&mut harness, Key::Char('c'));
     let asked = sheet(&harness);
     assert_eq!(asked.status, LaunchStatus::LiveJob, "{}", messages(asked));
+}
+
+// ---- #80: a Live Job's session running or idle (display only) ----
+
+fn activity(view: &ViewModel, n: u64) -> Option<JobActivity> {
+    let target = item(n);
+    view.list
+        .rows
+        .iter()
+        .find(|r| r.id == target)
+        .expect("listed")
+        .job_activity
+}
+
+/// The detail's line on PR `n`'s Job session, once it is selected.
+fn activity_line(harness: &mut Harness, n: u64) -> Option<JobActivityLine> {
+    select(harness, n);
+    harness
+        .view
+        .detail
+        .content
+        .as_ref()
+        .expect("a detail")
+        .job
+        .as_ref()
+        .expect("a Job section")
+        .activity
+        .clone()
+}
+
+/// A `claude` process for `session`, as den starts one.
+const CLAUDE: &str = "/opt/claude-code/bin/claude";
+
+#[test]
+fn live_jobs_show_running_or_idle_in_the_list_and_the_detail() {
+    let mut harness = harness_with(|h| {
+        live_job(h, 7);
+        live_job(h, 8);
+        // PR 9's Job: recorded, its worktree gone.
+        h.jobs.holding(job(9));
+        h.workspace.set_processes(&[
+            &[
+                CLAUDE,
+                "-n",
+                SESSION_7,
+                "/gh-resolve https://github.com/octo/app/pull/7",
+            ],
+            // Claude Desktop is a `claude` too, without a session flag.
+            &["/usr/lib/claude-desktop/claude", "--type=renderer"],
+            // Another program naming PR 8's session is not its Claude Code.
+            &["vim", "-n", "app-pr8-address-review"],
+        ]);
+    });
+
+    assert_eq!(marker(&harness.view, 7), Some(JobMarker::Live));
+    assert_eq!(activity(&harness.view, 7), Some(JobActivity::Running));
+    assert_eq!(marker(&harness.view, 8), Some(JobMarker::Live));
+    assert_eq!(activity(&harness.view, 8), Some(JobActivity::Idle));
+    assert_eq!(marker(&harness.view, 9), Some(JobMarker::Missing));
+    assert_eq!(activity(&harness.view, 9), None, "only a Live Job has one");
+    assert_eq!(activity(&harness.view, 10), None, "no Job");
+
+    assert_eq!(
+        activity_line(&mut harness, 7),
+        Some(JobActivityLine {
+            activity: JobActivity::Running,
+            text: format!("Session running: a local claude process has session {SESSION_7}"),
+        })
+    );
+    assert_eq!(
+        activity_line(&mut harness, 8),
+        Some(JobActivityLine {
+            activity: JobActivity::Idle,
+            text: "Session idle: no local claude process has session app-pr8-address-review; it finished or stopped".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn a_reopened_session_resumed_by_name_is_running() {
+    let harness = harness_with(|h| {
+        live_job(h, 7);
+        h.workspace.set_processes(&[&[
+            "claude",
+            "--permission-mode",
+            "manual",
+            "--resume",
+            SESSION_7,
+        ]]);
+    });
+    assert_eq!(activity(&harness.view, 7), Some(JobActivity::Running));
+}
+
+#[test]
+fn an_unreadable_process_list_is_unknown_and_the_job_stays_live() {
+    let mut harness = harness_with(|h| {
+        live_job(h, 7);
+        h.workspace
+            .processes_unreadable("can't list /proc: permission denied");
+    });
+    assert_eq!(marker(&harness.view, 7), Some(JobMarker::Live));
+    assert_eq!(activity(&harness.view, 7), Some(JobActivity::Unknown));
+    assert_eq!(
+        activity_line(&mut harness, 7),
+        Some(JobActivityLine {
+            activity: JobActivity::Unknown,
+            text: "Running or idle: unknown, den couldn't read the local processes: can't list /proc: permission denied".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn running_or_idle_never_changes_whether_a_launch_asks_about_the_live_job() {
+    for processes in [
+        // Idle: the session ended or crashed, but the worktree is still there.
+        vec![],
+        vec![[CLAUDE, "-n", SESSION_7]],
+    ] {
+        let mut harness = harness_with(|h| {
+            live_job(h, 7);
+            let argvs: Vec<&[&str]> = processes.iter().map(|p| p.as_slice()).collect();
+            h.workspace.set_processes(&argvs);
+        });
+        select(&mut harness, 7);
+        press(&mut harness, Key::Char('c'));
+        let asked = sheet(&harness);
+        assert_eq!(asked.status, LaunchStatus::LiveJob, "{}", messages(asked));
+        assert!(launch_plans(&harness).is_empty());
+        assert!(harness.workspace.calls().is_empty());
+    }
+}
+
+#[test]
+fn running_and_idle_live_jobs_are_teal_glyphs_of_their_own_before_the_title() {
+    let mut harness = harness_with(|h| {
+        live_job(h, 7);
+        live_job(h, 8);
+        h.workspace.set_processes(&[&[CLAUDE, "-n", SESSION_7]]);
+    });
+    let (cols, rows) = (160, 45);
+    harness.send(Event::Resized { cols, rows });
+    let theme = Theme::new(TerminalProfile::new(
+        ColorProfile::TrueColor,
+        GlyphProfile::Unicode,
+    ))
+    .expect("theme");
+    let buffer = frame::render(&theme, &harness.view, cols, rows).expect("renders");
+    let list = frame::regions(buffer.area, &harness.view.layout).list;
+    let cell_of = |glyph: &str| {
+        (list.top()..list.bottom())
+            .flat_map(|y| (list.left()..list.right()).map(move |x| (x, y)))
+            .find(|&(x, y)| buffer[(x, y)].symbol() == glyph)
+            .unwrap_or_else(|| panic!("{glyph} is drawn:\n{}", frame::buffer_text(&buffer)))
+    };
+    assert_eq!(buffer[cell_of("▸")].fg, OXIDE_TRUECOLOR.accent, "running");
+    assert_eq!(buffer[cell_of("◐")].fg, OXIDE_TRUECOLOR.accent, "idle");
+
+    let mono = Theme::new(TerminalProfile::new(
+        ColorProfile::NoColor,
+        GlyphProfile::Ascii,
+    ))
+    .expect("theme");
+    let text =
+        frame::buffer_text(&frame::render(&mono, &harness.view, cols, rows).expect("renders"));
+    let title = |n: u64| {
+        harness
+            .view
+            .list
+            .rows
+            .iter()
+            .find(|r| r.id == item(n))
+            .expect("listed")
+            .title
+            .clone()
+    };
+    assert!(text.contains(&format!("@ {}", title(7))), "{text}");
+    assert!(text.contains(&format!(". {}", title(8))), "{text}");
+
+    // The detail says it in words too.
+    select(&mut harness, 7);
+    let text =
+        frame::buffer_text(&frame::render(&theme, &harness.view, cols, rows).expect("renders"));
+    // The detail pane wraps the line; its start is on one row.
+    assert!(text.contains("▸ Session running: a local claude"), "{text}");
 }

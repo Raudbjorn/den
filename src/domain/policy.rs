@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 /// One Owner's Linear Workflow policy. Its [`Default`] is the **empty** policy,
 /// the one every Owner without a Linear Workflow gets, and it must stay a
 /// policy that changes no Decision: it offers no Start, has no review rules,
-/// holds no Repo and names no release state.
+/// holds no Repo, names no release state and parks nothing.
 ///
 /// Fields arrive with the tickets that use them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -43,6 +43,11 @@ pub struct LinearWorkflowPolicy {
     /// (#40); every other member lands after them. Empty in the empty
     /// policy, where no Linear Issue (and so no Land) exists.
     pub landing_order: Vec<RepoId>,
+    /// Linear states that park a Linear Issue (#74): one in them, with no
+    /// Landing Group that decides, has no Next Step instead of Implement or
+    /// Start. Compared with the issue's state name, ignoring case, like
+    /// [`Self::release_state`]. Empty in the empty policy.
+    pub parked_states: Vec<String>,
 }
 
 impl LinearWorkflowPolicy {
@@ -68,6 +73,13 @@ impl LinearWorkflowPolicy {
         self.review.is_some()
     }
 
+    /// Whether `state_name` is one of this workflow's parked states.
+    pub fn is_parked_state(&self, state_name: &str) -> bool {
+        self.parked_states
+            .iter()
+            .any(|parked| parked.eq_ignore_ascii_case(state_name))
+    }
+
     /// Whether `state_name` is this workflow's release state.
     pub fn is_release_state(&self, state_name: &str) -> bool {
         self.release_state
@@ -81,8 +93,10 @@ impl LinearWorkflowPolicy {
 /// review step and judges changes requested by the commit they were given on;
 /// the two switches tighten approval and comments further.
 ///
-/// The config turns both switches on by default (#32); that default is the
-/// config's. A `ReviewPolicy` built here has whatever it is given.
+/// The config's defaults follow GitHub's own rules (ADR-0009, #73):
+/// exact-head approval and pending requests holding the merge off, comment
+/// reviews needing re-review on. A `ReviewPolicy` built here has whatever it
+/// is given.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReviewPolicy {
     /// **Exact-head approval**: only a user's (never a bot's) approval given on
@@ -93,6 +107,12 @@ pub struct ReviewPolicy {
     /// **Comment reviews need re-review**: a user whose latest review only
     /// commented, on an older head, is awaiting re-review.
     pub comment_reviews_need_rereview: bool,
+    /// **Pending requests hold the merge**: a PR with a pending review request
+    /// stays at Review even when approved (spec 0002, story 44). Off: a
+    /// pending request leaves a PR at Review only while it isn't approved,
+    /// and an unread request no longer keeps Merge away, as GitHub doesn't
+    /// hold a merge for either (ADR-0009).
+    pub pending_requests_hold_merge: bool,
     /// The configured reviewers (GitHub logins or teams), suggested on every
     /// Request review.
     pub reviewers: Vec<Reviewer>,
@@ -204,6 +224,7 @@ static EMPTY_POLICY: LinearWorkflowPolicy = LinearWorkflowPolicy {
     held_repos: Vec::new(),
     release_state: None,
     landing_order: Vec::new(),
+    parked_states: Vec::new(),
 };
 
 impl Policies {

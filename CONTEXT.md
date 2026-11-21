@@ -38,6 +38,10 @@ _Avoid_: Plugin, integration, org mode
 A Repo in a Linear Workflow whose Pull Requests are held for release instead of landing with their Landing Group.
 _Avoid_: Exempt repo, app repo
 
+**Parked**:
+A Linear Issue in one of its Linear Workflow's parked states (`parked_states`, such as "Paused"). It rests: no Implement or Start, Waiting On nobody. Its Landing Group still decides, so a parked issue whose group could land shows Land, and one whose member merged shows Mark for release.
+_Avoid_: Paused (that is one state name), on hold, snoozed
+
 ### What needs doing
 
 **Work Item**:
@@ -108,10 +112,10 @@ Each Work Item has at most one. An Issue with a linked open Pull Request has non
 - **Review**: a Pull Request is waiting for a requested review and is not yet approved; with a Linear Workflow's `pending_requests_hold_merge` on, any pending request keeps it here (ADR-0009).
 - **Merge**: a Pull Request is approved, passing and mergeable.
 - **Triage**: an Issue has neither labels nor an assignee.
-- **Implement**: an Issue is ready to be worked on, or a Linear Issue is assigned and has no Pull Request yet. A Linear Issue in one of its Workflow's `parked_states` (such as "Paused") has no Next Step and is Waiting On nobody.
+- **Implement**: an Issue is ready to be worked on, or a Linear Issue is assigned, has no Pull Request yet and isn't Parked.
 - **Open PR**: a Branch has unmerged commits and no Pull Request.
 - **Prune or revive**: a Stale Branch needs a decision.
-- **Start**: an unassigned Linear Issue in one of its Linear Workflow's start teams, not yet started and with no Pull Request, can be picked up. "Not yet started" is Linear's unstarted state type, or backlog when the workflow includes it; the workflow may also limit Start to the active cycle. Start is Waiting On nobody: anyone may pick it up.
+- **Start**: an unassigned Linear Issue in one of its Linear Workflow's start teams, not yet started, not Parked and with no Pull Request, can be picked up. "Not yet started" is Linear's unstarted state type, or backlog when the workflow includes it; the workflow may also limit Start to the active cycle. Start is Waiting On nobody: anyone may pick it up.
 - **Request review**: a Pull Request in a Linear Workflow, with no review request pending, is not approved (at its current head, when the Workflow's `exact_head_approval` is on; ADR-0009), or has a reviewer whose feedback was given on an older head and needs a fresh look. Its author asks reviewers, or asks them again.
 - **Land**: every open Pull Request of a Landing Group outside Held Repos would Merge, none is ambiguous, not surveyed or in a merge queue, and den read all of the Linear Issue's attachments and those Pull Requests' facts, so the group can land as a whole. Waiting On the Linear assignee. Each such member shows no Next Step of its own and "lands with TEAM-123" instead of Merge, so half a group is never merged by itself. A held member never blocks Land and is never landed; otherwise the Linear Issue has no Next Step and its Explanation names each blocking member.
 - **Mark for release**: a Linear Issue has no open Pull Request (held ones included), at least one of its Pull Requests is known to have merged (den reads a member's state by number when it isn't among the open Pull Requests; closed without merging is no evidence), and its state is neither the release state nor completed or canceled, so it can move to its release state. Waiting On the Linear assignee. It claims only that Pull Requests merged, never that the work shipped. A Linear Issue already in the release state has no Next Step: release is outside den.

@@ -4,6 +4,7 @@
 //! - `build`: builders for Observations and facts (one file per Work Item kind).
 //! - `fakes`: fake ports (GitHub source, Workspace, Launcher, Clock) and a
 //!   scripted GraphQL transport for the GitHub adapter.
+//! - `ground_rules`: the Ground Rules texts as the spec words them.
 //! - `harness`: drives the App through events with fake ports (test seam 2).
 //! - `linear_replies`: scripted Linear replies and a source wired to them.
 //! - `render` / `row_text` / `profile`: rendering through the engine.
@@ -14,6 +15,7 @@
 pub mod branch_graphql;
 pub mod build;
 pub mod fakes;
+pub mod ground_rules;
 pub mod harness;
 pub mod linear_replies;
 

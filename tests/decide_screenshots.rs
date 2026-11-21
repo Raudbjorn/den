@@ -13,7 +13,8 @@ mod support;
 use den::{
     decide::{Decision, decide},
     domain::{
-        NextStep, Observation, Policies, RepoId, Skips, Viewers, WaitingOn, facts::Screenshots,
+        LinearWorkflowPolicy, NextStep, Observation, Policies, RepoId, ReviewPolicy, Skips,
+        Viewers, WaitingOn, facts::Screenshots,
     },
 };
 use support::build::{ME, ObservationBuilder, PrBuilder, now, pr};
@@ -264,6 +265,63 @@ fn a_skipped_add_screenshots_never_unblocks_merge() {
     let text = said(&decision);
     assert!(text.contains("Add screenshots is not tracked"), "{text}");
     assert!(text.contains("Screenshots"), "{text}");
+}
+
+/// Merging #73 and #79 keeps screenshots independent of the pending-review
+/// policy: ignoring a request or skipping the step never bypasses the gate.
+#[test]
+fn screenshots_still_gate_merge_when_pending_review_requests_do_not() {
+    for (pending_hold, screenshots, skip, expected) in [
+        (
+            false,
+            Screenshots::Missing,
+            false,
+            Some(NextStep::AddScreenshots),
+        ),
+        (
+            true,
+            Screenshots::Missing,
+            false,
+            Some(NextStep::AddScreenshots),
+        ),
+        (false, Screenshots::Missing, true, None),
+        (true, Screenshots::Missing, true, Some(NextStep::Review)),
+        (false, Screenshots::NotRead, false, None),
+        (false, Screenshots::Present, false, Some(NextStep::Merge)),
+        (
+            false,
+            Screenshots::NoVisualChange,
+            false,
+            Some(NextStep::Merge),
+        ),
+        (true, Screenshots::Present, false, Some(NextStep::Review)),
+    ] {
+        let mut policies = screenshots_in_app().with(
+            "octo",
+            LinearWorkflowPolicy {
+                review: Some(ReviewPolicy {
+                    pending_requests_hold_merge: pending_hold,
+                    ..ReviewPolicy::default()
+                }),
+                ..LinearWorkflowPolicy::default()
+            },
+        );
+        if skip {
+            policies = policies.with_skips(
+                Skips::default().with(RepoId::new("octo", "app"), [NextStep::AddScreenshots]),
+            );
+        }
+        let decision = decide_one(
+            mine_ready(8)
+                .review_requested_from("alice")
+                .screenshots(screenshots),
+            &policies,
+        );
+        assert_eq!(
+            decision.next_step, expected,
+            "pending_hold={pending_hold}, screenshots={screenshots:?}, skip={skip}: {decision:#?}"
+        );
+    }
 }
 
 /// A body den didn't read never yields Add screenshots or Merge: the state is

@@ -19,6 +19,7 @@ use crate::{
         workflows::{ClaudeDir, PluginsRead},
     },
     jobs::{JobRecord, JobStoreError},
+    start::GitDir,
     upstreams::UpstreamStoreError,
 };
 use jiff::Timestamp;
@@ -215,6 +216,11 @@ pub trait ObservationCache: Send + Sync {
 /// git and the filesystem: Main Clones, worktrees, refs (spec, "Workspace").
 /// Every git call has a timeout. Nothing here deletes anything.
 pub trait Workspace: Send + Sync {
+    /// What git says about `dir`, the directory den was started in (#90):
+    /// whether it is inside a work tree and, if so, its Main Clone (a Job
+    /// worktree's is the clone it was added from) and the remotes. A `dir`
+    /// den can't read is an error naming it, never a guess.
+    fn repo_at(&self, dir: &Path) -> Result<GitDir, WorkspaceError>;
     /// Git clones under `root` that could be Main Clones: folders whose `.git`
     /// is a directory (not worktrees), at most a few levels deep, not hidden.
     fn find_clones(&self, root: &Path) -> Result<Vec<PathBuf>, WorkspaceError>;
@@ -282,6 +288,11 @@ pub trait Workspace: Send + Sync {
     /// Reads only. A missing or unparseable list is
     /// [`PluginsRead::NotChecked`], never an error.
     fn installed_plugins(&self, claude_dir: &Path) -> PluginsRead;
+    /// The command lines (program first) of the local processes den's user
+    /// runs, for telling a Live Job running or idle (#80). Reads only, and
+    /// bounded; an error when the list can't be read in full, so a process
+    /// den didn't see is never reported as absent.
+    fn user_processes(&self) -> Result<Vec<Vec<String>>, WorkspaceError>;
 }
 
 /// A worktree to add: where, on which branch, starting how.

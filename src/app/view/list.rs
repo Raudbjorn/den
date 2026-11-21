@@ -54,6 +54,9 @@ fn row(state: &State<'_>, decision: &Decision) -> Row {
         incomplete: decision.coverage.iter().any(|c| !c.state.is_complete()),
         age: format::age(state.now, decision.item.updated_at),
         job: live::most_telling(state.job_checks, id).map(|c| jobs::marker(&c.state)),
+        job_activity: live::most_telling(state.job_checks, id)
+            .and_then(|c| c.activity.as_ref())
+            .map(jobs::activity),
         landing: landing::row(decision),
     }
 }

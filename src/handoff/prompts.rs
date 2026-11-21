@@ -68,7 +68,10 @@ pub const REVIEW_LINEAR_KEY: &str = "review_linear";
 /// The prompts-file key of a Linear Issue's Start or Implement Job.
 pub const IMPLEMENT_LINEAR_KEY: &str = "implement_linear";
 const IMPLEMENT_LINEAR_PLACEHOLDERS: [&str; 1] = ["identifier"];
-pub const DEFAULT_IMPLEMENT_LINEAR: &str = "/implement {identifier} {url} in {repo}";
+/// Spec 0004, story 66: a Job that can't read the Linear Issue (it never gets
+/// den's Linear key, ADR-0007) stops rather than guessing from the identifier.
+pub const DEFAULT_IMPLEMENT_LINEAR: &str =
+    "/implement {identifier} {url} in {repo}. If you can't read the Linear Issue, stop and say so.";
 
 /// The file's key for a Next Step kind: "Address review" → `address_review`.
 pub fn step_key(step: NextStep) -> String {
@@ -182,10 +185,10 @@ pub fn default_template(step: NextStep) -> &'static str {
         NextStep::Implement => "/implement {url}",
         NextStep::Triage => "/triage {url}",
         NextStep::FinishDraft => {
-            "Pull Request {repo}#{number} ({url}) is a draft. You are on its head branch {branch}. Finish the work so it is ready for review."
+            "Pull Request {repo}#{number} ({url}) is a draft. You are on its head branch {branch}. Finish the work, resolve conflicts and failing CI, then mark it ready for review."
         }
         NextStep::ResolveConflicts => {
-            "Pull Request {repo}#{number} ({url}) conflicts with its base branch. You are on its head branch {branch}. Resolve the conflicts."
+            "Pull Request {repo}#{number} ({url}) conflicts with its base branch. You are on its head branch {branch}. Resolve the conflicts: merge the base branch in; don't rebase."
         }
         NextStep::Merge => {
             "Pull Request {repo}#{number} ({url}) is approved and its checks pass. You are on its head branch {branch}. Check that it is ready, then merge it."

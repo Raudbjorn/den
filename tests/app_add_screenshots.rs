@@ -26,6 +26,7 @@ use den::{
 use std::path::{Path, PathBuf};
 use support::{
     build::{ME, ObservationBuilder, pr},
+    ground_rules::{coding_rules, quoted},
     harness::{Harness, config},
 };
 
@@ -164,6 +165,12 @@ fn c_then_enter_on_add_screenshots_launches_an_ask_first_job_on_the_pr_head_with
     let command = ready.command.as_deref().expect("a command");
     assert!(command.contains("--permission-mode manual"), "{command}");
     assert!(!command.contains("--setting-sources user"), "{command}");
+    // Add screenshots asks first but keeps the coding Ground Rules from main.
+    let rules = coding_rules("acme/api#2");
+    assert!(
+        command.contains(&format!("--append-system-prompt {}", quoted(&rules))),
+        "{command}"
+    );
 
     press(&mut harness, Key::Enter);
 
@@ -177,6 +184,7 @@ fn c_then_enter_on_add_screenshots_launches_an_ask_first_job_on_the_pr_head_with
     assert_eq!(plan.prompt, default_prompt());
     let windows = harness.launcher.windows();
     assert_eq!(windows.len(), 1);
+    assert_eq!(windows[0].ground_rules, rules);
     assert_eq!(
         windows[0].permission_mode,
         Some(PermissionMode::ApprovalRequired)
