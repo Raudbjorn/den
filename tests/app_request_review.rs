@@ -30,6 +30,7 @@ use den::{
 use std::path::PathBuf;
 use support::{
     build::{ME, ObservationBuilder, PrBuilder, now, pr},
+    ground_rules::{coding_rules, common_rules, quoted},
     harness::{Harness, config_with_linear},
 };
 
@@ -296,11 +297,15 @@ fn c_then_enter_on_request_review_launches_a_coordination_job_on_the_pr_head_in_
         Some(
             format!(
                 // The Workflow's key variable is removed (#70, ADR-0007).
-                "kitty --detach --hold --directory {WORKTREE_2} env -u DEN_TEST_LINEAR_KEY claude --permission-mode manual --setting-sources user -n {SESSION_2} '{}'",
+                "kitty --detach --hold --directory {WORKTREE_2} env -u DEN_TEST_LINEAR_KEY claude --permission-mode manual --setting-sources user --append-system-prompt {} -n {SESSION_2} '{}'",
+                quoted(&common_rules("acme/api#2")),
                 prompt_without_slack("alice, acme/backend")
             )
             .as_str()
         ),
+        // Since #71 (ADR-0008): a Coordination Job gets the common rules
+        // only (the coding rule would forbid requesting reviewers), naming
+        // its own PR.
         // `--setting-sources user` since the untrusted-PR-heads fix: a
         // coordination Job never loads the PR head's project settings, so a
         // hook committed in the PR can't run as the user.
@@ -405,8 +410,17 @@ fn coding_plans_carry_no_permission_mode_and_keep_milestone_1s_command() {
         assert_eq!(field(&ready, "ANNOUNCE"), None, "{step}");
         assert_eq!(ready.reviewers, None, "{step}");
         let command = ready.command.clone().expect("a command");
+        // Since #71 the Ground Rules follow `claude` (ADR-0008): Address
+        // review changes code and gets the coding rule; Merge doesn't.
+        let rules = match step {
+            "Merge" => common_rules("acme/api#4"),
+            _ => coding_rules("acme/api#3"),
+        };
         assert!(
-            command.contains(" claude -n ") && !command.contains("--permission-mode"),
+            command.contains(&format!(
+                " claude --append-system-prompt {} -n ",
+                quoted(&rules)
+            )) && !command.contains("--permission-mode"),
             "{command}"
         );
         press(&mut harness, Key::Enter);
@@ -716,10 +730,13 @@ fn reopening_a_request_review_job_passes_the_approval_required_mode_again() {
         ready.command.as_deref(),
         Some(
             format!(
-                "kitty --detach --hold --directory {WORKTREE_2} env -u DEN_TEST_LINEAR_KEY claude --permission-mode manual --setting-sources user --resume {SESSION_2}"
+                "kitty --detach --hold --directory {WORKTREE_2} env -u DEN_TEST_LINEAR_KEY claude --permission-mode manual --setting-sources user --append-system-prompt {} --resume {SESSION_2}",
+                quoted(&common_rules("acme/api#2"))
             )
             .as_str()
         ),
+        // Since #71 a reopened Coordination Job gets its common rules again
+        // (ADR-0008).
         // A resumed session runs SessionStart hooks too, so reopening a
         // coordination Job keeps the PR head's project settings off.
     );

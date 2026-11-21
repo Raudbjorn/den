@@ -27,6 +27,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 use support::{
     build::{ME, ObservationBuilder, now, pr},
     fakes::WorkspaceCall,
+    ground_rules::{coding_rules, quoted},
     harness::Harness,
 };
 
@@ -353,8 +354,14 @@ fn open_existing_resumes_the_recorded_session_in_the_existing_worktree_with_a_wa
     assert_eq!(
         ready.command.as_deref(),
         Some(
-            "kitty --detach --hold --directory /home/me/dev/app/.claude/worktrees/feature-7 claude --resume app-pr7-address-review"
-        )
+            format!(
+                "kitty --detach --hold --directory /home/me/dev/app/.claude/worktrees/feature-7 claude --append-system-prompt {} --resume app-pr7-address-review",
+                quoted(&coding_rules("octo/app#7"))
+            )
+            .as_str()
+        ),
+        // Since #71 a resumed session gets its Ground Rules again, the same
+        // as at launch (ADR-0008).
     );
     assert!(
         messages(&ready).contains(
@@ -378,6 +385,7 @@ fn open_existing_resumes_the_recorded_session_in_the_existing_worktree_with_a_wa
             setting_sources: den::handoff::SettingSources::All,
             // No Linear Workflow configured: nothing to remove (#70).
             removed_env: Vec::new(),
+            ground_rules: support::ground_rules::coding_rules("octo/app#7"),
         }]
     );
     // Nothing fetched, no worktree added, no new Job recorded, nothing deleted.
@@ -426,7 +434,8 @@ fn reopening_rechecks_project_settings_when_a_survey_changes_the_viewer() {
             .command
             .as_ref()
             .unwrap()
-            .contains("--setting-sources user --resume")
+            // Since #71 the Ground Rules sit between them (ADR-0008).
+            .contains("--setting-sources user --append-system-prompt ")
     );
 
     press(&mut harness, Key::Enter);
@@ -451,9 +460,11 @@ fn open_existing_outside_kitty_copies_the_resume_command() {
     press(&mut harness, Key::Enter);
     assert_eq!(
         harness.launcher.clipboard(),
-        [
-            "cd /home/me/dev/app/.claude/worktrees/feature-7 && claude --resume app-pr7-address-review"
-        ]
+        // Since #71 the resume line carries the Ground Rules (ADR-0008).
+        [format!(
+            "cd /home/me/dev/app/.claude/worktrees/feature-7 && claude --append-system-prompt {} --resume app-pr7-address-review",
+            quoted(&coding_rules("octo/app#7"))
+        )]
     );
     assert!(harness.launcher.windows().is_empty());
 }
@@ -735,6 +746,7 @@ fn a_live_job_stays_reopenable_while_its_pr_has_no_next_step() {
             setting_sources: den::handoff::SettingSources::All,
             // No Linear Workflow configured: nothing to remove (#70).
             removed_env: Vec::new(),
+            ground_rules: support::ground_rules::coding_rules("octo/app#7"),
         }]
     );
     assert_eq!(sheet(&harness).status, LaunchStatus::Reopened);
