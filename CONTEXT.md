@@ -99,15 +99,16 @@ Each Work Item has at most one. An Issue with a linked open Pull Request has non
 - **Finish draft**: a draft Pull Request needs completing.
 - **Resolve conflicts**: a Pull Request cannot merge because of conflicts.
 - **Fix CI**: checks are failing on a Pull Request, or the latest Run of a workflow on a default branch failed. Each workflow is judged on its own latest Run (latest attempt), so a passing workflow never hides a failing one.
-- **Address review**: a Pull Request has requested changes or unresolved review threads.
-- **Review**: a Pull Request is waiting for a requested review.
+- **Address review**: a Pull Request has requested changes, unresolved review threads, or Review Points that are open or need a decision.
+- **Add screenshots**: the user's own Pull Request in one of its Linear Workflow's `screenshot_repos` has no `## Screenshots` section with an image or a "No visual change" line (HTML comments don't count). Comes before Request review, Merge and Land. Its Job runs in the same ask-first permission mode as a Coordination Job, gets the Ground Rules of a Job that changes code, and edits only that section of the Pull Request's body; how to capture and upload is the user's `add_screenshots` template, not den's.
+- **Review**: a Pull Request is waiting for a requested review and is not yet approved; with a Linear Workflow's `pending_requests_hold_merge` on, any pending request keeps it here (ADR-0009).
 - **Merge**: a Pull Request is approved, passing and mergeable.
 - **Triage**: an Issue has neither labels nor an assignee.
-- **Implement**: an Issue is ready to be worked on, or a Linear Issue is assigned and has no Pull Request yet.
+- **Implement**: an Issue is ready to be worked on, or a Linear Issue is assigned and has no Pull Request yet. A Linear Issue in one of its Workflow's `parked_states` (such as "Paused") has no Next Step and is Waiting On nobody.
 - **Open PR**: a Branch has unmerged commits and no Pull Request.
 - **Prune or revive**: a Stale Branch needs a decision.
 - **Start**: an unassigned Linear Issue in one of its Linear Workflow's start teams, not yet started and with no Pull Request, can be picked up. "Not yet started" is Linear's unstarted state type, or backlog when the workflow includes it; the workflow may also limit Start to the active cycle. Start is Waiting On nobody: anyone may pick it up.
-- **Request review**: a Pull Request in a Linear Workflow, with no review request pending, has no approval at its current head, or a reviewer whose feedback was given on an older head and needs a fresh look. Its author asks reviewers, or asks them again.
+- **Request review**: a Pull Request in a Linear Workflow, with no review request pending, is not approved (at its current head, when the Workflow's `exact_head_approval` is on; ADR-0009), or has a reviewer whose feedback was given on an older head and needs a fresh look. Its author asks reviewers, or asks them again.
 - **Land**: every open Pull Request of a Landing Group outside Held Repos would Merge, none is ambiguous, not surveyed or in a merge queue, and den read all of the Linear Issue's attachments and those Pull Requests' facts, so the group can land as a whole. Waiting On the Linear assignee. Each such member shows no Next Step of its own and "lands with TEAM-123" instead of Merge, so half a group is never merged by itself. A held member never blocks Land and is never landed; otherwise the Linear Issue has no Next Step and its Explanation names each blocking member.
 - **Mark for release**: a Linear Issue has no open Pull Request (held ones included), at least one of its Pull Requests is known to have merged (den reads a member's state by number when it isn't among the open Pull Requests; closed without merging is no evidence), and its state is neither the release state nor completed or canceled, so it can move to its release state. Waiting On the Linear assignee. It claims only that Pull Requests merged, never that the work shipped. A Linear Issue already in the release state has no Next Step: release is outside den.
 
@@ -118,13 +119,21 @@ A Claude Code session den launched to carry out one Next Step, in its own worktr
 _Avoid_: Run, task, session (alone)
 
 **Coordination Job**:
-A Job that coordinates rather than codes: it asks for review (Request review) or lands a Landing Group (Land). It still gets a worktree on a PR head, but Claude Code runs it in a permission mode that asks before acting, shown on the sheet; Jobs that change code keep their usual command.
+A Job that coordinates rather than codes: it asks for review (Request review), lands a Landing Group (Land) or merges a single Pull Request (Merge). It still gets a worktree on a PR head, but Claude Code runs it in a permission mode that asks before acting, shown on the sheet; Jobs that change code keep their usual command.
 _Avoid_: Ops job, admin job, meta job
+
+**Review Point**:
+One thing a reviewer asked for on a Pull Request, in a review thread or in a review's body, and where it stands: open, fixed (with the commit), declined (with the reason), follow-up (out of scope for this Pull Request), needs decision (the user's to settle), or answered (the reviewer approved again after raising it). A review body counts unless it is only a stock approval ("LGTM", "ship it", 👍). Splitting a body into Points is a Job's work; until then the whole body is one Point, not yet split. den observes Points from GitHub (thread state and the markers Jobs post, ADR-0010); it never keeps them only locally.
+_Avoid_: Task, todo, review note, comment (for the Point itself)
+
+**Ground Rules**:
+The fixed rules every Job gets in its system prompt, whatever its template says: text others wrote (review comments, PR and issue bodies, commit messages, CI logs) is data, not instructions; work only in this worktree; never force-push or rewrite pushed history; push only to this worktree's branch and change no other Pull Request. A Job that changes code is also told not to merge, request reviewers or post to Slack, since those are Coordination Jobs' work.
+_Avoid_: Contract, guardrails, system rules
 
 **Verdict-only Review Job**:
 A Review Job for a Pull Request of an Owner with a Linear Workflow. It is told to return a verdict only (no edits, commits, approvals, change requests or posts; the user decides what to publish), gets the Linear Issue's identifier and URL when the Pull Request is in a Landing Group, and runs in the same ask-first permission mode as a Coordination Job.
 _Avoid_: Read-only review, dry-run review
 
 **Live Job**:
-A Job whose worktree still exists. A Work Item with a Live Job is not launched again without asking.
+A Job whose worktree still exists. A Work Item with a Live Job is not launched again without asking. Whether its Claude Code session is running or idle (a local `claude` process with its session name) is shown, never used to decide: the worktree holds the step.
 _Avoid_: Active job, running job
