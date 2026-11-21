@@ -250,7 +250,8 @@ impl ReopenPlan {
     /// worktree, in the Job's permission mode ([`Self::permission_mode`]).
     /// Claude Code would otherwise restore the mode the session ended in, or a
     /// settings file's `defaultMode`, so a coordination Job passes its mode
-    /// again.
+    /// again. Its Ground Rules are passed again too, rebuilt from the Job's
+    /// record as at launch (ADR-0008).
     pub fn window_command(&self) -> WindowCommand {
         WindowCommand {
             directory: self.job.worktree.clone(),
@@ -260,6 +261,7 @@ impl ReopenPlan {
             permission_mode: self.permission_mode,
             setting_sources: self.project_settings.sources(),
             removed_env: self.removed_env.clone(),
+            ground_rules: super::GroundRules::for_job(self.job.next_step, &self.job.subject).text(),
         }
     }
 }

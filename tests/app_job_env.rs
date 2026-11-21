@@ -21,6 +21,7 @@ use den::{
 use std::path::PathBuf;
 use support::{
     build::{ME, ObservationBuilder, now, pr},
+    ground_rules::{coding_rules, quoted},
     harness::{Harness, config_with_linear},
 };
 
@@ -31,6 +32,12 @@ const SESSION: &str = "app-pr7-address-review";
 const PROMPT: &str = "'/gh-resolve https://github.com/octo/app/pull/7'";
 const ZETA_KEY: &str = "DEN_ZETA_LINEAR_KEY";
 const ACME_KEY: &str = "ACME_LINEAR_KEY";
+
+/// PR 7's Address review Ground Rules as the command shows them (#71,
+/// ADR-0008): every command below carries them after `claude`'s flags.
+fn rules() -> String {
+    quoted(&coding_rules("octo/app#7"))
+}
 
 /// octo, acme and zeta watched; acme and zeta (never octo, the Job's Owner)
 /// each get a Linear Workflow whose key is in `keys` (acme's first). `keys`
@@ -110,7 +117,8 @@ fn each_workflows_key_variable_is_removed_once_in_sorted_order_on_the_sheet_and_
     assert_eq!(
         command,
         format!(
-            "kitty --detach --hold --directory {WORKTREE} env -u {ACME_KEY} -u {ZETA_KEY} claude -n {SESSION} {PROMPT}"
+            "kitty --detach --hold --directory {WORKTREE} env -u {ACME_KEY} -u {ZETA_KEY} claude --append-system-prompt {} -n {SESSION} {PROMPT}",
+            rules()
         )
     );
 
@@ -137,7 +145,7 @@ fn two_workflows_naming_the_same_variable_remove_it_once() {
     let command = ready_command(&mut harness);
     assert_eq!(command.matches("-u ").count(), 1, "{command}");
     assert!(
-        command.contains(&format!("env -u {ZETA_KEY} claude -n")),
+        command.contains(&format!("env -u {ZETA_KEY} claude --append-system-prompt ")),
         "{command}"
     );
 }
@@ -147,7 +155,10 @@ fn the_clipboard_command_removes_the_same_variables() {
     let mut harness = started(config(&[ZETA_KEY]), |h| h.launcher.outside_kitty());
 
     let command = ready_command(&mut harness);
-    let expected = format!("cd {WORKTREE} && env -u {ZETA_KEY} claude -n {SESSION} {PROMPT}");
+    let expected = format!(
+        "cd {WORKTREE} && env -u {ZETA_KEY} claude --append-system-prompt {} -n {SESSION} {PROMPT}",
+        rules()
+    );
     assert_eq!(command, expected);
 
     press(&mut harness, Key::Enter);
@@ -195,7 +206,8 @@ fn reopening_a_live_job_removes_the_same_variables() {
         ready.command.as_deref(),
         Some(
             format!(
-                "kitty --detach --hold --directory {WORKTREE} env -u {ZETA_KEY} claude --resume {SESSION}"
+                "kitty --detach --hold --directory {WORKTREE} env -u {ZETA_KEY} claude --append-system-prompt {} --resume {SESSION}",
+                rules()
             )
             .as_str()
         )
@@ -210,11 +222,17 @@ fn without_a_linear_workflow_the_command_is_unchanged() {
     let mut harness = started(config(&[]), |_| ());
 
     let command = ready_command(&mut harness);
+    // Unchanged apart from the Ground Rules (#71; spec 0004: "With no
+    // variables to remove there is no `env` word, so the command is
+    // unchanged apart from the rules").
     assert_eq!(
         command,
-        format!("kitty --detach --hold --directory {WORKTREE} claude -n {SESSION} {PROMPT}")
+        format!(
+            "kitty --detach --hold --directory {WORKTREE} claude --append-system-prompt {} -n {SESSION} {PROMPT}",
+            rules()
+        )
     );
-    assert!(!command.contains("env"), "{command}");
+    assert!(!command.contains(" env "), "{command}");
 }
 
 #[test]
@@ -238,6 +256,8 @@ fn the_window_mode_decides_only_where_the_command_goes_not_what_it_removes() {
         permission_mode: None,
         setting_sources: command::SettingSources::All,
         removed_env: vec![ACME_KEY.to_owned(), ZETA_KEY.to_owned()],
+        // No rules, so `claude -n` stays adjacent for this check.
+        ground_rules: String::new(),
     };
     let kitty = command::display(&WindowMode::Kitty, &window);
     let clipboard = command::display(

@@ -260,8 +260,12 @@ fn a_review_in_a_linear_workflow_carries_the_linear_context_the_verdict_only_ins
     );
     // Project settings stay disabled on these PR heads, including workflow Reviews.
     let command = ready.command.as_deref().unwrap();
+    // Since #71 the Ground Rules follow the flags (ADR-0008): a Verdict-only
+    // Review Job gets the common rules only, never the coding rule.
     assert!(
-        command.contains("claude --permission-mode manual --setting-sources user -n "),
+        command.contains(
+            "claude --permission-mode manual --setting-sources user --append-system-prompt "
+        ) && !command.contains("coordination Jobs"),
         "{command}"
     );
 
@@ -300,8 +304,11 @@ fn a_review_outside_a_linear_workflow_is_milestone_1s() {
     );
     // Project settings stay disabled on these PR heads, including workflow Reviews.
     let command = ready.command.as_deref().unwrap();
+    // Since #71 (ADR-0008): a Review Job outside a Linear Workflow gets the
+    // common rules only, too.
     assert!(
-        command.contains(" claude --setting-sources user -n ")
+        command.contains(" claude --setting-sources user --append-system-prompt ")
+            && !command.contains("coordination Jobs")
             && !command.contains("--permission-mode"),
         "{command}"
     );
@@ -366,9 +373,13 @@ fn reopening_a_review_job_recorded_without_a_mode_in_a_linear_workflow_asks_firs
     // Resumed coordination Jobs must also suppress project hooks.
     let command = reopen.command.as_deref().unwrap();
     assert!(
+        // Since #71 a reopened Review Job gets its Ground Rules again, the
+        // common rules naming its own PR (ADR-0008).
         command.contains(
-            "claude --permission-mode manual --setting-sources user --resume api-pr5-review"
-        ),
+            "claude --permission-mode manual --setting-sources user --append-system-prompt "
+        ) && command.contains(" --resume api-pr5-review")
+            && command.contains("other than acme/api#5.")
+            && !command.contains("coordination Jobs"),
         "{command}"
     );
     press(&mut harness, Key::Enter);
