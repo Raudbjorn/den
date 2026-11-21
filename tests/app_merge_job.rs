@@ -250,3 +250,81 @@ fn head_and_merge_method_belong_to_merge_and_land() {
         .expect("land may use {merge_method}");
     assert_eq!(land.unusable(PromptKind::Step(NextStep::Land)), None);
 }
+
+/// Review on #88: a head accepted for another kind (`HeadMoved`, then ⏎)
+/// never pins a Merge. Merge never offers to accept a moved head, so the
+/// sheet's accepted head, older than what den observed since, would refuse
+/// every Merge launch as moved. The Merge is pinned to the head the latest
+/// survey observed.
+#[test]
+fn a_head_accepted_for_another_kind_never_pins_a_merge() {
+    const THIRD_HEAD: &str = "3333333333333333333333333333333333333333";
+    let mut harness = Harness::new(Ok(config(MergeMethods::default())));
+    harness.answer(Ok(ObservationBuilder::new()
+        .owner("octo")
+        .repo("octo/app")
+        .pull_request(pr("octo/app", 7).author(ME).changes_requested())
+        .build()));
+    harness.start();
+    harness
+        .workspace
+        .add_clone(CLONE, &[("origin", "git@github.com:octo/app.git")]);
+    harness
+        .workspace
+        .set_remote_head(CLONE, "origin", "feature-7", HEAD_7);
+
+    // A refresh is under way; its answer has #7 approved at a third head.
+    let survey = harness.key(Key::Char('r'));
+    harness.answer(Ok(ObservationBuilder::new()
+        .owner("octo")
+        .repo("octo/app")
+        .pull_request(
+            pr("octo/app", 7)
+                .author(ME)
+                .head(THIRD_HEAD)
+                .approved()
+                .passing("ci"),
+        )
+        .build()));
+
+    // Address review: the head moved, and the user accepts it.
+    press(&mut harness, Key::Char('c'));
+    assert_eq!(sheet(&harness).next_step, "Address review");
+    harness
+        .workspace
+        .set_remote_head(CLONE, "origin", "feature-7", MOVED_HEAD);
+    press(&mut harness, Key::Enter);
+    assert_eq!(sheet(&harness).status, LaunchStatus::HeadMoved);
+
+    // The refresh lands: #7 is Merge now, at the head den just observed.
+    for effect in &survey {
+        harness.perform(effect);
+    }
+    harness
+        .workspace
+        .set_remote_head(CLONE, "origin", "feature-7", THIRD_HEAD);
+    press(&mut harness, Key::Enter);
+    let asked = sheet(&harness).clone();
+    assert_eq!(asked.next_step, "Merge", "{}", messages(&asked));
+    assert!(
+        prompt(&asked).contains(&format!("--match-head-commit {THIRD_HEAD}")),
+        "{}",
+        prompt(&asked)
+    );
+
+    press(&mut harness, Key::Enter);
+    let launched = sheet(&harness).clone();
+    assert_ne!(
+        launched.status,
+        LaunchStatus::Refused,
+        "{}",
+        messages(&launched)
+    );
+    let plans = launch_plans(&harness);
+    let merge = plans
+        .iter()
+        .find(|plan| plan.next_step == NextStep::Merge)
+        .expect("a Merge plan");
+    assert_eq!(merge.base.commit, THIRD_HEAD);
+    assert_eq!(harness.launcher.windows().len(), 1);
+}

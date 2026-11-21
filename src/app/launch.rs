@@ -1134,8 +1134,11 @@ impl App {
             removed_env: &self.removed_env,
         })?;
         Ok(match &sheet.accepted_head {
-            Some(commit) => plan.on_commit(commit),
-            None => plan,
+            // Merge never offers to accept a moved head (#72): it is pinned to
+            // the head den observed, so a head accepted for another kind on
+            // this sheet never applies to it.
+            Some(commit) if plan.next_step != NextStep::Merge => plan.on_commit(commit),
+            _ => plan,
         })
     }
 
