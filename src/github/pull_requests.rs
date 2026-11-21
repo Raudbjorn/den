@@ -197,6 +197,7 @@ fn with_facts(query: &str) -> String {
     format!("{query}\n{FACTS}")
 }
 
+/// `viewer` is the GitHub viewer's login, for the Review Point facts (#75).
 /// `screenshot_repos` are the Repos with `screenshots = true` (#79): PR bodies
 /// are asked for only when this Owner has one, and decoded only for them.
 pub fn fetch(
