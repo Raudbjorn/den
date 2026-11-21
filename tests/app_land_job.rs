@@ -890,3 +890,32 @@ fn land_uses_each_members_repo_merge_method() {
     let prompt = &ready.prompt.as_ref().expect("a prompt").text;
     assert!(prompt.contains("Merge each using --rebase."), "{prompt}");
 }
+
+// A settled Point can change publication text without changing readiness or heads.
+#[test]
+fn changed_resolutions_require_confirmation_again_even_when_heads_are_unchanged() {
+    let mut harness = started();
+    select(&mut harness, "TEAM-1");
+    let survey = harness.key(Key::Char('r'));
+    queue_round(
+        &harness,
+        vec![
+            ready("acme/api", 1, HEAD_1).thread("NEW_THREAD", "alice", true),
+            ready("acme/app", 2, HEAD_2),
+            pr("acme/web", 3).author(ME).conflicting(),
+        ],
+        &ALL,
+    );
+    open_sheet(&mut harness, "TEAM-1");
+    for effect in &survey {
+        harness.perform(effect);
+    }
+    press(&mut harness, Key::Enter);
+    assert!(harness.launcher.windows().is_empty());
+    let asked = sheet(&harness);
+    assert_eq!(asked.status, LaunchStatus::Ready, "{}", messages(asked));
+    assert!(asked.prompt.as_ref().unwrap().text.contains("NEW\\_THREAD"));
+    assert!(messages(asked).contains("prompt"), "{}", messages(asked));
+    press(&mut harness, Key::Enter);
+    assert_eq!(harness.launcher.windows().len(), 1);
+}
