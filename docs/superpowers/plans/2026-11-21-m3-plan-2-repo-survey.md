@@ -1665,7 +1665,7 @@ Expected: every test passes, and den behaves as before. Nothing sends `SurveyTar
   - `CachedObservation.reads: Vec<SourceRead>` (`#[serde(default)]`);
   - `CachedObservation::read_started(&self, repo: &RepoId, kind: SourceKind) -> Option<Timestamp>`;
   - `cache::CACHE_FORMAT == 13`;
-  - `cache::merge(previous, fresh)` keeps its signature. For each (Repo, listing kind) whose held read started strictly after `fresh.observed_at`, the fresh facts of that Repo and kind (and its details) are dropped. The held facts, coverage, age and read time stay. Every other source merges as before, and its read time becomes `fresh.observed_at`.
+  - `cache::merge(previous, fresh)` keeps its signature. For each (Repo, listing kind) whose held read started strictly after `fresh.observed_at`, whether or not `fresh` recorded that Repo, the fresh facts of that Repo and kind (and its details) are dropped. The held facts, coverage, age and read time stay. Every other source merges as before, and its read time becomes `fresh.observed_at`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1743,6 +1743,27 @@ fn owner_survey(at: &str, app_state: &SourceState) -> Observation {
     read_whole(builder, "acme/lib", &SourceState::Complete)
         .pull_request(pr("acme/app", 1).author(ME).title("answer"))
         .pull_request(pr("acme/app", 2).author(ME))
+        .pull_request(pr("acme/lib", 3).author(ME))
+        .build()
+}
+
+/// An Owner survey of acme that started at `at` and was cut off (rate
+/// limited) before its listing reached acme/app: acme's sources are partial,
+/// and only acme/lib has entries of its own.
+fn owner_survey_cut_before_app(at: &str) -> Observation {
+    let builder = [
+        SourceKind::Repos,
+        SourceKind::PullRequests,
+        SourceKind::Issues,
+        SourceKind::Branches,
+        SourceKind::Runs,
+    ]
+    .into_iter()
+    .fold(
+        ObservationBuilder::new().observed_at(at).owner("acme"),
+        |builder, kind| builder.owner_coverage("acme", kind, rate_limited()),
+    );
+    read_whole(builder, "acme/lib", &SourceState::Complete)
         .pull_request(pr("acme/lib", 3).author(ME))
         .build()
 }
@@ -1837,6 +1858,47 @@ fn a_partial_answer_that_started_earlier_neither_replaces_nor_downgrades_the_hel
             "{kind:?} keeps the held coverage"
         );
     }
+}
+
+#[test]
+fn an_earlier_answer_that_never_reached_the_held_repo_keeps_its_coverage_and_read_time() {
+    let merged = cache::merge(
+        Some(held()),
+        owner_survey_cut_before_app("2026-11-19T12:00:00Z"),
+    );
+
+    assert!(titles(&merged).contains(&("acme/app".to_owned(), 1, "held".to_owned())));
+    for kind in [
+        SourceKind::Repos,
+        SourceKind::PullRequests,
+        SourceKind::Issues,
+        SourceKind::Branches,
+        SourceKind::Runs,
+    ] {
+        assert_eq!(
+            state(&merged, "acme/app", kind),
+            Some(SourceState::Complete),
+            "{kind:?} keeps the held coverage"
+        );
+        assert_eq!(
+            merged.read_started(&repo_id("acme/app"), kind),
+            Some(ts(LATER)),
+            "{kind:?} keeps the held read time"
+        );
+    }
+
+    // The read time survived, so a still earlier answer that does reach
+    // acme/app is refused too.
+    let again = cache::merge(
+        Some(merged),
+        owner_survey("2026-11-19T11:00:00Z", &SourceState::Complete),
+    );
+    assert!(titles(&again).contains(&("acme/app".to_owned(), 1, "held".to_owned())));
+    assert!(
+        !titles(&again)
+            .iter()
+            .any(|(repo, number, _)| repo == "acme/app" && *number == 2)
+    );
 }
 
 #[test]
@@ -2130,7 +2192,7 @@ Expected: compile errors, `error[E0599]: no method named 'read_started' found fo
 - [ ] **Step 5: The guard in the merge** (`src/cache/merge.rs`)
 
 How it works:
-- `Guarded::of` lists every (folded Repo, listing kind) where den's held read started strictly after the fresh survey's `observed_at`. `listing` maps `PullRequestDetails` to `PullRequests` and `IssueDetails` to `Issues`, so details go with their list.
+- `Guarded::of` lists every (folded Repo, listing kind) where den's held read started strictly after the fresh survey's `observed_at`. It looks at the sources the fresh survey recorded and also at den's held reads of its Owners' Repos, because an Owner survey cut off before a Repo records nothing for it. `listing` maps `PullRequestDetails` to `PullRequests` and `IssueDetails` to `Issues`, so details go with their list.
 - `withdraw` removes the fresh survey's facts for those sources and puts the held coverage entries back in place of the fresh ones. `Reading::guarding` then makes `keeps_repo_fact` keep the held facts for them, so the existing keep-unread path carries them across with their ages.
 - `merged_reads` keeps the held read time for a guarded source and gives every other Repo source the fresh start time.
 - If anything was guarded and the held Observation is newer, `as_new_as_held` keeps `observed_at` at the held time. Otherwise the file would refuse the merge as older than what it holds. The fresh sources that carry data are then marked carried at the fresh time, so they still show their true age.
@@ -2197,10 +2259,21 @@ How it works:
 +static GUARDS_NOTHING: Guarded = Guarded(Vec::new());
 +
 +impl Guarded {
++    /// Every held Repo read the refresh speaks for: the sources it recorded,
++    /// and the held reads of its Owners' Repos it never reached. An Owner
++    /// survey cut off before a Repo (interrupted, or paused at the rate-limit
++    /// floor) records nothing for it, yet still replaces the Owner's coverage,
++    /// so without the second list that Repo's held coverage and read time
++    /// would go while its facts stayed.
 +    fn of(previous: &CachedObservation, fresh: &Observation) -> Self {
++        let recorded = fresh.coverage.entries().iter().map(|e| &e.source);
++        let unreached = previous.reads.iter().map(|r| &r.source).filter(|s| {
++            matches!(s, Source::Repo { repo, .. }
++                if fresh.owners.iter().any(|o| same_login(o, &repo.owner)))
++        });
 +        let mut held: Vec<(RepoId, SourceKind)> = Vec::new();
-+        for entry in fresh.coverage.entries() {
-+            let Source::Repo { repo, kind } = &entry.source else {
++        for source in recorded.chain(unreached) {
++            let Source::Repo { repo, kind } = source else {
 +                continue;
 +            };
 +            let key = (repo.folded(), listing(*kind));
@@ -3350,11 +3423,11 @@ Expected: every test passes. The module comment of `tests/workspace_repo_at.rs` 
 
 **Seam:** 2 (the App with fake ports; `Harness::opening`). **Spec:** "Screens and navigation", **Startup** rules 1–4 and "A Repo outside the watched Owners opens too"; "Cache": "The workbench shows the cached Repo at once … with its age, while its Repo Survey runs"; Testing Decisions, Seam 2, Startup resolution ("an argument; a clone; a worktree resolving to its Main Clone's Repo; `origin` versus a single other GitHub remote; several GitHub remotes with no GitHub `origin`, including an `origin` elsewhere; no GitHub remote; `--pick` inside a clone") and workbench "`r` emits a Repo Survey only".
 
-The rules live in a pure module, `src/app/start.rs`. `main` gathers the input in Task 9: the argument, or the start directory and what `Workspace::repo_at` found there. The rules' outcome is `Opened::Repo` or `Opened::Owners { notice }`. There is no Repo screen until Plan 4, so the outcomes that will open it open the watched Owners, as den does today, and the header says why when that is worth saying. A Repo opens as today's Repo Scope. Its survey, at start and on `r`, is `SurveyTarget::Repo` and merges with `cache::merge_repo`. Fitting the cache keeps it even when its Owner isn't watched.
+The rules live in a pure module, `src/app/start.rs`. `main` gathers the input in Task 9: the argument, or the start directory and what `Workspace::repo_at` found there. The rules' outcome is `Opened::Repo` or `Opened::Owners { notice }`. There is no Repo screen until Plan 4, so the outcomes that will open it open the watched Owners, as den does today, and the header says why when that is worth saying. A Repo opens as today's Repo Scope, and the Scope stays on it: the Scope keys (`←`/`→`, and `⏎` on another sidebar row) leave it unchanged. Otherwise `r`, which surveys the open Repo, would leave another Repo's cached facts on screen with nothing to refresh them. Opening another Repo is `den OWNER/REPO` until Plan 4's Repo screen. Its survey, at start and on `r`, is `SurveyTarget::Repo` and merges with `cache::merge_repo`. Fitting the cache keeps it even when its Owner isn't watched.
 
 **Files:**
 - Create: `src/app/start.rs` (`Start`, `Opened`, `resolve`, `from_remotes`, `github_repo`; constants `GITHUB_HOSTS`, `ORIGIN`)
-- Modify: `src/app/mod.rs` (`mod start` and its re-exports; `App.opened`; `App::with_start`, `open_repo`, `survey_request`; start and refresh use `survey_request`; a Repo Survey merges with `merge_repo`; the cache is fitted with `restricted_to(&config.owners, self.open_repo())`)
+- Modify: `src/app/mod.rs` (`mod start` and its re-exports; `App.opened`; `App::with_start`, `open_repo`, `survey_request`; start and refresh use `survey_request`; the Scope keys leave an open Repo's Scope unchanged; a Repo Survey merges with `merge_repo`; the cache is fitted with `restricted_to(&config.owners, self.open_repo())`)
 - Modify: `src/app/view/mod.rs` (`State.start_notice`), `src/app/view/header.rs` (the notice joins the status parts)
 - Modify: `tests/support/harness.rs` (`Harness::opening`)
 - Test: `tests/app_startup.rs` (new; `tests/app_start.rs` is #33's Start Next Step and is not touched)
@@ -3678,6 +3751,56 @@ fn r_surveys_the_open_repo_alone_again() {
     let mut harness = opened(&Start::Named(repo_id("acme/app")));
     harness.answer(Ok(repo_survey("acme/app", 1)));
     harness.start();
+
+    let effects = harness.key(Key::Char('r'));
+    let surveys: Vec<&SurveyTarget> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Survey { request, .. } => Some(&request.target),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(surveys, [&SurveyTarget::Repo(repo_id("acme/app"))]);
+}
+
+/// The Scope stays on the open Repo: neither the segment keys nor the
+/// sidebar move it to another cached Repo, so `r` always refreshes the Repo
+/// shown.
+#[test]
+fn the_scope_stays_on_the_open_repo_so_r_refreshes_what_is_shown() {
+    let mut cached = ObservationBuilder::new()
+        .observed_at("2026-11-19T10:00:00Z")
+        .fully_read_owner("acme");
+    for repo in ["acme/app", "acme/lib"] {
+        cached = cached.repo(repo);
+        for kind in KINDS {
+            cached = cached.repo_coverage(repo, kind, SourceState::Complete);
+        }
+    }
+    let cached = cached
+        .pull_request(pr("acme/lib", 2).author(ME).draft())
+        .build();
+    let mut harness = Harness::opening(
+        Ok(config(&["acme"])),
+        FakeCache::holding(CachedObservation::fresh(cached)),
+        &Start::Named(repo_id("acme/app")),
+    );
+    harness.answer(Ok(repo_survey("acme/app", 1)));
+    harness.start();
+    assert_eq!(harness.view.header.scope, "Repo · acme/app");
+
+    for key in [Key::Right, Key::Left] {
+        harness.key(key);
+        assert_eq!(harness.view.header.scope, "Repo · acme/app", "{key:?}");
+    }
+    // The sidebar lists acme/lib from the cache. Walking its rows and choosing
+    // each changes nothing (the sidebar keeps focus, as before the key).
+    harness.key(Key::Tab);
+    for _ in 0..3 {
+        harness.key(Key::Down);
+        harness.key(Key::Enter);
+        assert_eq!(harness.view.header.scope, "Repo · acme/app");
+    }
 
     let effects = harness.key(Key::Char('r'));
     let surveys: Vec<&SurveyTarget> = effects
@@ -4091,6 +4214,26 @@ A Repo Survey merges with `merge_repo`. The `shown` Observation is taken before 
                  // The cache is read first, so it shows before the survey answers;
                  // then the Jobs (local and bounded), so their markers don't wait
                  // for gh on the Worker's remote lane.
+@@ -447,10 +490,19 @@ impl App {
+         let entries = self.sidebar_entries();
+         let owners = self.owners().to_vec();
++        // While a Repo is open, the Scope stays that Repo. `r` surveys the open
++        // Repo alone, so another Scope would show cached data that nothing in
++        // this session refreshes. Plan 4's Repo screen (`g`) opens other Repos.
++        let before = self.scope.clone();
+         match self.scope.key(key, &owners, &entries) {
+             scope::Outcome::Unhandled => {}
+             scope::Outcome::Moved => return Vec::new(),
+             scope::Outcome::Changed => {
++                if let Some(repo) = self.open_repo()
++                    && !self.scope.scope.same(&ordering::Scope::Repo(repo.clone()))
++                {
++                    self.scope = before;
++                    return Vec::new();
++                }
+                 self.apply_scope();
+                 return Vec::new();
+             }
 @@ -512,8 +555,13 @@ impl App {
          match outcome {
              Ok(observation) => {
