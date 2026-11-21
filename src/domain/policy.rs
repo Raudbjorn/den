@@ -10,10 +10,11 @@
 //! state (#37) and its landing order (#40).
 
 use super::{
-    RepoId,
+    NextStep, RepoId,
     facts::{LinearIssue, LinearStateKind, Reviewer},
     ids::same_login,
 };
+use std::collections::BTreeSet;
 
 /// One Owner's Linear Workflow policy. Its [`Default`] is the **empty** policy,
 /// the one every Owner without a Linear Workflow gets, and it must stay a
@@ -144,11 +145,54 @@ impl StartPolicy {
     }
 }
 
+/// The Next Step kinds each Repo doesn't track (`[repos."OWNER/REPO"] skip`,
+/// spec 0003, "Not tracking a flow"). A Repo not listed tracks every kind.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Skips {
+    by_repo: Vec<(RepoId, BTreeSet<NextStep>)>,
+}
+
+/// What a Repo without a `skip` list skips: nothing.
+static NO_SKIPS: BTreeSet<NextStep> = BTreeSet::new();
+
+impl Skips {
+    /// `repo` doesn't track `steps`. Repos compare as GitHub compares names: a
+    /// Repo already listed is replaced.
+    #[must_use]
+    pub fn with(mut self, repo: RepoId, steps: impl IntoIterator<Item = NextStep>) -> Self {
+        let steps: BTreeSet<NextStep> = steps.into_iter().collect();
+        match self
+            .by_repo
+            .iter_mut()
+            .find(|(listed, _)| listed.same(&repo))
+        {
+            Some(entry) => *entry = (repo, steps),
+            None => self.by_repo.push((repo, steps)),
+        }
+        self
+    }
+
+    /// The kinds `repo` doesn't track; empty when it isn't listed.
+    pub fn for_repo(&self, repo: &RepoId) -> &BTreeSet<NextStep> {
+        self.by_repo
+            .iter()
+            .find(|(listed, _)| listed.same(repo))
+            .map_or(&NO_SKIPS, |(_, steps)| steps)
+    }
+
+    /// Whether `repo` has a `skip` list (compared as GitHub compares names).
+    pub fn lists(&self, repo: &RepoId) -> bool {
+        self.by_repo.iter().any(|(listed, _)| listed.same(repo))
+    }
+}
+
 /// The Linear Workflow policy of each Owner that has one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Policies {
     /// Owner (as configured) and its policy, in config order.
     by_owner: Vec<(String, LinearWorkflowPolicy)>,
+    /// The Next Step kinds each Repo doesn't track (spec 0003).
+    skips: Skips,
 }
 
 /// The policy of every Owner without a Linear Workflow.
@@ -184,6 +228,18 @@ impl Policies {
             .iter()
             .find(|(o, _)| same_login(o, owner))
             .map_or(&EMPTY_POLICY, |(_, policy)| policy)
+    }
+
+    /// Every Repo's `skip` list (spec 0003).
+    #[must_use]
+    pub fn with_skips(mut self, skips: Skips) -> Self {
+        self.skips = skips;
+        self
+    }
+
+    /// The Next Step kinds each Repo doesn't track.
+    pub fn skips(&self) -> &Skips {
+        &self.skips
     }
 }
 

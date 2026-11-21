@@ -9,6 +9,8 @@
 //! # [main_clones]                      per-Repo Main Clone overrides
 //! # Both take absolute paths only.
 //! # "Raudbjorn/den" = "/home/me/dev/den"
+//! # [repos."octo/app"]                Next Steps a Repo doesn't track (spec 0003)
+//! # skip = ["Fix CI", "Triage"]
 //! ```
 //!
 //! A Linear Workflow binds one Owner to one Linear workspace (spec 0002,
@@ -20,8 +22,8 @@ pub mod linear;
 pub use linear::{LinearWorkflow, Reviewer};
 
 use crate::domain::{
-    Policies,
-    ids::{MAX_LOGIN_CHARS, is_valid_login},
+    NextStep, Policies, RepoId, Skips,
+    ids::{MAX_LOGIN_CHARS, is_valid_login, is_valid_repo_name},
 };
 use serde::Deserialize;
 use std::{
@@ -44,6 +46,9 @@ pub struct Config {
     /// The Linear Workflows, at most one per Owner, in `owners` order. An
     /// Owner without one is GitHub-only.
     pub linear: Vec<LinearWorkflow>,
+    /// The Next Step kinds each Repo doesn't track (`[repos."OWNER/REPO"]
+    /// skip`, spec 0003). Repos outside the watched Owners may be listed.
+    pub skips: Skips,
 }
 
 impl Config {
@@ -58,9 +63,12 @@ impl Config {
     /// policy for Owners without a Linear Workflow. Each workflow maps its own
     /// ([`LinearWorkflow::policy`]).
     pub fn policies(&self) -> Policies {
-        self.linear.iter().fold(Policies::default(), |policies, w| {
-            policies.with(w.owner.clone(), w.policy())
-        })
+        self.linear
+            .iter()
+            .fold(Policies::default(), |policies, w| {
+                policies.with(w.owner.clone(), w.policy())
+            })
+            .with_skips(self.skips.clone())
     }
 
     /// Checks that every Linear Workflow's API key variable is set and not
@@ -95,6 +103,16 @@ struct RawConfig {
     main_clones: BTreeMap<String, Spanned<PathBuf>>,
     #[serde(default)]
     linear: BTreeMap<Spanned<String>, Spanned<linear::RawLinearWorkflow>>,
+    #[serde(default)]
+    repos: BTreeMap<Spanned<String>, RawRepo>,
+}
+
+/// One `[repos."OWNER/REPO"]` table (spec 0003).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRepo {
+    #[serde(default)]
+    skip: Vec<Spanned<String>>,
 }
 
 /// A 1-based line and column in the config file.
@@ -206,11 +224,13 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
     }
     let linear = linear::workflows(raw.linear, &owners, text)
         .map_err(|(span, message)| malformed(Some(span), message))?;
+    let skips = repo_skips(raw.repos).map_err(|(span, message)| malformed(Some(span), message))?;
     Ok(Config {
         owners,
         main_clone_root,
         main_clones,
         linear,
+        skips,
     })
 }
 
@@ -230,6 +250,69 @@ fn absolute(path: Spanned<PathBuf>, what: &str) -> Result<PathBuf, (Range<usize>
             path.display().to_string()
         ),
     ))
+}
+
+/// The `[repos."OWNER/REPO"]` tables' `skip` lists (spec 0003, "Not tracking
+/// a flow"). Each value must be a skippable Next Step spelled as `CONTEXT.md`
+/// spells it.
+fn repo_skips(raw: BTreeMap<Spanned<String>, RawRepo>) -> Result<Skips, (Range<usize>, String)> {
+    let mut skips = Skips::default();
+    for (key, table) in raw {
+        let key_span = key.span();
+        let name = key.into_inner();
+        let repo = match name.split_once('/') {
+            Some((owner, repo)) if is_valid_login(owner) && is_valid_repo_name(repo) => {
+                RepoId::new(owner, repo)
+            }
+            _ => {
+                return Err((
+                    key_span,
+                    format!("{name:?} is not OWNER/REPO, such as \"octo/app\""),
+                ));
+            }
+        };
+        if skips.lists(&repo) {
+            return Err((
+                key_span,
+                format!("{name} is configured twice (Repo names compare without case)"),
+            ));
+        }
+        let mut steps = Vec::with_capacity(table.skip.len());
+        for entry in table.skip {
+            let span = entry.span();
+            let label = entry.into_inner();
+            let Some(step) = NextStep::from_label(&label) else {
+                return Err((
+                    span,
+                    format!(
+                        "{label:?} is not a Next Step: use one of {}",
+                        skippable_names()
+                    ),
+                ));
+            };
+            if !step.skippable() {
+                return Err((
+                    span,
+                    format!(
+                        "{label} belongs to Linear Issues, not to a Repo, so a Repo can't skip it"
+                    ),
+                ));
+            }
+            steps.push(step);
+        }
+        skips = skips.with(repo, steps);
+    }
+    Ok(skips)
+}
+
+/// The skippable Next Steps, quoted, in glossary order.
+fn skippable_names() -> String {
+    NextStep::ALL
+        .into_iter()
+        .filter(|step| step.skippable())
+        .map(|step| format!("{:?}", step.label()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub(crate) fn location_of(text: &str, offset: usize) -> Location {

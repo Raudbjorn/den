@@ -1,6 +1,6 @@
 # The Repo is the unit of survey; a background Sweep keeps the Repo screen's counts
 
-den surveys the Repo you are working in, not every watched Owner, whenever it shows that Repo. A **Repo Survey** reads the viewer, the Repo and its open Pull Requests, Issues, Branches and default-branch Runs. It also reads, by number, the Landing Group members in the Owner's other Repos that the Repo's Linear Issues need. The Owner-wide survey survives as the **Sweep**. It runs in its own lane at lower priority, yields to the open Repo (cancelled between pages, stopped at a rate-limit floor) and feeds the Repo screen's counts. Both write into one cache keyed by Repo. For each Repo and source, a complete read replaces an earlier one only if it started later.
+den surveys the Repo you are working in, not every watched Owner, whenever it shows that Repo. A **Repo Survey** reads the viewer, the Repo and its open Pull Requests, Issues, Branches and default-branch Runs. It also reads, by number, the Landing Group members in the Owner's other Repos that the Repo's Linear Issues need. The Owner-wide survey survives as the **Sweep**. It runs in its own lane at lower priority, yields to the open Repo (cancelled between pages, stopped at a rate-limit floor) and feeds the Repo screen's counts. Both write into one cache keyed by Repo. For each Repo and source, a read, complete or partial, is merged only if it started later than the one den holds.
 
 ## Considered Options
 

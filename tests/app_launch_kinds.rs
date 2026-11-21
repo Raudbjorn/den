@@ -43,6 +43,7 @@ fn launch_config() -> Config {
         main_clone_root: Some(PathBuf::from(ROOT)),
         main_clones: BTreeMap::new(),
         linear: Vec::new(),
+        skips: den::domain::Skips::default(),
     }
 }
 

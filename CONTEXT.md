@@ -80,6 +80,10 @@ _Avoid_: Assignee (that is GitHub's narrower concept)
 A Branch with no Pull Request whose last commit is more than 30 days old.
 _Avoid_: Dead branch, old branch
 
+**Not tracked**:
+A Next Step kind a Repo has opted out of with `skip` in den's config. Its Work Items never get that Next Step: a Pull Request falls through to its next rule, and other Work Items get none. A skip never unblocks another Next Step, and the Explanation still says when the skipped kind's condition holds. Start, Land and Mark for release belong to Linear Issues and are never skipped per Repo.
+_Avoid_: Disabled, ignored, muted
+
 **Observation**:
 One survey of the watched Owners: the facts den read, who the viewer is, and when it was read.
 _Avoid_: Snapshot, fetch (for the result)

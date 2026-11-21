@@ -40,6 +40,7 @@ pub fn config(owners: &[&str]) -> Config {
         main_clone_root: None,
         main_clones: BTreeMap::new(),
         linear: Vec::new(),
+        skips: den::domain::Skips::default(),
     }
 }
 

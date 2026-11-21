@@ -80,6 +80,19 @@ Supported placeholders are `{repo}`, `{number}`, `{url}`, `{title}` and `{branch
 use `{{` and `}}` for literal braces. Malformed configuration or prompts are
 reported instead of silently replaced.
 
+A Repo can stop tracking Next Step kinds that don't suit it. Its Work Items
+then never get those Next Steps, and den says so rather than reporting
+"Nothing needs you" over them:
+
+```toml
+[repos."example-owner/hobby"]
+skip = ["Fix CI", "Triage", "Prune or revive"]
+```
+
+Names are spelled as den shows them. Start, Land and Mark for release belong to
+Linear Issues and can't be skipped per Repo. Skipping a kind never unblocks
+another one: with Fix CI skipped, a PR with failing checks still doesn't Merge.
+
 ## Check local setup
 
 ```sh

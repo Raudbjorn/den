@@ -714,9 +714,12 @@ impl App {
         )
     }
 
-    /// Narrows the list to the Scope, keeping the selection when it is still in it.
+    /// Narrows the list to the Scope, keeping the selection when it is still
+    /// in it. Work Items whose only Next Step their Repo doesn't track
+    /// (`skip`, spec 0003) are left out; the empty state counts them.
     fn apply_scope(&mut self) {
         self.decisions = ordering::in_scope(&self.ordered, &self.scope.scope)
+            .filter(|d| d.not_tracked.is_none())
             .cloned()
             .collect();
         self.keep_selection();
