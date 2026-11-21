@@ -141,6 +141,12 @@ branch, Main Clone, worktree, prompt and proposed steps before confirming. A
 launch may fetch, clone and create a worktree. A failure reports completed and
 unfinished steps; den does not undo them.
 
+A Job never gets den's Linear keys: when a Linear Workflow is configured, the
+command runs `claude` under `env -u <VAR>` for each Workflow's `api_key_env`
+variable, visibly, in kitty, on the clipboard and when reopening. Other variables,
+`GH_TOKEN` and `GITHUB_TOKEN` included, are left as they are, so a Job that needs
+Linear reaches it through your own Claude Code setup (for example an MCP server).
+
 A **Live Job** means its recorded worktree still exists, not that Claude is
 running. den asks before launching the same Work Item again: `o` reopens an
 existing Job and `f` prepares a fresh one when allowed.

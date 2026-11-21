@@ -599,7 +599,14 @@ impl App {
                 let (check, view) = (check.clone(), view.clone());
                 let settings = self.reopen_settings(&check.job);
                 let policy = self.policies.for_owner(check.job.owner());
-                effects = open_existing(&mut sheet, &check, &view, policy, settings);
+                effects = open_existing(
+                    &mut sheet,
+                    &check,
+                    &view,
+                    policy,
+                    settings,
+                    &self.removed_env,
+                );
             }
             (
                 Key::Char('f'),
@@ -1117,6 +1124,7 @@ impl App {
             slack_channel,
             linear_repo: sheet.linear.as_ref().and_then(LinearLaunch::repo),
             policy: self.policies.for_owner(sheet.item.owner()),
+            removed_env: &self.removed_env,
         })?;
         Ok(match &sheet.accepted_head {
             Some(commit) => plan.on_commit(commit),
@@ -1467,8 +1475,9 @@ fn open_existing(
     view: &WorkspaceView,
     policy: &LinearWorkflowPolicy,
     settings: ProjectSettings,
+    removed_env: &[String],
 ) -> Vec<Effect> {
-    match live::plan_reopen(check, view, policy, settings) {
+    match live::plan_reopen(check, view, policy, settings, removed_env) {
         Ok(plan) => {
             sheet.state = SheetState::ReopenReady {
                 plan: Box::new(plan),

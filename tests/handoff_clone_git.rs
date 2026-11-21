@@ -268,6 +268,7 @@ fn clone_plan(root: &Path, url: &str, tip: &str) -> LaunchPlan {
         review_request: None,
         landing: None,
         window: WindowMode::Kitty,
+        removed_env: Vec::new(),
         command: String::new(),
     };
     plan.command = command::display(&plan.window, &plan.window_command());

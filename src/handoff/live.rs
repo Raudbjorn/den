@@ -238,6 +238,9 @@ pub struct ReopenPlan {
     /// Job's Owner's Linear Workflow policy).
     pub permission_mode: Option<PermissionMode>,
     pub window: WindowMode,
+    /// Environment variables the resumed session runs without (#70), as a
+    /// new Job's.
+    pub removed_env: Vec<String>,
     /// The exact command, as shown on the sheet.
     pub command: String,
 }
@@ -256,6 +259,7 @@ impl ReopenPlan {
             start: SessionStart::Resume,
             permission_mode: self.permission_mode,
             setting_sources: self.project_settings.sources(),
+            removed_env: self.removed_env.clone(),
         }
     }
 }
@@ -281,6 +285,7 @@ pub fn plan_reopen(
     view: &WorkspaceView,
     policy: &LinearWorkflowPolicy,
     project_settings: ProjectSettings,
+    removed_env: &[String],
 ) -> Result<ReopenPlan, Refusal> {
     let job = &check.job;
     let mut reasons = Vec::new();
@@ -317,6 +322,7 @@ pub fn plan_reopen(
         project_settings,
         permission_mode: job.reopen_mode(policy),
         window: view.window.clone(),
+        removed_env: removed_env.to_vec(),
         command: String::new(),
     };
     plan.command = command::display(&plan.window, &plan.window_command());
