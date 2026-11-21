@@ -1,5 +1,7 @@
 # Vendor raudbjorn-tui's engine and write den's own IRONMAW Oxide templates
 
+Status: partly superseded by ADR-0006 (2026-11-21). den now draws with ratatui widgets instead of `.crepus` templates. Vendoring the palette generation and colour/glyph profiles, and the colour roles below, still hold.
+
 den vendors `raudbjorn-tui` (design-system @ `464835c`) rather than depending on it, because adopting IRONMAW changes the templates, not just the palette. IRONMAW assigns colour by job: teal = actionable, rust = the one action / you are here, amber = caution, slate = structure. raudbjorn-tui uses its teal `accent` for focus and selection. The palette is generated from IRONMAW's resolved DTCG tokens, never hand-edited.
 
 The prototype (branch `prototype/ironmaw-tui`) showed that what is worth vendoring is the **engine**: `ComponentRenderer`, the sentinel-colour palette mechanism, and the colour/glyph profiles. raudbjorn-tui's 28 components are gallery stubs (its Table renders a single string), so den writes its own `.crepus` templates and reuses none of them.
