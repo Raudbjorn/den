@@ -215,6 +215,9 @@ pub struct Policies {
     skips: Skips,
     /// The Repos with `screenshots = true` (#79).
     screenshot_repos: Vec<RepoId>,
+    /// `legacy_marker_prefixes` (#75, ADR-0010): whose `review-notes`
+    /// markers set Review Points, besides den's own.
+    legacy_marker_prefixes: Vec<String>,
 }
 
 /// The policy of every Owner without a Linear Workflow.
@@ -276,6 +279,18 @@ impl Policies {
     /// GitHub compares names).
     pub fn requires_screenshots(&self, repo: &RepoId) -> bool {
         self.screenshot_repos.iter().any(|listed| listed.same(repo))
+    }
+
+    /// The legacy marker prefixes whose markers set Review Points (#75).
+    #[must_use]
+    pub fn with_legacy_marker_prefixes(mut self, prefixes: Vec<String>) -> Self {
+        self.legacy_marker_prefixes = prefixes;
+        self
+    }
+
+    /// The legacy marker prefixes, as configured; empty by default.
+    pub fn legacy_marker_prefixes(&self) -> &[String] {
+        &self.legacy_marker_prefixes
     }
 }
 

@@ -202,6 +202,7 @@ fn with_facts(query: &str) -> String {
 pub fn fetch(
     session: &Session<'_>,
     owner: &str,
+    viewer: &str,
     screenshot_repos: &[RepoId],
 ) -> Result<KindFetch<PullRequest>, SurveyFailure> {
     let owner_query = with_facts(OWNER_QUERY);
@@ -282,7 +283,7 @@ pub fn fetch(
         owner: owner.to_owned(),
         kind: SourceKind::PullRequests,
     }));
-    details::fill(session, &mut found_prs, &mut out.coverage)?;
+    details::fill(session, &mut found_prs, &mut out.coverage, viewer)?;
     out.items = found_prs.into_iter().map(|(_, pr)| pr).collect();
     Ok(out)
 }

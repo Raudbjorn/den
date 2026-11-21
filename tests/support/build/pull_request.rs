@@ -4,8 +4,9 @@ use super::{repo_id, ts};
 use den::domain::{
     TeamRef,
     facts::{
-        ActorKind, Check, CheckOutcome, MergeState, Mergeability, PrDetails, PullRequest, Review,
-        ReviewDecision, ReviewVerdict, Reviewer, Screenshots,
+        ActorKind, Check, CheckOutcome, MarkerComment, MergeState, Mergeability, PrDetails,
+        PullRequest, Review, ReviewDecision, ReviewRecord, ReviewVerdict, Reviewer, Screenshots,
+        ThreadRecord, feedback::parse_markers,
     },
 };
 
@@ -46,6 +47,7 @@ pub fn pr(repo: &str, number: u64) -> PrBuilder {
     }
 }
 
+#[derive(Clone)]
 pub struct PrBuilder {
     pr: PullRequest,
 }
@@ -292,6 +294,89 @@ impl PrBuilder {
     /// den read; the standing verdicts were read in full.
     pub fn latest_reviews_truncated(mut self) -> Self {
         self.details().latest_reviews_with_comments.complete = false;
+        self
+    }
+
+    /// A submitted review for Review Points (#75): `id` (GitHub's number),
+    /// by the user `login`, at `at`; `body` is whether it says more than a
+    /// stock approval. GitHub's review decision is left as it is.
+    pub fn review_body(
+        self,
+        id: u64,
+        login: &str,
+        verdict: ReviewVerdict,
+        at: &str,
+        body: bool,
+    ) -> Self {
+        self.review_record(id, Some(login), ActorKind::User, verdict, at, body)
+    }
+
+    /// A submitted review for Review Points with every field given.
+    pub fn review_record(
+        mut self,
+        id: u64,
+        login: Option<&str>,
+        kind: ActorKind,
+        verdict: ReviewVerdict,
+        at: &str,
+        body: bool,
+    ) -> Self {
+        let url = format!("{}#pullrequestreview-{id}", self.pr.url);
+        self.details().reviews.items.push(ReviewRecord {
+            id,
+            author: login.map(str::to_owned),
+            author_kind: kind,
+            verdict,
+            submitted_at: Some(ts(at)),
+            url,
+            has_body: body,
+        });
+        self
+    }
+
+    /// A review thread `id` started by `login`, resolved or not. Also counts
+    /// into the unresolved threads, as the decoder does from the same list.
+    pub fn thread(mut self, id: &str, login: &str, resolved: bool) -> Self {
+        let url = format!("{}#discussion_{id}", self.pr.url);
+        let details = self.details();
+        details.threads.items.push(ThreadRecord {
+            id: id.to_owned(),
+            url: Some(url),
+            author: Some(login.to_owned()),
+            resolved,
+        });
+        if !resolved {
+            details.unresolved_threads += 1;
+        }
+        self
+    }
+
+    /// A conversation comment by `login` at `at` with `body`, kept as the
+    /// decoder keeps it: its markers only, with summaries when `login` is
+    /// the viewer (`ME`). Comments without markers are not kept.
+    pub fn comment(mut self, comment: u64, login: &str, at: &str, body: &str) -> Self {
+        let markers = parse_markers(body, login == super::ME);
+        let url = format!("{}#issuecomment-{comment}", self.pr.url);
+        if !markers.is_empty() {
+            self.details().marker_comments.items.push(MarkerComment {
+                author: Some(login.to_owned()),
+                created_at: ts(at),
+                url,
+                markers,
+            });
+        }
+        self
+    }
+
+    /// GitHub had more reviews (for Review Points) than den read.
+    pub fn point_reviews_truncated(mut self) -> Self {
+        self.details().reviews.complete = false;
+        self
+    }
+
+    /// GitHub had more conversation comments than den read.
+    pub fn comments_truncated(mut self) -> Self {
+        self.details().marker_comments.complete = false;
         self
     }
 

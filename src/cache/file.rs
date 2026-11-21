@@ -52,7 +52,10 @@ pub const CACHE_SUBDIR: &str = "cache";
 /// plus Land and Mark for release.
 /// 12: an Observation records the members den asked about and got no state
 /// for, with when it last asked (#37), so a bounded read rotates past them.
-pub const CACHE_FORMAT: u32 = 12;
+/// 13: a PR's details carry its reviews, review threads and marker comments
+/// for Review Points (#75). Milestone 3's Plan 2 also wants a new number:
+/// whichever lands second takes the next one.
+pub const CACHE_FORMAT: u32 = 13;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// Names the viewer whose cache startup shows.

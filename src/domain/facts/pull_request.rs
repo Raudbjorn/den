@@ -6,6 +6,7 @@
 //! from a follow-up query and live in [`PrDetails`], which is `None` when that
 //! query could not be read (coverage then says why).
 
+use super::feedback::{MarkerComment, ReviewRecord, ThreadRecord};
 use crate::domain::{
     ids::{RepoId, WorkItemId},
     observation::TeamRef,
@@ -123,6 +124,17 @@ pub struct PrDetails {
     /// commit. Read for the Linear Workflow review rules (#36); milestone 1's
     /// rules don't use it.
     pub latest_reviews_with_comments: Listed<Review>,
+    /// Every review, any state, without its body (#75), for Review Points.
+    #[serde(default)]
+    pub reviews: Listed<ReviewRecord>,
+    /// Every review thread (#75), for Review Points. Read with
+    /// `unresolved_threads`, from the same list.
+    #[serde(default)]
+    pub threads: Listed<ThreadRecord>,
+    /// The comments carrying markers (#75); `complete` says whether every
+    /// comment was read, not only those with markers.
+    #[serde(default)]
+    pub marker_comments: Listed<MarkerComment>,
 }
 
 impl Default for PrDetails {
@@ -135,6 +147,9 @@ impl Default for PrDetails {
             review_requests: Listed::default(),
             latest_reviews: Listed::default(),
             latest_reviews_with_comments: Listed::default(),
+            reviews: Listed::default(),
+            threads: Listed::default(),
+            marker_comments: Listed::default(),
         }
     }
 }

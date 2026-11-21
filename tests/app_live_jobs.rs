@@ -87,6 +87,7 @@ fn harness_observing(observed: ObservationBuilder, arrange: impl FnOnce(&Harness
         linear: Vec::new(),
         skips: den::domain::Skips::default(),
         screenshot_repos: Vec::new(),
+        legacy_marker_prefixes: Vec::new(),
     };
     let mut harness = Harness::new(Ok(config));
     harness

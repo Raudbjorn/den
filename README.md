@@ -103,6 +103,23 @@ Names are spelled as den shows them. Start, Land and Mark for release belong to
 Linear Issues and can't be skipped per Repo. Skipping a kind never unblocks
 another one: with Fix CI skipped, a PR with failing checks still doesn't Merge.
 
+Every Pull Request's feedback is a list of **Review Points**: each review
+thread, and each review body that says more than a stock approval ("LGTM",
+"ship it", 👍), from someone other than the author and not a bot. A body is
+one Point, "not yet split", until an Address review Job replies with one
+`<!-- den:point <review id>.<n> <state> [<commit>] -->` marker per Point
+(`open`, `fixed`, `declined`, `follow-up`, `needs-decision` or `answered`).
+A later approval by the same reviewer answers their earlier Points. Open, not
+yet split and needs-decision Points keep the PR at Address review, never Merge
+or Land; with only decisions left, it waits on you. Only markers posted by
+your own GitHub login count. If earlier tooling left markers of the form
+`<!-- <prefix>:review-notes:<review id>:addressed|needs-decision -->`, name its
+prefixes so those reviews don't reappear:
+
+```toml
+legacy_marker_prefixes = ["example-tool"]
+```
+
 ## Check local setup
 
 ```sh

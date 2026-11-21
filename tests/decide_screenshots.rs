@@ -14,7 +14,8 @@ use den::{
     decide::{Decision, decide},
     domain::{
         LinearWorkflowPolicy, NextStep, Observation, Policies, RepoId, ReviewPolicy, Skips,
-        Viewers, WaitingOn, facts::Screenshots,
+        Viewers, WaitingOn,
+        facts::{ReviewVerdict, Screenshots},
     },
 };
 use support::build::{ME, ObservationBuilder, PrBuilder, now, pr};
@@ -322,6 +323,33 @@ fn screenshots_still_gate_merge_when_pending_review_requests_do_not() {
             "pending_hold={pending_hold}, screenshots={screenshots:?}, skip={skip}: {decision:#?}"
         );
     }
+}
+
+#[test]
+fn resolving_review_points_still_leaves_missing_screenshots_to_address() {
+    let reviewed = mine_ready(9).screenshots(Screenshots::Missing).review_body(
+        100,
+        "alice",
+        ReviewVerdict::Approved,
+        "2026-11-10T10:00:00Z",
+        true,
+    );
+    let decision = decide_one(reviewed.clone(), &screenshots_in_app());
+    assert_eq!(decision.next_step, Some(NextStep::AddressReview));
+
+    let settled = reviewed.comment(
+        1,
+        ME,
+        "2026-11-11T10:00:00Z",
+        "<!-- den:point 100.1 fixed abc1234 -->\nFixed the reviewed behavior",
+    );
+    let decision = decide_one(settled.clone(), &screenshots_in_app());
+    assert_eq!(decision.next_step, Some(NextStep::AddScreenshots));
+    let decision = decide_one(
+        settled.screenshots(Screenshots::Present),
+        &screenshots_in_app(),
+    );
+    assert_eq!(decision.next_step, Some(NextStep::Merge));
 }
 
 /// A body den didn't read never yields Add screenshots or Merge: the state is

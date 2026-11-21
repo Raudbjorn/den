@@ -47,6 +47,7 @@ fn launch_config(main_clones: &[(&str, &str)]) -> Config {
         linear: Vec::new(),
         skips: den::domain::Skips::default(),
         screenshot_repos: Vec::new(),
+        legacy_marker_prefixes: Vec::new(),
     }
 }
 

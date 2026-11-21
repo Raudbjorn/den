@@ -22,6 +22,7 @@ mod issue;
 pub mod linear_issue;
 
 pub use linear_issue::{DEPLOYMENTS_UNSEEN, EVIDENCE_PREFIX};
+pub mod points;
 mod pull_request;
 mod run;
 
@@ -223,6 +224,11 @@ impl Context<'_> {
     /// nothing, when `owner` has no Linear Workflow.
     pub fn policy(&self, owner: &str) -> &LinearWorkflowPolicy {
         self.policies.for_owner(owner)
+    }
+
+    /// The configured legacy marker prefixes (#75).
+    pub fn legacy_marker_prefixes(&self) -> &[String] {
+        self.policies.legacy_marker_prefixes()
     }
 
     /// The Next Step kinds `repo` doesn't track (`skip`, spec 0003).

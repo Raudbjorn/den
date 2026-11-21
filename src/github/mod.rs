@@ -74,7 +74,10 @@ pub fn survey_request(
             .iter()
             .map(|owner| {
                 let rate_limit = &rate_limit;
-                scope.spawn(move || survey_owner(&Session::new(gql, rate_limit), owner, request))
+                let viewer = observation.viewer.login.as_str();
+                scope.spawn(move || {
+                    survey_owner(&Session::new(gql, rate_limit), owner, viewer, request)
+                })
             })
             .collect();
         handles
@@ -114,14 +117,16 @@ struct OwnerSurvey {
     coverage: Vec<CoverageEntry>,
 }
 
+/// `viewer` is the GitHub viewer's login, for the PRs' Review Point facts.
 fn survey_owner(
     session: &Session<'_>,
     owner: &str,
+    viewer: &str,
     request: &SurveyRequest,
 ) -> Result<OwnerSurvey, SurveyFailure> {
     let upstreams = &request.upstreams;
     let repos = repos::fetch(session, owner)?;
-    let pull_requests = pull_requests::fetch(session, owner, &request.screenshot_repos)?;
+    let pull_requests = pull_requests::fetch(session, owner, viewer, &request.screenshot_repos)?;
     let issues = issues::fetch(session, owner, &repos.items)?;
     let comparison = |repo: &Repo| comparison_branch(repo, upstreams);
     let branches = branches::fetch_against(session, owner, &repos.items, &comparison)?;
