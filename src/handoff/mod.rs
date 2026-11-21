@@ -365,6 +365,9 @@ pub struct LaunchPlan {
     /// heads, and the held members it leaves alone.
     pub landing: Option<LandingGroupPlan>,
     pub window: WindowMode,
+    /// Environment variables the Job runs without (#70, ADR-0007).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_env: Vec<String>,
     /// The exact command, as shown on the sheet.
     pub command: String,
 }
@@ -442,6 +445,7 @@ impl LaunchPlan {
             start: SessionStart::New,
             permission_mode: self.permission_mode,
             setting_sources: self.project_settings.sources(),
+            removed_env: self.removed_env.clone(),
         }
     }
 

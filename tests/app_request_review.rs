@@ -295,7 +295,8 @@ fn c_then_enter_on_request_review_launches_a_coordination_job_on_the_pr_head_in_
         ready.command.as_deref(),
         Some(
             format!(
-                "kitty --detach --hold --directory {WORKTREE_2} claude --permission-mode manual --setting-sources user -n {SESSION_2} '{}'",
+                // The Workflow's key variable is removed (#70, ADR-0007).
+                "kitty --detach --hold --directory {WORKTREE_2} env -u DEN_TEST_LINEAR_KEY claude --permission-mode manual --setting-sources user -n {SESSION_2} '{}'",
                 prompt_without_slack("alice, acme/backend")
             )
             .as_str()
@@ -715,7 +716,7 @@ fn reopening_a_request_review_job_passes_the_approval_required_mode_again() {
         ready.command.as_deref(),
         Some(
             format!(
-                "kitty --detach --hold --directory {WORKTREE_2} claude --permission-mode manual --setting-sources user --resume {SESSION_2}"
+                "kitty --detach --hold --directory {WORKTREE_2} env -u DEN_TEST_LINEAR_KEY claude --permission-mode manual --setting-sources user --resume {SESSION_2}"
             )
             .as_str()
         ),
