@@ -8,7 +8,7 @@ use super::{
     text::{self, LineStyle},
 };
 use crate::{
-    app::view_model::{JobMarker, List, Row},
+    app::view_model::{JobActivity, JobMarker, List, Row},
     domain::WorkItemKind,
 };
 use crepuscularity_tui::TemplateContext;
@@ -178,16 +178,26 @@ fn row_context(
         .set("title", title)
         .set("waiting", row.waiting_label.as_str())
         .set("age", row.age.as_str())
-        .set("job", job_glyph(row.job, glyphs))
+        .set("job", job_glyph(row.job, row.job_activity, glyphs))
         .set("job_live", row.job == Some(JobMarker::Live))
         .set("job_unknown", row.job == Some(JobMarker::Unknown));
     ctx
 }
 
 /// The Job marker before the title (#14): a glyph, coloured by the template.
-pub fn job_glyph(job: Option<JobMarker>, glyphs: &glyphs::Glyphs) -> &'static str {
+/// A Live Job's glyph says running or idle when den could tell (#80), and
+/// is the plain Live Job glyph when it couldn't.
+pub fn job_glyph(
+    job: Option<JobMarker>,
+    activity: Option<JobActivity>,
+    glyphs: &glyphs::Glyphs,
+) -> &'static str {
     match job {
-        Some(JobMarker::Live) => glyphs.live_job,
+        Some(JobMarker::Live) => match activity {
+            Some(JobActivity::Running) => glyphs.job_running,
+            Some(JobActivity::Idle) => glyphs.job_idle,
+            Some(JobActivity::Unknown) | None => glyphs.live_job,
+        },
         Some(JobMarker::Missing) => glyphs.job_missing,
         Some(JobMarker::Unknown) => glyphs.job_unknown,
         None => " ",

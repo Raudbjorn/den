@@ -519,6 +519,15 @@ impl Workspace for GitWorkspace {
         }
     }
 
+    fn user_processes(&self) -> Result<Vec<Vec<String>>, WorkspaceError> {
+        crate::processes::read_user_processes(Path::new(crate::processes::PROC_ROOT)).map_err(
+            |detail| WorkspaceError {
+                operation: "read local processes".to_owned(),
+                detail,
+            },
+        )
+    }
+
     fn installed_plugins(&self, claude_dir: &Path) -> PluginsRead {
         let file = installed_plugins_file(claude_dir);
         let bytes = match files::read_bounded(&file, MAX_INSTALLED_PLUGINS_BYTES) {

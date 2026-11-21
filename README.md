@@ -161,6 +161,15 @@ A **Live Job** means its recorded worktree still exists, not that Claude is
 running. den asks before launching the same Work Item again: `o` reopens an
 existing Job and `f` prepares a fresh one when allowed.
 
+Whether a Live Job's session is still working shows beside it: **running**
+(`▸`) when a local `claude` process of yours has `-n <session>` or
+`--resume <session>` in its arguments, **idle** (`◐`) when none has, and the
+plain Live Job glyph (`●`) when den couldn't read the process list (on Linux it
+reads `/proc`; elsewhere it can't). The detail's JOB section says the same in
+words. It is display only: an idle Job is still Live, and launching its Work
+Item still asks first. It is refreshed whenever den checks Jobs (at start, on
+`r`, after a launch).
+
 You can preview from the command line too (replace the fictional target):
 
 ```sh

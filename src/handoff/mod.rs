@@ -103,7 +103,7 @@ pub use execute::{LaunchOutcome, LaunchReport, LaunchStep, execute};
 pub use ground_rules::GroundRules;
 pub use inspect::{ChosenClone, CloneSearch, InspectRequest, WorkspaceView, inspect};
 pub use landing::{HeldMember, LandingGroupPlan, LandingMember};
-pub use live::{JobCheck, JobsCheck, ReopenPlan, WorktreeState};
+pub use live::{JobCheck, JobsCheck, ReopenPlan, SessionActivity, WorktreeState};
 pub use plan::{LaunchSettings, PlanInput, inspect_request, plan};
 pub use refusal::{Refusal, RefusalReason};
 pub use trust::{OffReason, ProjectSettings};

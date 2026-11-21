@@ -154,6 +154,9 @@ pub struct Row {
     /// A Job den launched for it, by its worktree's state (#14); `None`
     /// without one. Drawn as a glyph plus a colour.
     pub job: Option<JobMarker>,
+    /// A Live Job's session running or idle (#80); `None` unless `job` is
+    /// [`JobMarker::Live`]. Display only. Drawn as the Live Job's glyph.
+    pub job_activity: Option<JobActivity>,
     /// A Pull Request's Landing Groups (#35), drawn after the reference.
     pub landing: RowLanding,
 }
@@ -182,12 +185,34 @@ pub enum JobMarker {
     Unknown,
 }
 
+/// Whether a Live Job's Claude Code session has a local process (#80).
+/// Display only: the worktree ([`JobMarker`]) decides whether a Job is Live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobActivity {
+    /// A local `claude` process names its session.
+    Running,
+    /// No local `claude` process names it: finished, or crashed.
+    Idle,
+    /// den couldn't read the process list.
+    Unknown,
+}
+
+/// The detail's line on a Live Job's session (#80).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobActivityLine {
+    pub activity: JobActivity,
+    /// "Session running: …", "Session idle: …", "Running or idle: unknown, …".
+    pub text: String,
+}
+
 /// The detail's account of a Work Item's recorded Job (#14).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobDetail {
     pub marker: JobMarker,
     /// "Live Job: …", "Job's worktree is gone", "Job's worktree: unknown, …".
     pub summary: String,
+    /// A Live Job's session running, idle or unknown (#80); `None` otherwise.
+    pub activity: Option<JobActivityLine>,
     /// The worktree, the session and launch time, the branch.
     pub lines: Vec<String>,
 }

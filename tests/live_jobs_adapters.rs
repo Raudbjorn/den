@@ -201,3 +201,41 @@ fn a_main_clone_reached_through_a_symlink_still_has_live_jobs() {
         ]
     );
 }
+
+/// #80: the real process read. A child whose command line is
+/// `claude -n <session> …` (`tail` under the name `claude`, so it waits
+/// without doing anything) reads as running; once it has exited, idle.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_claude_process_naming_the_session_reads_as_running_then_idle_once_it_exits() {
+    use den::{handoff::SessionActivity, ports::Workspace};
+    use std::os::unix::process::CommandExt;
+
+    // A number, as `tail -n` needs, unique to this test run.
+    let session = (4_000_000_000u64 + u64::from(std::process::id())).to_string();
+    let read = || {
+        GitWorkspace::new()
+            .user_processes()
+            .map(|processes| live::running_sessions(&processes))
+            .map_err(|e| e.to_string())
+    };
+    assert_eq!(live::activity(&session, &read()), SessionActivity::Idle);
+
+    let mut child = Command::new("tail")
+        .arg0("claude")
+        .args(["-n", &session, "-f", "/dev/null"])
+        .spawn()
+        .expect("tail runs");
+    // The kernel shows the command line once the child has exec'd.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut seen = live::activity(&session, &read());
+    while seen != SessionActivity::Running && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+        seen = live::activity(&session, &read());
+    }
+    assert_eq!(seen, SessionActivity::Running);
+
+    child.kill().expect("kill");
+    child.wait().expect("reaped");
+    assert_eq!(live::activity(&session, &read()), SessionActivity::Idle);
+}

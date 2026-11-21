@@ -12,6 +12,14 @@
 //! adapter's timeout), at most [`MAX_JOBS_CHECKED`] Jobs, within
 //! [`JOB_CHECK_BUDGET_SECS`]. The App runs it as an Effect, off the UI thread.
 //!
+//! For each Live Job the same check says whether its Claude Code session is
+//! **running** or **idle** (#80, spec 0004 stories 67–69): running when a
+//! local `claude` process of the user has `-n <session>` or `--resume
+//! <session>` in its arguments ([`running_sessions`]), read once per check
+//! through [`Workspace::user_processes`]. An unreadable process list is
+//! unknown. It is display only: the worktree alone decides whether a Job is
+//! Live ([`JobCheck::is_live`]) and so whether a launch asks first.
+//!
 //! A Live Job can be reopened ([`plan_reopen`], [`reopen`]): a new window in
 //! its worktree resuming its recorded session. Never in the Main Clone itself,
 //! and nothing is ever deleted.
@@ -52,11 +60,26 @@ pub enum WorktreeState {
     Unknown(String),
 }
 
+/// Whether a Live Job's Claude Code session has a local process (#80).
+/// Display only: never decides whether a Job is Live.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionActivity {
+    /// A local `claude` process of the user names the Job's session.
+    Running,
+    /// No local `claude` process of the user names it: the session ended,
+    /// or crashed.
+    Idle,
+    /// den couldn't read the process list, and why.
+    Unknown(String),
+}
+
 /// One recorded Job and its worktree's state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobCheck {
     pub job: JobRecord,
     pub state: WorktreeState,
+    /// Whether its session is running; `None` unless the Job is Live.
+    pub activity: Option<SessionActivity>,
 }
 
 impl JobCheck {
@@ -152,9 +175,47 @@ fn latest(jobs: &[JobRecord]) -> Vec<&JobRecord> {
         .collect()
 }
 
+/// Claude Code's flags that name a session in a command line: den starts
+/// sessions with `-n <session>` and reopens them with `--resume <session>`
+/// ([`command`]).
+const SESSION_FLAGS: [&str; 2] = ["-n", "--resume"];
+
+/// The sessions named by the `claude` processes in `processes` (each a
+/// command line, program first): the word after `-n` or `--resume` in a
+/// process whose program is `claude` (pure). Other programs called `claude`
+/// (Claude Desktop's) never pass those flags, so they name nothing.
+pub fn running_sessions(processes: &[Vec<String>]) -> BTreeSet<String> {
+    processes
+        .iter()
+        .filter(|argv| {
+            argv.first()
+                .and_then(|program| Path::new(program).file_name())
+                .is_some_and(|name| name == command::CLAUDE_PROGRAM)
+        })
+        .flat_map(|argv| {
+            argv.windows(2)
+                .skip(1)
+                .filter(|pair| SESSION_FLAGS.contains(&pair[0].as_str()))
+                .map(|pair| pair[1].clone())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// `session`'s activity, given the sessions read from the process list, or
+/// why it couldn't be read (pure).
+pub fn activity(session: &str, sessions: &Result<BTreeSet<String>, String>) -> SessionActivity {
+    match sessions {
+        Ok(sessions) if sessions.contains(session) => SessionActivity::Running,
+        Ok(_) => SessionActivity::Idle,
+        Err(why) => SessionActivity::Unknown(why.clone()),
+    }
+}
+
 /// Checks the worktrees of `jobs` (the newest [`MAX_JOBS_CHECKED`] of them)
 /// through `workspace`, listing each Main Clone's worktrees once. Jobs left
-/// when `budget` runs out are unknown.
+/// when `budget` runs out are unknown. When any Job is Live, the user's
+/// processes are read once to tell each Live Job running or idle.
 pub fn check_jobs(jobs: &[JobRecord], workspace: &dyn Workspace, budget: Duration) -> JobsCheck {
     let latest = latest(jobs);
     let not_checked = latest.len().saturating_sub(MAX_JOBS_CHECKED);
@@ -181,13 +242,44 @@ pub fn check_jobs(jobs: &[JobRecord], workspace: &dyn Workspace, budget: Duratio
             JobCheck {
                 job: job.clone(),
                 state,
+                activity: None,
             }
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let checks = with_activity(checks, workspace, started, budget);
     JobsCheck {
         checks,
         not_checked,
     }
+}
+
+/// `checks` with each Live Job's [`SessionActivity`], from one read of the
+/// user's processes; none is read when no Job is Live. Unknown when the
+/// budget already ran out.
+fn with_activity(
+    mut checks: Vec<JobCheck>,
+    workspace: &dyn Workspace,
+    started: Instant,
+    budget: Duration,
+) -> Vec<JobCheck> {
+    if !checks.iter().any(JobCheck::is_live) {
+        return checks;
+    }
+    let sessions = if started.elapsed() > budget {
+        Err(format!(
+            "not checked: den's check of Jobs ran out of its {}s",
+            budget.as_secs()
+        ))
+    } else {
+        workspace
+            .user_processes()
+            .map(|processes| running_sessions(&processes))
+            .map_err(|e| format!("den couldn't read the local processes: {}", e.detail))
+    };
+    for check in checks.iter_mut().filter(|c| c.is_live()) {
+        check.activity = Some(activity(&check.job.session, &sessions));
+    }
+    checks
 }
 
 /// The check that says most about `item`'s Jobs: its newest Live Job, else
@@ -393,5 +485,60 @@ fn open(plan: &ReopenPlan, launcher: &dyn Launcher, done: &mut Vec<String>) -> L
     }
     LaunchOutcome::Reopened {
         job: plan.job.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SessionActivity, activity, running_sessions};
+    use std::collections::BTreeSet;
+
+    fn argvs(processes: &[&[&str]]) -> Vec<Vec<String>> {
+        processes
+            .iter()
+            .map(|argv| argv.iter().map(|w| (*w).to_owned()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn only_claude_processes_name_sessions_with_n_or_resume() {
+        let sessions = running_sessions(&argvs(&[
+            &[
+                "/opt/claude-code/bin/claude",
+                "-n",
+                "a-pr1-fix-ci",
+                "prompt",
+            ],
+            &[
+                "claude",
+                "--permission-mode",
+                "manual",
+                "--resume",
+                "a-pr2-land",
+            ],
+            // Not `claude`: the program's file name decides, not a substring.
+            &["/usr/bin/claude-desktop", "-n", "not-1"],
+            &["vim", "-n", "not-2"],
+            &["sh", "-c", "claude -n not-3"],
+            // A flag with no value names nothing; nor does the program word.
+            &["claude", "-n"],
+            &["-n", "not-4"],
+            &[],
+        ]));
+        assert_eq!(
+            sessions,
+            BTreeSet::from(["a-pr1-fix-ci".to_owned(), "a-pr2-land".to_owned()])
+        );
+    }
+
+    #[test]
+    fn a_session_is_running_idle_or_unknown_from_the_read() {
+        let read = Ok(BTreeSet::from(["s".to_owned()]));
+        assert_eq!(activity("s", &read), SessionActivity::Running);
+        assert_eq!(activity("t", &read), SessionActivity::Idle);
+        assert_eq!(
+            activity("s", &Err("no /proc".to_owned())),
+            SessionActivity::Unknown("no /proc".to_owned())
+        );
     }
 }

@@ -16,8 +16,13 @@ pub struct Glyphs {
     pub chamfer: &'static str,
     /// The text cursor in an input field.
     pub cursor: &'static str,
-    /// A Live Job: its worktree exists and is registered (teal) (#14).
+    /// A Live Job: its worktree exists and is registered (teal) (#14). Also
+    /// a Live Job whose session den couldn't tell running or idle (#80).
     pub live_job: &'static str,
+    /// A Live Job whose session has a local `claude` process (teal) (#80).
+    pub job_running: &'static str,
+    /// A Live Job whose session has no local `claude` process (teal) (#80).
+    pub job_idle: &'static str,
     /// A Job whose worktree is gone (faint).
     pub job_missing: &'static str,
     /// A Job whose worktree den can't tell about (amber).
@@ -70,6 +75,8 @@ pub fn for_profile(profile: GlyphProfile) -> Glyphs {
             chamfer: "◢",
             cursor: "▏",
             live_job: "●",
+            job_running: "▸",
+            job_idle: "◐",
             job_missing: "○",
             job_unknown: "◌",
             linear: "◇",
@@ -85,6 +92,8 @@ pub fn for_profile(profile: GlyphProfile) -> Glyphs {
             chamfer: "/",
             cursor: "|",
             live_job: "*",
+            job_running: "@",
+            job_idle: ".",
             job_missing: "o",
             job_unknown: "~",
             linear: "[L]",
