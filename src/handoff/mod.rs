@@ -129,7 +129,11 @@ pub fn job_permission_mode(
     policy: &LinearWorkflowPolicy,
 ) -> Option<PermissionMode> {
     match step {
-        NextStep::RequestReview | NextStep::Land => Some(PermissionMode::ApprovalRequired),
+        // Add screenshots uploads images and edits the PR body: every step
+        // is seen before it happens (#79).
+        NextStep::RequestReview | NextStep::Land | NextStep::AddScreenshots => {
+            Some(PermissionMode::ApprovalRequired)
+        }
         NextStep::Review if policy.reviews_verdict_only() => Some(PermissionMode::ApprovalRequired),
         NextStep::Review
         | NextStep::FinishDraft
@@ -144,6 +148,15 @@ pub fn job_permission_mode(
         | NextStep::Start
         | NextStep::MarkForRelease => None,
     }
+}
+
+/// Whether a Job for `step` coordinates rather than changes code: it runs
+/// in the approval-required mode ([`job_permission_mode`]) and acts on GitHub,
+/// not on its branch, so it gets no push line and never the repo's project
+/// settings. Add screenshots runs in that mode too but is not one (#79,
+/// CONTEXT.md): it may commit to its own PR's branch, which is the viewer's.
+pub fn coordinates(step: NextStep, policy: &LinearWorkflowPolicy) -> bool {
+    step != NextStep::AddScreenshots && job_permission_mode(step, policy).is_some()
 }
 
 /// The worktree path for a Job named `name` in `clone`.

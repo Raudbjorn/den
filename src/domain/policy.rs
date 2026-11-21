@@ -193,6 +193,8 @@ pub struct Policies {
     by_owner: Vec<(String, LinearWorkflowPolicy)>,
     /// The Next Step kinds each Repo doesn't track (spec 0003).
     skips: Skips,
+    /// The Repos with `screenshots = true` (#79).
+    screenshot_repos: Vec<RepoId>,
 }
 
 /// The policy of every Owner without a Linear Workflow.
@@ -240,6 +242,19 @@ impl Policies {
     /// The Next Step kinds each Repo doesn't track.
     pub fn skips(&self) -> &Skips {
         &self.skips
+    }
+
+    /// The Repos with `screenshots = true` (#79).
+    #[must_use]
+    pub fn with_screenshot_repos(mut self, repos: Vec<RepoId>) -> Self {
+        self.screenshot_repos = repos;
+        self
+    }
+
+    /// Whether `repo` requires screenshots on its Pull Requests (compared as
+    /// GitHub compares names).
+    pub fn requires_screenshots(&self, repo: &RepoId) -> bool {
+        self.screenshot_repos.iter().any(|listed| listed.same(repo))
     }
 }
 

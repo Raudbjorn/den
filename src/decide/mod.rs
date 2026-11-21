@@ -229,6 +229,11 @@ impl Context<'_> {
     pub fn skips(&self, repo: &RepoId) -> &BTreeSet<NextStep> {
         self.policies.skips().for_repo(repo)
     }
+
+    /// Whether `repo` requires screenshots (`screenshots = true`, #79).
+    pub fn requires_screenshots(&self, repo: &RepoId) -> bool {
+        self.policies.requires_screenshots(repo)
+    }
 }
 
 /// A Decision whose Next Step its Repo doesn't track (spec 0003), as no Next

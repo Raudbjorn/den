@@ -267,6 +267,7 @@ impl App {
                 let request = SurveyRequest {
                     owners: config.owners.clone(),
                     upstreams: self.upstreams.clone(),
+                    screenshot_repos: config.screenshot_repos.clone(),
                 };
                 // The cache is read first, so it shows before the survey answers;
                 // then the Jobs (local and bounded), so their markers don't wait
@@ -580,6 +581,7 @@ impl App {
                 let request = SurveyRequest {
                     owners: config.owners.clone(),
                     upstreams: self.upstreams.clone(),
+                    screenshot_repos: config.screenshot_repos.clone(),
                 };
                 let mut effects = vec![Effect::CheckJobs];
                 effects.extend(self.begin_survey(request));

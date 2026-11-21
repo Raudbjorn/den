@@ -62,6 +62,7 @@ fn config() -> Config {
         main_clones: std::collections::BTreeMap::new(),
         linear: vec![workflow],
         skips: den::domain::Skips::default(),
+        screenshot_repos: Vec::new(),
     }
 }
 

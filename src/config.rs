@@ -11,6 +11,7 @@
 //! # "Raudbjorn/den" = "/home/me/dev/den"
 //! # [repos."octo/app"]                Next Steps a Repo doesn't track (spec 0003)
 //! # skip = ["Fix CI", "Triage"]
+//! # screenshots = true                 my PRs here need screenshots (#79)
 //! ```
 //!
 //! A Linear Workflow binds one Owner to one Linear workspace (spec 0002,
@@ -49,6 +50,9 @@ pub struct Config {
     /// The Next Step kinds each Repo doesn't track (`[repos."OWNER/REPO"]
     /// skip`, spec 0003). Repos outside the watched Owners may be listed.
     pub skips: Skips,
+    /// The Repos with `screenshots = true` (#79): the viewer's own PRs there
+    /// need a Screenshots section with an image, or a "No visual change" line.
+    pub screenshot_repos: Vec<RepoId>,
 }
 
 impl Config {
@@ -69,6 +73,7 @@ impl Config {
                 policies.with(w.owner.clone(), w.policy())
             })
             .with_skips(self.skips.clone())
+            .with_screenshot_repos(self.screenshot_repos.clone())
     }
 
     /// The environment variables a Job's command removes (#70, ADR-0007):
@@ -125,6 +130,9 @@ struct RawConfig {
 struct RawRepo {
     #[serde(default)]
     skip: Vec<Spanned<String>>,
+    /// Off unless written (#79).
+    #[serde(default)]
+    screenshots: bool,
 }
 
 /// A 1-based line and column in the config file.
@@ -236,13 +244,15 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
     }
     let linear = linear::workflows(raw.linear, &owners, text)
         .map_err(|(span, message)| malformed(Some(span), message))?;
-    let skips = repo_skips(raw.repos).map_err(|(span, message)| malformed(Some(span), message))?;
+    let (skips, screenshot_repos) =
+        repo_tables(raw.repos).map_err(|(span, message)| malformed(Some(span), message))?;
     Ok(Config {
         owners,
         main_clone_root,
         main_clones,
         linear,
         skips,
+        screenshot_repos,
     })
 }
 
@@ -264,11 +274,14 @@ fn absolute(path: Spanned<PathBuf>, what: &str) -> Result<PathBuf, (Range<usize>
     ))
 }
 
-/// The `[repos."OWNER/REPO"]` tables' `skip` lists (spec 0003, "Not tracking
-/// a flow"). Each value must be a skippable Next Step spelled as `CONTEXT.md`
-/// spells it.
-fn repo_skips(raw: BTreeMap<Spanned<String>, RawRepo>) -> Result<Skips, (Range<usize>, String)> {
+/// The `[repos."OWNER/REPO"]` tables: their `skip` lists (spec 0003, "Not
+/// tracking a flow"), each value a skippable Next Step spelled as
+/// `CONTEXT.md` spells it, and the Repos with `screenshots = true` (#79).
+fn repo_tables(
+    raw: BTreeMap<Spanned<String>, RawRepo>,
+) -> Result<(Skips, Vec<RepoId>), (Range<usize>, String)> {
     let mut skips = Skips::default();
+    let mut screenshot_repos = Vec::new();
     for (key, table) in raw {
         let key_span = key.span();
         let name = key.into_inner();
@@ -312,9 +325,12 @@ fn repo_skips(raw: BTreeMap<Spanned<String>, RawRepo>) -> Result<Skips, (Range<u
             }
             steps.push(step);
         }
+        if table.screenshots {
+            screenshot_repos.push(repo.clone());
+        }
         skips = skips.with(repo, steps);
     }
-    Ok(skips)
+    Ok((skips, screenshot_repos))
 }
 
 /// The skippable Next Steps, quoted, in glossary order.

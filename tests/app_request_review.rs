@@ -437,18 +437,22 @@ fn coding_plans_carry_no_permission_mode_and_keep_milestone_1s_command() {
     // Only the coordination kinds ever get a mode, and (#41) a Review in a
     // Linear Workflow. #41 widened the function with the Owner's policy: the
     // empty policy keeps #39's expectation exactly; a workflow's policy adds
-    // Review and nothing else, so every coding kind still gets none.
+    // Review and nothing else, so every coding kind still gets none. Add
+    // screenshots (#79) asks first too, without being a coordination Job.
     let workflow = harness_policy();
     for step in NextStep::ALL {
-        let coordination = matches!(step, NextStep::RequestReview | NextStep::Land);
-        let expected = coordination.then_some(PermissionMode::ApprovalRequired);
+        let asks_first = matches!(
+            step,
+            NextStep::RequestReview | NextStep::Land | NextStep::AddScreenshots
+        );
+        let expected = asks_first.then_some(PermissionMode::ApprovalRequired);
         assert_eq!(
             job_permission_mode(step, &den::domain::LinearWorkflowPolicy::default()),
             expected,
             "{step:?}"
         );
         let in_workflow =
-            (coordination || step == NextStep::Review).then_some(PermissionMode::ApprovalRequired);
+            (asks_first || step == NextStep::Review).then_some(PermissionMode::ApprovalRequired);
         assert_eq!(
             job_permission_mode(step, &workflow),
             in_workflow,

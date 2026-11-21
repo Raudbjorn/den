@@ -83,6 +83,7 @@ fn harness_observing(observed: ObservationBuilder, arrange: impl FnOnce(&Harness
         main_clones: BTreeMap::new(),
         linear: Vec::new(),
         skips: den::domain::Skips::default(),
+        screenshot_repos: Vec::new(),
     };
     let mut harness = Harness::new(Ok(config));
     harness
