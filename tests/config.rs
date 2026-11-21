@@ -214,8 +214,10 @@ reviewers = ["alice", "acme/backend"]
 slack_channel = "#team-dev"
 in_progress_state = "In Progress"
 release_state = "Ready for Release"
-exact_head_approval = false
+parked_states = ["Paused", "Blocked"]
+exact_head_approval = true
 comment_reviews_need_rereview = false
+pending_requests_hold_merge = true
 "##;
 
 #[test]
@@ -247,26 +249,36 @@ fn a_linear_workflow_reads_every_setting() {
     assert_eq!(workflow.slack_channel.as_deref(), Some("#team-dev"));
     assert_eq!(workflow.in_progress_state.as_deref(), Some("In Progress"));
     assert_eq!(workflow.release_state.as_deref(), Some("Ready for Release"));
-    assert!(!workflow.exact_head_approval);
+    assert_eq!(workflow.parked_states, ["Paused", "Blocked"]);
+    // Explicit strict settings still override the GitHub-aligned defaults.
+    assert!(workflow.exact_head_approval);
     assert!(!workflow.comment_reviews_need_rereview);
+    assert!(workflow.pending_requests_hold_merge);
     assert!(config.linear_workflow("octo").is_none());
 }
 
-/// The policy switches default to on in the config (spec 0002, "Config");
-/// everything else is empty or off, and no organization's values ship.
+/// The review switches default to GitHub's own rules (ADR-0009, #73):
+/// exact-head approval and pending requests holding the merge off, comment
+/// reviews needing re-review on. Everything else is empty or off, and no
+/// organization's values ship.
 #[test]
 fn a_minimal_linear_workflow_has_the_configs_defaults() {
     let config =
         parse("owners = [\"acme\"]\n[linear.acme]\nworkspace = \"acme\"\napi_key_env = \"K\"\n")
             .expect("valid");
     let workflow = &config.linear[0];
-    assert!(workflow.exact_head_approval);
+    assert!(!workflow.exact_head_approval);
     assert!(workflow.comment_reviews_need_rereview);
+    assert!(!workflow.pending_requests_hold_merge);
     assert!(!workflow.include_backlog && !workflow.active_cycle_only);
     assert!(workflow.start_teams.is_empty() && workflow.new_work_repos.is_empty());
     assert!(workflow.held_repos.is_empty() && workflow.landing_order.is_empty());
     assert!(workflow.reviewers.is_empty() && workflow.slack_channel.is_none());
     assert!(workflow.in_progress_state.is_none() && workflow.release_state.is_none());
+    assert!(
+        workflow.parked_states.is_empty(),
+        "nothing is parked by default"
+    );
 }
 
 #[test]
@@ -301,8 +313,9 @@ fn a_linear_workflows_review_settings_become_its_owners_policy() {
                 active_cycle_only: true,
             },
             review: Some(ReviewPolicy {
-                exact_head_approval: false,
+                exact_head_approval: true,
                 comment_reviews_need_rereview: false,
+                pending_requests_hold_merge: true,
                 reviewers: vec![
                     Reviewer::User("alice".to_owned()),
                     Reviewer::Team(TeamRef {
@@ -314,9 +327,10 @@ fn a_linear_workflows_review_settings_become_its_owners_policy() {
             held_repos: vec![RepoId::new("acme", "app")],
             release_state: Some("Ready for Release".to_owned()),
             landing_order: vec![RepoId::new("acme", "api"), RepoId::new("acme", "web")],
+            parked_states: vec!["Paused".to_owned(), "Blocked".to_owned()],
         }
     );
-    // The config's defaults: both switches on.
+    // The config's defaults (ADR-0009): GitHub's rules, comments re-reviewed.
     let minimal =
         parse("owners = [\"acme\"]\n[linear.acme]\nworkspace = \"acme\"\napi_key_env = \"K\"\n")
             .expect("valid");
@@ -326,7 +340,8 @@ fn a_linear_workflows_review_settings_become_its_owners_policy() {
         .review
         .as_ref()
         .expect("review rules");
-    assert!(review.exact_head_approval && review.comment_reviews_need_rereview);
+    assert!(!review.exact_head_approval && review.comment_reviews_need_rereview);
+    assert!(!review.pending_requests_hold_merge);
     assert!(review.reviewers.is_empty());
     // The empty policy keeps every switch off, offers no Start and holds
     // nothing.
@@ -335,6 +350,7 @@ fn a_linear_workflows_review_settings_become_its_owners_policy() {
     assert_eq!(empty.review, None);
     assert!(empty.held_repos.is_empty());
     assert_eq!(empty.release_state, None);
+    assert!(empty.parked_states.is_empty());
 }
 
 #[test]
@@ -412,6 +428,26 @@ fn linear_workflow_errors_name_the_file_and_line() {
             block("release_state = \"  \"\n"),
             6,
             "release_state",
+        ),
+        (
+            "blank parked state",
+            block("parked_states = [\"Paused\", \" \"]\n"),
+            6,
+            "parked_states",
+        ),
+        (
+            "a parked state listed twice",
+            block("parked_states = [\"Paused\", \"PAUSED\"]\n"),
+            6,
+            "listed twice in `parked_states`",
+        ),
+        // A type error is TOML's own: it names the line and column of the
+        // value, not the key, as for every list setting.
+        (
+            "parked_states not a list",
+            block("parked_states = \"Paused\"\n"),
+            6,
+            "expected a sequence",
         ),
         (
             "unknown setting",
@@ -641,4 +677,45 @@ fn bad_skips_name_the_line() {
         );
         assert!(error.to_string().contains(message), "{name}: {error}");
     }
+}
+
+/// #75: `legacy_marker_prefixes` is a top-level list of marker prefixes,
+/// handed to the decision engine through the policies.
+#[test]
+fn legacy_marker_prefixes_are_read_in_order() {
+    let config = parse("owners = [\"acme\"]\nlegacy_marker_prefixes = [\"acme-bot\", \"tool2\"]\n")
+        .expect("valid");
+    assert_eq!(config.legacy_marker_prefixes, ["acme-bot", "tool2"]);
+    assert_eq!(
+        config.policies().legacy_marker_prefixes(),
+        ["acme-bot", "tool2"]
+    );
+    let none = parse("owners = [\"acme\"]\n").expect("valid");
+    assert!(none.legacy_marker_prefixes.is_empty());
+}
+
+#[test]
+fn a_bad_legacy_marker_prefix_is_an_error_naming_its_line() {
+    for (prefix, says) in [
+        (
+            "Acme",
+            "is not a marker prefix: use lowercase letters, digits and -",
+        ),
+        ("acme_bot", "is not a marker prefix"),
+        ("", "is not a marker prefix"),
+        ("den", "is den's own marker prefix"),
+    ] {
+        let text =
+            format!("owners = [\"acme\"]\n\nlegacy_marker_prefixes = [\"ok\", \"{prefix}\"]\n");
+        let error = parse(&text).expect_err(prefix);
+        assert!(error.to_string().contains(says), "{prefix:?}: {error}");
+        assert_eq!(
+            location(&error).map(|l| l.line),
+            Some(3),
+            "{prefix:?}: {error}"
+        );
+    }
+    let twice = parse("owners = [\"acme\"]\nlegacy_marker_prefixes = [\"a\", \"a\"]\n")
+        .expect_err("listed twice");
+    assert!(twice.to_string().contains("listed twice"), "{twice}");
 }

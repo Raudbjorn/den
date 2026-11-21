@@ -42,11 +42,15 @@ pub fn config(owners: &[&str]) -> Config {
         linear: Vec::new(),
         skips: den::domain::Skips::default(),
         screenshot_repos: Vec::new(),
+        legacy_marker_prefixes: Vec::new(),
     }
 }
 
-/// A Linear Workflow for `owner` on `workspace`, every setting at its
-/// config default (both policy switches on), its key in `DEN_TEST_LINEAR_KEY`.
+/// A Linear Workflow for `owner` on `workspace`, its key in
+/// `DEN_TEST_LINEAR_KEY`, every setting at its config default except the
+/// review switches, which are all on: the strictest rules, as spec 0002 had
+/// them. The config's own defaults follow GitHub since ADR-0009 (#73) and are
+/// tested in `tests/config.rs` and `tests/decide_review_rules.rs`.
 pub fn linear_workflow(owner: &str, workspace: &str) -> LinearWorkflow {
     LinearWorkflow {
         owner: owner.to_owned(),
@@ -63,8 +67,10 @@ pub fn linear_workflow(owner: &str, workspace: &str) -> LinearWorkflow {
         slack_channel: None,
         in_progress_state: None,
         release_state: None,
+        parked_states: Vec::new(),
         exact_head_approval: true,
         comment_reviews_need_rereview: true,
+        pending_requests_hold_merge: true,
     }
 }
 
@@ -135,6 +141,14 @@ impl Harness {
 
     pub fn with_owners(owners: &[&str]) -> Self {
         Self::new(Ok(config(owners)))
+    }
+
+    /// The App opens where the start rules said (#90), as `main` tells it.
+    #[must_use]
+    pub fn with_start(mut self, start: den::start::Start) -> Self {
+        self.app = self.app.with_start(start);
+        self.view = self.app.view();
+        self
     }
 
     /// Queues the next survey's answer.

@@ -66,6 +66,7 @@ fn no_pr_details(request: &GraphQlRequest) -> Value {
             json!({
                 "headRefOid": "abc",
                 "reviewThreads": empty, "reviewRequests": empty, "latestOpinionatedReviews": empty, "latestReviews": empty,
+                "reviews": empty, "comments": empty,
                 "commits": { "nodes": [{ "commit": { "statusCheckRollup": null } }] }
             }),
         );

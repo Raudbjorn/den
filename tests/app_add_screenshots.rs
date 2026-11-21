@@ -2,7 +2,8 @@
 //! launches a Job on the PR head in the approval-required (ask-first)
 //! permission mode, with the default `add_screenshots` prompt or the user's
 //! own. It is not a Coordination Job (CONTEXT.md, "Add screenshots"): it runs
-//! on the viewer's own PR head, so the repo's project settings stay loaded.
+//! on the viewer's own PR head, so the repo's project settings stay loaded,
+//! and it gets the Ground Rules of a Job that changes code (ADR-0008).
 //! Asserted on the sheet, the LaunchPlans in Effects and what the fake
 //! Launcher and Job store were asked to do; nothing real is launched.
 
@@ -26,6 +27,7 @@ use den::{
 use std::path::{Path, PathBuf};
 use support::{
     build::{ME, ObservationBuilder, pr},
+    ground_rules::{coding_rules, quoted},
     harness::{Harness, config},
 };
 
@@ -164,6 +166,13 @@ fn c_then_enter_on_add_screenshots_launches_an_ask_first_job_on_the_pr_head_with
     let command = ready.command.as_deref().expect("a command");
     assert!(command.contains("--permission-mode manual"), "{command}");
     assert!(!command.contains("--setting-sources user"), "{command}");
+    assert!(
+        command.contains(&format!(
+            "--append-system-prompt {}",
+            quoted(&coding_rules("acme/api#2"))
+        )),
+        "the coding Ground Rules, naming only its own PR: {command}"
+    );
 
     press(&mut harness, Key::Enter);
 
@@ -181,6 +190,7 @@ fn c_then_enter_on_add_screenshots_launches_an_ask_first_job_on_the_pr_head_with
         windows[0].permission_mode,
         Some(PermissionMode::ApprovalRequired)
     );
+    assert_eq!(windows[0].ground_rules, coding_rules("acme/api#2"));
     let jobs = harness.jobs.records();
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0].next_step, NextStep::AddScreenshots);
@@ -213,5 +223,10 @@ fn the_users_add_screenshots_template_replaces_the_default() {
         plans[0].permission_mode,
         Some(PermissionMode::ApprovalRequired),
         "a custom template never changes the mode"
+    );
+    assert_eq!(
+        harness.launcher.windows()[0].ground_rules,
+        coding_rules("acme/api#2"),
+        "nor removes the Ground Rules"
     );
 }

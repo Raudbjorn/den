@@ -66,6 +66,7 @@ fn harness_with(extra: Vec<LinearIssue>) -> Harness {
         linear: vec![linear_workflow("octo", "acme")],
         skips: den::domain::Skips::default(),
         screenshot_repos: Vec::new(),
+        legacy_marker_prefixes: Vec::new(),
     };
     let mut harness = Harness::new(Ok(config));
     let (cols, rows) = SIZE;
@@ -431,6 +432,7 @@ fn a_held_member_reads_as_held_for_release_in_the_landing_group() {
         linear: vec![workflow],
         skips: den::domain::Skips::default(),
         screenshot_repos: Vec::new(),
+        legacy_marker_prefixes: Vec::new(),
     };
     let mut harness = Harness::new(Ok(config));
     let (cols, rows) = SIZE;

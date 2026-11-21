@@ -22,6 +22,12 @@
 //! `env -u <VAR>…` for each variable in [`WindowCommand::removed_env`], in
 //! kitty, on the clipboard and when reopening, written into the command so
 //! the sheet shows exactly what runs. With none to remove there is no `env`.
+//!
+//! Every Job gets its Ground Rules ([`super::ground_rules`], ADR-0008) as
+//! `--append-system-prompt <rules>`, after the mode flags and before the
+//! session: `claude [--permission-mode …] [--setting-sources user]
+//! --append-system-prompt <rules> -n <session> <prompt>`, and the same before
+//! `--resume <session>` when reopening.
 
 use crate::process::Invocation;
 use serde::{Deserialize, Serialize};
@@ -51,6 +57,10 @@ const CLAUDE_MANUAL_MODE: &str = "manual";
 const CLAUDE_SETTING_SOURCES_FLAG: &str = "--setting-sources";
 /// Only the user's own settings (`~/.claude/settings.json`).
 const CLAUDE_USER_SOURCE: &str = "user";
+/// Claude Code's flag for text appended to its default system prompt
+/// (`claude --help`, Claude Code 2.1: "Append a system prompt to the default
+/// system prompt").
+const CLAUDE_APPEND_SYSTEM_PROMPT_FLAG: &str = "--append-system-prompt";
 
 /// Which of Claude Code's setting sources a Job's session loads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -130,6 +140,11 @@ pub struct WindowCommand {
     /// variables. Empty: no `env`, as before.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub removed_env: Vec<String>,
+    /// The Job's Ground Rules text ([`super::ground_rules::GroundRules`]),
+    /// passed as `--append-system-prompt`. den's plans always fill it in;
+    /// empty adds no flag.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ground_rules: String,
 }
 
 /// Whether the window starts a new Claude Code session or resumes one.
@@ -153,13 +168,21 @@ pub enum WindowMode {
 
 /// `claude -n <session> <prompt>` (or `claude --resume <session>`), after
 /// `--permission-mode <mode>` and `--setting-sources user` when the window
-/// has them, as arguments after the program.
+/// has them, then `--append-system-prompt <rules>`, as arguments after the
+/// program.
 pub fn claude_args(window: &WindowCommand) -> Vec<String> {
+    let rules = (!window.ground_rules.is_empty()).then(|| {
+        [
+            CLAUDE_APPEND_SYSTEM_PROMPT_FLAG.to_owned(),
+            window.ground_rules.clone(),
+        ]
+    });
     let mode = window
         .permission_mode
         .into_iter()
         .flat_map(PermissionMode::args)
-        .chain(window.setting_sources.args());
+        .chain(window.setting_sources.args())
+        .chain(rules.into_iter().flatten());
     let session = match window.start {
         SessionStart::New => vec![
             CLAUDE_NAME_FLAG.to_owned(),

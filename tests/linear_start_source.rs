@@ -391,6 +391,51 @@ fn a_state_name_a_start_team_lacks_fails_team_states_naming_it() {
     assert!(!error.contains("OPS"), "OPS is no start team: {error}");
 }
 
+/// #74: parked states are state names like the others: one a start team
+/// lacks fails the team-states source, naming it; one it has passes.
+#[test]
+fn a_parked_state_a_start_team_lacks_fails_team_states_naming_it() {
+    let (survey, _) = run_survey(
+        LinearWorkflow {
+            parked_states: vec!["Done".to_owned(), "Paused".to_owned()],
+            ..start_workflow()
+        },
+        script(all_teams, two_starts),
+    );
+    let error = failure(&survey, LinearSourceKind::TeamStates);
+    assert!(
+        error.contains("parked_states \"Paused\" is not a state of start team TEAM"),
+        "{error}"
+    );
+    assert!(!error.contains("\"Done\""), "TEAM has Done: {error}");
+}
+
+/// #74: a workflow whose only state setting is `parked_states` still reads
+/// the team states, so a parked state no team has fails when den loads.
+#[test]
+fn parked_states_alone_are_checked_against_every_team() {
+    let workflow = LinearWorkflow {
+        start_teams: Vec::new(),
+        in_progress_state: None,
+        release_state: None,
+        parked_states: vec!["Paused".to_owned()],
+        ..start_workflow()
+    };
+    assert!(
+        workflow
+            .linear_sources()
+            .contains(&LinearSourceKind::TeamStates),
+        "{:?}",
+        workflow.linear_sources()
+    );
+    let (survey, _) = run_survey(workflow, script(all_teams, two_starts));
+    let error = failure(&survey, LinearSourceKind::TeamStates);
+    assert!(
+        error.contains("parked_states \"Paused\" is not a state of any team"),
+        "{error}"
+    );
+}
+
 /// Without start teams, a state name is checked against every team: it must
 /// be some team's. Start-team issues aren't asked for or recorded.
 #[test]

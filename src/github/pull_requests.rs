@@ -197,11 +197,13 @@ fn with_facts(query: &str) -> String {
     format!("{query}\n{FACTS}")
 }
 
+/// `viewer` is the GitHub viewer's login, for the Review Point facts (#75).
 /// `screenshot_repos` are the Repos with `screenshots = true` (#79): PR bodies
 /// are asked for only when this Owner has one, and decoded only for them.
 pub fn fetch(
     session: &Session<'_>,
     owner: &str,
+    viewer: &str,
     screenshot_repos: &[RepoId],
 ) -> Result<KindFetch<PullRequest>, SurveyFailure> {
     let owner_query = with_facts(OWNER_QUERY);
@@ -282,7 +284,7 @@ pub fn fetch(
         owner: owner.to_owned(),
         kind: SourceKind::PullRequests,
     }));
-    details::fill(session, &mut found_prs, &mut out.coverage)?;
+    details::fill(session, &mut found_prs, &mut out.coverage, viewer)?;
     out.items = found_prs.into_iter().map(|(_, pr)| pr).collect();
     Ok(out)
 }

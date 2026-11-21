@@ -51,6 +51,7 @@ fn harness_with_issues(issues: Vec<LinearIssue>) -> Harness {
         linear: vec![workflow],
         skips: den::domain::Skips::default(),
         screenshot_repos: Vec::new(),
+        legacy_marker_prefixes: Vec::new(),
     };
     let harness = Harness::new(Ok(config));
     queue_round_with(&harness, issues);
