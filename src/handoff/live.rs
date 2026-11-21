@@ -237,6 +237,10 @@ pub struct ReopenPlan {
     /// The mode the session is resumed in ([`JobRecord::reopen_mode`] for the
     /// Job's Owner's Linear Workflow policy).
     pub permission_mode: Option<PermissionMode>,
+    /// The variables the command removes with `env -u` (ADR-0007), from the
+    /// configuration den has now: a resumed session never gets a key the
+    /// Job's launch took away.
+    pub unset_env: Vec<String>,
     pub window: WindowMode,
     /// The exact command, as shown on the sheet.
     pub command: String,
@@ -256,6 +260,7 @@ impl ReopenPlan {
             start: SessionStart::Resume,
             permission_mode: self.permission_mode,
             setting_sources: self.project_settings.sources(),
+            unset_env: self.unset_env.clone(),
         }
     }
 }
@@ -275,12 +280,14 @@ fn session_usable(session: &str) -> bool {
 /// `policy` is the Job's Owner's Linear Workflow policy (the empty one
 /// without a workflow): a record without a mode reopens in the mode its
 /// Next Step launches in for that Owner.
-/// `project_settings` is [`super::trust::for_reopen`]'s for the Job.
+/// `project_settings` is [`super::trust::for_reopen`]'s for the Job, and
+/// `unset_env` the variables its command removes ([`command::unset_env`]).
 pub fn plan_reopen(
     check: &JobCheck,
     view: &WorkspaceView,
     policy: &LinearWorkflowPolicy,
     project_settings: ProjectSettings,
+    unset_env: Vec<String>,
 ) -> Result<ReopenPlan, Refusal> {
     let job = &check.job;
     let mut reasons = Vec::new();
@@ -316,6 +323,7 @@ pub fn plan_reopen(
         job: job.clone(),
         project_settings,
         permission_mode: job.reopen_mode(policy),
+        unset_env,
         window: view.window.clone(),
         command: String::new(),
     };

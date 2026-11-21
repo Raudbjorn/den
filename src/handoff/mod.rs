@@ -359,6 +359,8 @@ pub struct LaunchPlan {
     /// Off (`--setting-sources user`) for a coordination Job and for a PR
     /// head the viewer didn't write ([`trust`]).
     pub project_settings: ProjectSettings,
+    /// The variables the command removes with `env -u` (ADR-0007).
+    pub unset_env: Vec<String>,
     /// Request review only: whom the prompt asks, and where it announces.
     pub review_request: Option<ReviewRequest>,
     /// Land only (#40): the members the Job lands, in order, pinned to their
@@ -442,6 +444,7 @@ impl LaunchPlan {
             start: SessionStart::New,
             permission_mode: self.permission_mode,
             setting_sources: self.project_settings.sources(),
+            unset_env: self.unset_env.clone(),
         }
     }
 

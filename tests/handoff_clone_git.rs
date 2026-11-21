@@ -265,6 +265,7 @@ fn clone_plan(root: &Path, url: &str, tip: &str) -> LaunchPlan {
         prompt: "/diagnosing-bugs https://github.com/octo/app/actions/runs/41".to_owned(),
         permission_mode: None,
         project_settings: den::handoff::ProjectSettings::Loaded,
+        unset_env: Vec::new(),
         review_request: None,
         landing: None,
         window: WindowMode::Kitty,

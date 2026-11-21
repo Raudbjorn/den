@@ -23,6 +23,7 @@ use den::{
     workspace::GitWorkspace,
 };
 use std::{
+    ffi::OsString,
     path::{Path, PathBuf},
     process::Command,
     sync::Mutex,
@@ -38,6 +39,7 @@ fn window() -> WindowCommand {
         start: SessionStart::New,
         permission_mode: None,
         setting_sources: den::handoff::SettingSources::All,
+        unset_env: Vec::new(),
     }
 }
 
@@ -133,6 +135,112 @@ fn the_clipboard_uses_wl_copy_on_wayland_then_xclip_or_xsel_and_says_what_to_ins
         command::clipboard_text(&window()),
         "cd /home/me/dev/app/.claude/worktrees/feature-7 && claude -n app-pr7-address-review '/gh-resolve https://github.com/octo/app/pull/7 — it'\\''s fine'"
     );
+}
+
+/// A folder with a stand-in `claude` that writes the folder it runs in, its
+/// arguments and its environment to `claude.out` next to it.
+#[cfg(unix)]
+fn fake_claude(temp: &Path) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = temp.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let out = temp.join("claude.out");
+    let script = bin.join("claude");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n{{ echo \"pwd=$(pwd)\"; for a in \"$@\"; do echo \"arg=$a\"; done; env; }} > '{}'\n",
+            out.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (bin, out)
+}
+
+/// `bin` first on PATH, with a Linear key, both GitHub tokens and another
+/// tool's variable set, as den's own environment might have them.
+#[cfg(unix)]
+fn with_den_environment(command: &mut Command, bin: &Path) {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![bin.to_path_buf()];
+    paths.extend(std::env::split_paths(&path));
+    command
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("A_LINEAR_KEY", "lin_api_secret_a")
+        .env("Z_LINEAR_KEY", "lin_api_secret_z")
+        .env("GH_TOKEN", "gh-token")
+        .env("GITHUB_TOKEN", "github-token")
+        .env("SLACK_BOT_TOKEN", "slack-token");
+}
+
+/// What the stand-in `claude` saw: it ran in the worktree, with den's
+/// arguments, without the Linear keys and with everything else.
+#[cfg(unix)]
+fn assert_claude_saw(out: &Path, worktree: &Path) {
+    let seen = std::fs::read_to_string(out).expect("claude ran");
+    let lines: Vec<&str> = seen.lines().collect();
+    assert_eq!(lines[0], format!("pwd={}", worktree.display()));
+    assert_eq!(
+        lines[1..4],
+        [
+            "arg=-n",
+            "arg=app-pr7-address-review",
+            "arg=fix it, don't ask"
+        ]
+    );
+    assert!(!seen.contains("A_LINEAR_KEY") && !seen.contains("lin_api_secret"));
+    assert!(!seen.contains("Z_LINEAR_KEY"));
+    for kept in [
+        "GH_TOKEN=gh-token",
+        "GITHUB_TOKEN=github-token",
+        "SLACK_BOT_TOKEN=slack-token",
+    ] {
+        assert!(lines.contains(&kept), "{kept} missing from:\n{seen}");
+    }
+}
+
+/// #70 (ADR-0007): the real command shapes, run with a stand-in `claude`.
+/// Kitty is not started: what it runs in the worktree (everything after
+/// `--directory <worktree>`) is run there directly. The clipboard line is run
+/// by `sh`, as a pasted line would be.
+#[cfg(unix)]
+#[test]
+fn the_kitty_and_clipboard_commands_run_claude_without_dens_linear_keys() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, out) = fake_claude(temp.path());
+    let worktree = temp.path().join("feature 7");
+    std::fs::create_dir(&worktree).unwrap();
+    let window = WindowCommand {
+        directory: worktree.clone(),
+        prompt: "fix it, don't ask".to_owned(),
+        unset_env: command::unset_env(["Z_LINEAR_KEY", "A_LINEAR_KEY", "Z_LINEAR_KEY"]),
+        ..window()
+    };
+
+    let invocation = command::kitty_invocation(&window);
+    let args: Vec<_> = invocation.args.iter().map(OsString::as_os_str).collect();
+    assert_eq!(
+        args[..4],
+        [
+            "--detach".as_ref(),
+            "--hold".as_ref(),
+            "--directory".as_ref(),
+            worktree.as_os_str()
+        ]
+    );
+    let mut in_window = Command::new(args[4]);
+    in_window.args(&args[5..]).current_dir(&worktree);
+    with_den_environment(&mut in_window, &bin);
+    assert!(in_window.status().unwrap().success());
+    assert_claude_saw(&out, &worktree);
+
+    std::fs::remove_file(&out).unwrap();
+    let mut pasted = Command::new("sh");
+    pasted.arg("-c").arg(command::clipboard_text(&window));
+    with_den_environment(&mut pasted, &bin);
+    assert!(pasted.status().unwrap().success());
+    assert_claude_saw(&out, &worktree);
 }
 
 // ---- pure naming and matching ----
@@ -391,6 +499,7 @@ fn plan_for(clone: &Path, url: &str, head: &str) -> LaunchPlan {
         prompt: "/gh-resolve https://github.com/octo/app/pull/7".to_owned(),
         permission_mode: None,
         project_settings: den::handoff::ProjectSettings::Loaded,
+        unset_env: Vec::new(),
         review_request: None,
         landing: None,
         window: WindowMode::Kitty,

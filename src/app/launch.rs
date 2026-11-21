@@ -599,7 +599,12 @@ impl App {
                 let (check, view) = (check.clone(), view.clone());
                 let settings = self.reopen_settings(&check.job);
                 let policy = self.policies.for_owner(check.job.owner());
-                effects = open_existing(&mut sheet, &check, &view, policy, settings);
+                let reopen = Reopen {
+                    policy,
+                    settings,
+                    unset_env: self.unset_env(),
+                };
+                effects = open_existing(&mut sheet, &check, &view, reopen);
             }
             (
                 Key::Char('f'),
@@ -1065,6 +1070,18 @@ impl App {
         self.config.as_ref().ok()?.linear_workflow(&repo.owner)
     }
 
+    /// The variables every Job's command removes (ADR-0007): each configured
+    /// Linear Workflow's key variable, once, sorted; none without a config.
+    fn unset_env(&self) -> Vec<String> {
+        let workflows = self.config.as_ref().map(|c| c.linear.as_slice());
+        handoff::command::unset_env(
+            workflows
+                .unwrap_or_default()
+                .iter()
+                .map(|workflow| workflow.api_key_env.as_str()),
+        )
+    }
+
     /// Whether reopening `job` loads the worktree's project settings, decided
     /// again from the survey shown now ([`trust::for_reopen`]).
     fn reopen_settings(&self, job: &JobRecord) -> ProjectSettings {
@@ -1106,6 +1123,7 @@ impl App {
             .ok_or_else(gone)?;
         let workflow = self.linear_workflow_of(&sheet.item);
         let slack_channel = workflow.and_then(|workflow| workflow.slack_channel.as_deref());
+        let unset_env = self.unset_env();
         let plan = handoff::plan(&PlanInput {
             decision,
             observation,
@@ -1117,6 +1135,7 @@ impl App {
             slack_channel,
             linear_repo: sheet.linear.as_ref().and_then(LinearLaunch::repo),
             policy: self.policies.for_owner(sheet.item.owner()),
+            unset_env: &unset_env,
         })?;
         Ok(match &sheet.accepted_head {
             Some(commit) => plan.on_commit(commit),
@@ -1459,16 +1478,29 @@ fn live_job_request(
     InspectRequest::for_job(&check.job, item, observation)
 }
 
+/// What a reopen is decided from besides the Job and the workspace.
+struct Reopen<'a> {
+    /// The Job's Owner's Linear Workflow policy.
+    policy: &'a LinearWorkflowPolicy,
+    settings: ProjectSettings,
+    /// The variables the command removes (ADR-0007).
+    unset_env: Vec<String>,
+}
+
 /// `o` on a Live Job: plans the reopen, or refuses (never in the Main Clone).
-/// `policy` is the Job's Owner's Linear Workflow policy.
 fn open_existing(
     sheet: &mut Sheet,
     check: &JobCheck,
     view: &WorkspaceView,
-    policy: &LinearWorkflowPolicy,
-    settings: ProjectSettings,
+    reopen: Reopen<'_>,
 ) -> Vec<Effect> {
-    match live::plan_reopen(check, view, policy, settings) {
+    match live::plan_reopen(
+        check,
+        view,
+        reopen.policy,
+        reopen.settings,
+        reopen.unset_env,
+    ) {
         Ok(plan) => {
             sheet.state = SheetState::ReopenReady {
                 plan: Box::new(plan),

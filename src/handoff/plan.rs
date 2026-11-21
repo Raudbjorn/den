@@ -85,6 +85,9 @@ pub struct PlanInput<'a> {
     /// [`PromptKind::for_job`]).
     /// Land also reads its landing order and Held Repos.
     pub policy: &'a LinearWorkflowPolicy,
+    /// The variables the Job's command removes (ADR-0007): every configured
+    /// Linear Workflow's key variable, as [`command::unset_env`] gives them.
+    pub unset_env: &'a [String],
 }
 
 /// The facts for a launch, or every reason it can't happen. PRs here; a Land
@@ -469,6 +472,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             input.policy,
             trust::checkout(item, Some(input.observation)),
         ),
+        unset_env: input.unset_env.to_vec(),
         review_request,
         landing: facts.landing,
         window: view.window.clone(),

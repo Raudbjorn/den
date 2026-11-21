@@ -199,6 +199,7 @@ fn c_then_enter_on_a_pr_produces_exactly_one_launch_plan_fetching_from_the_remot
             start: SessionStart::New,
             permission_mode: None,
             setting_sources: den::handoff::SettingSources::All,
+            unset_env: Vec::new(),
         }]
     );
     let job = harness.jobs.records();
