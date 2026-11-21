@@ -1125,6 +1125,7 @@ impl App {
             linear_repo: sheet.linear.as_ref().and_then(LinearLaunch::repo),
             policy: self.policies.for_owner(sheet.item.owner()),
             removed_env: &self.removed_env,
+            legacy_marker_prefixes: self.policies.legacy_marker_prefixes(),
         })?;
         Ok(match &sheet.accepted_head {
             Some(commit) => plan.on_commit(commit),

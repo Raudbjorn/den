@@ -39,6 +39,14 @@
 //! (the instruction to return a verdict without editing, committing,
 //! approving, requesting changes or posting), and it must use both.
 //!
+//! `address_review` alone has `{review_notes}` (#76, spec 0004 stories 37, 47
+//! and 53), which it must use. With no review-body Review Points left to
+//! address it is empty. Otherwise it lists each such review as `<url> (review
+//! <id>)`, never its text, and tells the Job to split each body into Points,
+//! settle each one, push with a plain push, then post one comment per review
+//! with a `den:point` marker and a one-line summary in its own words per
+//! Point, which den reads back (`decide::points`).
+//!
 //! `implement_linear` (#38) is a Linear Issue's Start or Implement template.
 //! It alone has `{identifier}`; defaults carry no issue title or description.
 
@@ -61,6 +69,8 @@ const PLACEHOLDERS: [&str; 5] = ["repo", "number", "url", "title", "branch"];
 const REQUEST_REVIEW_PLACEHOLDERS: [&str; 2] = ["reviewers", "announcement"];
 /// Placeholders only the Land template has (#40).
 const LAND_PLACEHOLDERS: [&str; 2] = ["members", "held"];
+/// Placeholders only the Address review template has (#76).
+const ADDRESS_REVIEW_PLACEHOLDERS: [&str; 1] = ["review_notes"];
 /// Placeholders only the Review (Linear) template has (#41).
 const REVIEW_LINEAR_PLACEHOLDERS: [&str; 2] = ["linear_context", "verdict_only"];
 /// The prompts-file key of the Review (Linear) template.
@@ -128,6 +138,7 @@ impl PromptKind {
         match self {
             Self::Step(NextStep::RequestReview) => &REQUEST_REVIEW_PLACEHOLDERS,
             Self::Step(NextStep::Land) => &LAND_PLACEHOLDERS,
+            Self::Step(NextStep::AddressReview) => &ADDRESS_REVIEW_PLACEHOLDERS,
             Self::ReviewLinear => &REVIEW_LINEAR_PLACEHOLDERS,
             Self::ImplementLinear => &IMPLEMENT_LINEAR_PLACEHOLDERS,
             Self::Step(_) => &[],
@@ -147,6 +158,10 @@ impl PromptKind {
             Self::Step(NextStep::Land) => {
                 &[("members", "or the Job never gets what the sheet chose")]
             }
+            Self::Step(NextStep::AddressReview) => &[(
+                "review_notes",
+                "or the Job never learns which review bodies to split into Review Points",
+            )],
             Self::ReviewLinear => &[
                 (
                     "linear_context",
@@ -170,7 +185,7 @@ impl PromptKind {
 /// The default template for each kind (spec, "Launch handoff").
 pub fn default_template(step: NextStep) -> &'static str {
     match step {
-        NextStep::AddressReview => "/gh-resolve {url}",
+        NextStep::AddressReview => "/gh-resolve {url}{review_notes}",
         NextStep::Review => "/code-review {url}",
         NextStep::FixCi => {
             "/diagnosing-bugs CI is failing for {url}. You are on branch {branch}. Find out why and fix it."
@@ -242,6 +257,32 @@ const REVIEW_LINEAR_TEMPLATE: &str = "/code-review {url}{linear_context}{verdict
 /// What `{verdict_only}` is (spec 0002, story 70).
 const VERDICT_ONLY: &str = " Return your verdict to me only. Don't edit files, commit, push, approve, request changes, comment or post anywhere: I decide what gets published.";
 
+/// What `{review_notes}` is (#76): the reviews whose bodies still hold Review
+/// Points, by URL and id only, and how to split them and record each Point
+/// where den reads it back. den reads markers from the pull request's
+/// conversation comments only, one marker per line, with the summary on the
+/// next line (`domain::facts::parse_markers`). Nothing when there are none.
+fn review_notes(reviews: &[(String, u64)]) -> String {
+    if reviews.is_empty() {
+        return String::new();
+    }
+    let listed: Vec<String> = reviews
+        .iter()
+        .map(|(url, id)| format!("{url} (review {id})"))
+        .collect();
+    format!(
+        " These reviews still have points to address: {}. \
+Split each review's body into separate points, numbered from 1 within that review. \
+Fix, decline, mark as follow-up, or flag for my decision each point. \
+Push your commits with a plain push, never a force-push, before you reply. \
+Then post one comment on the pull request's conversation per review (gh pr comment, not a reply in a review thread). \
+In it, for each point, write a line that is exactly <!-- den:point <review id>.<n> <state> [<commit>] --> \
+and, on the very next line, a one-line summary of what you did in your own words, not the reviewer's. \
+<state> is one of open, fixed, declined, follow-up or needs-decision; after fixed, give the commit.",
+        listed.join(", ")
+    )
+}
+
 /// What `{linear_context}` is for a Pull Request attached to `issues`
 /// (identifier, URL): nothing when it is attached to none.
 fn linear_context(issues: &[(String, String)]) -> String {
@@ -282,6 +323,10 @@ pub struct PromptFields {
     pub linear_issues: Vec<(String, String)>,
     /// A Linear Issue's identifier (`TEAM-123`); empty for GitHub Work Items.
     pub identifier: String,
+    /// Address review only: the reviews whose bodies still hold Review
+    /// Points to address, as (URL, review id), in the order den shows them.
+    /// Never their text.
+    pub review_notes: Vec<(String, u64)>,
 }
 
 /// The default template of any kind.
@@ -513,6 +558,7 @@ fn fill(template: &str, fields: &PromptFields) -> String {
                     }
                     "linear_context" => out.push_str(&linear_context(&fields.linear_issues)),
                     "verdict_only" => out.push_str(VERDICT_ONLY),
+                    "review_notes" => out.push_str(&review_notes(&fields.review_notes)),
                     _ => {}
                 }
             }
