@@ -72,6 +72,18 @@ impl NextStep {
             Self::MarkForRelease => "Mark for release",
         }
     }
+
+    /// The Next Step whose glossary name is `label`, spelled exactly as
+    /// [`NextStep::label`] (and `CONTEXT.md`) spells it.
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|step| step.label() == label)
+    }
+
+    /// Whether a Repo may stop tracking this kind (`skip`, spec 0003). Start,
+    /// Land and Mark for release belong to Linear Issues, not to a Repo.
+    pub fn skippable(self) -> bool {
+        !matches!(self, Self::Start | Self::Land | Self::MarkForRelease)
+    }
 }
 
 /// Who a Next Step is owed by. "Unattributed" is a separate marker on the

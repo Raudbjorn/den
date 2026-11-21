@@ -44,6 +44,7 @@ fn launch_config(main_clones: &[(&str, &str)]) -> Config {
             .map(|(repo, path)| ((*repo).to_owned(), PathBuf::from(path)))
             .collect::<BTreeMap<_, _>>(),
         linear: Vec::new(),
+        skips: den::domain::Skips::default(),
     }
 }
 
