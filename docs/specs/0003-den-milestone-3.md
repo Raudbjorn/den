@@ -98,14 +98,14 @@ GitHub stays read-only (ADR-0002), and Linear writes stay as ADR-0004 allows.
 
 - The App gains a `Screen`: `Repos`, `Linear` or `Workbench(RepoId)`. Overlays (launch sheet, detail sheet) stay as they are.
 - **Startup.** The first rule that matches wins:
-  1. `den OWNER/REPO` opens that Repo.
-  2. Inside a git work tree, `git rev-parse --git-common-dir` finds the Main Clone, so a Job worktree resolves to its Main Clone's Repo. Then:
+  1. `den --pick` opens the Repo screen, even inside a clone.
+  2. `den OWNER/REPO` opens that Repo.
+  3. Inside a git work tree, `git rev-parse --git-common-dir` finds the Main Clone, so a Job worktree resolves to its Main Clone's Repo. Then:
      - `origin`, if it names a GitHub Repo, opens it;
      - otherwise the only GitHub remote opens;
-     - several GitHub remotes and no `origin`: the Repo screen opens, filtered to the candidates.
-  3. Otherwise the Repo screen opens. A directory that is a git repo without a GitHub remote gets a notice.
-  4. `den --pick` always opens the Repo screen.
-- Forks follow ADR-0003. A Repo outside the watched Owners opens too. Watched Owners decide what the Repo screen lists and what the Sweep reads, not what den may open.
+     - several GitHub remotes, none of them a GitHub `origin` (no `origin`, or an `origin` elsewhere): the Repo screen opens, filtered to the candidates.
+  4. Otherwise the Repo screen opens. A directory that is a git repo without a GitHub remote gets a notice.
+- Forks follow ADR-0003. A Repo outside the watched Owners opens too. Watched Owners decide what the Repo screen lists and what the Sweep reads, not what den may open. Opening one records it in Recent like any Repo, so `g` from its workbench finds it in the `All` tab's RECENT group.
 - Resolving the start directory is a new `Workspace` port read (`Workspace::repo_at(path)`), with git's timeout and `GIT_TERMINAL_PROMPT=0`.
 
 **Keys**
@@ -156,7 +156,7 @@ See `0003-assets/repos-160x45.png`.
 
 **REPOS panel**
 - Tabs: `All N`, then one per watched Owner with its count.
-- Rows: a RECENT group (Repos from `recent.json` that the tab covers), then BY LAST PUSH (everything else, newest push first).
+- Rows: a RECENT group (Repos from `recent.json` that the tab covers: `All` covers every recent Repo, watched or not, and an Owner's tab covers that Owner's), then BY LAST PUSH (everything else, newest push first). An unwatched Repo's row shows what its last Repo Survey read.
 - Columns:
 
 | Column | Shows |
@@ -280,6 +280,7 @@ skip = ["Fix CI", "Triage", "Prune or revive"]
 - **Coverage per Repo:** every Work Item source is recorded per Repo in both surveys. The Sweep splits an Owner's PR and Issue listing per Repo: a Repo's PRs are complete when the Owner listing was complete or the Repo's own pages were read completely. Otherwise they are partial with the Owner's reason. The cross-kind rule (no kind more complete than the Repo list) applies per Owner as today.
 - **Merge:**
   - For each Repo and source, a complete read replaces the earlier one only if it **started later**. This read-time guard stops a Sweep that began before a Repo Survey from overwriting it.
+  - Merging stays in the App's event handling, one answer at a time, as `cache::merge` runs today. Survey lanes only read. The store lane writes the App's merged result whole, one write at a time in the order the App emitted them. So the guard's comparison and the replacement are one step, and no survey can interleave with it.
   - Incomplete reads keep earlier facts with their own ages, as `cache::merge` does today.
 - Older formats are rejected and rebuilt, as before.
 - The workbench shows the cached Repo at once, from the last Repo Survey or the Sweep, with its age, while its Repo Survey runs.
@@ -358,10 +359,12 @@ Tests go through the two seams, plus thin adapter checks, as in milestones 1 and
 - the skip note appears in the Explanation;
 - a Run with Fix CI skipped has no Next Step and says why;
 - skips of another Repo don't apply;
-- a Linear Issue's Land is unaffected by a member Repo's skips.
+- a Linear Issue's Land is unaffected by a member Repo's skips;
+- a skipped kind den couldn't rule out still reports what is unknown, and is never "not ruled out";
+- a skipped Merge keeps the Landing Group reads den couldn't finish.
 
 **Seam 2, the App with fake ports.**
-- Startup resolution: an argument; a clone; a worktree resolving to its Main Clone's Repo; `origin` versus a single other GitHub remote; several remotes and no `origin`; no GitHub remote; `--pick`.
+- Startup resolution: an argument; a clone; a worktree resolving to its Main Clone's Repo; `origin` versus a single other GitHub remote; several GitHub remotes with no GitHub `origin`, including an `origin` elsewhere; no GitHub remote; `--pick` inside a clone.
 - Repo screen:
   - type-to-filter;
   - RECENT then BY LAST PUSH;
@@ -386,7 +389,7 @@ Tests go through the two seams, plus thin adapter checks, as in milestones 1 and
   - stopped at the rate-limit floor with partial coverage;
   - per-Owner answers fill the Repo screen.
 - Cache:
-  - a Sweep that started before a Repo Survey doesn't overwrite it;
+  - a Sweep that started before a Repo Survey doesn't overwrite it, even when its answer arrives after the Repo Survey's;
   - partial reads keep ages;
   - a per-Repo coverage split from an Owner listing;
   - format 12 rejected and rebuilt.
