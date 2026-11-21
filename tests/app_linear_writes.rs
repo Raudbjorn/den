@@ -101,6 +101,7 @@ fn config(workflow: LinearWorkflow) -> Config {
         main_clones: BTreeMap::new(),
         linear: vec![workflow],
         skips: den::domain::Skips::default(),
+        merge_methods: den::domain::MergeMethods::default(),
     }
 }
 

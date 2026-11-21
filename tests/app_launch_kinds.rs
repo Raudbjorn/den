@@ -44,6 +44,7 @@ fn launch_config() -> Config {
         main_clones: BTreeMap::new(),
         linear: Vec::new(),
         skips: den::domain::Skips::default(),
+        merge_methods: den::domain::MergeMethods::default(),
     }
 }
 

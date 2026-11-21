@@ -9,7 +9,7 @@ use super::{
     RefusalReason, WindowMode, check_prompt, clone, command, short_commit,
 };
 use crate::{
-    domain::{NextStep, WorkItemKind},
+    domain::{NextStep, WorkItemId, WorkItemKind, facts::PullRequestRef},
     jobs::JobRecord,
     ports::{JobStore, Launcher, Workspace, WorktreeAdd, WorktreeStart},
 };
@@ -133,6 +133,17 @@ fn run(
                 return LaunchOutcome::Refused(Refusal::one(RefusalReason::LandingMemberMoved {
                     pr: first.pr.clone(),
                     approved: first.head_commit.clone(),
+                    now: to,
+                }));
+            }
+            // A Merge Job is pinned to the head den decided to Merge (#72):
+            // a push after den looked is never merged unseen.
+            if plan.next_step == NextStep::Merge
+                && let WorkItemId::PullRequest { repo, number } = &plan.work_item
+            {
+                return LaunchOutcome::Refused(Refusal::one(RefusalReason::MergeHeadMoved {
+                    pr: PullRequestRef::new(repo.clone(), *number),
+                    observed: plan.base.commit.clone(),
                     now: to,
                 }));
             }

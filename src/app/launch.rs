@@ -79,6 +79,9 @@ use crate::{
     ports::{LinearIssueRead, LinearIssueRequest, LinearWriteKind, LinearWriteOutcome},
 };
 
+/// The merge methods of a den without a usable config: none.
+static NO_MERGE_METHODS: crate::domain::MergeMethods = crate::domain::MergeMethods::new();
+
 /// One open launch sheet.
 #[derive(Debug, Clone)]
 pub(super) struct Sheet {
@@ -1117,6 +1120,10 @@ impl App {
             slack_channel,
             linear_repo: sheet.linear.as_ref().and_then(LinearLaunch::repo),
             policy: self.policies.for_owner(sheet.item.owner()),
+            merge_methods: self
+                .config
+                .as_ref()
+                .map_or(&NO_MERGE_METHODS, |config| &config.merge_methods),
         })?;
         Ok(match &sheet.accepted_head {
             Some(commit) => plan.on_commit(commit),

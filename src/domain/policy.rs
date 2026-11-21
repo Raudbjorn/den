@@ -145,6 +145,81 @@ impl StartPolicy {
     }
 }
 
+/// How a Repo merges its Pull Requests (`[repos."OWNER/REPO"] merge_method`,
+/// #72, spec 0004): Merge and Land Jobs pass its `gh pr merge` flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeMethod {
+    Squash,
+    Merge,
+    Rebase,
+}
+
+impl MergeMethod {
+    pub const ALL: [Self; 3] = [Self::Squash, Self::Merge, Self::Rebase];
+
+    /// The config's spelling, which is `gh`'s: `squash`, `merge`, `rebase`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Squash => "squash",
+            Self::Merge => "merge",
+            Self::Rebase => "rebase",
+        }
+    }
+
+    /// The method spelled `name`, exactly as [`Self::name`] spells it.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|method| method.name() == name)
+    }
+
+    /// `gh pr merge`'s flag for it: `--squash`, `--merge`, `--rebase`.
+    pub fn flag(self) -> &'static str {
+        match self {
+            Self::Squash => "--squash",
+            Self::Merge => "--merge",
+            Self::Rebase => "--rebase",
+        }
+    }
+}
+
+/// Each Repo's merge method (#72). A Repo not listed names none: its Jobs use
+/// what the repository allows and ask when it allows more than one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MergeMethods {
+    by_repo: Vec<(RepoId, MergeMethod)>,
+}
+
+impl MergeMethods {
+    /// No Repo names a merge method.
+    pub const fn new() -> Self {
+        Self {
+            by_repo: Vec::new(),
+        }
+    }
+
+    /// `repo` merges with `method`. Repos compare as GitHub compares names:
+    /// a Repo already listed is replaced.
+    #[must_use]
+    pub fn with(mut self, repo: RepoId, method: MergeMethod) -> Self {
+        match self
+            .by_repo
+            .iter_mut()
+            .find(|(listed, _)| listed.same(&repo))
+        {
+            Some(entry) => *entry = (repo, method),
+            None => self.by_repo.push((repo, method)),
+        }
+        self
+    }
+
+    /// `repo`'s merge method, if it names one.
+    pub fn for_repo(&self, repo: &RepoId) -> Option<MergeMethod> {
+        self.by_repo
+            .iter()
+            .find(|(listed, _)| listed.same(repo))
+            .map(|(_, method)| *method)
+    }
+}
+
 /// The Next Step kinds each Repo doesn't track (`[repos."OWNER/REPO"] skip`,
 /// spec 0003, "Not tracking a flow"). A Repo not listed tracks every kind.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

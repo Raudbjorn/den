@@ -65,6 +65,7 @@ fn config() -> Config {
         main_clones: std::collections::BTreeMap::new(),
         linear: vec![linear_workflow("acme", "acme")],
         skips: den::domain::Skips::default(),
+        merge_methods: den::domain::MergeMethods::default(),
     }
 }
 
