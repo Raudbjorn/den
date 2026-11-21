@@ -187,7 +187,8 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
     // the next rule (spec 0003). Every rule's preconditions are unchanged, so
     // a skip never unblocks another step. Merge is withheld below, after the
     // Landing Group check, so a member that would Merge still lands with its
-    // Linear Issue.
+    // Linear Issue. An Unknown stays, so the Explanation still says what den
+    // couldn't establish, but a skipped kind is never "not ruled out".
     let skips = ctx.skips(&pr.repo);
     let mut not_tracked: Vec<(NextStep, String)> = Vec::new();
     for (step, finding) in &mut rules {
@@ -197,8 +198,8 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         }
         if let Finding::Holds(why) = finding {
             not_tracked.push((step, why.clone()));
+            *finding = Finding::No;
         }
-        *finding = Finding::No;
     }
     let winner = rules
         .iter()
@@ -278,6 +279,7 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
     };
     let not_ruled_out: Vec<String> = rules[..index]
         .iter()
+        .filter(|(earlier, _)| !skips.contains(earlier))
         .filter_map(|(earlier, finding)| match finding {
             Finding::Unknown(what) => Some(format!("{} ({what})", earlier.label())),
             _ => None,
@@ -313,6 +315,12 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         decision.held_back = Some(held);
         return with_reviewers(decision);
     }
+    // Read before a skipped Merge is withheld: a PR that might be an unread
+    // Landing Group's member says so either way.
+    let membership = (step == NextStep::Merge).then(|| membership_unread(ctx, pr));
+    if let Some((_, Some(unread))) = &membership {
+        unknowns.push(unread.clone());
+    }
     if step == NextStep::Merge && skips.contains(&NextStep::Merge) {
         let mut decision = Decision::new(
             ctx,
@@ -327,11 +335,10 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
             },
         );
         decision.not_tracked = Some(NextStep::Merge);
+        if let Some((sources, _)) = membership {
+            decision.coverage.extend(sources);
+        }
         return with_reviewers(decision);
-    }
-    let membership = (step == NextStep::Merge).then(|| membership_unread(ctx, pr));
-    if let Some((_, Some(unread))) = &membership {
-        unknowns.push(unread.clone());
     }
     let mut decision = Decision::new(
         ctx,

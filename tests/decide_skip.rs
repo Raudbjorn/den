@@ -260,6 +260,77 @@ fn a_member_in_a_repo_that_skips_merge_still_lands_with_its_issue() {
 }
 
 #[test]
+fn a_skipped_kind_den_could_not_rule_out_still_says_what_is_unknown() {
+    let observation = acme()
+        .pull_request(
+            pr("acme/app", 3)
+                .author(ME)
+                .mergeability_unknown()
+                .failing_required("ci"),
+        )
+        .build();
+    let tracked = decide_all(&observation, &Policies::default());
+    assert_says(
+        pull_request(&tracked, "acme/app", 3),
+        &[
+            "not ruled out: Resolve conflicts",
+            "mergeability not computed yet by GitHub",
+        ],
+    );
+
+    let decisions = decide_all(
+        &observation,
+        &skipping("acme/app", &[NextStep::ResolveConflicts]),
+    );
+    let decision = pull_request(&decisions, "acme/app", 3);
+    assert_eq!(decision.next_step, Some(NextStep::FixCi), "{decision:#?}");
+    // A kind the Repo doesn't track can't win, so it is never "not ruled
+    // out"; what den couldn't establish is still a fact worth saying.
+    let winning = decision
+        .explanation
+        .winning_rule
+        .as_deref()
+        .unwrap_or_default();
+    assert!(!winning.contains("Resolve conflicts"), "{winning:?}");
+    assert!(
+        decision
+            .explanation
+            .unknowns
+            .iter()
+            .any(|u| u == "mergeability not computed yet by GitHub"),
+        "{decision:#?}"
+    );
+}
+
+#[test]
+fn a_skipped_merge_keeps_the_landing_group_reads_den_could_not_finish() {
+    let observation = acme()
+        .linear_viewer("acme", "acme")
+        .pull_request(ready("acme/app", 2))
+        .linear_issue(
+            linear_issue("acme", "id-1", "TEAM-1").attachments_incomplete("page 2 failed"),
+        )
+        .build();
+    let decisions = decide_all(&observation, &acme_workflow_skipping_merge_in_app());
+
+    let decision = pull_request(&decisions, "acme/app", 2);
+    assert_eq!(decision.not_tracked, Some(NextStep::Merge), "{decision:#?}");
+    assert_says(
+        decision,
+        &[
+            "Merge is not tracked in this Repo (skip): ",
+            "whether it lands with a Linear Issue",
+            "TEAM-1's attachments weren't all read",
+        ],
+    );
+    assert!(
+        decision.coverage.iter().any(|e| !e.state.is_complete()),
+        "the unread attachments make the row incomplete: {:#?}",
+        decision.coverage
+    );
+}
+
+#[test]
 fn a_run_whose_fix_ci_is_skipped_has_no_next_step_and_says_why() {
     let observation = acme().run(run("acme/app", "ci.yml", 1).failed()).build();
     let tracked = decide_all(&observation, &Policies::default());
