@@ -57,6 +57,8 @@ pub struct State<'a> {
     pub upstreams: &'a UpstreamTargets,
     /// Something wrong with the Upstream choices, for the header.
     pub upstream_note: Option<String>,
+    /// What the start rules said about where den opened (#90), for the header.
+    pub start_note: Option<&'a str>,
 }
 
 pub fn build(state: &State<'_>) -> ViewModel {

@@ -38,12 +38,15 @@ fn status(state: &State<'_>) -> String {
             None => "Not surveyed yet".to_owned(),
         };
     };
-    let mut parts = vec![format!(
+    // The start notice leads (#90): the row is cut at the terminal's width,
+    // and what den found when it started is what the user needs to act on.
+    let mut parts: Vec<String> = state.start_note.map(str::to_owned).into_iter().collect();
+    parts.push(format!(
         "{}observed {}, {}",
         if state.from_cache { "cached: " } else { "" },
         format::clock_time(observation.observed_at),
         format::ago(state.now, observation.observed_at)
-    )];
+    ));
     if let Some(failure) = state.failure {
         parts.push(format!("last refresh failed: {}", failure_text(failure)));
     }

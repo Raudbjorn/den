@@ -38,6 +38,7 @@ pub mod ports;
 pub mod process;
 pub mod processes;
 pub mod runtime;
+pub mod start;
 pub mod terminal;
 pub mod ui;
 pub mod upstreams;
