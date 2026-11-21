@@ -210,7 +210,10 @@ See `0003-assets/workbench-160x45.png` and `workbench-200x56.png`.
 - The bear shows only when the rail holds the bear, the identity block and every section without scrolling. Otherwise it is omitted.
 
 **List panel**
-- Titled with the section, with its count and coverage on the right. A filter row (`/`).
+- Titled with the section, with its count and coverage on the right. A filter row (`/`):
+  - it matches each row's reference and title, case-insensitively, as a substring, as the Repo filter does;
+  - it narrows what is shown and nothing else: Decisions, Waiting On groups and coverage are computed as without it;
+  - when it matches nothing, the list says nothing matches the filter and shows the filter text. It never says "Nothing needs you here", since the hidden rows may need you (#58).
 - Columns: NEXT STEP (chip), ITEM (reference and title), WAITING, AGE, JOB (`● live`, `○ gone`, `? unknown`).
 - **Next Steps** groups rows under WAITING ON YOU, WAITING ON OTHERS and WAITING ON NOBODY, ordered within each group as `ordering::order` does today. This replaces the approved "for you / all" rail entries: the groups do the same job in one list.
 - **Pull Requests, Issues, Branches and Runs** list every open item of that kind in the Repo. An item with no Next Step shows a faint `—` and its no-step reason, and sorts last.
@@ -376,7 +379,7 @@ Tests go through the two seams, plus thin adapter checks, as in milestones 1 and
 - Workbench:
   - sections and counts;
   - Waiting On groups;
-  - the list filter;
+  - the list filter, including a filter that matches nothing never reading as "Nothing needs you here";
   - `g` with the cursor on the Repo;
   - `r` emits a Repo Survey only;
   - the elsewhere counts exclude this Repo;
@@ -420,7 +423,7 @@ Tests go through the two seams, plus thin adapter checks, as in milestones 1 and
 
 - Periodic surveys while den is open (#57). The Sweep runs at startup and on demand only.
 - Board Scope (#59). A Board spans Repos; it could become its own screen later.
-- Searching Work Items across Repos. The list filter (`/`) and the Repo screen filter cover #58 for one Repo and for Repo names.
+- Searching Work Items across Repos. The list filter (`/`) and the Repo screen filter cover #58 for one Repo and for Repo names. #58's empty-result rule is in **List panel** above.
 - Upstreaming the kit into `design-system`'s `raudbjorn-tui` (ADR-0006 defers it).
 - Light mode or other editions.
 - Any GitHub write. Any Linear write beyond ADR-0004.
