@@ -4,7 +4,7 @@ use super::{
     Theme, UiError, glyphs, templates,
     text::{self, LineStyle},
 };
-use crate::app::view_model::{Detail, JobMarker};
+use crate::app::view_model::{Detail, JobMarker, PointTone};
 use crepuscularity_tui::TemplateContext;
 use ratatui::{Frame, layout::Rect};
 
@@ -63,6 +63,32 @@ pub fn draw(frame: &mut Frame, theme: &Theme, detail: &Detail, area: Rect) -> Re
                 push("ALSO", LineStyle::Label);
                 for also in &content.also {
                     push(also, LineStyle::Plain);
+                }
+            }
+            if let Some(points) = &content.review_points {
+                push(&points.label, LineStyle::Label);
+                for point in &points.lines {
+                    let style = match point.tone {
+                        PointTone::Blocking => LineStyle::Caution,
+                        PointTone::Yours => LineStyle::Step,
+                        PointTone::Settled => LineStyle::Muted,
+                    };
+                    push(&point.text, style);
+                    for ignored in &point.ignored {
+                        push(&format!("  {ignored}"), LineStyle::Muted);
+                    }
+                }
+                for unread in &points.unread {
+                    push(
+                        &format!("{} {unread}", glyphs.incomplete),
+                        LineStyle::Caution,
+                    );
+                }
+                if let Some(settle) = &points.settle {
+                    push(settle, LineStyle::Plain);
+                }
+                if let Some(copied) = &points.copied {
+                    push(copied, LineStyle::Muted);
                 }
             }
             if !content.coverage.is_empty() {

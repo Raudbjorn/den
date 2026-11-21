@@ -1121,3 +1121,65 @@ fn long_landing_groups_keep_an_ellipsis_and_a_gap_before_the_age() {
         }
     }
 }
+
+#[test]
+fn the_detail_draws_review_points_and_the_key_bar_offers_m() {
+    use den::domain::facts::ReviewVerdict;
+    let mut harness = Harness::with_owners(&["octo"]);
+    harness.send(Event::Resized {
+        cols: DESIGN_SIZE.0,
+        rows: DESIGN_SIZE.1,
+    });
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("octo")
+        .pull_request(
+            pr("octo/one", 1)
+                .author(ME)
+                .passing("ci")
+                .approved()
+                .review_body(
+                    100,
+                    "alice",
+                    ReviewVerdict::Commented,
+                    "2026-11-10T10:00:00Z",
+                    true,
+                )
+                .comment(
+                    7,
+                    ME,
+                    "2026-11-11T10:00:00Z",
+                    "<!-- den:point 100.1 needs-decision -->\nKeep the old flag?\n\
+                     <!-- den:point 100.2 fixed abc1234 -->",
+                )
+                .comment(
+                    8,
+                    "bob",
+                    "2026-11-11T11:00:00Z",
+                    "<!-- den:point 100.1 declined -->",
+                ),
+        )
+        .build()));
+    harness.start();
+    for glyphs in [GlyphProfile::Unicode, GlyphProfile::Ascii] {
+        let theme = Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
+        let (cols, rows) = DESIGN_SIZE;
+        let text =
+            frame::buffer_text(&frame::render(&theme, &harness.view, cols, rows).expect("renders"));
+        // The plate wraps long lines, so these are fragments within one line.
+        for expected in [
+            "REVIEW POINTS",
+            "needs decision",
+            "review 100.1 by",
+            "review 100.2",
+            "abc1234",
+            "marker by bob not counted",
+            "m copies its",
+            "copy marker",
+        ] {
+            assert!(
+                text.contains(expected),
+                "{glyphs:?}: missing {expected:?}\n{text}"
+            );
+        }
+    }
+}

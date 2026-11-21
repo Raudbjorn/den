@@ -235,6 +235,45 @@ pub struct DetailContent {
     /// The Landing Group (#35): a Linear Issue's members, or the groups a
     /// Pull Request belongs to or is possibly for. `None` when it has none.
     pub landing: Option<LandingDetail>,
+    /// A Pull Request's Review Points (#77); `None` for other Work Items and
+    /// for a PR with no Points and nothing unread.
+    pub review_points: Option<ReviewPointsDetail>,
+}
+
+/// The detail's REVIEW POINTS section (#77). Every meaning is in the text;
+/// `tone` only adds colour.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewPointsDetail {
+    /// "REVIEW POINTS".
+    pub label: String,
+    pub lines: Vec<PointLine>,
+    /// What den didn't read of them, one line each.
+    pub unread: Vec<String>,
+    /// How to settle the needs-decision Points (`m` copies their marker
+    /// lines); `None` when there are none.
+    pub settle: Option<String>,
+    /// What the last `m` on this Work Item did.
+    pub copied: Option<String>,
+}
+
+/// One Review Point: state, which Point, reviewer, commit, summary and link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PointLine {
+    pub text: String,
+    pub tone: PointTone,
+    /// Markers others posted about it: shown with their author, not counted.
+    pub ignored: Vec<String>,
+}
+
+/// How a Point weighs on the PR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointTone {
+    /// Open or not yet split: holds the PR at Address review.
+    Blocking,
+    /// Needs the user's decision.
+    Yours,
+    /// Resolved, fixed, declined, follow-up or answered.
+    Settled,
 }
 
 /// The detail's Landing Group section (#35).

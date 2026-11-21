@@ -130,6 +130,22 @@ pub struct Point {
     pub ignored_markers: Vec<ForeignMarker>,
 }
 
+impl Point {
+    /// The marker line that settles this Point as answered, for the user to
+    /// post with their decision (#77): `<!-- den:point <review>.<n> answered -->`.
+    /// A body not yet split is its Point 1. `None` for a thread, which GitHub
+    /// settles by resolving it.
+    pub fn answering_marker(&self) -> Option<String> {
+        match self.reference {
+            PointRef::Review { review, n } => Some(format!(
+                "<!-- den:point {review}.{} answered -->",
+                n.unwrap_or(1)
+            )),
+            PointRef::Thread { .. } => None,
+        }
+    }
+}
+
 /// A Pull Request's Review Points and what den couldn't read of them.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ReviewPoints {
