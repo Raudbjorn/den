@@ -46,6 +46,7 @@ fn launch_config(main_clones: &[(&str, &str)]) -> Config {
             .collect::<BTreeMap<_, _>>(),
         linear: Vec::new(),
         skips: den::domain::Skips::default(),
+        legacy_marker_prefixes: Vec::new(),
     }
 }
 

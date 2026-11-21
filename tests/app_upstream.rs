@@ -46,6 +46,7 @@ fn config() -> Config {
         main_clones: BTreeMap::new(),
         linear: Vec::new(),
         skips: den::domain::Skips::default(),
+        legacy_marker_prefixes: Vec::new(),
     }
 }
 

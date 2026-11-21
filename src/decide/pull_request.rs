@@ -35,13 +35,24 @@
 //! join its coverage and the Explanation says what den couldn't establish.
 //! The empty policy (no Linear Workflow) changes none of this module's
 //! Decisions.
+//!
+//! Review Points (#75, [`super::points`]) apply to every Owner, whichever
+//! review rules: a review-body Point that is open, not yet split or needs a
+//! decision holds the PR at Address review and withholds Merge (and so
+//! Land, which needs every member to be one that would Merge). With only
+//! needs-decision Points holding it, Address review is Waiting On the user,
+//! and the reason links the comments that ask. Points den couldn't read in
+//! full withhold Merge, and leave Address review not ruled out.
 
 mod workflow;
 
 use super::{
-    Attribution, Context, Decision, Explanation, HeldBack, WorkItem, correlation::GroupRef,
+    Attribution, Context, Decision, Explanation, HeldBack, WorkItem,
+    correlation::GroupRef,
     not_tracked_note,
+    points::{PointState, ReviewPoints, review_points},
 };
+use crate::domain::WaitingOn;
 use crate::domain::{
     CoverageEntry, Incompleteness, LinearSourceKind, LinearWorkflowPolicy, NextStep, ReviewPolicy,
     Source, SourceKind, SourceState, Viewer,
@@ -173,6 +184,20 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         suggested_reviewers_unread,
         pending_requests_hold,
     } = ReviewFindings::assess(pr, policy.review.as_ref());
+    let points = review_points(
+        pr.details.as_ref(),
+        pr.author.as_deref(),
+        &ctx.viewers.github.login,
+        ctx.legacy_marker_prefixes(),
+    );
+    let decisions_only = only_decisions_hold(&address_review, &points);
+    let address_review = with_points(address_review, &points);
+    let mut review_blockers = review_blockers;
+    // Unread details already block Merge ("checks could not be read"), and
+    // say more than the Points could.
+    if pr.details.is_some() {
+        review_blockers.extend(points_blockers(&points));
+    }
     // Every Decision below carries the suggested reviewers, whatever its step.
     let with_reviewers = move |mut decision: Decision| {
         decision.suggested_reviewers = suggested_reviewers;
@@ -352,11 +377,20 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         }
         return with_reviewers(decision);
     }
+    let attribution = if step == NextStep::AddressReview && decisions_only {
+        Attribution {
+            waiting_on: WaitingOn::Me,
+            reason: "only Review Points that need your decision hold it".to_owned(),
+            unattributed: false,
+        }
+    } else {
+        waiting_on(step, pr, ctx)
+    };
     let mut decision = Decision::new(
         ctx,
         item,
         Some(step),
-        waiting_on(step, pr, ctx),
+        attribution,
         Explanation {
             winning_rule: Some(winning_rule),
             other_conditions,
@@ -589,6 +623,87 @@ fn address_review(pr: &PullRequest) -> Finding {
         return Finding::Unknown("not every review thread was read".to_owned());
     }
     Finding::No
+}
+
+/// Address review with the Review Points (#75): blocking review-body Points
+/// hold it; Points den couldn't read leave it unknown when nothing holds it.
+fn with_points(finding: Finding, points: &ReviewPoints) -> Finding {
+    match (finding, points_reasons(points)) {
+        (Finding::Holds(why), Some(more)) => Finding::Holds(format!("{why}, {more}")),
+        (Finding::Holds(why), None) => Finding::Holds(why),
+        (_, Some(more)) => Finding::Holds(more),
+        (Finding::No, None) if !points.complete() => {
+            Finding::Unknown(format!("Review Points: {}", points.unread.join(", ")))
+        }
+        (other, None) => other,
+    }
+}
+
+/// Only needs-decision Points would hold Address review: nothing else does,
+/// and every blocking review-body Point needs a decision.
+fn only_decisions_hold(finding: &Finding, points: &ReviewPoints) -> bool {
+    !matches!(finding, Finding::Holds(_))
+        && points.blocking_bodies().next().is_some()
+        && points
+            .blocking_bodies()
+            .all(|p| p.state == PointState::NeedsDecision)
+}
+
+/// "2 open Review Points, 1 review not yet split into Review Points, 1
+/// Review Point needs your decision (<comment URL>)".
+fn points_reasons(points: &ReviewPoints) -> Option<String> {
+    let count = |state: PointState| {
+        points
+            .blocking_bodies()
+            .filter(|p| p.state == state)
+            .count()
+    };
+    let mut reasons = Vec::new();
+    let open = count(PointState::Open);
+    if open > 0 {
+        reasons.push(format!("{open} open {}", plural(open, "Review Point")));
+    }
+    let unsplit = count(PointState::NotYetSplit);
+    if unsplit > 0 {
+        reasons.push(format!(
+            "{unsplit} {} not yet split into Review Points",
+            plural(unsplit, "review")
+        ));
+    }
+    let asking: Vec<&str> = points
+        .blocking_bodies()
+        .filter(|p| p.state == PointState::NeedsDecision)
+        .filter_map(|p| p.set_by.as_deref())
+        .collect();
+    let needs = count(PointState::NeedsDecision);
+    if needs > 0 {
+        let verb = if needs == 1 { "needs" } else { "need" };
+        let links = if asking.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", asking.join(", "))
+        };
+        reasons.push(format!(
+            "{needs} {} {verb} your decision{links}",
+            plural(needs, "Review Point")
+        ));
+    }
+    (!reasons.is_empty()).then(|| reasons.join(", "))
+}
+
+/// What the Review Points add to Merge's blockers (#75).
+fn points_blockers(points: &ReviewPoints) -> Vec<String> {
+    let mut blockers = Vec::new();
+    if points.blocking_bodies().next().is_some() {
+        blockers.push("Review Points open, not yet split or needing a decision".to_owned());
+    }
+    if !points.complete() {
+        blockers.push(format!(
+            "not every Review Point was read ({})",
+            points.unread.join(", ")
+        ));
+    }
+    blockers
 }
 
 /// "2 unresolved review threads" ("at least" when not every thread was read).

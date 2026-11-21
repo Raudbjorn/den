@@ -17,9 +17,11 @@ use crate::{
     domain::{
         CoverageEntry, Incompleteness, RepoId, Source, SourceKind, SourceState, TeamRef,
         facts::{
-            ActorKind, Check, CheckOutcome, Listed, PrDetails, PullRequest, Review, ReviewVerdict,
-            Reviewer,
+            ActorKind, Check, CheckOutcome, Listed, MarkerComment, PrDetails, PullRequest, Review,
+            ReviewRecord, ReviewVerdict, Reviewer, ThreadRecord,
+            feedback::{is_stock_approval, parse_markers},
         },
+        ids::same_login,
     },
     github::session::{Actor, Connection, Fetched, Session},
     ports::SurveyFailure,
@@ -28,9 +30,10 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
-/// PRs per details query. Each PR asks for at most 350 nodes (100 checks,
-/// 100 threads, 50 review requests, 50 standing reviews, 50 latest reviews of
-/// any kind), so a batch stays far inside
+/// PRs per details query. Each PR asks for at most 600 nodes (100 checks,
+/// 100 threads and their first comments, 50 review requests, 50 standing
+/// reviews, 50 latest reviews of any kind, 50 reviews and 100 comments for
+/// Review Points, #75), so a batch stays far inside
 /// GitHub's 500,000-node limit while keeping the number of `gh` calls low.
 pub const PRS_PER_QUERY: usize = 25;
 
@@ -38,10 +41,13 @@ const SELECTION: &str = include_str!("../queries/pull_request_details.graphql");
 const ID_PLACEHOLDER: &str = "$PR_ID";
 
 /// Reads the details of every PR in `prs` (node ID, fact) into `fact.details`.
+/// `viewer` is the GitHub viewer's login: a Point's summary is kept only from
+/// the viewer's own comments (#75).
 pub fn fill(
     session: &Session<'_>,
     prs: &mut [(String, PullRequest)],
     coverage: &mut Vec<CoverageEntry>,
+    viewer: &str,
 ) -> Result<(), SurveyFailure> {
     // Record clean details even for an empty list, so old carried detail ages expire.
     let completed: Vec<_> = coverage
@@ -59,7 +65,7 @@ pub fn fill(
         .collect();
     coverage.extend(completed);
     for batch in prs.chunks_mut(PRS_PER_QUERY) {
-        fill_batch(session, batch, coverage)?;
+        fill_batch(session, batch, coverage, viewer)?;
     }
     Ok(())
 }
@@ -68,6 +74,7 @@ fn fill_batch(
     session: &Session<'_>,
     batch: &mut [(String, PullRequest)],
     coverage: &mut Vec<CoverageEntry>,
+    viewer: &str,
 ) -> Result<(), SurveyFailure> {
     let variables: Map<String, Value> = batch
         .iter()
@@ -96,7 +103,9 @@ fn fill_batch(
     for (i, (_, pr)) in batch.iter_mut().enumerate() {
         let node = data.get(&format!("pr{i}")).cloned().unwrap_or(Value::Null);
         match serde_json::from_value::<Option<DetailsNode>>(node) {
-            Ok(Some(details)) => pr.details = Some(details.into_details(response_complete)),
+            Ok(Some(details)) => {
+                pr.details = Some(details.into_details(response_complete, viewer));
+            }
             Ok(None) => {
                 let lost = SourceState::Failed {
                     error: "GitHub returned nothing for it".to_owned(),
@@ -162,6 +171,8 @@ fn truncated_lists(details: &PrDetails) -> Vec<&'static str> {
         (!details.threads_complete, "review threads"),
         (!details.review_requests.complete, "review requests"),
         (!details.latest_reviews.complete, "reviews"),
+        (!details.reviews.complete, "reviews for Review Points"),
+        (!details.marker_comments.complete, "comments"),
     ]
     .into_iter()
     .filter_map(|(truncated, name)| truncated.then_some(name))
@@ -235,13 +246,54 @@ struct DetailsNode {
     review_requests: Connection<RequestNode>,
     latest_opinionated_reviews: Connection<ReviewNode>,
     latest_reviews: Connection<ReviewNode>,
+    reviews: Connection<FullReviewNode>,
+    comments: Connection<CommentNode>,
     commits: CommitList,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ThreadNode {
+    id: String,
     is_resolved: bool,
+    comments: ThreadComments,
+}
+
+#[derive(Deserialize)]
+struct ThreadComments {
+    #[serde(default)]
+    nodes: Vec<Option<ThreadComment>>,
+}
+
+#[derive(Deserialize)]
+struct ThreadComment {
+    url: String,
+    author: Option<Actor>,
+}
+
+/// A review as read for Review Points (#75). `body` is read only to tell a
+/// stock approval from more.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FullReviewNode {
+    database_id: Option<u64>,
+    state: String,
+    submitted_at: Option<jiff::Timestamp>,
+    url: String,
+    #[serde(default)]
+    body: String,
+    author: Option<ReviewAuthor>,
+}
+
+/// A conversation comment (#75), read only for its marker lines.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommentNode {
+    created_at: jiff::Timestamp,
+    url: String,
+    #[serde(default)]
+    body: String,
+    author: Option<Actor>,
 }
 
 #[derive(Deserialize)]
@@ -350,17 +402,23 @@ struct NamedNode {
 }
 
 impl DetailsNode {
-    /// `response_complete` is false when the response carried errors.
-    fn into_details(self, response_complete: bool) -> PrDetails {
+    /// `response_complete` is false when the response carried errors;
+    /// `viewer` is the GitHub viewer's login.
+    fn into_details(self, response_complete: bool, viewer: &str) -> PrDetails {
         let threads = self.review_threads;
         let threads_complete =
             !threads.page_info.has_next_page && threads.nodes.iter().all(Option::is_some);
         let unresolved = threads.nodes.iter().flatten().filter(|t| !t.is_resolved);
+        let unresolved = u32::try_from(unresolved.count()).unwrap_or(u32::MAX);
+        let threads = listed(threads, |node| Some(node.into_thread()));
         PrDetails {
             head_commit: Some(self.head_ref_oid),
             checks: checks(self.commits, response_complete),
-            unresolved_threads: u32::try_from(unresolved.count()).unwrap_or(u32::MAX),
+            unresolved_threads: unresolved,
             threads_complete,
+            threads,
+            reviews: listed(self.reviews, FullReviewNode::into_record),
+            marker_comments: marker_comments(self.comments, viewer),
             review_requests: listed(self.review_requests, |node| {
                 node.requested_reviewer
                     .and_then(ReviewerNode::into_reviewer)
@@ -368,6 +426,63 @@ impl DetailsNode {
             latest_reviews: listed(self.latest_opinionated_reviews, ReviewNode::into_review),
             latest_reviews_with_comments: listed(self.latest_reviews, ReviewNode::into_review),
         }
+    }
+}
+
+/// The comments of `comments` that carry markers, each with only its
+/// markers; complete when every comment was read. A summary is kept only on
+/// `viewer`'s own comments.
+fn marker_comments(comments: Connection<CommentNode>, viewer: &str) -> Listed<MarkerComment> {
+    let mut complete = !comments.page_info.has_next_page;
+    let mut items = Vec::new();
+    for node in comments.nodes {
+        let Some(node) = node else {
+            complete = false;
+            continue;
+        };
+        let author = node.author.map(|a| a.login);
+        let mine = author.as_deref().is_some_and(|a| same_login(a, viewer));
+        let markers = parse_markers(&node.body, mine);
+        if !markers.is_empty() {
+            items.push(MarkerComment {
+                author,
+                created_at: node.created_at,
+                url: node.url,
+                markers,
+            });
+        }
+    }
+    Listed { items, complete }
+}
+
+impl ThreadNode {
+    fn into_thread(self) -> ThreadRecord {
+        let first = self.comments.nodes.into_iter().flatten().next();
+        ThreadRecord {
+            id: self.id,
+            url: first.as_ref().map(|c| c.url.clone()),
+            author: first.and_then(|c| c.author).map(|a| a.login),
+            resolved: self.is_resolved,
+        }
+    }
+}
+
+impl FullReviewNode {
+    /// `None` without GitHub's number for it: no marker could name it.
+    fn into_record(self) -> Option<ReviewRecord> {
+        let author_kind = self
+            .author
+            .as_ref()
+            .map_or(ActorKind::Other, |a| actor_kind(&a.typename));
+        Some(ReviewRecord {
+            id: self.database_id?,
+            author: self.author.map(|a| a.login),
+            author_kind,
+            verdict: verdict(&self.state),
+            submitted_at: self.submitted_at,
+            url: self.url,
+            has_body: !is_stock_approval(&self.body),
+        })
     }
 }
 

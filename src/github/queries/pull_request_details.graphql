@@ -6,7 +6,19 @@
 headRefOid
 reviewThreads(first: 100) {
   pageInfo { hasNextPage endCursor }
-  nodes { isResolved }
+  nodes { id isResolved comments(first: 1) { nodes { url author { login } } } }
+}
+# Every review, for Review Points (#75): the body is read only to tell a stock
+# approval from more, and is not kept.
+reviews(first: 50) {
+  pageInfo { hasNextPage endCursor }
+  nodes { databaseId state submittedAt url body author { __typename login } }
+}
+# The conversation's comments, for their marker lines (#75): nothing else of
+# a body is kept.
+comments(first: 100) {
+  pageInfo { hasNextPage endCursor }
+  nodes { createdAt url body author { login } }
 }
 reviewRequests(first: 50) {
   pageInfo { hasNextPage endCursor }
