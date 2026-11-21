@@ -31,10 +31,16 @@ impl fmt::Display for Refusal {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RefusalReason {
     NoNextStep,
-    /// A Linear Issue: den launches Jobs for it only from the Start and
-    /// Implement sheets, which arrive with the Linear writes (#38), and for
-    /// its Landing Group when its Next Step is Land (#40).
+    /// A Linear Issue whose Next Step is neither Start, Implement nor Land.
     LinearIssueNotLaunchable,
+    /// A Linear Issue's Owner offers no Repos for new work, so its Job has
+    /// nowhere to go (#38).
+    NoNewWorkRepos {
+        owner: String,
+    },
+    /// The Linear Workflow offers several Repos for new work and none is
+    /// chosen yet: den never guesses where code goes (#38).
+    NewWorkRepoNotChosen,
     /// Land (#40): no open member outside a Held Repo is left to land.
     NothingToLand {
         identifier: String,
@@ -242,7 +248,14 @@ impl fmt::Display for RefusalReason {
         match self {
             Self::NoNextStep => f.write_str("this Work Item has no Next Step to hand off"),
             Self::LinearIssueNotLaunchable => f.write_str(
-                "den can't launch a Job for this Linear Issue yet: it has no Repo until one is chosen for it, and the sheet that chooses one isn't built yet (only Land launches from a Linear Issue, for its Landing Group)",
+                "den launches a Job for a Linear Issue only to start, implement or land it",
+            ),
+            Self::NoNewWorkRepos { owner } => write!(
+                f,
+                "{owner}'s Linear Workflow offers no Repos for new work (new_work_repos in the config), so this Linear Issue's Job has nowhere to go"
+            ),
+            Self::NewWorkRepoNotChosen => f.write_str(
+                "choose the target Repo with t: the Linear Workflow offers several, and den doesn't guess where code goes",
             ),
             Self::NothingToLand { identifier } => write!(
                 f,

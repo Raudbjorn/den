@@ -20,6 +20,8 @@ mod branch;
 pub mod correlation;
 mod issue;
 pub mod linear_issue;
+
+pub use linear_issue::{DEPLOYMENTS_UNSEEN, EVIDENCE_PREFIX};
 mod pull_request;
 mod run;
 

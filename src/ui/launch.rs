@@ -4,7 +4,9 @@
 //! When the sheet has more lines than rows, sections give way in this order:
 //! the fields' notes move onto their value's line, then go, then fields are cut,
 //! then the command, then the prompt, then a Request review's reviewers; the
-//! Work Item, its status and the messages (refusals, what a launch did) stay.
+//! Work Item, its status and the Linear writes (#38: one teal line each,
+//! above the command, never wrapped) get space before the messages (refusals,
+//! evidence, what a launch did).
 
 use super::{
     Theme, UiError, glyphs, templates,
@@ -103,6 +105,19 @@ pub fn lines(sheet: &LaunchSheet, width: usize, rows: usize, glyphs: glyphs::Gly
         .as_ref()
         .map(|c| labelled("COMMAND", c, width, LineStyle::Muted))
         .unwrap_or_default();
+    let linear_writes: Vec<Line> = sheet
+        .linear_writes
+        .iter()
+        .enumerate()
+        .map(|(i, write)| {
+            let label = if i == 0 { "LINEAR" } else { "" };
+            (
+                label.to_owned(),
+                one_line(write, width, glyphs),
+                LineStyle::Step,
+            )
+        })
+        .collect();
     let full_fields = field_lines(&sheet.fields, width, glyphs, Notes::OwnLine);
     let inline_fields = field_lines(&sheet.fields, width, glyphs, Notes::Inline);
     let compact_fields = field_lines(&sheet.fields, width, glyphs, Notes::Hidden);
@@ -111,6 +126,7 @@ pub fn lines(sheet: &LaunchSheet, width: usize, rows: usize, glyphs: glyphs::Gly
     let spacer = || (String::new(), String::new(), LineStyle::Plain);
     let mut left = rows;
     let head = take(&head, usize::MAX, &mut left, width, glyphs);
+    let linear_writes = take(&linear_writes, usize::MAX, &mut left, width, glyphs);
     let messages = take(&messages, usize::MAX, &mut left, width, glyphs);
     let reviewers = take(&reviewers, REVIEWERS_MAX_ROWS, &mut left, width, glyphs);
     let prompt = take(&prompt, PROMPT_MAX_ROWS, &mut left, width, glyphs);
@@ -122,7 +138,15 @@ pub fn lines(sheet: &LaunchSheet, width: usize, rows: usize, glyphs: glyphs::Gly
     } else {
         take(&compact_fields, usize::MAX, &mut left, width, glyphs)
     };
-    let sections = [head, fields, reviewers, prompt, command, messages];
+    let sections = [
+        head,
+        fields,
+        reviewers,
+        prompt,
+        linear_writes,
+        command,
+        messages,
+    ];
     let filled: usize = sections.iter().map(Vec::len).sum();
     let gaps = sections
         .iter()
@@ -138,6 +162,21 @@ pub fn lines(sheet: &LaunchSheet, width: usize, rows: usize, glyphs: glyphs::Gly
         out.extend(section);
     }
     out
+}
+
+/// `text` on one row of `width` cells, cut with the profile's ellipsis when
+/// longer.
+fn one_line(text: &str, width: usize, glyphs: glyphs::Glyphs) -> String {
+    let rows = text::wrap(text, width);
+    if rows.len() <= 1 {
+        return rows.into_iter().next().unwrap_or_default();
+    }
+    // Room for the ellipsis's cells.
+    let first = text::wrap(text, width.saturating_sub(text::cells(glyphs.ellipsis)))
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    text::end_with(first.trim_end(), width, glyphs.ellipsis)
 }
 
 /// Up to `cap` lines of `section`, out of the `left` rows still free, each
@@ -288,8 +327,11 @@ fn status_tone(status: LaunchStatus) -> Tone {
         | LaunchStatus::Failed
         | LaunchStatus::HeadMoved
         | LaunchStatus::JobUnknown => Tone::Caution,
-        LaunchStatus::Ready | LaunchStatus::LiveJob | LaunchStatus::ReopenReady => Tone::Plain,
-        LaunchStatus::Inspecting | LaunchStatus::Launching => Tone::Muted,
+        LaunchStatus::Ready
+        | LaunchStatus::LiveJob
+        | LaunchStatus::ReopenReady
+        | LaunchStatus::ChooseRepo => Tone::Plain,
+        LaunchStatus::Inspecting | LaunchStatus::Launching | LaunchStatus::Writing => Tone::Muted,
     }
 }
 
@@ -309,6 +351,72 @@ fn tone(tone: Tone, glyphs: glyphs::Glyphs) -> (Option<&'static str>, LineStyle)
 mod tests {
     use super::*;
     use raudbjorn_tui::profile::GlyphProfile;
+
+    /// #38: each Linear write is one teal line (the Next Step's style),
+    /// labelled LINEAR, directly above the Job's command, however long it is.
+    #[test]
+    fn each_linear_write_is_one_teal_line_above_the_command() {
+        let long = format!(
+            "Linear: move TEAM-8 from Todo to {}",
+            "In Progress ".repeat(20)
+        );
+        let sheet = LaunchSheet {
+            label: "L A U N C H   J O B".to_owned(),
+            reference: "TEAM-8".to_owned(),
+            title: "Pick me".to_owned(),
+            next_step: "Start".to_owned(),
+            status: LaunchStatus::Ready,
+            headline: "Ready".to_owned(),
+            fields: Vec::new(),
+            reviewers: None,
+            prompt: Some(PromptField {
+                text: "/implement TEAM-8".to_owned(),
+                cursor: 0,
+                editing: false,
+            }),
+            linear_writes: vec!["Linear: assign TEAM-8 to Me Myself (you)".to_owned(), long],
+            command: Some("kitty --detach claude".to_owned()),
+            messages: Vec::new(),
+        };
+        let width = 60;
+        let lines = lines(
+            &sheet,
+            width,
+            40,
+            glyphs::for_profile(GlyphProfile::Unicode),
+        );
+        let writes: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, text, _))| text.starts_with("Linear: "))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(writes.len(), 2, "{lines:#?}");
+        for &i in &writes {
+            assert_eq!(lines[i].2, LineStyle::Step, "{:?}", lines[i]);
+            assert!(lines[i].1.width() <= width, "{:?}", lines[i]);
+        }
+        assert_eq!(lines[writes[0]].0, "LINEAR");
+        assert_eq!(writes[1], writes[0] + 1, "one line each");
+        assert!(
+            lines[writes[1]]
+                .1
+                .ends_with(glyphs::for_profile(GlyphProfile::Unicode).ellipsis),
+            "cut, not wrapped"
+        );
+        // The command follows (after a spacer when there is room).
+        let command = lines
+            .iter()
+            .position(|(label, _, _)| label == "COMMAND")
+            .expect("a command line");
+        assert!(command > writes[1], "{lines:#?}");
+        assert!(
+            lines[writes[1] + 1..command]
+                .iter()
+                .all(|(label, text, _)| label.is_empty() && text.is_empty()),
+            "nothing between the writes and the command: {lines:#?}"
+        );
+    }
 
     #[test]
     fn prompt_rows_use_cell_width_for_wrapping_and_cursor_scrolling() {
@@ -362,6 +470,7 @@ mod tests {
             fields: Vec::new(),
             prompt: None,
             reviewers: None,
+            linear_writes: Vec::new(),
             command: Some(command),
             messages: Vec::new(),
         };

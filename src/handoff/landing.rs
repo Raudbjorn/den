@@ -187,6 +187,8 @@ pub(super) fn facts(
         base_commit: Some(first.head_commit.clone()),
         branch: names::new_branch_name(NextStep::Land, &names::slug(&group.identifier)),
         new_branch: true,
+        named_fresh: false,
+        identifier: None,
         landing: Some(group),
     })
 }

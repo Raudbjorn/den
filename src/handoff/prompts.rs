@@ -38,6 +38,9 @@
 //! Issues' identifiers and URLs; nothing otherwise) and `{verdict_only}`
 //! (the instruction to return a verdict without editing, committing,
 //! approving, requesting changes or posting), and it must use both.
+//!
+//! `implement_linear` (#38) is a Linear Issue's Start or Implement template.
+//! It alone has `{identifier}`; defaults carry no issue title or description.
 
 use crate::config::{Location, location_of};
 use crate::domain::{LinearWorkflowPolicy, NextStep};
@@ -62,6 +65,10 @@ const LAND_PLACEHOLDERS: [&str; 2] = ["members", "held"];
 const REVIEW_LINEAR_PLACEHOLDERS: [&str; 2] = ["linear_context", "verdict_only"];
 /// The prompts-file key of the Review (Linear) template.
 pub const REVIEW_LINEAR_KEY: &str = "review_linear";
+/// The prompts-file key of a Linear Issue's Start or Implement Job.
+pub const IMPLEMENT_LINEAR_KEY: &str = "implement_linear";
+const IMPLEMENT_LINEAR_PLACEHOLDERS: [&str; 1] = ["identifier"];
+pub const DEFAULT_IMPLEMENT_LINEAR: &str = "/implement {identifier} {url} in {repo}";
 
 /// The file's key for a Next Step kind: "Address review" → `address_review`.
 pub fn step_key(step: NextStep) -> String {
@@ -76,6 +83,8 @@ pub enum PromptKind {
     /// A Review Job for a Pull Request of an Owner with a Linear Workflow:
     /// verdict only, with the Linear context.
     ReviewLinear,
+    /// A Start or Implement Job for a Linear Issue.
+    ImplementLinear,
 }
 
 impl From<NextStep> for PromptKind {
@@ -90,7 +99,7 @@ impl PromptKind {
         NextStep::ALL
             .into_iter()
             .map(Self::Step)
-            .chain(std::iter::once(Self::ReviewLinear))
+            .chain([Self::ReviewLinear, Self::ImplementLinear])
     }
 
     /// The template a Job for `step` uses, given its Owner's Linear Workflow
@@ -107,6 +116,7 @@ impl PromptKind {
         match self {
             Self::Step(step) => step_key(step),
             Self::ReviewLinear => REVIEW_LINEAR_KEY.to_owned(),
+            Self::ImplementLinear => IMPLEMENT_LINEAR_KEY.to_owned(),
         }
     }
 
@@ -116,6 +126,7 @@ impl PromptKind {
             Self::Step(NextStep::RequestReview) => &REQUEST_REVIEW_PLACEHOLDERS,
             Self::Step(NextStep::Land) => &LAND_PLACEHOLDERS,
             Self::ReviewLinear => &REVIEW_LINEAR_PLACEHOLDERS,
+            Self::ImplementLinear => &IMPLEMENT_LINEAR_PLACEHOLDERS,
             Self::Step(_) => &[],
         }
     }
@@ -143,7 +154,7 @@ impl PromptKind {
                     "or the Job is never told to return a verdict only",
                 ),
             ],
-            Self::Step(_) => &[],
+            Self::Step(_) | Self::ImplementLinear => &[],
         }
     }
 
@@ -266,6 +277,8 @@ pub struct PromptFields {
     /// Review (Linear) only: the Linear Issues the Pull Request is attached
     /// to, as (identifier, URL).
     pub linear_issues: Vec<(String, String)>,
+    /// A Linear Issue's identifier (`TEAM-123`); empty for GitHub Work Items.
+    pub identifier: String,
 }
 
 /// The default template of any kind.
@@ -273,6 +286,7 @@ pub fn default_template_of(kind: PromptKind) -> &'static str {
     match kind {
         PromptKind::Step(step) => default_template(step),
         PromptKind::ReviewLinear => REVIEW_LINEAR_TEMPLATE,
+        PromptKind::ImplementLinear => DEFAULT_IMPLEMENT_LINEAR,
     }
 }
 
@@ -476,6 +490,7 @@ fn fill(template: &str, fields: &PromptFields) -> String {
             '{' => {
                 let name: String = chars.by_ref().take_while(|&c| c != '}').collect();
                 match name.as_str() {
+                    "identifier" => out.push_str(&fields.identifier),
                     "repo" => out.push_str(&fields.repo),
                     "number" => {
                         out.push_str(&fields.number.map(|n| n.to_string()).unwrap_or_default())

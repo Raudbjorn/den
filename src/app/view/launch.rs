@@ -1,6 +1,10 @@
 //! The launch sheet's ViewModel: what launching will do, then what it did.
 
-use super::super::launch::{ReviewersField, Sheet, SheetState};
+use super::super::{
+    launch::{LinearLaunch, ReviewersField, Sheet, SheetState},
+    linear_writes::{self, WriteResult, Writes},
+    release::{ReleaseSheet, ReleaseState},
+};
 use crate::handoff::{Target, TargetChoice};
 use crate::{
     app::view_model::{LaunchSheet, LaunchStatus, PromptField, SheetField, SheetMessage, Tone},
@@ -14,11 +18,15 @@ use crate::{
 };
 
 const LABEL: &str = "L A U N C H   J O B";
+/// The Mark for release sheet's label (#38).
+const RELEASE_LABEL: &str = "M A R K   F O R   R E L E A S E";
+/// Said on every sheet that writes to Linear: Linear has no compare-and-set.
+const NO_COMPARE_AND_SET: &str = "den re-reads the issue just before writing, but Linear has no compare-and-set: someone may change it in between, and den shows what Linear returns";
 
 pub fn build(sheet: &Sheet) -> LaunchSheet {
     let mut view = LaunchSheet {
         label: LABEL.to_owned(),
-        reference: sheet.item.to_string(),
+        reference: sheet.reference.clone(),
         title: sheet.title.clone(),
         next_step: sheet
             .next_step
@@ -29,10 +37,25 @@ pub fn build(sheet: &Sheet) -> LaunchSheet {
         fields: Vec::new(),
         reviewers: None,
         prompt: None,
+        linear_writes: Vec::new(),
         command: None,
         messages: Vec::new(),
     };
     match &sheet.state {
+        SheetState::ChooseRepo => {
+            view.status = LaunchStatus::ChooseRepo;
+            view.headline = "Choose the target Repo: t picks the next one".to_owned();
+        }
+        SheetState::Writing { plan, .. } => {
+            view.status = LaunchStatus::Writing;
+            view.headline = "Writing to Linear before launching…".to_owned();
+            fill_plan(&mut view, sheet, plan, None);
+        }
+        SheetState::Stopped { plan } => {
+            fill_plan(&mut view, sheet, plan, None);
+            view.status = LaunchStatus::Failed;
+            view.headline = "Stopped: nothing launched".to_owned();
+        }
         SheetState::Inspecting => {
             view.status = LaunchStatus::Inspecting;
             view.headline = "Looking at the workspace…".to_owned();
@@ -143,9 +166,205 @@ pub fn build(sheet: &Sheet) -> LaunchSheet {
             finished(&mut view, &plan.window, report);
         }
     }
+    if let Some(linear) = &sheet.linear {
+        add_linear(&mut view, sheet, linear);
+    }
     if let Some(notice) = &sheet.notice {
         view.messages.push(message(notice, Tone::Caution));
     }
+    view
+}
+
+/// A Linear Issue's Start or Implement sheet (#38): the issue, the Repos for
+/// new work, the move toggle and Linear's branch name among the fields; the
+/// writes as their own lines; what they did first among the messages.
+fn add_linear(view: &mut LaunchSheet, sheet: &Sheet, linear: &LinearLaunch) {
+    let writes = &linear.writes;
+    let mut fields = vec![issue_field(writes)];
+    if linear.repos.len() > 1 || linear.repo.is_none() {
+        let offered = linear
+            .repos
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        fields.push(match linear.repo() {
+            Some(repo) => field(
+                "REPO",
+                repo.to_string(),
+                Some(format!("chosen from {offered}; t picks the next")),
+                Tone::Plain,
+            ),
+            None if linear.repos.is_empty() => field(
+                "REPO",
+                "none offered".to_owned(),
+                Some("the Linear Workflow lists no new_work_repos".to_owned()),
+                Tone::Caution,
+            ),
+            None => field(
+                "REPO",
+                "none chosen".to_owned(),
+                Some(format!("offered for new work: {offered}; t picks one")),
+                Tone::Caution,
+            ),
+        });
+    }
+    if !writes.finished {
+        fields.push(move_field(sheet, linear));
+    }
+    for existing in &mut view.fields {
+        if existing.label == "BRANCH" {
+            let note = match &linear.suggested_branch {
+                Some(name) if *name == existing.value => "Linear's suggested name".to_owned(),
+                Some(name) => format!(
+                    "Linear suggests {name}, which isn't a safe branch name, so den named it"
+                ),
+                None => "Linear suggests no name, so den named it".to_owned(),
+            };
+            existing.note = Some(match existing.note.take() {
+                Some(before) => format!("{before}; {note}"),
+                None => note,
+            });
+        }
+    }
+    fields.append(&mut view.fields);
+    view.fields = fields;
+    view.linear_writes = writes.planned();
+    // The writes were made, then the launch didn't happen: never "nothing
+    // was done".
+    if writes.finished && matches!(view.status, LaunchStatus::Refused | LaunchStatus::Failed) {
+        view.headline = format!(
+            "{}; den's Linear writes above were made and stay",
+            view.headline
+                .replace(": nothing was done", ": nothing launched")
+        );
+    }
+    let mut messages = result_messages(writes);
+    if writes.pending() && matches!(sheet.state, SheetState::Ready { .. }) {
+        messages.push(message(NO_COMPARE_AND_SET, Tone::Muted));
+    }
+    if matches!(sheet.state, SheetState::Stopped { .. }) {
+        messages.push(message(
+            "Nothing was undone: den never un-assigns an issue or moves it back.",
+            Tone::Muted,
+        ));
+    }
+    messages.append(&mut view.messages);
+    view.messages = messages;
+}
+
+/// The IN LINEAR field: who the issue is assigned to and its state, as the
+/// sheet shows it (the survey's, or a re-read's after den asked again).
+fn issue_field(writes: &Writes) -> SheetField {
+    field(
+        "IN LINEAR",
+        linear_writes::describe(writes.shown.assignee.as_ref(), &writes.shown.state),
+        None,
+        Tone::Plain,
+    )
+}
+
+/// The MOVE field: the toggle, or why there is no move.
+fn move_field(sheet: &Sheet, linear: &LinearLaunch) -> SheetField {
+    let writes = &linear.writes;
+    match &writes.move_to {
+        Some(to) if writes.move_on => field(
+            "MOVE",
+            format!("on: to {to}"),
+            Some("m leaves the state as it is".to_owned()),
+            Tone::Plain,
+        ),
+        Some(to) => field(
+            "MOVE",
+            "off".to_owned(),
+            Some(format!("m moves it to {to}")),
+            Tone::Muted,
+        ),
+        None => {
+            let why = if sheet.next_step == Some(crate::domain::NextStep::Implement)
+                && !linear_writes::not_started(&writes.shown.state)
+            {
+                "the issue has already started, so den leaves its state"
+            } else {
+                "the Linear Workflow names no in_progress_state"
+            };
+            field("MOVE", "none".to_owned(), Some(why.to_owned()), Tone::Muted)
+        }
+    }
+}
+
+/// What the Linear writes did, in order.
+fn result_messages(writes: &Writes) -> Vec<SheetMessage> {
+    writes
+        .results
+        .iter()
+        .map(|result| match result {
+            WriteResult::Done(text) => message(text, Tone::Good),
+            WriteResult::Failed(text) | WriteResult::Unknown(text) => message(text, Tone::Caution),
+            WriteResult::Read(text) => message(text, Tone::Plain),
+        })
+        .collect()
+}
+
+/// The Mark for release sheet (#38), drawn as a launch sheet without a prompt
+/// or a command.
+pub fn build_release(sheet: &ReleaseSheet) -> LaunchSheet {
+    let mut view = LaunchSheet {
+        label: RELEASE_LABEL.to_owned(),
+        reference: sheet.reference.clone(),
+        title: sheet.title.clone(),
+        next_step: crate::domain::NextStep::MarkForRelease.label().to_owned(),
+        status: LaunchStatus::Ready,
+        headline: String::new(),
+        fields: Vec::new(),
+        reviewers: None,
+        prompt: None,
+        linear_writes: Vec::new(),
+        command: None,
+        messages: Vec::new(),
+    };
+    (view.status, view.headline) = match &sheet.state {
+        ReleaseState::Ready => (
+            LaunchStatus::Ready,
+            "Ready: ⏎ moves it in Linear, esc cancels".to_owned(),
+        ),
+        ReleaseState::Writing => (LaunchStatus::Writing, "Writing to Linear…".to_owned()),
+        ReleaseState::Moved => (LaunchStatus::Launched, "Moved in Linear".to_owned()),
+        ReleaseState::Stopped => (LaunchStatus::Failed, "Stopped: see below".to_owned()),
+        ReleaseState::Refused(_) => (
+            LaunchStatus::Refused,
+            "Refused: nothing was done".to_owned(),
+        ),
+    };
+    if let Some(writes) = &sheet.writes {
+        view.fields.push(issue_field(writes));
+        if let Some(to) = &writes.move_to {
+            view.fields.push(field(
+                "RELEASE",
+                to.clone(),
+                Some("the Linear Workflow's release_state".to_owned()),
+                Tone::Plain,
+            ));
+        }
+        view.linear_writes = writes.planned();
+    }
+    view.fields
+        .push(field("URL", sheet.url.clone(), None, Tone::Plain));
+    if let ReleaseState::Refused(why) = &sheet.state {
+        view.messages.push(message(why, Tone::Caution));
+    }
+    if let Some(writes) = &sheet.writes {
+        view.messages.extend(result_messages(writes));
+        if sheet.state == ReleaseState::Ready {
+            view.messages.push(message(NO_COMPARE_AND_SET, Tone::Muted));
+        }
+    }
+    if let Some(notice) = &sheet.notice {
+        view.messages.push(message(notice, Tone::Caution));
+    }
+    // Outcomes and warnings must remain visible when release evidence is long.
+    view.messages
+        .extend(sheet.evidence.iter().map(|e| message(e, Tone::Plain)));
     view
 }
 

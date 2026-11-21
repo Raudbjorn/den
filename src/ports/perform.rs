@@ -1,7 +1,7 @@
 //! Carrying out one Effect through the ports. Shared by `main`'s background
 //! worker and the seam-2 test harness, so tests exercise the same wiring.
 
-use super::Ports;
+use super::{LinearWriteKind, Ports};
 use crate::{
     app::{Effect, Event},
     handoff,
@@ -75,6 +75,20 @@ pub fn perform(effect: &Effect, ports: &Ports) -> Vec<Event> {
                 ports.workspace.as_ref(),
                 ports.launcher.as_ref(),
             )),
+        }],
+        Effect::ReadLinearIssue { id, request } => vec![Event::LinearIssueRead {
+            id: *id,
+            read: Box::new(ports.linear.read_issue(request)),
+        }],
+        Effect::AssignLinearIssue { id, request } => vec![Event::LinearWriteFinished {
+            id: *id,
+            write: LinearWriteKind::AssignToViewer,
+            outcome: Box::new(ports.linear_writer.assign_to_viewer(request)),
+        }],
+        Effect::MoveLinearIssue { id, request, state } => vec![Event::LinearWriteFinished {
+            id: *id,
+            write: LinearWriteKind::MoveState,
+            outcome: Box::new(ports.linear_writer.move_state(request, state)),
         }],
         Effect::StoreUpstreams { upstreams } => vec![Event::UpstreamsStored {
             outcome: ports.upstreams.store(upstreams),

@@ -7,8 +7,14 @@
 mod support;
 
 use den::{
-    app::{App, Effect, Event, SurveyId},
-    ports::{LinearSource, LinearSurvey, LinearSurveyRequest, Ports, SurveyRequest},
+    app::{App, Effect, Event, LaunchId, SurveyId},
+    domain::{
+        LinearIssueId,
+        facts::{LinearState, LinearStateKind},
+    },
+    ports::{
+        LinearIssueRequest, LinearSource, LinearSurvey, LinearSurveyRequest, Ports, SurveyRequest,
+    },
     runtime::{Flow, Worker},
 };
 use std::{
@@ -40,6 +46,12 @@ impl LinearSource for HeldLinear {
         let _ = self.release.lock().expect("lock").recv();
         LinearSurvey::default()
     }
+
+    fn read_issue(&self, _request: &den::ports::LinearIssueRequest) -> den::ports::LinearIssueRead {
+        den::ports::LinearIssueRead::Failed {
+            error: "not used here".to_owned(),
+        }
+    }
 }
 
 fn worker() -> (Worker, Sender<()>) {
@@ -53,6 +65,7 @@ fn worker() -> (Worker, Sender<()>) {
         linear: Arc::new(HeldLinear {
             release: Mutex::new(held),
         }),
+        linear_writer: Arc::new(support::fakes::FakeLinearWriter::default()),
         cache: Arc::new(FakeCache::default()),
         workspace: Arc::new(FakeWorkspace::default()),
         launcher: Arc::new(FakeLauncher::default()),
@@ -122,6 +135,45 @@ fn github_and_local_writes_answer_while_a_linear_survey_hangs() {
             .any(|e| matches!(e, Event::UpstreamsStored { outcome: Ok(()) })),
         "{finished:?}"
     );
+    let id = LaunchId(7);
+    let request = Box::new(LinearIssueRequest {
+        workflow: linear_workflow("acme", "acme"),
+        issue: LinearIssueId::new("acme", "issue-7"),
+        identifier: "TEAM-7".to_owned(),
+    });
+    // Confirmation work must answer even while the separate Linear survey is held.
+    for effect in [
+        Effect::ReadLinearIssue {
+            id,
+            request: request.clone(),
+        },
+        Effect::AssignLinearIssue {
+            id,
+            request: request.clone(),
+        },
+        Effect::MoveLinearIssue {
+            id,
+            request,
+            state: Box::new(LinearState {
+                id: "started".to_owned(),
+                name: "In Progress".to_owned(),
+                kind: LinearStateKind::Started,
+            }),
+        },
+    ] {
+        assert_eq!(
+            worker.dispatch(&mut app, &mut view, vec![effect]),
+            Flow::Continue
+        );
+        let finished = next_event(&worker).expect("confirmation work answers while Linear is held");
+        assert!(
+            matches!(finished,
+                Event::LinearIssueRead { id: answered, .. }
+                | Event::LinearWriteFinished { id: answered, .. } if answered == id
+            ),
+            "{finished:?}"
+        );
+    }
     release.send(()).expect("Linear still waiting");
     let second = next_event(&worker).expect("Linear answers once let go");
     assert!(
