@@ -125,6 +125,41 @@ fn a_job_worktree_reads_as_its_main_clone() {
     assert_eq!(names(&remotes), [("origin", "https://github.com/acme/app")]);
 }
 
+/// With `extensions.worktreeConfig`, a Job worktree can carry remotes of its
+/// own. They are not the Main Clone's: den reads the Main Clone's remotes, so
+/// a worktree-only remote or `origin` never changes which Repo opens.
+#[test]
+fn a_job_worktree_with_its_own_config_still_reads_the_main_clones_remotes() {
+    let temp = tempfile::tempdir().unwrap();
+    let clone = clone_with(temp.path(), &[("upstream", "https://github.com/acme/main")]);
+    git(&clone, &["config", "extensions.worktreeConfig", "true"]);
+    let worktree = clone.join(".claude/worktrees/feat_y");
+    git(
+        &clone,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat_y",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    for (key, url) in [
+        ("remote.fork.url", "https://github.com/other/fork.git"),
+        ("remote.origin.url", "https://github.com/other/origin.git"),
+    ] {
+        git(&worktree, &["config", "--worktree", key, url]);
+    }
+
+    let (main_clone, remotes) = work_tree(&worktree);
+    assert!(same_dir(&main_clone, &clone), "{}", main_clone.display());
+    assert_eq!(
+        names(&remotes),
+        [("upstream", "https://github.com/acme/main")]
+    );
+}
+
 #[test]
 fn a_clone_without_remotes_has_none() {
     let temp = tempfile::tempdir().unwrap();

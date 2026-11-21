@@ -12,8 +12,12 @@ mod support;
 use den::{
     app::{Event, Key},
     domain::{Observation, RepoId},
-    start::Start,
+    handoff::Remote,
+    start::{GitDir, Start, StartArg, resolve},
+    ui::{Theme, frame},
 };
+use raudbjorn_tui::profile::{ColorProfile, GlyphProfile, TerminalProfile};
+use std::path::PathBuf;
 use support::{
     build::{ME, ObservationBuilder, now, pr},
     harness::Harness,
@@ -125,4 +129,45 @@ fn the_start_notice_goes_once_the_scope_changes() {
         "{}",
         harness.view.header.status
     );
+}
+
+/// The header's status is one row: the start notice leads it, so what den
+/// found (the candidates, and how to open one) is on screen from the minimum
+/// size up, after the clone path a long home directory might add.
+#[test]
+fn the_candidates_are_on_screen_at_every_supported_width() {
+    let start = resolve(&StartArg::Auto, || {
+        Ok(GitDir::WorkTree {
+            main_clone: PathBuf::from("/home/somebody-with-a-long-name/dev/work/clients/app"),
+            remotes: vec![
+                Remote {
+                    name: "fork".to_owned(),
+                    url: "git@github.com:me/app.git".to_owned(),
+                },
+                Remote {
+                    name: "upstream".to_owned(),
+                    url: "https://github.com/acme/app.git".to_owned(),
+                },
+            ],
+        })
+    });
+    let theme = Theme::new(TerminalProfile::new(
+        ColorProfile::TrueColor,
+        GlyphProfile::Unicode,
+    ))
+    .expect("theme");
+    for (cols, rows) in [(80, 24), (120, 40), (160, 45)] {
+        let mut harness = Harness::with_owners(&["octo", "beta"]).with_start(start.clone());
+        harness.send(Event::Resized { cols, rows });
+        harness.answer(Ok(two_owners()));
+        harness.start();
+        let text =
+            frame::buffer_text(&frame::render(&theme, &harness.view, cols, rows).expect("renders"));
+        for shown in ["me/app", "acme/app"] {
+            assert!(
+                text.contains(shown),
+                "{cols}x{rows}: {shown:?} not on screen:\n{text}"
+            );
+        }
+    }
 }

@@ -221,8 +221,10 @@ impl Workspace for GitWorkspace {
             // still the clone's, and the directory is the best name for it.
             _ => common,
         };
-        // Worktrees share the clone's config, so `dir`'s remotes are its own.
-        let remotes = self.remotes(dir)?;
+        // The Main Clone's remotes, read there: with `extensions.worktreeConfig`
+        // a worktree can add remotes (even an `origin`) of its own, and those
+        // must not decide which Repo a Job worktree opens.
+        let remotes = self.remotes(&main_clone)?;
         Ok(GitDir::WorkTree {
             main_clone,
             remotes,

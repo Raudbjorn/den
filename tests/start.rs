@@ -127,7 +127,9 @@ fn several_github_remotes_without_a_github_origin_name_the_candidates() {
     for remotes in cases {
         let start = resolve(&StartArg::Auto, || clone_with(remotes));
         let said = notice(&start).expect("a notice");
-        for expected in ["me/app", "acme/app", "den OWNER/REPO", "/home/me/dev/app"] {
+        // No clone path here (PR #92 review): the header's status is one row,
+        // so the notice spends it on the candidates and how to open one.
+        for expected in ["me/app", "acme/app", "den OWNER/REPO"] {
             assert!(said.contains(expected), "{expected:?} in {said:?}");
         }
     }

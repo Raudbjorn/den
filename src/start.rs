@@ -97,29 +97,31 @@ fn from_remotes(main_clone: &std::path::Path, remotes: &[Remote]) -> Start {
     {
         return Start::Repo(origin);
     }
-    let mut candidates: Vec<(RepoId, &str)> = Vec::new();
+    let mut candidates: Vec<RepoId> = Vec::new();
     for remote in remotes {
         if let Some(repo) = github_repo(&remote.url)
-            && !candidates.iter().any(|(known, _)| known.same(&repo))
+            && !candidates.iter().any(|known| known.same(&repo))
         {
-            candidates.push((repo, &remote.name));
+            candidates.push(repo);
         }
     }
+    // The header's status is one row, so a notice says what matters first:
+    // the candidates, then how to open one; a path, if any, last.
     match candidates.as_slice() {
         [] => Start::Unchosen {
             notice: Some(format!(
-                "{} has no GitHub remote, so den didn't open a Repo",
+                "no GitHub remote, so den didn't open a Repo: {}",
                 main_clone.display()
             )),
         },
-        [(only, _)] => Start::Repo(only.clone()),
+        [only] => Start::Repo(only.clone()),
         several => Start::Unchosen {
             notice: Some(format!(
-                "{} has several GitHub remotes and no GitHub origin, so den didn't choose: {}; open one with `den OWNER/REPO`",
-                main_clone.display(),
+                "{} GitHub remotes and no GitHub origin: {}; open one with `den OWNER/REPO`",
+                several.len(),
                 several
                     .iter()
-                    .map(|(repo, remote)| format!("{repo} ({remote})"))
+                    .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(", ")
             )),
