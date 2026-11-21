@@ -51,6 +51,13 @@ impl Glyphs {
         }
         Cow::Owned(out)
     }
+
+    /// ViewModel text drawn in this profile (see [`Self::text`]) in at most
+    /// `width` cells: whole when it fits, otherwise cut between graphemes and
+    /// ended with the profile's form of [`ELLIPSIS`] (see [`super::text::fit`]).
+    pub fn fit(&self, text: &str, width: usize) -> String {
+        super::text::fit(&self.text(text), width, self.ellipsis)
+    }
 }
 
 pub fn for_profile(profile: GlyphProfile) -> Glyphs {

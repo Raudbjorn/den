@@ -1,12 +1,20 @@
 #![cfg(unix)]
 // Test helpers fail loudly, as in the existing adapter tests.
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+mod support;
+
+use den::{
+    cache::{CachedObservation, FileCache},
+    ports::ObservationCache,
+};
 
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
     process::{Command, Output},
 };
+use support::build::{ME, ObservationBuilder, pr};
 use tempfile::TempDir;
 
 struct Fixture {
@@ -290,7 +298,43 @@ fn diagnostic_output_failure_is_reported_without_a_panic() {
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(1));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("writing output"));
+        // Launch and diagnostic output now share the stdout-specific error wording.
+        assert!(String::from_utf8_lossy(&output.stderr).contains("writing to stdout"));
     }
     assert!(!fixture.root.path().join("state").exists());
+}
+
+#[test]
+fn dump_and_launch_report_a_closed_stdout_pipe_without_panicking() {
+    let fixture = Fixture::new();
+    fixture.config("owners = ['octo']\n");
+    let cached = CachedObservation::fresh(
+        ObservationBuilder::new()
+            .owner("octo")
+            .repo("octo/app")
+            .pull_request(pr("octo/app", 7).author(ME).changes_requested())
+            .build(),
+    );
+    FileCache::in_state_dir(&fixture.root.path().join("state/den"))
+        .store(&cached)
+        .unwrap();
+
+    for args in [["--dump", "80x24"], ["--launch", "octo/app#7"]] {
+        // Close the reader before spawning, so the first stdout write reliably fails.
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let output = fixture
+            .command()
+            .args(args)
+            .env("DEN_GRAPHICS", "off")
+            .stdout(writer)
+            .output()
+            .unwrap();
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {error}");
+        assert!(error.contains("writing to stdout"), "{args:?}: {error}");
+        assert!(error.contains("Broken pipe"), "{args:?}: {error}");
+        assert!(!error.contains("panicked"), "{args:?}: {error}");
+    }
+    assert!(!fixture.root.path().join("state/den/jobs.json").exists());
 }

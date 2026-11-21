@@ -91,7 +91,8 @@ enum DenError {
     Doctor,
     #[error("launch: {0}")]
     Launch(String),
-    #[error("writing output: {0}")]
+    /// Writing to stdout failed, e.g. it was closed (`den --dump .. | head`).
+    #[error("writing to stdout: {0}")]
     Output(io::Error),
     #[error("stopped by signal {0}")]
     Signalled(i32),
@@ -100,6 +101,12 @@ enum DenError {
     RestoreAfter {
         outcome: Box<DenError>,
         restore: io::Error,
+    },
+    /// A `--launch` step failed and printing its sheet failed as well.
+    #[error("{outcome}; printing the sheet also failed: {printing}")]
+    PrintingAfter {
+        outcome: Box<DenError>,
+        printing: Box<DenError>,
     },
 }
 
@@ -465,9 +472,7 @@ fn run(args: &[String]) -> Result<(), DenError> {
             };
             let (view, _) = runtime::settle(&mut app, started, &ports);
             let buffer = frame::render(&theme, &view, cols, rows)?;
-            // Not `println!`, which panics when stdout is closed (`den --dump .. | head`).
-            writeln!(io::stdout().lock(), "{}", frame::buffer_text(&buffer))
-                .map_err(DenError::Output)
+            write_stdout(|out| writeln!(out, "{}", frame::buffer_text(&buffer)))
         }
         Mode::Launch {
             item,
@@ -543,20 +548,63 @@ fn run_launch(
     if let Some(prompt) = prompt {
         view = type_prompt(&mut app, &view, prompt);
     }
-    print_sheet(theme, &view)?;
+    let trailer = if confirm { "" } else { DRY_RUN_NOTE };
+    let printed = print_sheet(theme, &view, "", trailer);
+    let ready = sheet_status(&view, LaunchStatus::Ready);
     if !confirm {
-        println!("\n(dry run: add --yes to launch)");
-        return sheet_status(&view, LaunchStatus::Ready);
+        return weigh_printing(ready, printed, Printing::Required).map(|_| ());
     }
-    if sheet_status(&view, LaunchStatus::Ready).is_err() {
-        return Err(DenError::Launch(
-            "the sheet is not ready to launch".to_owned(),
-        ));
-    }
+    let ready = ready.map_err(|_| DenError::Launch("the sheet is not ready to launch".to_owned()));
+    // Nothing is launched unless the sheet both was ready and reached stdout.
+    weigh_printing(ready, printed, Printing::Required)?;
     view = runtime::settle(&mut app, Event::Key(Key::Enter), ports).0;
-    println!();
-    print_sheet(theme, &view)?;
-    sheet_status(&view, LaunchStatus::Launched)
+    let printed = print_sheet(theme, &view, "\n", "");
+    let launched = sheet_status(&view, LaunchStatus::Launched);
+    if let Some(warning) = weigh_printing(launched, printed, Printing::AfterLaunch)? {
+        tracing::warn!(error = %warning, "the Job was launched; printing its sheet failed");
+        eprintln!(
+            "den: warning: the Job was launched, but printing its sheet failed: {}",
+            escape_controls(&warning.to_string())
+        );
+    }
+    Ok(())
+}
+
+/// Printed after a dry run's sheet.
+const DRY_RUN_NOTE: &str = "\n(dry run: add --yes to launch)\n";
+
+/// What a failure to print a `--launch` sheet means for the run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Printing {
+    /// Nothing was launched yet: the sheet is what the run is for, so a
+    /// failure to print it fails the run (and nothing is launched).
+    Required,
+    /// The Job was launched: the launch stands and the failure is a warning,
+    /// since a failing exit status would invite a retry that launches twice.
+    AfterLaunch,
+}
+
+/// A `--launch` step's outcome weighed with whether its sheet was printed.
+/// The outcome comes first, so a closed stdout never hides why a sheet was
+/// refused or a launch failed; when both failed, the error says both.
+/// `Ok(Some(_))` is a printing failure to report as a warning.
+fn weigh_printing(
+    outcome: Result<(), DenError>,
+    printed: Result<(), DenError>,
+    printing: Printing,
+) -> Result<Option<DenError>, DenError> {
+    match (outcome, printed) {
+        (Ok(()), Ok(())) => Ok(None),
+        (Err(outcome), Ok(())) => Err(outcome),
+        (Err(outcome), Err(printing)) => Err(DenError::PrintingAfter {
+            outcome: Box::new(outcome),
+            printing: Box::new(printing),
+        }),
+        (Ok(()), Err(failure)) => match printing {
+            Printing::Required => Err(failure),
+            Printing::AfterLaunch => Ok(Some(failure)),
+        },
+    }
 }
 
 /// Replaces the sheet's prompt by typing into its field: `e`, delete what is
@@ -592,23 +640,40 @@ fn sheet_status(view: &ViewModel, wanted: LaunchStatus) -> Result<(), DenError> 
     }
 }
 
-/// The frame as text, then the sheet's command and messages unwrapped.
-fn print_sheet(theme: &Theme, view: &ViewModel) -> Result<(), DenError> {
+/// `before`, the frame as text, the sheet's command and messages unwrapped,
+/// then `after`, in one write to stdout.
+fn print_sheet(theme: &Theme, view: &ViewModel, before: &str, after: &str) -> Result<(), DenError> {
     let (cols, rows) = LAUNCH_DUMP_SIZE;
     let buffer = frame::render(theme, view, cols, rows)?;
-    println!("{}", frame::buffer_text(&buffer));
-    if let Some(Overlay::LaunchSheet(sheet)) = &view.overlay {
-        if let Some(prompt) = &sheet.prompt {
-            println!("\nprompt:  {}", prompt.text);
+    write_stdout(|out| {
+        write!(out, "{before}")?;
+        writeln!(out, "{}", frame::buffer_text(&buffer))?;
+        if let Some(Overlay::LaunchSheet(sheet)) = &view.overlay {
+            if let Some(prompt) = &sheet.prompt {
+                writeln!(out, "\nprompt:  {}", prompt.text)?;
+            }
+            if let Some(command) = &sheet.command {
+                writeln!(out, "command: {command}")?;
+            }
+            for message in &sheet.messages {
+                writeln!(out, "- {}", message.text)?;
+            }
         }
-        if let Some(command) = &sheet.command {
-            println!("command: {command}");
-        }
-        for message in &sheet.messages {
-            println!("- {}", message.text);
-        }
-    }
-    Ok(())
+        write!(out, "{after}")
+    })
+}
+
+/// Writes to stdout under one lock, then flushes, as a value: never
+/// `print!`/`println!`, which panic when stdout is closed
+/// (`den --dump .. | head -1`). The error reaches `main`, which reports it
+/// through `escape_controls` like any other.
+fn write_stdout(
+    write: impl FnOnce(&mut io::StdoutLock<'static>) -> io::Result<()>,
+) -> Result<(), DenError> {
+    let mut out = io::stdout().lock();
+    write(&mut out)
+        .and_then(|()| out.flush())
+        .map_err(DenError::Output)
 }
 
 /// The bear's graphics mode from `DEN_GRAPHICS`, when set (unset or empty: detect).
@@ -652,7 +717,9 @@ fn exit_code(error: &DenError) -> ExitCode {
         DenError::Usage(_) => ExitCode::from(EXIT_USAGE),
         DenError::Signalled(signal) => u8::try_from(SIGNAL_EXIT_STATUS_BASE + signal)
             .map_or(ExitCode::from(EXIT_FAILURE), ExitCode::from),
-        DenError::RestoreAfter { outcome, .. } => exit_code(outcome),
+        DenError::RestoreAfter { outcome, .. } | DenError::PrintingAfter { outcome, .. } => {
+            exit_code(outcome)
+        }
         _ => ExitCode::from(EXIT_FAILURE),
     }
 }
@@ -660,6 +727,57 @@ fn exit_code(error: &DenError) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn broken_pipe() -> DenError {
+        DenError::Output(io::Error::from(io::ErrorKind::BrokenPipe))
+    }
+
+    fn refused() -> DenError {
+        DenError::Launch("the launch sheet says: Refused".to_owned())
+    }
+
+    /// After a launch, a closed stdout is a warning: the run succeeds, so a
+    /// wrapper that retries on failure does not launch the Job twice.
+    #[test]
+    fn a_closed_stdout_after_a_launch_is_a_warning_not_a_failure() {
+        let weighed = weigh_printing(Ok(()), Err(broken_pipe()), Printing::AfterLaunch);
+        assert!(
+            matches!(weighed, Ok(Some(DenError::Output(_)))),
+            "{weighed:?}"
+        );
+        let weighed = weigh_printing(Ok(()), Ok(()), Printing::AfterLaunch);
+        assert!(matches!(weighed, Ok(None)), "{weighed:?}");
+    }
+
+    /// Before a launch, the printed sheet is the point: a closed stdout fails
+    /// the run (and nothing is launched).
+    #[test]
+    fn a_closed_stdout_before_a_launch_fails_the_run() {
+        let weighed = weigh_printing(Ok(()), Err(broken_pipe()), Printing::Required);
+        assert!(matches!(weighed, Err(DenError::Output(_))), "{weighed:?}");
+    }
+
+    /// A refused or failed launch is never hidden by a closed stdout: its
+    /// reason comes first, the printing failure second, and the exit status is
+    /// the launch's.
+    #[test]
+    fn a_closed_stdout_never_hides_why_a_launch_failed() {
+        for printing in [Printing::Required, Printing::AfterLaunch] {
+            let weighed = weigh_printing(Err(refused()), Err(broken_pipe()), printing);
+            let Err(error) = weighed else {
+                panic!("{printing:?}: a failed launch succeeded");
+            };
+            let message = error.to_string();
+            assert!(
+                message.starts_with("launch: the launch sheet says: Refused")
+                    && message.contains("printing the sheet also failed: writing to stdout"),
+                "{printing:?}: {message}"
+            );
+            assert_eq!(exit_code(&error), exit_code(&refused()));
+            let weighed = weigh_printing(Err(refused()), Ok(()), printing);
+            assert!(matches!(weighed, Err(DenError::Launch(_))), "{weighed:?}");
+        }
+    }
 
     #[test]
     fn cli_prompts_are_validated_before_the_editor_can_truncate_them() {

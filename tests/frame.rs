@@ -10,7 +10,7 @@ mod support;
 use den::{
     app::{
         App, Event, Key, ViewModel,
-        view_model::{ELLIPSIS, ENTER_KEY, EmptyState, SEPARATOR},
+        view_model::{ELLIPSIS, ENTER_KEY, EmptyState, SEPARATOR, SidebarEntry},
     },
     palette::OXIDE_TRUECOLOR,
     ui::{Theme, frame},
@@ -21,6 +21,7 @@ use support::{
     build::{ME, ObservationBuilder, pr},
     harness::{Harness, config},
 };
+use unicode_width::UnicodeWidthStr;
 
 const DESIGN_SIZE: (u16, u16) = (160, 45);
 const MINIMUM_SIZE: (u16, u16) = (80, 24);
@@ -776,6 +777,277 @@ fn every_detail_page_is_reachable_in_the_pane_and_narrow_sheet() {
     }
 }
 
+/// A label of `cells` cells broken by hyphens, the way Repo names and workflow
+/// paths are: left to the template, such text wraps at a hyphen and loses its
+/// end without a sign.
+fn hyphenated(cells: usize) -> String {
+    "ab-".repeat(cells).chars().take(cells).collect()
+}
+
+/// The profile's ellipsis: the ViewModel's, in that profile's form.
+fn ellipsis(glyphs: GlyphProfile) -> &'static str {
+    match glyphs {
+        GlyphProfile::Unicode => "…",
+        GlyphProfile::Ascii => "...",
+    }
+}
+
+/// A 4-digit count, as an Owner with many Work Items has ("1101┊" touched the
+/// rail at 80 columns).
+const WIDE_COUNT: usize = 1101;
+
+/// The sidebar rows the sweep puts the cursor on, in `many_repos`: All Owners,
+/// the Owner `octo` (both headings), and the Repo `octo/a-fork`. The template
+/// draws the cursor's row in a branch of its own, so each kind is swept there.
+const SIDEBAR_CURSORS: [usize; 3] = [0, 1, 2];
+
+/// At either size and in either glyph profile, a count as wide as its column
+/// keeps a blank cell before the sidebar's rail, and a label too long for what
+/// is left is cut with the profile's ellipsis instead of pushing into the
+/// count or losing its end unmarked. Swept over every label length up to the
+/// plate's width, so whichever length exactly fills the label column is hit,
+/// with the cursor on a heading and on a Repo.
+#[test]
+fn a_wide_sidebar_count_keeps_off_the_rail_and_long_labels_end_in_an_ellipsis() {
+    let mut problems = Vec::new();
+    for size in [MINIMUM_SIZE, DESIGN_SIZE] {
+        let harness = many_repos(size);
+        let (cols, rows) = size;
+        for (glyphs, cursor) in [GlyphProfile::Unicode, GlyphProfile::Ascii]
+            .into_iter()
+            .flat_map(|glyphs| SIDEBAR_CURSORS.map(|cursor| (glyphs, cursor)))
+        {
+            let theme =
+                Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
+            let mark = ellipsis(glyphs);
+            let width = frame::regions(Rect::new(0, 0, cols, rows), &harness.view.layout)
+                .sidebar
+                .width;
+            for cells in 1..=usize::from(width) {
+                let mut view = harness.view.clone();
+                view.sidebar.focused = true;
+                view.sidebar.cursor = Some(cursor);
+                let label = hyphenated(cells);
+                for (i, row) in view.sidebar.rows.iter_mut().enumerate() {
+                    row.label.clone_from(&label);
+                    row.count = WIDE_COUNT;
+                    // Every other Repo targets its Upstream: the widest row.
+                    // Only a Repo has an Upstream in a real ViewModel.
+                    if i % 2 == 1 && row.entry == SidebarEntry::Repo && row.upstream.is_none() {
+                        row.upstream = Some("up/stream".to_owned());
+                    }
+                }
+                let buffer = frame::render(&theme, &view, cols, rows).expect("renders");
+                let sidebar = frame::regions(buffer.area, &view.layout).sidebar;
+                let context = format!(
+                    "{glyphs:?} {cols}x{rows}, cursor on row {cursor}, label of {cells} cells"
+                );
+                let first_row = sidebar.y + 3;
+                for y in first_row..sidebar.bottom() {
+                    let line: String = (sidebar.left()..sidebar.right())
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect();
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    if !line.ends_with(&format!(" {WIDE_COUNT} ")) {
+                        problems.push(format!(
+                            "{context}: not a blank, the count, a blank before the rail: {line:?}"
+                        ));
+                    }
+                    if !(line.contains(&label) || line.contains(mark)) {
+                        problems.push(format!(
+                            "{context}: the label neither whole nor cut with {mark:?}: {line:?}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert_no_problems(&problems);
+}
+
+/// Fails listing every problem found (a sweep reports all of its misses, in
+/// every profile and size, not only the first).
+fn assert_no_problems(problems: &[String]) {
+    assert!(
+        problems.is_empty(),
+        "{} problems:\n{}",
+        problems.len(),
+        problems.join("\n")
+    );
+}
+
+/// A count wider than its column is drawn as a true bound, not cut to digits.
+#[test]
+fn a_five_digit_sidebar_count_is_drawn_as_a_bound_within_its_column() {
+    let mut harness = many_repos(MINIMUM_SIZE);
+    harness.view.sidebar.rows[0].count = 12_345;
+    let (cols, rows) = MINIMUM_SIZE;
+    let theme = Theme::new(TerminalProfile::new(
+        ColorProfile::Mono,
+        GlyphProfile::Ascii,
+    ))
+    .expect("theme");
+    let buffer = frame::render(&theme, &harness.view, cols, rows).expect("renders");
+    let sidebar = region_lines(
+        &buffer,
+        frame::regions(buffer.area, &harness.view.layout).sidebar,
+    );
+    let all = sidebar_row(&sidebar, "All");
+    assert_eq!(all.last().map(String::as_str), Some("10k+"), "{sidebar:#?}");
+}
+
+/// The age a Run row had when its workflow path ran into it ("release.yml146d").
+const OLD_AGE: &str = "146d";
+
+/// At either size and in either glyph profile, a Work Item row's Repo and
+/// reference keep a blank cell before the age, and its title one before Waiting
+/// On; either too long for its column is cut with the profile's ellipsis
+/// rather than running into the next column or losing its end unmarked. Swept
+/// over every length up to the plate's width, selected row and not.
+#[test]
+fn a_long_workflow_path_and_title_are_cut_with_an_ellipsis_clear_of_the_next_column() {
+    let mut problems = Vec::new();
+    for size in [MINIMUM_SIZE, DESIGN_SIZE] {
+        let harness = surveyed_harness(size);
+        let (cols, rows) = size;
+        for glyphs in [GlyphProfile::Unicode, GlyphProfile::Ascii] {
+            let theme =
+                Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
+            let mark = ellipsis(glyphs);
+            let width = frame::regions(Rect::new(0, 0, cols, rows), &harness.view.layout)
+                .list
+                .width;
+            for cells in 1..=usize::from(width) {
+                let mut view = harness.view.clone();
+                let path = format!(".github/workflows/{}", hyphenated(cells));
+                let title = hyphenated(cells);
+                for row in &mut view.list.rows {
+                    row.reference.clone_from(&path);
+                    row.title.clone_from(&title);
+                    row.age = OLD_AGE.to_owned();
+                }
+                let buffer = frame::render(&theme, &view, cols, rows).expect("renders");
+                let list = frame::regions(buffer.area, &view.layout).list;
+                let lines = region_lines(&buffer, list);
+                let text = lines.join("\n");
+                let context = format!("{glyphs:?} {cols}x{rows}, {cells} cells");
+                for row in &view.list.rows {
+                    let place = format!("{} {path}", row.repo);
+                    let first = lines
+                        .iter()
+                        .position(|l| l.contains(&row.repo))
+                        .unwrap_or_else(|| panic!("{context}: no row for {}\n{text}", row.repo));
+                    let (top, bottom) = (&lines[first], &lines[first + 1]);
+                    if !top.ends_with(&format!(" {OLD_AGE}")) {
+                        problems.push(format!("{context}: no blank before the age: {top:?}"));
+                    }
+                    if !(top.contains(&place) || top.contains(mark)) {
+                        problems.push(format!(
+                            "{context}: Repo and path neither whole nor cut with {mark:?}: {top:?}"
+                        ));
+                    }
+                    if !bottom.ends_with(&format!(" {}", row.waiting_label)) {
+                        problems.push(format!("{context}: no blank before Waiting On: {bottom:?}"));
+                    }
+                    if !(bottom.contains(&title) || bottom.contains(mark)) {
+                        problems.push(format!(
+                            "{context}: the title neither whole nor cut with {mark:?}: {bottom:?}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert_no_problems(&problems);
+}
+
+/// An emoji presentation sequence: U+2B06 U+FE0F, one cell by its scalars'
+/// widths but two as drawn, the way Dependabot and gitmoji PR titles start.
+const WIDE_EMOJI: &str = "\u{2b06}\u{fe0f}";
+
+/// `WIDE_EMOJI` as drawn in each glyph profile: the ASCII engine draws a
+/// non-ASCII grapheme as `?` and keeps its two cells, the second blank.
+fn drawn_emoji(glyphs: GlyphProfile) -> &'static str {
+    match glyphs {
+        GlyphProfile::Unicode => WIDE_EMOJI,
+        GlyphProfile::Ascii => "? ",
+    }
+}
+
+/// The text inside `area`, one line per row and trimmed, as a reader sees it:
+/// the cell a wide symbol hides is skipped rather than read as a blank.
+fn drawn_lines(buffer: &Buffer, area: Rect) -> Vec<String> {
+    (area.top()..area.bottom())
+        .map(|y| {
+            let mut line = String::new();
+            let mut x = area.left();
+            while x < area.right() {
+                let symbol = buffer.cell((x, y)).map_or(" ", |cell| cell.symbol());
+                line.push_str(symbol);
+                let cells = u16::try_from(symbol.width()).unwrap_or(1).max(1);
+                x = x.saturating_add(cells);
+            }
+            line.trim().to_owned()
+        })
+        .collect()
+}
+
+/// A title of wide emoji is measured as drawn: whole when it fits, otherwise
+/// cut with the profile's ellipsis inside its column, never wider than it and
+/// never cut without a sign. Swept over every count of emoji up to the plate's
+/// width, after an even and an odd number of narrow cells, so both the exact
+/// fit and an emoji straddling the edge are hit.
+#[test]
+fn a_title_of_wide_emoji_is_cut_by_drawn_width_with_an_ellipsis() {
+    let mut problems = Vec::new();
+    for size in [MINIMUM_SIZE, DESIGN_SIZE] {
+        let harness = surveyed_harness(size);
+        let (cols, rows) = size;
+        for glyphs in [GlyphProfile::Unicode, GlyphProfile::Ascii] {
+            let theme =
+                Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
+            let mark = ellipsis(glyphs);
+            let width = frame::regions(Rect::new(0, 0, cols, rows), &harness.view.layout)
+                .list
+                .width;
+            for (lead, count) in ["", "x"]
+                .into_iter()
+                .flat_map(|lead| (1..=usize::from(width)).map(move |count| (lead, count)))
+            {
+                let mut view = harness.view.clone();
+                let title = format!("{lead}{}", WIDE_EMOJI.repeat(count));
+                for row in &mut view.list.rows {
+                    row.title.clone_from(&title);
+                }
+                let buffer = frame::render(&theme, &view, cols, rows).expect("renders");
+                let lines = drawn_lines(&buffer, frame::regions(buffer.area, &view.layout).list);
+                let text = lines.join("\n");
+                let context = format!("{glyphs:?} {cols}x{rows}, {lead:?} and {count} emoji");
+                let whole = format!("{lead}{}", drawn_emoji(glyphs).repeat(count));
+                let whole = whole.trim_end();
+                for row in &view.list.rows {
+                    let first = lines
+                        .iter()
+                        .position(|l| l.contains(&row.repo))
+                        .unwrap_or_else(|| panic!("{context}: no row for {}\n{text}", row.repo));
+                    let bottom = &lines[first + 1];
+                    if !bottom.ends_with(&format!(" {}", row.waiting_label)) {
+                        problems.push(format!("{context}: no blank before Waiting On: {bottom:?}"));
+                    }
+                    if !(bottom.contains(whole) || bottom.contains(mark)) {
+                        problems.push(format!(
+                            "{context}: the title neither whole nor cut with {mark:?}: {bottom:?}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert_no_problems(&problems);
+}
+
 /// #32: the Linear glyph marks a Linear Issue's row, its detail's facts, and
 /// an Owner with a Linear Workflow in the sidebar and the header, in every
 /// glyph profile and without colour (monochrome).
@@ -821,6 +1093,31 @@ fn linear_markers_are_glyphs_that_read_in_monochrome() {
                 text.contains(&expected),
                 "{glyphs:?}: missing {expected:?}\n{text}"
             );
+        }
+    }
+}
+
+/// Landing Group annotations share the reference column's clipping budget.
+#[test]
+fn long_landing_groups_keep_an_ellipsis_and_a_gap_before_the_age() {
+    let (cols, rows) = MINIMUM_SIZE;
+    let mut view = surveyed_harness(MINIMUM_SIZE).view;
+    for row in &mut view.list.rows {
+        row.landing.groups = (1..=10).map(|n| format!("TEAM-{n}")).collect();
+        row.landing.ambiguous = true;
+        row.age = OLD_AGE.to_owned();
+    }
+    for glyphs in [GlyphProfile::Unicode, GlyphProfile::Ascii] {
+        let theme = Theme::new(TerminalProfile::new(ColorProfile::Mono, glyphs)).expect("theme");
+        let buffer = frame::render(&theme, &view, cols, rows).expect("renders");
+        let lines = region_lines(&buffer, frame::regions(buffer.area, &view.layout).list);
+        for row in &view.list.rows {
+            let top = lines
+                .iter()
+                .find(|line| line.contains(&row.repo))
+                .expect("Repo row");
+            assert!(top.contains(ellipsis(glyphs)), "{glyphs:?}: {top:?}");
+            assert!(top.ends_with(&format!(" {OLD_AGE}")), "{glyphs:?}: {top:?}");
         }
     }
 }
