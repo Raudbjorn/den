@@ -287,6 +287,36 @@ fn a_later_approval_by_the_same_reviewer_answers_earlier_points_but_not_a_decisi
     );
 }
 
+/// Review on #97: a reapproval answers only what was open before it. A
+/// marker the viewer posts after it (here: reopening Point 1) is newer and
+/// wins, so the PR stays at Address review; one posted before it is answered.
+#[test]
+fn a_marker_posted_after_a_reapproval_wins_over_it() {
+    let reopened = ready(1)
+        .review_body(100, ALICE, ReviewVerdict::ChangesRequested, T1, true)
+        .comment(1, ME, T2, "<!-- den:point 100.2 open -->\nRename it")
+        .review_body(101, ALICE, ReviewVerdict::Approved, T3, false)
+        .comment(2, ME, T4, "<!-- den:point 100.1 open -->\nStill racy");
+    let found = points(reopened.clone(), &[]);
+    assert_eq!(
+        states(&found),
+        [
+            (body(100, Some(1)), PointState::Open),
+            (body(100, Some(2)), PointState::Answered),
+        ]
+    );
+    assert_eq!(
+        found.points[0].set_by.as_deref(),
+        Some("https://github.com/acme/app/pull/1#issuecomment-2"),
+        "the newer marker set it, not the approval"
+    );
+    assert_eq!(
+        pull_request(&decided([reopened]), 1).next_step,
+        Some(NextStep::AddressReview),
+        "a Point reopened after the approval still blocks Merge"
+    );
+}
+
 #[test]
 fn a_marker_by_anyone_else_is_kept_with_its_author_and_changes_nothing() {
     let forged = ready(1)

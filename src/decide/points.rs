@@ -16,7 +16,8 @@
 //!   nothing: a marker gates merging, so it is a permission.
 //! - A later approval by the same reviewer makes that reviewer's earlier
 //!   open or not-yet-split review-body Points answered; one needing a
-//!   decision stays so.
+//!   decision stays so, and so does a state a marker set after the approval
+//!   (a Point the viewer reopens after it stays open).
 //!
 //! Open, not yet split and needs decision **block**: they hold a PR at
 //! Address review and withhold Merge (and so Land). Points den couldn't read
@@ -29,6 +30,7 @@ use crate::domain::{
     },
     ids::same_login,
 };
+use jiff::Timestamp;
 
 /// Where a Point's state stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,6 +227,9 @@ struct Marked {
     commit: Option<String>,
     summary: Option<String>,
     set_by: Option<String>,
+    /// When the marker that set the state was posted; `None` for a body not
+    /// yet split.
+    set_at: Option<Timestamp>,
 }
 
 /// `review`'s Points: one per number the viewer's markers name, else the
@@ -241,6 +246,7 @@ fn body_points(
         commit: None,
         summary: None,
         set_by: None,
+        set_at: None,
     };
     let mut split: Vec<(u32, Marked)> = Vec::new();
     let mut ignored = Vec::new();
@@ -279,6 +285,7 @@ fn body_points(
                         commit: commit.clone(),
                         summary: summary.clone(),
                         set_by: Some(comment.url.clone()),
+                        set_at: Some(comment.created_at),
                     };
                     match split.iter_mut().find(|(k, _)| k == n) {
                         Some((_, point)) => *point = marked,
@@ -291,6 +298,7 @@ fn body_points(
                         commit: None,
                         summary: None,
                         set_by: Some(comment.url.clone()),
+                        set_at: Some(comment.created_at),
                     };
                     whole = marked.clone();
                     for (_, point) in &mut split {
@@ -302,14 +310,18 @@ fn body_points(
     }
     let reapproval = later_approval(review, reviews);
     let finish = |n: Option<u32>, mut marked: Marked| {
-        if let Some(approval) = reapproval
+        // Approvals and markers apply in time order: an approval answers
+        // only a state set before it (review on #97).
+        if let Some((approval, approved_at)) = reapproval
             && matches!(marked.state, PointState::Open | PointState::NotYetSplit)
+            && marked.set_at.is_none_or(|set_at| set_at < approved_at)
         {
             marked = Marked {
                 state: PointState::Answered,
                 commit: None,
                 summary: None,
                 set_by: Some(approval.url.clone()),
+                set_at: Some(approved_at),
             };
         }
         Point {
@@ -336,20 +348,25 @@ fn body_points(
         .collect()
 }
 
-/// An approval by `review`'s author submitted after it, if any.
+/// The latest approval by `review`'s author submitted after it, with when,
+/// if any: the latest, so a marker is weighed against the newest approval.
 fn later_approval<'a>(
     review: &ReviewRecord,
     reviews: &'a [ReviewRecord],
-) -> Option<&'a ReviewRecord> {
+) -> Option<(&'a ReviewRecord, Timestamp)> {
     let (Some(author), Some(at)) = (&review.author, review.submitted_at) else {
         return None;
     };
-    reviews.iter().find(|other| {
-        other.verdict == ReviewVerdict::Approved
-            && other
-                .author
-                .as_deref()
-                .is_some_and(|a| same_login(a, author))
-            && other.submitted_at.is_some_and(|t| t > at)
-    })
+    reviews
+        .iter()
+        .filter(|other| {
+            other.verdict == ReviewVerdict::Approved
+                && other
+                    .author
+                    .as_deref()
+                    .is_some_and(|a| same_login(a, author))
+        })
+        .filter_map(|other| other.submitted_at.map(|t| (other, t)))
+        .filter(|(_, t)| *t > at)
+        .max_by_key(|(_, t)| *t)
 }
