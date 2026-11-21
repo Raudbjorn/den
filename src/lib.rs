@@ -36,6 +36,7 @@ pub mod palette;
 pub mod paths;
 pub mod ports;
 pub mod process;
+pub mod processes;
 pub mod runtime;
 pub mod start;
 pub mod terminal;
