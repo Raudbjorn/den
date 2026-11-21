@@ -51,6 +51,8 @@
 //! reads the directories once; an edited prompt is checked against the same
 //! read.
 //!
+//! Land confirmation first reads a fresh survey round, including Linear membership
+//! and member states; cancellation or incomplete reads never launch a Job.
 //! `Enter` plans again from the current Decision. When a survey that landed
 //! while the sheet was open changed what decides the Job (its Next Step, and
 //! so its permission mode and prompt template; its reviewers; a Landing
@@ -96,6 +98,8 @@ pub(super) struct Sheet {
     pub editing: bool,
     /// A one-off message, e.g. why `Enter` did nothing.
     pub notice: Option<String>,
+    /// The fresh survey round authorized by Enter on Land, never an earlier read.
+    pub land_check: Option<super::SurveyId>,
     /// The PR head commit the user accepted after it moved.
     pub accepted_head: Option<String>,
     /// This Job's target: the Work Item's Repo or, for a fork, its Upstream.
@@ -298,6 +302,7 @@ impl App {
             prompt: PromptEditor::default(),
             editing: false,
             notice: None,
+            land_check: None,
             accepted_head: None,
             choice: fork_choice,
             fork_choice,
@@ -525,6 +530,12 @@ impl App {
         if key == Key::Interrupt {
             return vec![Effect::Quit];
         }
+        if sheet.land_check.is_some() {
+            if key != Key::Esc {
+                self.overlay = Some(OverlayState::Launch(sheet));
+            }
+            return Vec::new();
+        }
         sheet.notice = None;
         if let Some(field) = sheet.reviewers.as_mut().filter(|f| f.editing) {
             if field.editor.key(key) == Edit::NotAnEdit
@@ -594,6 +605,9 @@ impl App {
                 | SheetState::LiveJob { .. }
                 | SheetState::JobUnknown { .. },
             ) => effects = self.switch_target(&mut sheet),
+            (Key::Enter, SheetState::Ready { plan, .. }) if plan.landing.is_some() => {
+                effects = self.check_land(&mut sheet);
+            }
             (Key::Enter, SheetState::Ready { .. }) => effects = self.launch(&mut sheet),
             (Key::Char('o'), SheetState::LiveJob { check, view }) => {
                 let (check, view) = (check.clone(), view.clone());
@@ -653,6 +667,66 @@ impl App {
             }
             _ => {}
         }
+        self.overlay = Some(OverlayState::Launch(sheet));
+        effects
+    }
+
+    /// Reuse the survey round; no reads begun before this confirmation authorize it.
+    fn check_land(&mut self, sheet: &mut Sheet) -> Vec<Effect> {
+        if self.running.is_some()
+            || self.linear_running.is_some()
+            || self.member_states_running.is_some()
+        {
+            sheet.notice = Some(
+                "A survey is still running; wait, then press Enter to check Land again".to_owned(),
+            );
+            return Vec::new();
+        }
+        let effects = self.refresh();
+        sheet.land_check = self.running;
+        effects
+    }
+
+    /// A Land confirmation waits for both fresh sources and any member reads.
+    pub(super) fn finish_land_check(&mut self) -> Vec<Effect> {
+        if self.running.is_some()
+            || self.linear_running.is_some()
+            || self.member_states_running.is_some()
+        {
+            return Vec::new();
+        }
+        let Some(OverlayState::Launch(sheet)) = &self.overlay else {
+            return Vec::new();
+        };
+        let Some(round) = sheet.land_check else {
+            return Vec::new();
+        };
+        let Some(OverlayState::Launch(mut sheet)) = self.overlay.take() else {
+            return Vec::new();
+        };
+        sheet.land_check = None;
+        let incomplete = self.decision_of(&sheet.item).is_some_and(|decision| {
+            std::iter::once(decision)
+                .chain(
+                    decision
+                        .landing
+                        .members
+                        .iter()
+                        .filter_map(|member| self.decision_of(&member.pr.id())),
+                )
+                .any(|decision| {
+                    decision
+                        .coverage
+                        .iter()
+                        .any(|entry| !entry.state.is_complete())
+                })
+        });
+        let effects = if self.next_survey != round.0 + 1 || self.failure.is_some() || incomplete {
+            sheet.notice = Some("Not launched: the fresh Land check could not read every required source; press Enter to retry or Esc to cancel".to_owned());
+            Vec::new()
+        } else {
+            self.launch(&mut sheet)
+        };
         self.overlay = Some(OverlayState::Launch(sheet));
         effects
     }

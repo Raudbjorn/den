@@ -269,3 +269,15 @@ field leaves the empty policy one that changes nothing.
 | Ticket | Adds / edits |
 |---|---|
 | #74 Parked Linear Issues (done) | `config/linear.rs`: `parked_states` (a list of state names, each validated like the other state settings, duplicates refused ignoring case; empty by default) joins `LinearWorkflow::state_names` as `parked_states`, so the team-states source checks each against Linear like `in_progress_state` and `release_state` and turns on for a workflow that names only parked states. `LinearWorkflowPolicy.parked_states` + `is_parked_state` (ignoring case, as `is_release_state`); empty in the empty policy. `decide/linear_issue.rs`: `by_assignment` checks it first, so it runs after every Landing Group rule and before Implement and Start: no Next Step, "parked in <state>", Waiting On nobody. Tests: `tests/decide_parked.rs`, `tests/config.rs`, `tests/linear_start_source.rs`. |
+
+### Land confirmation freshness (issue #30, story 74)
+
+Enter on a ready Land sheet starts a fresh survey round through the existing
+GitHub and Linear read ports. It waits for both sources and any follow-up member
+state reads before replanning; earlier in-flight surveys cannot authorize the
+launch. Failed or incomplete relevant reads leave the sheet retryable. Changes
+to landed members, their heads, held members or the first target require renewed
+confirmation. Escape cancels the pending launch even when reads finish later.
+The executor still checks heads immediately before workspace effects. These
+reads are not an atomic service transaction: later changes can still race them.
+Regression coverage lives in `tests/app_land_job.rs`.

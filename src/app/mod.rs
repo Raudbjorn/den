@@ -230,7 +230,7 @@ impl App {
     }
 
     pub fn handle(&mut self, event: Event) -> (ViewModel, Vec<Effect>) {
-        let effects = match event {
+        let mut effects = match event {
             Event::Started { now } => {
                 self.now = Some(now);
                 self.start()
@@ -266,6 +266,7 @@ impl App {
             Event::JobsChecked { outcome } => self.jobs_checked(outcome),
             Event::UpstreamsStored { outcome } => self.upstreams_stored(outcome),
         };
+        effects.extend(self.finish_land_check());
         (self.view(), effects)
     }
 
