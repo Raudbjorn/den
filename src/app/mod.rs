@@ -24,6 +24,7 @@ use crate::{
     cache::{self, CacheError, CachedObservation, LinearReads},
     config::{Config, ConfigError},
     decide::{self, Decision},
+    domain::ids::same_login,
     domain::{
         Coverage, LinearSourceKind, Observation, Policies, Source, SourceKind, SourceState,
         UpstreamTargets, Viewer, Viewers, WorkItemId,
@@ -39,6 +40,7 @@ use crate::{
         LinearSurvey, LinearSurveyRequest, MemberStatesRead, MemberStatesRequest, SurveyFailure,
         SurveyRequest,
     },
+    start::Start,
 };
 use jiff::Timestamp;
 use scope::ScopeState;
@@ -111,6 +113,9 @@ pub struct App {
     upstreams_unreadable: Option<String>,
     /// The last thing that went wrong with a `u` (not saved, Upstream not visible).
     upstream_problem: Option<String>,
+    /// What the start rules had to say about where den opened (#90), until
+    /// the user chooses another Scope.
+    start_note: Option<String>,
     /// Each Owner's Linear Workflow policy for the decision engine, from the
     /// config: the empty policy for an Owner without a Linear Workflow.
     policies: Policies,
@@ -175,7 +180,35 @@ impl App {
             upstreams_unreadable: None,
             upstream_problem: None,
             copied: None,
+            start_note: None,
         }
+    }
+
+    /// Opens where the start rules said (#90). A watched Owner's Repo opens in
+    /// its Repo Scope. A Repo outside the watched Owners can't be surveyed
+    /// until the Repo Survey exists (milestone 3, Plan 2), so den opens All
+    /// Owners and says so. No Repo chosen opens All Owners, with the rules'
+    /// notice if they gave one.
+    #[must_use]
+    pub fn with_start(mut self, start: Start) -> Self {
+        match start {
+            Start::Repo(repo) => {
+                if self.owners().iter().any(|o| same_login(o, &repo.owner)) {
+                    let scope = ordering::Scope::Repo(repo);
+                    self.scope = ScopeState {
+                        cursor: scope.clone(),
+                        scope,
+                        ..ScopeState::default()
+                    };
+                } else {
+                    self.start_note = Some(format!(
+                        "{repo} is not a watched Owner's Repo, so den can't survey it yet and opened All Owners"
+                    ));
+                }
+            }
+            Start::Unchosen { notice } => self.start_note = notice,
+        }
+        self
     }
 
     /// Sets the launch settings that don't come from the config: the prompts
@@ -264,6 +297,7 @@ impl App {
             upstream_note: self.upstream_note(),
             legacy_marker_prefixes: self.policies.legacy_marker_prefixes(),
             copied: self.copied.as_ref(),
+            start_note: self.start_note.as_deref(),
         })
     }
 
@@ -460,6 +494,8 @@ impl App {
             scope::Outcome::Unhandled => {}
             scope::Outcome::Moved => return Vec::new(),
             scope::Outcome::Changed => {
+                // The start notice was about where den opened.
+                self.start_note = None;
                 self.apply_scope();
                 return Vec::new();
             }

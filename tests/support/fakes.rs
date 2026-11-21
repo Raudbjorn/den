@@ -317,6 +317,10 @@ struct WorkspaceState {
     claude_dirs: BTreeMap<PathBuf, ClaudeDir>,
     /// The installed plugins (#41); `None`: none installed, the list read.
     plugins: Option<PluginsRead>,
+    /// The user's processes' command lines (#80), or why they can't be
+    /// read; `None`: not scripted, read as unreadable, so a test that
+    /// doesn't care sees the plain Live Job glyph.
+    processes: Option<Result<Vec<Vec<String>>, String>>,
     calls: Vec<WorkspaceCall>,
 }
 
@@ -327,6 +331,19 @@ pub struct FakeWorkspace {
 }
 
 impl FakeWorkspace {
+    /// The user's local processes (#80), each a command line, program first.
+    pub fn set_processes(&self, processes: &[&[&str]]) {
+        self.state.lock().expect("lock").processes = Some(Ok(processes
+            .iter()
+            .map(|argv| argv.iter().map(|w| (*w).to_owned()).collect())
+            .collect()));
+    }
+
+    /// The process list can't be read (#80), and why.
+    pub fn processes_unreadable(&self, why: &str) {
+        self.state.lock().expect("lock").processes = Some(Err(why.to_owned()));
+    }
+
     /// Changes the Claude directory `dir` (#41), empty to begin with.
     pub fn with_claude_dir(&self, dir: &str, change: impl FnOnce(&mut ClaudeDir)) {
         let mut state = self.state.lock().expect("lock");
@@ -564,6 +581,22 @@ fn no_clone(path: &Path) -> WorkspaceError {
 }
 
 impl Workspace for FakeWorkspace {
+    /// A directory in a registered clone reads as that clone, with its
+    /// remotes; anywhere else is no work tree.
+    fn repo_at(&self, dir: &Path) -> Result<den::start::GitDir, WorkspaceError> {
+        let state = self.state.lock().expect("lock");
+        Ok(state
+            .clones
+            .iter()
+            .find(|(clone, _)| dir.starts_with(clone))
+            .map_or(den::start::GitDir::NotAWorkTree, |(clone, c)| {
+                den::start::GitDir::WorkTree {
+                    main_clone: clone.clone(),
+                    remotes: c.remotes.clone(),
+                }
+            }))
+    }
+
     fn find_clones(&self, root: &Path) -> Result<Vec<PathBuf>, WorkspaceError> {
         let state = self.state.lock().expect("lock");
         Ok(state
@@ -793,6 +826,18 @@ impl Workspace for FakeWorkspace {
             file: installed_plugins_file(claude_dir),
             plugins: Vec::new(),
         })
+    }
+
+    fn user_processes(&self) -> Result<Vec<Vec<String>>, WorkspaceError> {
+        let state = self.state.lock().expect("lock");
+        state
+            .processes
+            .clone()
+            .unwrap_or_else(|| Err("not scripted".to_owned()))
+            .map_err(|detail| WorkspaceError {
+                operation: "read local processes".to_owned(),
+                detail,
+            })
     }
 }
 

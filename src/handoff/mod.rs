@@ -83,6 +83,7 @@ pub mod clone;
 pub mod cloning;
 pub mod command;
 mod execute;
+pub mod ground_rules;
 mod inspect;
 mod kinds;
 pub mod landing;
@@ -99,9 +100,10 @@ pub use clone::Remote;
 pub use cloning::NewCloneView;
 pub use command::{PermissionMode, SessionStart, SettingSources, WindowCommand, WindowMode};
 pub use execute::{LaunchOutcome, LaunchReport, LaunchStep, execute};
+pub use ground_rules::GroundRules;
 pub use inspect::{ChosenClone, CloneSearch, InspectRequest, WorkspaceView, inspect};
 pub use landing::{HeldMember, LandingGroupPlan, LandingMember};
-pub use live::{JobCheck, JobsCheck, ReopenPlan, WorktreeState};
+pub use live::{JobCheck, JobsCheck, ReopenPlan, SessionActivity, WorktreeState};
 pub use plan::{LaunchSettings, PlanInput, inspect_request, plan};
 pub use refusal::{Refusal, RefusalReason};
 pub use trust::{OffReason, ProjectSettings};
@@ -446,6 +448,7 @@ impl LaunchPlan {
             permission_mode: self.permission_mode,
             setting_sources: self.project_settings.sources(),
             removed_env: self.removed_env.clone(),
+            ground_rules: GroundRules::for_job(self.next_step, &self.subject()).text(),
         }
     }
 

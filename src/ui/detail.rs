@@ -4,7 +4,7 @@ use super::{
     Theme, UiError, glyphs, templates,
     text::{self, LineStyle},
 };
-use crate::app::view_model::{Detail, JobMarker, PointTone};
+use crate::app::view_model::{Detail, JobActivity, JobMarker, PointTone};
 use crepuscularity_tui::TemplateContext;
 use ratatui::{Frame, layout::Rect};
 
@@ -43,7 +43,7 @@ pub fn draw(frame: &mut Frame, theme: &Theme, detail: &Detail, area: Rect) -> Re
                 );
                 for line in &landing.lines {
                     // The list's own glyph, so the two can't drift apart.
-                    let glyph = super::list::job_glyph(line.job, &glyphs);
+                    let glyph = super::list::job_glyph(line.job, None, &glyphs);
                     let style = if line.caution {
                         LineStyle::Caution
                     } else {
@@ -105,6 +105,14 @@ pub fn draw(frame: &mut Frame, theme: &Theme, detail: &Detail, area: Rect) -> Re
                     JobMarker::Unknown => (glyphs.job_unknown, LineStyle::Caution),
                 };
                 push(&format!("{glyph} {}", job.summary), style);
+                if let Some(activity) = &job.activity {
+                    let (glyph, style) = match activity.activity {
+                        JobActivity::Running => (glyphs.job_running, LineStyle::Step),
+                        JobActivity::Idle => (glyphs.job_idle, LineStyle::Plain),
+                        JobActivity::Unknown => (glyphs.unattributed, LineStyle::Muted),
+                    };
+                    push(&format!("{glyph} {}", activity.text), style);
+                }
                 for line in &job.lines {
                     push(line, LineStyle::Muted);
                 }

@@ -62,6 +62,8 @@ pub struct State<'a> {
     pub legacy_marker_prefixes: &'a [String],
     /// What the last `m` did (#77), and for which Work Item.
     pub copied: Option<&'a (WorkItemId, Result<(), String>)>,
+    /// What the start rules said about where den opened (#90), for the header.
+    pub start_note: Option<&'a str>,
 }
 
 pub fn build(state: &State<'_>) -> ViewModel {

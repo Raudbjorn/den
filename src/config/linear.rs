@@ -16,14 +16,16 @@
 //! slack_channel = "#team-dev"      # optional, opaque: only passed into prompts
 //! in_progress_state = "In Progress"
 //! release_state = "Ready for Release"
-//! exact_head_approval = true       # default true
+//! parked_states = ["Paused"]       # Linear Issues in these have no Next Step (#74)
+//! exact_head_approval = true       # default false (ADR-0009)
 //! comment_reviews_need_rereview = true  # default true
+//! pending_requests_hold_merge = true    # default false (ADR-0009)
 //! ```
 //!
 //! Every Repo named must be the Owner's own: `api` or `acme/api`, never
 //! another Owner's. Team and state names are checked against Linear on a
 //! survey (#33, the team-states source), not here. No organization's values are defaults: only the
-//! two policy switches have defaults, and those are the config's (on), not
+//! review switches have defaults, and those are the config's (ADR-0009), not
 //! the policy type's (whose empty default changes nothing).
 
 use super::{Location, location_of};
@@ -75,17 +77,24 @@ pub struct LinearWorkflow {
     pub slack_channel: Option<String>,
     pub in_progress_state: Option<String>,
     pub release_state: Option<String>,
-    /// Approvals count only at the PR's current head (#36). Default on.
+    /// States that park a Linear Issue: no Implement or Start (#74).
+    pub parked_states: Vec<String>,
+    /// Approvals count only at the PR's current head (#36). Default off:
+    /// GitHub's review decision decides (ADR-0009, #73).
     pub exact_head_approval: bool,
     /// A COMMENTED review needs a fresh look after the head moves (#36). Default on.
     pub comment_reviews_need_rereview: bool,
+    /// A pending review request keeps an approved PR at Review (spec 0002,
+    /// story 44). Default off: GitHub doesn't hold a merge for one (ADR-0009, #73).
+    pub pending_requests_hold_merge: bool,
 }
 
 impl LinearWorkflow {
     /// The decision engine's policy for this workflow's Owner: which
     /// unassigned Linear Issues it offers to Start (#33), its review rules
-    /// (the two switches as configured, and the configured reviewers), its
-    /// Held Repos (#36), its release state (#37) and its landing order (#40).
+    /// (the three switches as configured, and the configured reviewers), its
+    /// Held Repos (#36), its release state (#37), its landing order (#40)
+    /// and its parked states (#74).
     pub fn policy(&self) -> LinearWorkflowPolicy {
         LinearWorkflowPolicy {
             start: StartPolicy {
@@ -96,11 +105,13 @@ impl LinearWorkflow {
             review: Some(ReviewPolicy {
                 exact_head_approval: self.exact_head_approval,
                 comment_reviews_need_rereview: self.comment_reviews_need_rereview,
+                pending_requests_hold_merge: self.pending_requests_hold_merge,
                 reviewers: self.reviewers.clone(),
             }),
             held_repos: self.held_repos.clone(),
             release_state: self.release_state.clone(),
             landing_order: self.landing_order.clone(),
+            parked_states: self.parked_states.clone(),
         }
     }
 
@@ -123,7 +134,7 @@ impl LinearWorkflow {
     }
 
     /// The state names the config gives (setting, name), to check against
-    /// Linear's team states.
+    /// Linear's team states: the single states, then each parked state.
     pub fn state_names(&self) -> impl Iterator<Item = (&'static str, &str)> {
         [
             ("in_progress_state", self.in_progress_state.as_deref()),
@@ -131,6 +142,11 @@ impl LinearWorkflow {
         ]
         .into_iter()
         .filter_map(|(setting, name)| name.map(|n| (setting, n)))
+        .chain(
+            self.parked_states
+                .iter()
+                .map(|name| ("parked_states", name.as_str())),
+        )
     }
 }
 
@@ -160,8 +176,11 @@ pub(super) struct RawLinearWorkflow {
     slack_channel: Option<Spanned<String>>,
     in_progress_state: Option<Spanned<String>>,
     release_state: Option<Spanned<String>>,
+    #[serde(default)]
+    parked_states: Vec<Spanned<String>>,
     exact_head_approval: Option<bool>,
     comment_reviews_need_rereview: Option<bool>,
+    pending_requests_hold_merge: Option<bool>,
 }
 
 type Invalid = (Range<usize>, String);
@@ -245,8 +264,13 @@ fn workflow(owner: &str, raw: RawLinearWorkflow, text: &str) -> Result<LinearWor
             .release_state
             .map(|v| setting(v, "release_state"))
             .transpose()?,
-        exact_head_approval: raw.exact_head_approval.unwrap_or(true),
+        parked_states: unique(raw.parked_states, "parked_states", |v| {
+            setting(v, "parked_states")
+        })?,
+        // ADR-0009 (#73): GitHub's own rules by default; stricter is opt-in.
+        exact_head_approval: raw.exact_head_approval.unwrap_or(false),
         comment_reviews_need_rereview: raw.comment_reviews_need_rereview.unwrap_or(true),
+        pending_requests_hold_merge: raw.pending_requests_hold_merge.unwrap_or(false),
     })
 }
 
