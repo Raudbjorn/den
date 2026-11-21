@@ -279,9 +279,9 @@ skip = ["Fix CI", "Triage", "Prune or revive"]
   - the Linear part as today.
 - **Coverage per Repo:** every Work Item source is recorded per Repo in both surveys. The Sweep splits an Owner's PR and Issue listing per Repo: a Repo's PRs are complete when the Owner listing was complete or the Repo's own pages were read completely. Otherwise they are partial with the Owner's reason. The cross-kind rule (no kind more complete than the Repo list) applies per Owner as today.
 - **Merge:**
-  - For each Repo and source, a complete read replaces the earlier one only if it **started later**. This read-time guard stops a Sweep that began before a Repo Survey from overwriting it.
+  - For each Repo and source, a read is merged only if it **started later** than the one den holds, whether it is complete or partial. An answer that started earlier changes nothing for that Repo and source: not its facts, not its coverage, not its ages. This read-time guard stops a Sweep that began before a Repo Survey from overwriting it, including when the Sweep was interrupted or paused and answers partial.
   - Merging stays in the App's event handling, one answer at a time, as `cache::merge` runs today. Survey lanes only read. The store lane writes the App's merged result whole, one write at a time in the order the App emitted them. So the guard's comparison and the replacement are one step, and no survey can interleave with it.
-  - Incomplete reads keep earlier facts with their own ages, as `cache::merge` does today.
+  - A complete read that passes the guard replaces the earlier facts. An incomplete one keeps earlier facts it didn't read with their own ages, as `cache::merge` does today.
 - Older formats are rejected and rebuilt, as before.
 - The workbench shows the cached Repo at once, from the last Repo Survey or the Sweep, with its age, while its Repo Survey runs.
 
@@ -390,6 +390,7 @@ Tests go through the two seams, plus thin adapter checks, as in milestones 1 and
   - per-Owner answers fill the Repo screen.
 - Cache:
   - a Sweep that started before a Repo Survey doesn't overwrite it, even when its answer arrives after the Repo Survey's;
+  - the same when that Sweep's answer is partial (interrupted or paused at the rate-limit floor): it neither replaces the Repo Survey's facts nor changes their coverage;
   - partial reads keep ages;
   - a per-Repo coverage split from an Owner listing;
   - format 12 rejected and rebuilt.
