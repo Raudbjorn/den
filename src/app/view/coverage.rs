@@ -7,7 +7,7 @@ use crate::{
     app::view_model::RepoCoverage,
     cache::{self, source_owner},
     domain::{CoverageEntry, Incompleteness, Observation, RepoId, Source, SourceState},
-    ordering::{Scope, same_repo},
+    ordering::Scope,
 };
 use jiff::Timestamp;
 
@@ -43,6 +43,9 @@ fn carried_since(state: &State<'_>, source: &Source) -> Option<Timestamp> {
         .find(|c| c.source.same(source))
         .map(|c| c.observed_at);
     own.or_else(|| match source {
+        // A Repo with a coverage entry of its own is dated by it alone: its
+        // Owner's kept data is older facts of other Repos (spec 0003).
+        Source::Repo { .. } if has_entry(state, source) => None,
         Source::Repo { repo, kind } => carried_since(
             state,
             &Source::Owner {
@@ -52,6 +55,13 @@ fn carried_since(state: &State<'_>, source: &Source) -> Option<Timestamp> {
         ),
         Source::Owner { .. } | Source::Viewer => None,
     })
+}
+
+/// Whether the shown Observation recorded `source` itself.
+fn has_entry(state: &State<'_>, source: &Source) -> bool {
+    state
+        .observation
+        .is_some_and(|o| o.coverage.entries().iter().any(|e| e.source.same(source)))
 }
 
 /// The carried note for `source` as it bears on one Repo: data kept for the Repo
@@ -150,22 +160,18 @@ pub fn scope_complete(observation: &Observation, scope: &Scope) -> bool {
     }
 }
 
-/// The sources behind one Repo's Work Items: its Owner's and its own. Its
-/// Owner's Linear sources only once a Repo Scope can hold Linear Issues
+/// The sources behind one Repo's Work Items, as
+/// [`crate::domain::Coverage::applicable_to_repo`] gives them: its own, and
+/// its Owner's for kinds it has none of its own for. Its Owner's Linear
+/// sources only once a Repo Scope can hold Linear Issues
 /// ([`Scope::holds_linear_issues`]).
 fn applicable_to_repo<'o>(observation: &'o Observation, repo: &RepoId) -> Vec<&'o CoverageEntry> {
     let with_linear = Scope::Repo(repo.clone()).holds_linear_issues();
     observation
         .coverage
-        .entries()
-        .iter()
-        .filter(|e| match &e.source {
-            Source::Owner { owner, .. } => {
-                owner.eq_ignore_ascii_case(&repo.owner) && (with_linear || !e.source.is_linear())
-            }
-            Source::Repo { repo: r, .. } => same_repo(r, repo),
-            Source::Viewer => false,
-        })
+        .applicable_to_repo(repo)
+        .into_iter()
+        .filter(|e| with_linear || !e.source.is_linear())
         .collect()
 }
 

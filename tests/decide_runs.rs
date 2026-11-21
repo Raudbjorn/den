@@ -437,18 +437,18 @@ fn partial_and_failed_runs_coverage_is_carried_onto_run_items() {
         owner: owner.to_owned(),
         kind: SourceKind::Runs,
     };
+    // o/busy has a Runs entry of its own, so it alone speaks for o/busy's
+    // Runs (spec 0003, "Coverage per Repo"); o's complete listing no longer
+    // appears beside it. The item is still partial, which is what matters.
     assert_eq!(
         coverage_of("o/busy"),
-        [
-            (owner("o"), SourceState::Complete),
-            (
-                Source::Repo {
-                    repo: repo_id("o/busy"),
-                    kind: SourceKind::Runs
-                },
-                partial
-            ),
-        ]
+        [(
+            Source::Repo {
+                repo: repo_id("o/busy"),
+                kind: SourceKind::Runs
+            },
+            partial
+        )]
     );
     assert_eq!(coverage_of("o/calm"), [(owner("o"), SourceState::Complete)]);
     assert_eq!(coverage_of("p/r"), [(owner("p"), failed)]);
