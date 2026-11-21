@@ -61,6 +61,7 @@ fn decision(
         coverage: Vec::new(),
         observed_at: ts(support::build::NOW),
         held_back: None,
+        not_tracked: None,
         suggested_reviewers: None,
         landing: Landing::default(),
         start_order: None,

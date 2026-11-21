@@ -100,6 +100,7 @@ fn config(workflow: LinearWorkflow) -> Config {
         main_clone_root: Some(PathBuf::from(ROOT)),
         main_clones: BTreeMap::new(),
         linear: vec![workflow],
+        skips: den::domain::Skips::default(),
     }
 }
 

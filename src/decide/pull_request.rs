@@ -40,6 +40,7 @@ mod workflow;
 
 use super::{
     Attribution, Context, Decision, Explanation, HeldBack, WorkItem, correlation::GroupRef,
+    not_tracked_note,
 };
 use crate::domain::{
     CoverageEntry, Incompleteness, LinearSourceKind, LinearWorkflowPolicy, NextStep, ReviewPolicy,
@@ -182,6 +183,24 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
     ];
     rules.extend(request_review.map(|finding| (NextStep::RequestReview, finding)));
     rules.push((NextStep::Merge, merge(pr, &merge_review, &merge_blockers)));
+    // A kind the Repo doesn't track never wins: evaluation falls through to
+    // the next rule (spec 0003). Every rule's preconditions are unchanged, so
+    // a skip never unblocks another step. Merge is withheld below, after the
+    // Landing Group check, so a member that would Merge still lands with its
+    // Linear Issue. An Unknown stays, so the Explanation still says what den
+    // couldn't establish, but a skipped kind is never "not ruled out".
+    let skips = ctx.skips(&pr.repo);
+    let mut not_tracked: Vec<(NextStep, String)> = Vec::new();
+    for (step, finding) in &mut rules {
+        let step = *step;
+        if step == NextStep::Merge || !skips.contains(&step) {
+            continue;
+        }
+        if let Finding::Holds(why) = finding {
+            not_tracked.push((step, why.clone()));
+            *finding = Finding::No;
+        }
+    }
     let winner = rules
         .iter()
         .enumerate()
@@ -209,6 +228,11 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         winner_step,
     ));
     other_conditions.extend(review_notes);
+    other_conditions.extend(
+        not_tracked
+            .iter()
+            .map(|(step, why)| not_tracked_note(*step, why)),
+    );
 
     let mut unknowns: Vec<String> = rules
         .iter()
@@ -228,22 +252,34 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
     unknowns.dedup();
 
     let Some((index, step, why)) = winner else {
-        let decision = Decision::new(
+        let no_rule = format!("no rule matched: {}", merge_blockers.join("; "));
+        let no_step_reason = if not_tracked.is_empty() {
+            no_rule
+        } else {
+            let kinds: Vec<&str> = not_tracked.iter().map(|(step, _)| step.label()).collect();
+            format!(
+                "not tracked in this Repo (skip): {}; {no_rule}",
+                kinds.join(", ")
+            )
+        };
+        let mut decision = Decision::new(
             ctx,
             item,
             None,
             Attribution::nobody("no Next Step, so nobody owes one"),
             Explanation {
-                no_step_reason: Some(format!("no rule matched: {}", merge_blockers.join("; "))),
+                no_step_reason: Some(no_step_reason),
                 other_conditions,
                 unknowns,
                 ..Explanation::default()
             },
         );
+        decision.not_tracked = not_tracked.first().map(|(step, _)| *step);
         return with_reviewers(decision);
     };
     let not_ruled_out: Vec<String> = rules[..index]
         .iter()
+        .filter(|(earlier, _)| !skips.contains(earlier))
         .filter_map(|(earlier, finding)| match finding {
             Finding::Unknown(what) => Some(format!("{} ({what})", earlier.label())),
             _ => None,
@@ -279,9 +315,30 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         decision.held_back = Some(held);
         return with_reviewers(decision);
     }
+    // Read before a skipped Merge is withheld: a PR that might be an unread
+    // Landing Group's member says so either way.
     let membership = (step == NextStep::Merge).then(|| membership_unread(ctx, pr));
     if let Some((_, Some(unread))) = &membership {
         unknowns.push(unread.clone());
+    }
+    if step == NextStep::Merge && skips.contains(&NextStep::Merge) {
+        let mut decision = Decision::new(
+            ctx,
+            item,
+            None,
+            Attribution::nobody("no Next Step, so nobody owes one"),
+            Explanation {
+                no_step_reason: Some(not_tracked_note(NextStep::Merge, &winning_rule)),
+                other_conditions,
+                unknowns,
+                ..Explanation::default()
+            },
+        );
+        decision.not_tracked = Some(NextStep::Merge);
+        if let Some((sources, _)) = membership {
+            decision.coverage.extend(sources);
+        }
+        return with_reviewers(decision);
     }
     let mut decision = Decision::new(
         ctx,

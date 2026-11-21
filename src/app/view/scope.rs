@@ -85,7 +85,13 @@ pub fn empty_in_scope(state: &State<'_>) -> Option<EmptyState> {
     if current == &Scope::AllOwners {
         return None;
     }
-    let elsewhere = state.all_decisions.len();
+    // Work Items this Scope leaves out because their Repo doesn't track their
+    // Next Step (spec 0003) are here, not elsewhere; the list names them.
+    let elsewhere = state
+        .all_decisions
+        .iter()
+        .filter(|d| !current.contains_decision(d))
+        .count();
     let title = if coverage::scope_complete(observation, current) {
         format!("Nothing in {current}.")
     } else {

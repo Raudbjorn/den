@@ -6,6 +6,7 @@
 
 use den::{
     config::{self, ConfigError, Location},
+    domain::{NextStep, RepoId},
     paths::{Paths, PathsError},
 };
 use std::{collections::HashMap, ffi::OsString, path::Path};
@@ -488,5 +489,117 @@ fn config_reviewers_and_the_sheets_reviewers_accept_the_same_words() {
             sheet.clone().map(|r| vec![r]),
             "{word:?}: config {config:?}, sheet {sheet:?}"
         );
+    }
+}
+
+#[test]
+fn repos_can_skip_next_step_kinds() {
+    let config = parse(
+        "owners = [\"acme\"]\n\n[repos.\"acme/hobby\"]\nskip = [\"Fix CI\", \"Triage\", \"Prune or revive\"]\n",
+    )
+    .expect("valid");
+    let hobby = RepoId::new("acme", "hobby");
+    assert_eq!(
+        config
+            .skips
+            .for_repo(&hobby)
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        [NextStep::FixCi, NextStep::Triage, NextStep::PruneOrRevive]
+    );
+    assert!(
+        config
+            .skips
+            .for_repo(&RepoId::new("acme", "other"))
+            .is_empty()
+    );
+    assert!(
+        config
+            .policies()
+            .skips()
+            .for_repo(&hobby)
+            .contains(&NextStep::FixCi)
+    );
+}
+
+#[test]
+fn repo_keys_compare_without_case() {
+    let config = parse("owners = [\"acme\"]\n\n[repos.\"ACME/Hobby\"]\nskip = [\"Triage\"]\n")
+        .expect("valid");
+    assert!(
+        config
+            .skips
+            .for_repo(&RepoId::new("acme", "hobby"))
+            .contains(&NextStep::Triage)
+    );
+}
+
+#[test]
+fn a_repo_outside_the_watched_owners_may_skip_too() {
+    let config = parse("owners = [\"acme\"]\n\n[repos.\"elsewhere/app\"]\nskip = [\"Merge\"]\n")
+        .expect("valid");
+    assert!(
+        config
+            .skips
+            .for_repo(&RepoId::new("elsewhere", "app"))
+            .contains(&NextStep::Merge)
+    );
+}
+
+#[test]
+fn no_repos_table_skips_nothing() {
+    let config = parse("owners = [\"acme\"]\n").expect("valid");
+    assert!(
+        config
+            .skips
+            .for_repo(&RepoId::new("acme", "app"))
+            .is_empty()
+    );
+}
+
+#[test]
+fn bad_skips_name_the_line() {
+    let cases = [
+        (
+            "wrong case",
+            "owners = [\"a\"]\n[repos.\"a/b\"]\nskip = [\"fix ci\"]\n",
+            3,
+            "\"fix ci\" is not a Next Step: use one of \"Finish draft\"",
+        ),
+        (
+            "a Linear Issue's kind",
+            "owners = [\"a\"]\n[repos.\"a/b\"]\nskip = [\"Land\"]\n",
+            3,
+            "Land belongs to Linear Issues, not to a Repo",
+        ),
+        (
+            "not owner/repo",
+            "owners = [\"a\"]\n[repos.\"just-a-name\"]\nskip = []\n",
+            2,
+            "\"just-a-name\" is not OWNER/REPO",
+        ),
+        (
+            "typo'd field",
+            "owners = [\"a\"]\n[repos.\"a/b\"]\nskips = [\"Triage\"]\n",
+            3,
+            "unknown field",
+        ),
+        (
+            // BTreeMap order puts "a/B" before "a/b", so "a/b" (line 2) is the repeat.
+            "the same Repo twice",
+            "owners = [\"a\"]\n[repos.\"a/b\"]\nskip = []\n[repos.\"a/B\"]\nskip = []\n",
+            2,
+            "a/b is configured twice",
+        ),
+    ];
+    for (name, text, line, message) in cases {
+        let error = parse(text).expect_err(name);
+        assert_eq!(
+            location(&error).map(|l| l.line),
+            Some(line),
+            "{name}: {error}"
+        );
+        assert!(error.to_string().contains(message), "{name}: {error}");
     }
 }

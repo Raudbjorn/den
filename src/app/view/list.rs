@@ -5,16 +5,19 @@ use crate::cache;
 use crate::{
     app::view_model::{ELLIPSIS, EmptyState, List, Row},
     decide::Decision,
-    domain::WaitingOn,
+    domain::{NextStep, WaitingOn},
     handoff::live,
 };
+use std::collections::BTreeSet;
 
 const LABEL: &str = "N E X T   S T E P S";
 const NO_STEP: &str = "no step yet";
 
 pub fn build(state: &State<'_>) -> List {
     let rows: Vec<Row> = state.decisions.iter().map(|d| row(state, d)).collect();
-    let empty = rows.is_empty().then(|| empty_state(state));
+    let empty = rows
+        .is_empty()
+        .then(|| with_not_tracked(state, empty_state(state)));
     List {
         label: LABEL.to_owned(),
         rows,
@@ -53,6 +56,33 @@ fn row(state: &State<'_>, decision: &Decision) -> Row {
         job: live::most_telling(state.job_checks, id).map(|c| jobs::marker(&c.state)),
         landing: landing::row(decision),
     }
+}
+
+/// An empty list never hides Work Items silently: the ones left out because
+/// their Repo doesn't track their Next Step (`skip`, spec 0003) are named,
+/// by kind and count.
+fn with_not_tracked(state: &State<'_>, mut empty: EmptyState) -> EmptyState {
+    let left_out: Vec<NextStep> = state
+        .all_decisions
+        .iter()
+        .filter(|d| state.scope.scope.contains_decision(d))
+        .filter_map(|d| d.not_tracked)
+        .collect();
+    if left_out.is_empty() {
+        return empty;
+    }
+    let kinds: BTreeSet<NextStep> = left_out.iter().copied().collect();
+    let kinds: Vec<&str> = kinds.iter().map(|kind| kind.label()).collect();
+    let items = match left_out.len() {
+        1 => "1 Work Item".to_owned(),
+        n => format!("{n} Work Items"),
+    };
+    empty.detail = format!(
+        "{} Not tracked here (skip in config.toml): {}, on {items}.",
+        empty.detail,
+        kinds.join(", ")
+    );
+    empty
 }
 
 /// Never says "Nothing needs you" unless every source was read completely.
