@@ -1,6 +1,6 @@
 # Spec: den, milestone 3 — Repo-first workbench
 
-Status: draft, for review
+Status: ready-for-agent
 Builds on: milestones 1 and 2 on `main` (`a58116a`).
 Sources: `CONTEXT.md`, ADR-0001…0004, the new ADR-0005 (the Repo is the unit of survey) and ADR-0006 (ratatui widgets), `docs/architecture.md`, a brainstorming session held on 2026-11-21, and its approved renders in `docs/specs/0003-assets/`.
 
