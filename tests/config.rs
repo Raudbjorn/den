@@ -214,6 +214,7 @@ reviewers = ["alice", "acme/backend"]
 slack_channel = "#team-dev"
 in_progress_state = "In Progress"
 release_state = "Ready for Release"
+parked_states = ["Paused", "Blocked"]
 exact_head_approval = true
 comment_reviews_need_rereview = false
 pending_requests_hold_merge = true
@@ -248,6 +249,8 @@ fn a_linear_workflow_reads_every_setting() {
     assert_eq!(workflow.slack_channel.as_deref(), Some("#team-dev"));
     assert_eq!(workflow.in_progress_state.as_deref(), Some("In Progress"));
     assert_eq!(workflow.release_state.as_deref(), Some("Ready for Release"));
+    assert_eq!(workflow.parked_states, ["Paused", "Blocked"]);
+    // Explicit strict settings still override the GitHub-aligned defaults.
     assert!(workflow.exact_head_approval);
     assert!(!workflow.comment_reviews_need_rereview);
     assert!(workflow.pending_requests_hold_merge);
@@ -272,6 +275,10 @@ fn a_minimal_linear_workflow_has_the_configs_defaults() {
     assert!(workflow.held_repos.is_empty() && workflow.landing_order.is_empty());
     assert!(workflow.reviewers.is_empty() && workflow.slack_channel.is_none());
     assert!(workflow.in_progress_state.is_none() && workflow.release_state.is_none());
+    assert!(
+        workflow.parked_states.is_empty(),
+        "nothing is parked by default"
+    );
 }
 
 #[test]
@@ -320,6 +327,7 @@ fn a_linear_workflows_review_settings_become_its_owners_policy() {
             held_repos: vec![RepoId::new("acme", "app")],
             release_state: Some("Ready for Release".to_owned()),
             landing_order: vec![RepoId::new("acme", "api"), RepoId::new("acme", "web")],
+            parked_states: vec!["Paused".to_owned(), "Blocked".to_owned()],
         }
     );
     // The config's defaults (ADR-0009): GitHub's rules, comments re-reviewed.
@@ -342,6 +350,7 @@ fn a_linear_workflows_review_settings_become_its_owners_policy() {
     assert_eq!(empty.review, None);
     assert!(empty.held_repos.is_empty());
     assert_eq!(empty.release_state, None);
+    assert!(empty.parked_states.is_empty());
 }
 
 #[test]
@@ -419,6 +428,26 @@ fn linear_workflow_errors_name_the_file_and_line() {
             block("release_state = \"  \"\n"),
             6,
             "release_state",
+        ),
+        (
+            "blank parked state",
+            block("parked_states = [\"Paused\", \" \"]\n"),
+            6,
+            "parked_states",
+        ),
+        (
+            "a parked state listed twice",
+            block("parked_states = [\"Paused\", \"PAUSED\"]\n"),
+            6,
+            "listed twice in `parked_states`",
+        ),
+        // A type error is TOML's own: it names the line and column of the
+        // value, not the key, as for every list setting.
+        (
+            "parked_states not a list",
+            block("parked_states = \"Paused\"\n"),
+            6,
+            "expected a sequence",
         ),
         (
             "unknown setting",

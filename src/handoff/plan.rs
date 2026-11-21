@@ -85,6 +85,9 @@ pub struct PlanInput<'a> {
     /// [`PromptKind::for_job`]).
     /// Land also reads its landing order and Held Repos.
     pub policy: &'a LinearWorkflowPolicy,
+    /// The environment variables the Job runs without (#70,
+    /// [`crate::config::Config::job_removed_env`]).
+    pub removed_env: &'a [String],
 }
 
 /// The facts for a launch, or every reason it can't happen. PRs here; a Land
@@ -472,6 +475,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         review_request,
         landing: facts.landing,
         window: view.window.clone(),
+        removed_env: input.removed_env.to_vec(),
         command: String::new(),
     };
     plan.command = command::display(&plan.window, &plan.window_command());
