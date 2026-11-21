@@ -64,6 +64,7 @@ fn harness_with(extra: Vec<LinearIssue>) -> Harness {
         main_clone_root: Some(PathBuf::from(ROOT)),
         main_clones: std::collections::BTreeMap::new(),
         linear: vec![linear_workflow("octo", "acme")],
+        skips: den::domain::Skips::default(),
     };
     let mut harness = Harness::new(Ok(config));
     let (cols, rows) = SIZE;
@@ -427,6 +428,7 @@ fn a_held_member_reads_as_held_for_release_in_the_landing_group() {
         main_clone_root: Some(PathBuf::from(ROOT)),
         main_clones: std::collections::BTreeMap::new(),
         linear: vec![workflow],
+        skips: den::domain::Skips::default(),
     };
     let mut harness = Harness::new(Ok(config));
     let (cols, rows) = SIZE;

@@ -322,6 +322,7 @@ mod tests {
             main_clone_root: None,
             main_clones: Default::default(),
             linear: Vec::new(),
+            skips: crate::domain::Skips::default(),
         }));
         let (mut view, effects) = app.handle(Event::Started {
             now: Timestamp::UNIX_EPOCH,

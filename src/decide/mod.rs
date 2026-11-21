@@ -29,12 +29,13 @@ pub use attribution::Attribution;
 pub use correlation::{Correlation, Landing, correlate};
 
 use crate::domain::{
-    CoverageEntry, LinearWorkflowPolicy, NextStep, Observation, Policies, UpstreamTargets, Viewers,
-    WaitingOn, WorkItemId,
+    CoverageEntry, LinearWorkflowPolicy, NextStep, Observation, Policies, RepoId, UpstreamTargets,
+    Viewers, WaitingOn, WorkItemId,
     facts::{LinearPriority, Reviewer},
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 /// What the list shows about a Work Item, independent of its kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +93,11 @@ pub struct Decision {
     /// `None` otherwise, and always for Owners without a Linear Workflow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_back: Option<HeldBack>,
+    /// The Next Step this Work Item would have, had its Repo not stopped
+    /// tracking that kind (`skip`, spec 0003). Set only when the Decision has
+    /// no Next Step because of it; the list leaves such Work Items out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_tracked: Option<NextStep>,
     /// For a PR of an Owner with a Linear Workflow: who to ask on Request
     /// review (#36). The configured reviewers plus those awaiting re-review,
     /// minus fresh approvers, pending requests and the author. `None` for
@@ -189,6 +195,7 @@ impl Decision {
             coverage,
             observed_at,
             held_back: None,
+            not_tracked: None,
             suggested_reviewers: None,
             landing: Landing::default(),
             start_order: None,
@@ -217,6 +224,36 @@ impl Context<'_> {
     pub fn policy(&self, owner: &str) -> &LinearWorkflowPolicy {
         self.policies.for_owner(owner)
     }
+
+    /// The Next Step kinds `repo` doesn't track (`skip`, spec 0003).
+    pub fn skips(&self, repo: &RepoId) -> &BTreeSet<NextStep> {
+        self.policies.skips().for_repo(repo)
+    }
+}
+
+/// A Decision whose Next Step its Repo doesn't track (spec 0003), as no Next
+/// Step. The kind's rule held, so the reason keeps its words; whoever owed
+/// the step owes nothing now. A Linear Issue has no Repo and is never
+/// withheld.
+fn withhold_not_tracked(ctx: &Context<'_>, mut decision: Decision) -> Decision {
+    let step = match (decision.next_step, decision.item.id.repo()) {
+        (Some(step), Some(repo)) if ctx.skips(repo).contains(&step) => step,
+        _ => return decision,
+    };
+    let why = decision.explanation.winning_rule.take().unwrap_or_default();
+    decision.explanation.no_step_reason = Some(not_tracked_note(step, &why));
+    decision.next_step = None;
+    decision.not_tracked = Some(step);
+    decision.waiting_on = WaitingOn::Nobody;
+    decision.waiting_reason = "no Next Step, so nobody owes one".to_owned();
+    decision.unattributed = false;
+    decision
+}
+
+/// How an Explanation says that a kind's rule held in a Repo that doesn't
+/// track the kind (spec 0003).
+pub(crate) fn not_tracked_note(step: NextStep, why: &str) -> String {
+    format!("{} is not tracked in this Repo (skip): {why}", step.label())
 }
 
 /// Decides every Work Item in the Observation, in kind order (Pull Requests,
@@ -267,9 +304,16 @@ pub fn decide_with(
     }
     // Land reads each member's own Decision.
     let linear_issues = linear_issue::decide_all(&ctx, &decisions);
-    decisions.extend(issue::decide_all(&ctx));
-    decisions.extend(branch::decide_all(&ctx));
-    decisions.extend(run::decide_all(&ctx));
+    // Issues, Branches and Runs have one candidate Next Step each, so a kind
+    // their Repo doesn't track leaves them with none (spec 0003). Pull
+    // Requests apply skips in their own rule table.
+    for kind in [
+        issue::decide_all(&ctx),
+        branch::decide_all(&ctx),
+        run::decide_all(&ctx),
+    ] {
+        decisions.extend(kind.into_iter().map(|d| withhold_not_tracked(&ctx, d)));
+    }
     decisions.extend(linear_issues);
     decisions
 }

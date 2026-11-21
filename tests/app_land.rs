@@ -49,6 +49,7 @@ fn harness_with_issues(issues: Vec<LinearIssue>) -> Harness {
         main_clone_root: None,
         main_clones: std::collections::BTreeMap::new(),
         linear: vec![workflow],
+        skips: den::domain::Skips::default(),
     };
     let harness = Harness::new(Ok(config));
     queue_round_with(&harness, issues);

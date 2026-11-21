@@ -64,6 +64,7 @@ fn config() -> Config {
         main_clone_root: Some(PathBuf::from(ROOT)),
         main_clones: std::collections::BTreeMap::new(),
         linear: vec![linear_workflow("acme", "acme")],
+        skips: den::domain::Skips::default(),
     }
 }
 
