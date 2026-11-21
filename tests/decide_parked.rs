@@ -14,7 +14,7 @@ use den::{
     domain::{
         LinearWorkflowPolicy, NextStep, Observation, Policies, ReviewPolicy, StartPolicy, Viewers,
         WaitingOn,
-        facts::{LinearStateKind, ReviewVerdict},
+        facts::{LinearStateKind, PullRequestState, ReviewVerdict},
     },
 };
 use support::build::{ME, ObservationBuilder, PrBuilder, linear_issue, now, pr};
@@ -181,4 +181,34 @@ fn a_parked_issue_whose_group_could_land_is_land() {
     let issue = linear(&decisions, "TEAM-1");
     assert_eq!(issue.next_step, Some(NextStep::Land), "{issue:#?}");
     assert_eq!(issue.waiting_on, WaitingOn::Me);
+}
+
+/// Mark for release is a Landing Group rule too, so it also comes before the
+/// parked rule: a parked issue whose member merged is Mark for release. (The
+/// workflow needs a release state for Mark for release to apply at all.)
+#[test]
+fn a_parked_issue_whose_member_merged_is_mark_for_release() {
+    let policies = Policies::default().with(
+        "acme",
+        LinearWorkflowPolicy {
+            release_state: Some("Ready for Release".to_owned()),
+            ..parked().for_owner("acme").clone()
+        },
+    );
+    let observation = acme_owner()
+        .member_state("acme/api", 1, PullRequestState::Merged { merged_at: None })
+        .linear_issue(
+            linear_issue("acme", "id-1", "TEAM-1")
+                .state(PAUSED, LinearStateKind::Started)
+                .attached("acme/api", 1),
+        )
+        .build();
+    let decisions = decide_all(&observation, &policies);
+
+    let issue = linear(&decisions, "TEAM-1");
+    assert_eq!(
+        issue.next_step,
+        Some(NextStep::MarkForRelease),
+        "{issue:#?}"
+    );
 }
