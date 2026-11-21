@@ -2,7 +2,7 @@
 
 den tracks every Review Point on a Pull Request (each review thread, and each point written in a review's body) to a state, and a Pull Request with any Point open or needing a decision has the Next Step Address review, never Merge or Land. The state lives on GitHub, not in den: a thread's resolution is GitHub's, and a body's Points are recorded by the Address review Job in its reply to that review, one hidden marker per Point, `<!-- den:point <review id>.<n> <state> [<commit>] -->`, beside the Job's own one-line summary of the Point. den reads the markers back and shows the list as an Observation, like any other fact; its cache only caches it. Immediately before `gh pr merge`, the Merge or Land Coordination Job posts one comment per Pull Request it merges, with the resolution of every Point (state, commit, link), rendered by den into the prompt's `{resolutions}` placeholder and posted verbatim, so what the launch sheet shows is what is published.
 
-den never posts any of this itself (ADR-0002): Jobs do. Prompts still carry no text written by others: `{review_notes}` gives an Address review Job the reviews' URLs and ids, and it reads them under its Ground Rules (ADR-0008). The Points' one-line summaries in markers and in `{resolutions}` are the Job's own words, not the reviewer's.
+den never posts any of this itself (ADR-0002): Jobs do. Prompts still carry no text written by others: `{review_notes}` gives an Address review Job the reviews' URLs and ids, and it reads them under its Ground Rules (ADR-0008). The Points' one-line summaries, each on the line after its marker and carried into `{resolutions}`, are the Job's own words, not the reviewer's; den keeps a summary only from the viewer's own comments.
 
 ## Considered Options
 
