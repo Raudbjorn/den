@@ -7,7 +7,11 @@
 
 mod support;
 
-use den::{app::Event, config, domain::Observation};
+use den::{
+    app::{Event, Key},
+    config,
+    domain::Observation,
+};
 use std::path::Path;
 use support::{
     build::{ME, ObservationBuilder, now, pr, run},
@@ -53,6 +57,27 @@ fn an_empty_list_says_what_it_does_not_track() {
     assert!(harness.view.list.rows.is_empty());
     let empty = harness.view.list.empty.clone().expect("an empty state");
     assert_eq!(empty.title, "Nothing needs you.");
+    assert!(
+        empty
+            .detail
+            .ends_with("Not tracked here (skip in config.toml): Fix CI, on 1 Work Item."),
+        "{empty:?}"
+    );
+}
+
+#[test]
+fn a_narrowed_scope_does_not_count_its_own_untracked_work_items_as_elsewhere() {
+    let mut harness = started(acme().run(run("acme/app", "ci.yml", 1).failed()).build());
+    harness.key(Key::Right);
+    assert_eq!(harness.view.header.scope, "Owner · acme");
+    assert!(harness.view.list.rows.is_empty());
+    let empty = harness.view.list.empty.clone().expect("an empty state");
+    assert!(
+        empty
+            .detail
+            .starts_with("Nothing in any other Scope either"),
+        "the only Work Item is in this Scope, just not tracked: {empty:?}"
+    );
     assert!(
         empty
             .detail
