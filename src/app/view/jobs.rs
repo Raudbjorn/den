@@ -2,10 +2,39 @@
 //! Live Job, a gone worktree, or one den can't tell about.
 
 use crate::{
-    app::view_model::{JobDetail, JobMarker},
+    app::view_model::{JobActivity, JobActivityLine, JobDetail, JobMarker},
     domain::WorkItemId,
-    handoff::{JobCheck, WorktreeState, live},
+    handoff::{JobCheck, SessionActivity, WorktreeState, live},
 };
+
+/// A Live Job's session activity, as the list draws it (#80).
+pub fn activity(activity: &SessionActivity) -> JobActivity {
+    match activity {
+        SessionActivity::Running => JobActivity::Running,
+        SessionActivity::Idle => JobActivity::Idle,
+        SessionActivity::Unknown(_) => JobActivity::Unknown,
+    }
+}
+
+/// The detail's line on a Live Job's session (#80): what den saw, and that
+/// it decides nothing.
+fn activity_line(check: &JobCheck) -> Option<JobActivityLine> {
+    let session = &check.job.session;
+    let found = check.activity.as_ref()?;
+    let text = match found {
+        SessionActivity::Running => {
+            format!("Session running: a local claude process has session {session}")
+        }
+        SessionActivity::Idle => format!(
+            "Session idle: no local claude process has session {session}; it finished or stopped"
+        ),
+        SessionActivity::Unknown(why) => format!("Running or idle: unknown, {why}"),
+    };
+    Some(JobActivityLine {
+        activity: activity(found),
+        text,
+    })
+}
 
 pub fn marker(state: &WorktreeState) -> JobMarker {
     match state {
@@ -37,6 +66,7 @@ pub fn detail(checks: &[JobCheck], item: &WorkItemId) -> Option<JobDetail> {
     Some(JobDetail {
         marker: marker(&check.state),
         summary,
+        activity: activity_line(check),
         lines: land_job
             .into_iter()
             .chain([

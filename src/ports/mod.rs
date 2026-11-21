@@ -279,6 +279,11 @@ pub trait Workspace: Send + Sync {
     /// Reads only. A missing or unparseable list is
     /// [`PluginsRead::NotChecked`], never an error.
     fn installed_plugins(&self, claude_dir: &Path) -> PluginsRead;
+    /// The command lines (program first) of the local processes den's user
+    /// runs, for telling a Live Job running or idle (#80). Reads only, and
+    /// bounded; an error when the list can't be read in full, so a process
+    /// den didn't see is never reported as absent.
+    fn user_processes(&self) -> Result<Vec<Vec<String>>, WorkspaceError>;
 }
 
 /// A worktree to add: where, on which branch, starting how.
