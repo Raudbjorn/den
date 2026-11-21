@@ -43,6 +43,7 @@ fn workflow(parked_states: &[&str]) -> Policies {
             review: Some(ReviewPolicy {
                 exact_head_approval: true,
                 comment_reviews_need_rereview: true,
+                pending_requests_hold_merge: true,
                 reviewers: Vec::new(),
             }),
             parked_states: parked_states.iter().map(|s| (*s).to_owned()).collect(),

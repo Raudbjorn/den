@@ -84,7 +84,7 @@ Owners without a Linear Workflow are not affected: no Linear requests, no Linear
 41. As the user, I want approvals from bots not to count toward that, so that automation can't approve a merge.
 42. As the user, I want a reviewer whose latest review requested changes, or only commented (when the workflow's comment policy is on), and who hasn't been asked again since the head moved, to make the PR show Request review, so that feedback gets looked at again before merging.
 43. As the user, I want a "changes requested" review given on an older head, with no unresolved threads left, to lead to Request review rather than Address review, so that a PR whose feedback I've addressed doesn't stay stuck on Address review.
-44. As the user, I want a PR with a pending review request to stay at Review, never Merge, so that an outstanding request is never treated as answered.
+44. As the user, I want a PR with a pending review request to stay at Review, never Merge, so that an outstanding request is never treated as answered. *(Amended by ADR-0009, #73: this holds only with the Linear Workflow's `pending_requests_hold_merge = true`. By default a pending request leaves a PR at Review only while it isn't approved.)*
 45. As the user, I want each Linear Workflow rule shown in the Explanation as a workflow policy (for example "workflow policy: approval must be at the current head"), so that I can tell organization rules from GitHub facts.
 46. As the user, I want a member PR that would otherwise show Merge to show no Next Step and "lands with TEAM-123", so that I don't merge one half of a group by itself.
 47. As the user, I want a PR in a Held Repo that would otherwise show Merge to show no Next Step and a "held for release" marker, so that it is visible but never offered for merging.
@@ -179,7 +179,7 @@ Owners without a Linear Workflow are not affected: no Linear requests, no Linear
   - the configured reviewers (GitHub logins or teams);
   - the optional Slack channel (opaque);
   - the in-progress and release state names;
-  - two policy switches: **exact-head approval** (on by default) and **comment reviews need re-review** (on by default).
+  - two policy switches: **exact-head approval** (on by default) and **comment reviews need re-review** (on by default). *(Amended by ADR-0009, #73: exact-head approval is now off by default, and a third switch, `pending_requests_hold_merge`, is off by default too.)*
 - Every Repo named in a Linear Workflow must be one of that Owner's Repos. Team and state names are checked against Linear on the first survey. A mismatch makes the team-states source fail with a reason naming the bad value.
 - No organization's values ship as defaults. A missing Linear Workflow means the Owner is GitHub-only.
 
@@ -318,7 +318,7 @@ No organization-specific slash commands are defaults. A user can point a kind at
 - **Tracker:** published as Raudbjorn/den#30, labelled `ready-for-agent`, broken down into #31–#41. Tickets branch from `main` once milestone 1's stack has merged.
 - **Confirmed by the user:** Mark for release waits for held PRs. It requires **no** open member PRs, held ones included.
 - **Policy taken from the organization's existing tooling, not yet confirmed by the user** (each is config or a switch, so changing it is cheap):
-  - exact-head approval;
+  - exact-head approval (*superseded by ADR-0009, #73: that tooling counts an approval given before a later push and doesn't wait for pending requests, matching the organization's own branch rules, so den's defaults now follow GitHub*);
   - plain COMMENTED reviews need re-review;
   - a Held Repo doesn't block Land even when its PR is broken;
   - the landing order.

@@ -54,6 +54,9 @@ use crate::domain::{
 
 const AUTHOR_ROLE: &str = "the PR author";
 const REVIEWERS_ROLE: &str = "the requested reviewers";
+/// Why a pending request on an approved PR doesn't hold the merge (#73).
+const PENDING_DOESNT_HOLD: &str =
+    "workflow policy: a pending review request doesn't hold the merge";
 /// Failing or pending checks named in one line before "and N more".
 const MAX_NAMED_CHECKS: usize = 4;
 
@@ -111,6 +114,10 @@ struct ReviewFindings {
     /// What den did not read to filter them
     /// ([`Decision::suggested_reviewers_unread`]).
     suggested_reviewers_unread: Option<String>,
+    /// A pending (or unread) review request holds an approved PR at Review
+    /// and keeps Merge away: always under milestone 1, and under a Linear
+    /// Workflow with `pending_requests_hold_merge` on (#73, ADR-0009).
+    pending_requests_hold: bool,
 }
 
 impl ReviewFindings {
@@ -140,6 +147,7 @@ impl ReviewFindings {
             notes: Vec::new(),
             suggested_reviewers: None,
             suggested_reviewers_unread: None,
+            pending_requests_hold: true,
         }
     }
 }
@@ -163,6 +171,7 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         notes: review_notes,
         suggested_reviewers,
         suggested_reviewers_unread,
+        pending_requests_hold,
     } = ReviewFindings::assess(pr, policy.review.as_ref());
     // Every Decision below carries the suggested reviewers, whatever its step.
     let with_reviewers = move |mut decision: Decision| {
@@ -170,16 +179,18 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         decision.suggested_reviewers_unread = suggested_reviewers_unread;
         decision
     };
-    let merge_blockers = merge_blockers(pr, &approval, review_blockers);
+    let merge_blockers = merge_blockers(pr, &approval, review_blockers, pending_requests_hold);
+    let (review, pending_note) = review_unless_approved(
+        review(pr.details.as_ref(), ctx.viewers.github),
+        &approval,
+        pending_requests_hold,
+    );
     let mut rules = vec![
         (NextStep::FinishDraft, draft(pr)),
         (NextStep::ResolveConflicts, conflicts(pr)),
         (NextStep::FixCi, fix_ci(pr.details.as_ref())),
         (NextStep::AddressReview, address_review),
-        (
-            NextStep::Review,
-            review(pr.details.as_ref(), ctx.viewers.github),
-        ),
+        (NextStep::Review, review),
     ];
     rules.extend(request_review.map(|finding| (NextStep::RequestReview, finding)));
     rules.push((NextStep::Merge, merge(pr, &merge_review, &merge_blockers)));
@@ -228,6 +239,7 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         winner_step,
     ));
     other_conditions.extend(review_notes);
+    other_conditions.extend(pending_note);
     other_conditions.extend(
         not_tracked
             .iter()
@@ -619,6 +631,26 @@ fn review(details: Option<&PrDetails>, viewer: &Viewer) -> Finding {
     Finding::Holds(format!("review requested from {}", names.join(", ")))
 }
 
+/// A pending review request that doesn't hold the merge (#73, ADR-0009):
+/// with `pending_requests_hold` off and the PR approved (or needing no
+/// review), Review doesn't hold, and an unread request isn't an unknown for
+/// it. The request is kept as a note naming the policy. Otherwise `review`
+/// as it is.
+fn review_unless_approved(
+    review: Finding,
+    approval: &Approval,
+    pending_requests_hold: bool,
+) -> (Finding, Option<String>) {
+    let approved = matches!(approval, Approval::Approved | Approval::NoReviewRequired);
+    if pending_requests_hold || !approved {
+        return (review, None);
+    }
+    match review {
+        Finding::Holds(why) => (Finding::No, Some(format!("{why} ({PENDING_DOESNT_HOLD})"))),
+        Finding::Unknown(_) | Finding::No => (Finding::No, None),
+    }
+}
+
 /// `review` is the review half of the rule ("approved").
 fn merge(pr: &PullRequest, review: &str, blockers: &[String]) -> Finding {
     if !blockers.is_empty() {
@@ -640,6 +672,7 @@ fn merge_blockers(
     pr: &PullRequest,
     approval: &Approval,
     review_blockers: Vec<String>,
+    pending_requests_hold: bool,
 ) -> Vec<String> {
     let mut blockers = Vec::new();
     if pr.is_draft {
@@ -659,8 +692,9 @@ fn merge_blockers(
             } else if !details.threads_complete {
                 blockers.push("not every review thread was read".to_owned());
             }
-            // An unread request could be a pending review, which comes before Merge.
-            if !details.review_requests.complete {
+            // An unread request could be a pending review, which comes before
+            // Merge only where a pending request holds it (#73).
+            if pending_requests_hold && !details.review_requests.complete {
                 blockers.push("not every review request was read".to_owned());
             }
             let checks = &details.checks.items;

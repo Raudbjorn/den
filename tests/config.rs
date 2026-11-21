@@ -215,8 +215,9 @@ slack_channel = "#team-dev"
 in_progress_state = "In Progress"
 release_state = "Ready for Release"
 parked_states = ["Paused", "Blocked"]
-exact_head_approval = false
+exact_head_approval = true
 comment_reviews_need_rereview = false
+pending_requests_hold_merge = true
 "##;
 
 #[test]
@@ -249,21 +250,26 @@ fn a_linear_workflow_reads_every_setting() {
     assert_eq!(workflow.in_progress_state.as_deref(), Some("In Progress"));
     assert_eq!(workflow.release_state.as_deref(), Some("Ready for Release"));
     assert_eq!(workflow.parked_states, ["Paused", "Blocked"]);
-    assert!(!workflow.exact_head_approval);
+    // Explicit strict settings still override the GitHub-aligned defaults.
+    assert!(workflow.exact_head_approval);
     assert!(!workflow.comment_reviews_need_rereview);
+    assert!(workflow.pending_requests_hold_merge);
     assert!(config.linear_workflow("octo").is_none());
 }
 
-/// The policy switches default to on in the config (spec 0002, "Config");
-/// everything else is empty or off, and no organization's values ship.
+/// The review switches default to GitHub's own rules (ADR-0009, #73):
+/// exact-head approval and pending requests holding the merge off, comment
+/// reviews needing re-review on. Everything else is empty or off, and no
+/// organization's values ship.
 #[test]
 fn a_minimal_linear_workflow_has_the_configs_defaults() {
     let config =
         parse("owners = [\"acme\"]\n[linear.acme]\nworkspace = \"acme\"\napi_key_env = \"K\"\n")
             .expect("valid");
     let workflow = &config.linear[0];
-    assert!(workflow.exact_head_approval);
+    assert!(!workflow.exact_head_approval);
     assert!(workflow.comment_reviews_need_rereview);
+    assert!(!workflow.pending_requests_hold_merge);
     assert!(!workflow.include_backlog && !workflow.active_cycle_only);
     assert!(workflow.start_teams.is_empty() && workflow.new_work_repos.is_empty());
     assert!(workflow.held_repos.is_empty() && workflow.landing_order.is_empty());
@@ -307,8 +313,9 @@ fn a_linear_workflows_review_settings_become_its_owners_policy() {
                 active_cycle_only: true,
             },
             review: Some(ReviewPolicy {
-                exact_head_approval: false,
+                exact_head_approval: true,
                 comment_reviews_need_rereview: false,
+                pending_requests_hold_merge: true,
                 reviewers: vec![
                     Reviewer::User("alice".to_owned()),
                     Reviewer::Team(TeamRef {
@@ -323,7 +330,7 @@ fn a_linear_workflows_review_settings_become_its_owners_policy() {
             parked_states: vec!["Paused".to_owned(), "Blocked".to_owned()],
         }
     );
-    // The config's defaults: both switches on.
+    // The config's defaults (ADR-0009): GitHub's rules, comments re-reviewed.
     let minimal =
         parse("owners = [\"acme\"]\n[linear.acme]\nworkspace = \"acme\"\napi_key_env = \"K\"\n")
             .expect("valid");
@@ -333,7 +340,8 @@ fn a_linear_workflows_review_settings_become_its_owners_policy() {
         .review
         .as_ref()
         .expect("review rules");
-    assert!(review.exact_head_approval && review.comment_reviews_need_rereview);
+    assert!(!review.exact_head_approval && review.comment_reviews_need_rereview);
+    assert!(!review.pending_requests_hold_merge);
     assert!(review.reviewers.is_empty());
     // The empty policy keeps every switch off, offers no Start and holds
     // nothing.

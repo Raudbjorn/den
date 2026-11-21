@@ -93,8 +93,10 @@ impl LinearWorkflowPolicy {
 /// review step and judges changes requested by the commit they were given on;
 /// the two switches tighten approval and comments further.
 ///
-/// The config turns both switches on by default (#32); that default is the
-/// config's. A `ReviewPolicy` built here has whatever it is given.
+/// The config's defaults follow GitHub's own rules (ADR-0009, #73):
+/// exact-head approval and pending requests holding the merge off, comment
+/// reviews needing re-review on. A `ReviewPolicy` built here has whatever it
+/// is given.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReviewPolicy {
     /// **Exact-head approval**: only a user's (never a bot's) approval given on
@@ -105,6 +107,12 @@ pub struct ReviewPolicy {
     /// **Comment reviews need re-review**: a user whose latest review only
     /// commented, on an older head, is awaiting re-review.
     pub comment_reviews_need_rereview: bool,
+    /// **Pending requests hold the merge**: a PR with a pending review request
+    /// stays at Review even when approved (spec 0002, story 44). Off: a
+    /// pending request leaves a PR at Review only while it isn't approved,
+    /// and an unread request no longer keeps Merge away, as GitHub doesn't
+    /// hold a merge for either (ADR-0009).
+    pub pending_requests_hold_merge: bool,
     /// The configured reviewers (GitHub logins or teams), suggested on every
     /// Request review.
     pub reviewers: Vec<Reviewer>,

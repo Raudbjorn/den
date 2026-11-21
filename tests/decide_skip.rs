@@ -213,6 +213,7 @@ fn acme_workflow_skipping_merge_in_app() -> Policies {
                 review: Some(ReviewPolicy {
                     exact_head_approval: true,
                     comment_reviews_need_rereview: true,
+                    pending_requests_hold_merge: true,
                     reviewers: Vec::new(),
                 }),
                 ..LinearWorkflowPolicy::default()
