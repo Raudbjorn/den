@@ -34,6 +34,7 @@ fn acme() -> Policies {
             review: Some(ReviewPolicy {
                 exact_head_approval: true,
                 comment_reviews_need_rereview: true,
+                pending_requests_hold_merge: true,
                 reviewers: Vec::new(),
             }),
             held_repos: vec![RepoId::new("acme", "web")],

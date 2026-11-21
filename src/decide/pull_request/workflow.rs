@@ -71,6 +71,7 @@ pub(super) fn assess(pr: &PullRequest, policy: &ReviewPolicy) -> ReviewFindings 
         suggested_reviewers_unread: review.suggested_unread(),
         suggested_reviewers: Some(review.suggested),
         approval,
+        pending_requests_hold: policy.pending_requests_hold_merge,
     }
 }
 
