@@ -44,7 +44,7 @@ ADRs and `CONTEXT.md`; this file links them and holds the rest until `/to-spec`.
   "resolve conflicts and failing CI, then mark it ready for review" (a coding
   Job may mark ready under ADR-0008).
 - **Merge Job pins the head**: new `{head}` placeholder, `gh pr merge
-  --match-head-commit {head}`. Optional per-Workflow **`merge_method`**
+  --match-head-commit {head}`. Optional per-Repo **`merge_method`**
   (`squash`/`merge`/`rebase`; e.g. `squash`), used by Merge and Land; unset →
   the prompt says use what the repository allows and ask if several are.
 - The reference tool's no-merge list (a mobile-app repo cherry-picked at release) maps to existing `held_repos`.
@@ -69,7 +69,8 @@ ADRs and `CONTEXT.md`; this file links them and holds the rest until `/to-spec`.
 
 ### Screenshots gate (§4 #3)
 
-- Per-Workflow `screenshot_repos` (for example an admin portal and a mobile app) and a
+- Per-Repo `screenshots = true` in milestone 3's `[repos."OWNER/REPO"]` table
+  (not per Workflow: the gate has nothing to do with Linear) and a
   new Next Step **Add screenshots** (term in `CONTEXT.md`): the user's own PRs
   only, after Address review, before Request review / Merge / Land (so Land
   waits for it through its members).
@@ -117,6 +118,18 @@ ADRs and `CONTEXT.md`; this file links them and holds the rest until `/to-spec`.
 - #33–#41 closed on 2026-11-21 as delivered (each via its PR into
   `feat/32-linear-tracer`, landed on `main` as ccf4d35 / #45; #37 and #41 through
   integration PRs #51 and #61). Specs #1 and #30 stay open.
+
+### Consistency with milestone 3 (#66, #67)
+
+- ADRs numbered 0007–0010 after milestone 3's ADR-0005 (the Repo is the unit
+  of survey) and ADR-0006 (ratatui widgets). This work is spec 0004 /
+  milestone 4: spec 0003 excludes Next Step rule changes and GitHub writes.
+- Repo policy (`screenshots`, `merge_method`) lives in the per-Repo table;
+  review and Linear policy stays on the Workflow.
+- The Sweep reads the same Review Point and screenshot facts as the Repo
+  Survey, so the Repo screen's counts agree with the workbench; the extra
+  GraphQL cost is unverified.
+- Add screenshots joins `skip`'s skippable kinds.
 
 ## Status
 

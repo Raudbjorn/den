@@ -100,7 +100,7 @@ Each Work Item has at most one. An Issue with a linked open Pull Request has non
 - **Resolve conflicts**: a Pull Request cannot merge because of conflicts.
 - **Fix CI**: checks are failing on a Pull Request, or the latest Run of a workflow on a default branch failed. Each workflow is judged on its own latest Run (latest attempt), so a passing workflow never hides a failing one.
 - **Address review**: a Pull Request has requested changes, unresolved review threads, or Review Points that are open or need a decision.
-- **Add screenshots**: the user's own Pull Request in one of its Linear Workflow's `screenshot_repos` has no `## Screenshots` section with an image or a "No visual change" line (HTML comments don't count). Comes before Request review, Merge and Land. Its Job runs in the same ask-first permission mode as a Coordination Job, gets the Ground Rules of a Job that changes code, and edits only that section of the Pull Request's body; how to capture and upload is the user's `add_screenshots` template, not den's.
+- **Add screenshots**: the user's own Pull Request in a Repo configured with `screenshots = true` has no `## Screenshots` section with an image or a "No visual change" line (HTML comments don't count). Comes before Request review, Merge and Land. Its Job runs in the same ask-first permission mode as a Coordination Job, gets the Ground Rules of a Job that changes code, and edits only that section of the Pull Request's body; how to capture and upload is the user's `add_screenshots` template, not den's.
 - **Review**: a Pull Request is waiting for a requested review and is not yet approved; with a Linear Workflow's `pending_requests_hold_merge` on, any pending request keeps it here (ADR-0009).
 - **Merge**: a Pull Request is approved, passing and mergeable.
 - **Triage**: an Issue has neither labels nor an assignee.
@@ -123,7 +123,7 @@ A Job that coordinates rather than codes: it asks for review (Request review), l
 _Avoid_: Ops job, admin job, meta job
 
 **Review Point**:
-One thing a reviewer asked for on a Pull Request, in a review thread or in a review's body, and where it stands: open, fixed (with the commit), declined (with the reason), follow-up (out of scope for this Pull Request), needs decision (the user's to settle), or answered (the reviewer approved again after raising it). A review body counts unless it is only a stock approval ("LGTM", "ship it", 👍). Splitting a body into Points is a Job's work; until then the whole body is one Point, not yet split. den observes Points from GitHub (thread state and the markers Jobs post, ADR-0010); it never keeps them only locally.
+One thing a reviewer asked for on a Pull Request, in a review thread or in a review's body, and where it stands: open, resolved (a thread resolved on GitHub), fixed (with the commit), declined (with the reason), follow-up (out of scope for this Pull Request), needs decision (the user's to settle), or answered (the reviewer approved again after raising it). A review body counts unless it is only a stock approval ("LGTM", "ship it", 👍). Splitting a body into Points is a Job's work; until then the whole body is one Point, not yet split. Every Pull Request has Review Points, whether or not its Owner has a Linear Workflow. den observes them from GitHub (thread state and the markers Jobs post, ADR-0010); it never keeps them only locally.
 _Avoid_: Task, todo, review note, comment (for the Point itself)
 
 **Ground Rules**:
