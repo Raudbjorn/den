@@ -25,6 +25,7 @@ use den::{
 use std::{collections::BTreeMap, path::Path, path::PathBuf};
 use support::{
     build::{ME, ObservationBuilder, pr},
+    ground_rules::{common_rules, quoted},
     harness::Harness,
 };
 
@@ -133,6 +134,12 @@ fn merge_launches_ask_first_pinned_to_the_head_den_observed() {
     assert_eq!(prompt(&ready), merge_prompt(ASK));
     let command = ready.command.clone().expect("a command");
     assert!(command.contains("--permission-mode manual"), "{command}");
+    // #71's common-only rules must compose with #72's ask-first Merge mode.
+    let rules = common_rules("octo/app#7");
+    assert!(
+        command.contains(&format!("--append-system-prompt {} -n ", quoted(&rules))),
+        "{command}"
+    );
 
     press(&mut harness, Key::Enter);
     let plans = launch_plans(&harness);
@@ -143,6 +150,7 @@ fn merge_launches_ask_first_pinned_to_the_head_den_observed() {
         Some(PermissionMode::ApprovalRequired)
     );
     assert_eq!(plans[0].prompt, merge_prompt(ASK));
+    assert_eq!(harness.launcher.windows()[0].ground_rules, rules);
     assert_eq!(
         harness.launcher.windows()[0].permission_mode,
         Some(PermissionMode::ApprovalRequired)

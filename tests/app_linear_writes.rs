@@ -741,7 +741,13 @@ fn the_implement_prompt_carries_the_identifier_and_url_and_no_issue_text() {
     );
     let url = team_6().url;
     let prompt = ready.prompt.expect("a prompt").text;
-    assert_eq!(prompt, format!("/implement TEAM-6 {url} in acme/api"));
+    // Since #71 the default ends with the stop line (spec 0004, story 66).
+    assert_eq!(
+        prompt,
+        format!(
+            "/implement TEAM-6 {url} in acme/api. If you can't read the Linear Issue, stop and say so."
+        )
+    );
     assert!(!prompt.contains("SECRET"), "{prompt}");
 
     harness.linear.push_reread(reread(Some(me()), todo()));
@@ -812,7 +818,11 @@ fn several_repos_for_new_work_wait_for_one_to_be_chosen() {
     assert_eq!(web.status, LaunchStatus::Ready, "{}", messages(&web));
     assert_eq!(field(&web, "TARGET").0, "acme/web");
     assert!(
-        web.prompt.expect("a prompt").text.ends_with("in acme/web"),
+        // Since #71 the stop line follows the Repo (spec 0004, story 66).
+        web.prompt
+            .expect("a prompt")
+            .text
+            .contains(" in acme/web. If you can't read the Linear Issue, stop and say so."),
         "the prompt names the chosen Repo"
     );
 }

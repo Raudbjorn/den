@@ -25,6 +25,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 use support::{
     build::{ME, ObservationBuilder, branch, issue, repo_id, run},
     fakes::WorkspaceCall,
+    ground_rules::{coding_rules, quoted},
     harness::Harness,
 };
 
@@ -252,6 +253,19 @@ fn a_triage_issue_gets_a_triage_branch_and_the_triage_prompt() {
     assert_eq!(
         ready.prompt.as_ref().expect("a prompt").text,
         "/triage https://github.com/octo/app/issues/11"
+    );
+    // The Ground Rules (#71, ADR-0008): Triage changes code, so it gets the
+    // coding rule, and an Issue's Job may change no existing pull request.
+    assert!(
+        ready
+            .command
+            .as_deref()
+            .is_some_and(|c| c.contains(&format!(
+                " claude --append-system-prompt {} -n ",
+                quoted(&coding_rules(""))
+            ))),
+        "{:?}",
+        ready.command
     );
 }
 

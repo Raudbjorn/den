@@ -26,18 +26,34 @@ const EXACT_HEAD: &str = "workflow policy: approval must be at the current head"
 struct Switches {
     exact_head: bool,
     comments: bool,
+    /// `pending_requests_hold_merge` (#73).
+    pending_hold: bool,
 }
 
+/// Every switch on: the strictest rules, and spec 0002's original defaults.
 const BOTH_ON: Switches = Switches {
     exact_head: true,
     comments: true,
+    pending_hold: true,
 };
+
+/// The config's defaults since ADR-0009: GitHub's own rules, comment
+/// reviews still needing re-review.
+const DEFAULTS: Switches = Switches {
+    exact_head: false,
+    comments: true,
+    pending_hold: false,
+};
+
+const PENDING_DOESNT_HOLD: &str =
+    "workflow policy: a pending review request doesn't hold the merge";
 
 fn workflow(switches: Switches, reviewers: Vec<Reviewer>, held: &[&str]) -> LinearWorkflowPolicy {
     LinearWorkflowPolicy {
         review: Some(ReviewPolicy {
             exact_head_approval: switches.exact_head,
             comment_reviews_need_rereview: switches.comments,
+            pending_requests_hold_merge: switches.pending_hold,
             reviewers,
         }),
         held_repos: held.iter().map(|r| repo_id(r)).collect(),
@@ -132,10 +148,119 @@ fn an_approval_at_an_older_head_is_request_review_with_exact_head_on_and_merge_w
         &acme(Switches {
             exact_head: false,
             comments: true,
+            pending_hold: true,
         }),
     );
     assert_eq!(off.next_step, Some(NextStep::Merge), "{off:#?}");
     assert_says(&off, &["approved", "nobody awaiting re-review"]);
+}
+
+/// #73, ADR-0009: with `pending_requests_hold_merge` off (the default), an
+/// approved, passing, mergeable PR is Merge even while another reviewer's
+/// request is pending, as GitHub would merge it; on, it stays at Review
+/// (spec 0002, story 44).
+#[test]
+fn an_approved_pr_with_a_pending_request_is_merge_by_default_and_review_when_requests_hold() {
+    let pr = || {
+        ready(21)
+            .review_at_head("alice", ReviewVerdict::Approved)
+            .review_requested_from("bob")
+    };
+
+    let by_default = decided(pr(), &acme(DEFAULTS));
+    assert_eq!(
+        by_default.next_step,
+        Some(NextStep::Merge),
+        "{by_default:#?}"
+    );
+    assert_says(
+        &by_default,
+        &["review requested from bob", PENDING_DOESNT_HOLD],
+    );
+
+    let held = decided(
+        pr(),
+        &acme(Switches {
+            pending_hold: true,
+            ..DEFAULTS
+        }),
+    );
+    assert_eq!(held.next_step, Some(NextStep::Review), "{held:#?}");
+    assert_says(&held, &["review requested from bob"]);
+}
+
+#[test]
+fn a_pending_request_on_a_pr_that_is_not_approved_is_review_under_either_setting() {
+    for pending_hold in [false, true] {
+        let decision = decided(
+            pr("acme/api", 22)
+                .author(ME)
+                .passing("ci")
+                .decision(ReviewDecision::ReviewRequired)
+                .review_requested_from("bob"),
+            &acme(Switches {
+                pending_hold,
+                ..DEFAULTS
+            }),
+        );
+        assert_eq!(decision.next_step, Some(NextStep::Review), "{decision:#?}");
+        assert_says(&decision, &["review requested from bob"]);
+    }
+}
+
+/// An unread request could be a pending one: it keeps Merge away only where a
+/// pending request would.
+#[test]
+fn unread_review_requests_block_merge_only_when_pending_requests_hold_merge() {
+    let pr = || {
+        ready(23)
+            .review_at_head("alice", ReviewVerdict::Approved)
+            .review_requests_truncated()
+    };
+
+    let by_default = decided(pr(), &acme(DEFAULTS));
+    assert_eq!(
+        by_default.next_step,
+        Some(NextStep::Merge),
+        "{by_default:#?}"
+    );
+
+    let held = decided(
+        pr(),
+        &acme(Switches {
+            pending_hold: true,
+            ..DEFAULTS
+        }),
+    );
+    assert_ne!(held.next_step, Some(NextStep::Merge), "{held:#?}");
+}
+
+/// #73: under the config's defaults, an approval given before a later push
+/// counts, and changes requested on an older head with no unresolved threads
+/// still ask for a fresh look (story 43).
+#[test]
+fn the_config_defaults_follow_github_and_keep_story_43() {
+    let older_approval = decided(
+        ready(24).review_on("alice", ReviewVerdict::Approved, OLDER_HEAD),
+        &acme(DEFAULTS),
+    );
+    assert_eq!(
+        older_approval.next_step,
+        Some(NextStep::Merge),
+        "{older_approval:#?}"
+    );
+
+    let older_changes = decided(
+        ready(25)
+            .changes_requested()
+            .review_on("bob", ReviewVerdict::ChangesRequested, OLDER_HEAD),
+        &acme(DEFAULTS),
+    );
+    assert_eq!(
+        older_changes.next_step,
+        Some(NextStep::RequestReview),
+        "{older_changes:#?}"
+    );
 }
 
 #[test]
@@ -173,6 +298,7 @@ fn an_approval_with_a_pending_request_to_a_commented_reviewer_is_review_never_me
         Switches {
             exact_head: true,
             comments: false,
+            pending_hold: true,
         },
     ] {
         let decision = decided(
@@ -210,6 +336,7 @@ fn a_plain_comment_on_an_older_head_needs_re_review_only_when_the_comment_policy
         &acme(Switches {
             exact_head: true,
             comments: false,
+            pending_hold: true,
         }),
     );
     assert_eq!(off.next_step, Some(NextStep::Merge), "{off:#?}");
@@ -227,6 +354,7 @@ fn an_older_approval_does_not_suppress_the_comment_re_review_policy() {
                 &acme(Switches {
                     exact_head,
                     comments,
+                    pending_hold: true,
                 }),
             );
             // Accepting older approvals must not bypass the independent comment policy.

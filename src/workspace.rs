@@ -14,6 +14,7 @@ use crate::{
     },
     ports::{Workspace, WorkspaceError, WorktreeAdd, WorktreeStart},
     process::{self, Invocation, Output},
+    start::GitDir,
 };
 use serde::Deserialize;
 use std::{
@@ -46,6 +47,10 @@ pub const MAX_INSTALLED_PLUGINS_BYTES: u64 = 1024 * 1024;
 /// The most plugin installs den reads from `installed_plugins.json`.
 pub const MAX_PLUGIN_INSTALLS: usize = 200;
 const GIT_PROGRAM: &str = "git";
+/// What git says, under `LC_ALL=C`, when a directory is in no repository.
+const NOT_A_REPOSITORY: &str = "not a git repository";
+/// The name of a Main Clone's git directory: its parent is the Main Clone.
+const GIT_DIR_NAME: &str = ".git";
 /// Owner and other write bits of a Unix mode.
 #[cfg(unix)]
 const OWNER_WRITE: u32 = 0o200;
@@ -170,6 +175,62 @@ fn checked_remote(remote: &str, operation: impl Fn() -> String) -> Result<&str, 
 }
 
 impl Workspace for GitWorkspace {
+    fn repo_at(&self, dir: &Path) -> Result<GitDir, WorkspaceError> {
+        let operation = || format!("read the git work tree at {}", dir.display());
+        if !dir.is_dir() {
+            return Err(WorkspaceError {
+                operation: operation(),
+                detail: "no such directory".to_owned(),
+            });
+        }
+        // One call answers both: whether `dir` is in a work tree, and the
+        // common git directory every worktree of the clone shares.
+        let invocation = self.git(dir).args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--is-inside-work-tree",
+            "--git-common-dir",
+        ]);
+        let output = self.run(&invocation, operation, GIT_TIMEOUT_SECS)?;
+        if !output.status.success() {
+            let detail = failure_detail(&output);
+            if detail.contains(NOT_A_REPOSITORY) {
+                return Ok(GitDir::NotAWorkTree);
+            }
+            return Err(WorkspaceError {
+                operation: operation(),
+                detail,
+            });
+        }
+        let text = output.stdout_text();
+        let mut lines = text.lines().map(str::trim);
+        if lines.next() != Some("true") {
+            return Ok(GitDir::NotAWorkTree);
+        }
+        let common = lines
+            .next()
+            .filter(|line| !line.is_empty())
+            .map(PathBuf::from)
+            .ok_or_else(|| WorkspaceError {
+                operation: operation(),
+                detail: format!("git named no common git directory: {text:?}"),
+            })?;
+        let main_clone = match (common.file_name(), common.parent()) {
+            (Some(name), Some(parent)) if name == GIT_DIR_NAME => parent.to_path_buf(),
+            // A git directory kept apart from its work tree: the remotes are
+            // still the clone's, and the directory is the best name for it.
+            _ => common,
+        };
+        // The Main Clone's remotes, read there: with `extensions.worktreeConfig`
+        // a worktree can add remotes (even an `origin`) of its own, and those
+        // must not decide which Repo a Job worktree opens.
+        let remotes = self.remotes(&main_clone)?;
+        Ok(GitDir::WorkTree {
+            main_clone,
+            remotes,
+        })
+    }
+
     fn find_clones(&self, root: &Path) -> Result<Vec<PathBuf>, WorkspaceError> {
         let operation = || format!("search {} for clones", root.display());
         let mut clones = Vec::new();

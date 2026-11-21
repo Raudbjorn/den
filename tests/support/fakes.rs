@@ -581,6 +581,22 @@ fn no_clone(path: &Path) -> WorkspaceError {
 }
 
 impl Workspace for FakeWorkspace {
+    /// A directory in a registered clone reads as that clone, with its
+    /// remotes; anywhere else is no work tree.
+    fn repo_at(&self, dir: &Path) -> Result<den::start::GitDir, WorkspaceError> {
+        let state = self.state.lock().expect("lock");
+        Ok(state
+            .clones
+            .iter()
+            .find(|(clone, _)| dir.starts_with(clone))
+            .map_or(den::start::GitDir::NotAWorkTree, |(clone, c)| {
+                den::start::GitDir::WorkTree {
+                    main_clone: clone.clone(),
+                    remotes: c.remotes.clone(),
+                }
+            }))
+    }
+
     fn find_clones(&self, root: &Path) -> Result<Vec<PathBuf>, WorkspaceError> {
         let state = self.state.lock().expect("lock");
         Ok(state

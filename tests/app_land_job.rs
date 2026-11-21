@@ -35,6 +35,7 @@ use den::{
 use std::path::PathBuf;
 use support::{
     build::{ME, ObservationBuilder, PrBuilder, linear_issue, linear_viewer, pr},
+    ground_rules::{common_rules, quoted},
     harness::{Harness, linear_workflow},
 };
 
@@ -331,6 +332,19 @@ fn c_then_enter_on_land_launches_one_coordination_job_with_the_approved_members_
         ready.command.as_deref().is_some_and(|c| {
             c.contains("--permission-mode manual") && c.contains("--setting-sources user")
         }),
+        "{:?}",
+        ready.command
+    );
+    // The Ground Rules (#71, ADR-0008): the common rules only, naming every
+    // member den lands in landing order, and never the held member.
+    assert!(
+        ready
+            .command
+            .as_deref()
+            .is_some_and(|c| c.contains(&format!(
+                " --append-system-prompt {} -n ",
+                quoted(&common_rules("acme/app#2, acme/api#1"))
+            ))),
         "{:?}",
         ready.command
     );

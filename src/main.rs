@@ -29,7 +29,10 @@ use den::{
     app::{App, Event, Key, ViewModel},
     cache::FileCache,
     config,
-    domain::{RepoId, WorkItemId},
+    domain::{
+        RepoId, WorkItemId,
+        ids::{is_valid_login, is_valid_repo_name},
+    },
     github::{GhSource, graphql::GhCli},
     handoff::prompts,
     jobs::FileJobStore,
@@ -37,8 +40,9 @@ use den::{
     linear::{LinearApi, write::LinearWrites},
     logging::{self, LoggingError},
     paths::{Paths, PathsError},
-    ports::{Ports, SystemClock, UpstreamStore},
+    ports::{Ports, SystemClock, UpstreamStore, WorkspaceError},
     runtime::{self, Flow, Worker},
+    start::{self, StartArg},
     terminal::{SIGNAL_EXIT_STATUS_BASE, TerminalSession},
     ui::{
         Theme, UiError,
@@ -59,7 +63,7 @@ use std::{
 
 const EXIT_FAILURE: u8 = 1;
 const EXIT_USAGE: u8 = 2;
-const USAGE: &str = "usage: den [--help | --version | --doctor | --dump COLSxROWS | --launch OWNER/REPO#N|OWNER/REPO:BRANCH|OWNER/REPO@WORKFLOW [--switch-target] [--prompt TEXT] [--yes]]";
+const USAGE: &str = "usage: den [OWNER/REPO | --pick | --help | --version | --doctor | --dump COLSxROWS | --launch OWNER/REPO#N|OWNER/REPO:BRANCH|OWNER/REPO@WORKFLOW [--switch-target] [--prompt TEXT] [--yes]]";
 /// The terminal size `--launch` lays the sheet out for, in cells.
 const LAUNCH_DUMP_SIZE: (u16, u16) = (160, 45);
 /// The largest `--dump` width or height, in cells. The dump buffer holds
@@ -111,7 +115,8 @@ enum DenError {
 }
 
 enum Mode {
-    Interactive,
+    /// The workspace, opening where the start rules say (#90).
+    Interactive(StartArg),
     Dump {
         cols: u16,
         rows: u16,
@@ -128,7 +133,15 @@ enum Mode {
 
 fn parse_args(args: &[String]) -> Result<Mode, DenError> {
     match args {
-        [] => Ok(Mode::Interactive),
+        [] => Ok(Mode::Interactive(StartArg::Auto)),
+        [flag] if flag == "--pick" => Ok(Mode::Interactive(StartArg::Pick)),
+        [repo] if !repo.starts_with('-') => parse_repo(repo)
+            .map(|repo| Mode::Interactive(StartArg::Repo(repo)))
+            .ok_or_else(|| {
+                DenError::Usage(format!(
+                    "expected OWNER/REPO such as Raudbjorn/den, got {repo:?}"
+                ))
+            }),
         [flag, size] if flag == "--dump" => {
             let parsed = size
                 .split_once('x')
@@ -148,6 +161,12 @@ fn parse_args(args: &[String]) -> Result<Mode, DenError> {
         [flag, item, rest @ ..] if flag == "--launch" => parse_launch(item, rest),
         other => Err(DenError::Usage(format!("unexpected arguments: {other:?}"))),
     }
+}
+
+/// `OWNER/REPO`, each part a valid GitHub name.
+fn parse_repo(text: &str) -> Option<RepoId> {
+    let (owner, name) = text.split_once('/')?;
+    (is_valid_login(owner) && is_valid_repo_name(name)).then(|| RepoId::new(owner, name))
 }
 
 /// The Work Item `--launch` names.
@@ -390,7 +409,10 @@ fn run(args: &[String]) -> Result<(), DenError> {
             return writeln!(
                 io::stdout().lock(),
                 "{USAGE}\n\n\
-                With no arguments, open the interactive workspace.\n\
+                With no arguments, open the interactive workspace: in the Repo of the\n\
+                git clone (or Job worktree) it was started in, when that is clear.\n\
+                OWNER/REPO   Open in that Repo.\n\
+                --pick       Open on every watched Owner, even inside a clone.\n\
                 --help       Show this help without loading configuration.\n\
                 --version    Print the package version.\n\
                 --doctor     Check local survey and launch prerequisites (no network or writes).\n\
@@ -464,7 +486,17 @@ fn run(args: &[String]) -> Result<(), DenError> {
         clock: Arc::new(SystemClock),
     };
     match mode {
-        Mode::Interactive => run_interactive(&theme, app, ports, graphics),
+        Mode::Interactive(arg) => {
+            let start = start::resolve(&arg, || {
+                let dir = std::env::current_dir().map_err(|e| WorkspaceError {
+                    operation: "read the current directory".to_owned(),
+                    detail: e.to_string(),
+                })?;
+                ports.workspace.repo_at(&dir)
+            });
+            tracing::info!(?arg, ?start, "start");
+            run_interactive(&theme, app.with_start(start), ports, graphics)
+        }
         Mode::Dump { cols, rows } => {
             app.handle(Event::Resized { cols, rows });
             let started = Event::Started {
@@ -751,6 +783,47 @@ mod tests {
 
     /// Before a launch, the printed sheet is the point: a closed stdout fails
     /// the run (and nothing is launched).
+    fn args(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| (*w).to_owned()).collect()
+    }
+
+    /// #90: `den OWNER/REPO` and `den --pick` choose where the workspace
+    /// opens; anything else that isn't a flag must be a valid OWNER/REPO.
+    #[test]
+    fn a_repo_or_pick_chooses_where_the_workspace_opens() {
+        assert!(matches!(
+            parse_args(&[]),
+            Ok(Mode::Interactive(StartArg::Auto))
+        ));
+        assert!(matches!(
+            parse_args(&args(&["--pick"])),
+            Ok(Mode::Interactive(StartArg::Pick))
+        ));
+        assert!(matches!(
+            parse_args(&args(&["Raudbjorn/den"])),
+            Ok(Mode::Interactive(StartArg::Repo(repo))) if repo == RepoId::new("Raudbjorn", "den")
+        ));
+        for bad in ["den", "a/b/c", "/den", "owner/", "own er/den", "o/.."] {
+            assert!(
+                matches!(parse_args(&args(&[bad])), Err(DenError::Usage(e)) if e.contains("OWNER/REPO")),
+                "{bad}"
+            );
+        }
+        // A leading `-` reads as an unknown flag, not a Repo.
+        assert!(matches!(
+            parse_args(&args(&["-x/den"])),
+            Err(DenError::Usage(e)) if e.contains("unexpected arguments")
+        ));
+        assert!(matches!(
+            parse_args(&args(&["Raudbjorn/den", "extra"])),
+            Err(DenError::Usage(_))
+        ));
+        assert!(matches!(
+            parse_args(&args(&["--pick", "Raudbjorn/den"])),
+            Err(DenError::Usage(_))
+        ));
+    }
+
     #[test]
     fn a_closed_stdout_before_a_launch_fails_the_run() {
         let weighed = weigh_printing(Ok(()), Err(broken_pipe()), Printing::Required);
