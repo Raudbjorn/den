@@ -117,6 +117,15 @@ Help and version also work without configuration or a graphical session.
 den
 ```
 
+Started inside a git clone, or one of its Job worktrees, den opens in that
+Repo's Scope: the Repo `origin` names on GitHub, or else the only GitHub Repo
+among the remotes. With several GitHub remotes and no GitHub `origin`, or no
+GitHub remote at all, den opens on every watched Owner and says why in the
+header. `den OWNER/REPO` opens a named Repo, and `den --pick` opens on every
+watched Owner even inside a clone. For now a Repo outside the watched Owners
+opens on every watched Owner, with a notice, because den surveys only the
+watched Owners.
+
 On startup den displays cached data for the viewer while surveying again. Coverage
 says whether each source was complete, partial, failed or not fetched. Earlier
 facts retained after a failed or partial survey keep their age; they are not fresh

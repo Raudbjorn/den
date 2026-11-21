@@ -136,6 +136,14 @@ impl Harness {
         Self::new(Ok(config(owners)))
     }
 
+    /// The App opens where the start rules said (#90), as `main` tells it.
+    #[must_use]
+    pub fn with_start(mut self, start: den::start::Start) -> Self {
+        self.app = self.app.with_start(start);
+        self.view = self.app.view();
+        self
+    }
+
     /// Queues the next survey's answer.
     pub fn answer(&self, outcome: Result<Observation, SurveyFailure>) -> &Self {
         self.github.push_answer(outcome);

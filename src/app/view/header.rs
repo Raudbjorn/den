@@ -50,6 +50,9 @@ fn status(state: &State<'_>) -> String {
     if let Some(note) = coverage::rate_limit_note(observation) {
         parts.push(note);
     }
+    if let Some(note) = state.start_note {
+        parts.push(note.to_owned());
+    }
     if let Some(note) = &state.upstream_note {
         parts.push(note.clone());
     }
