@@ -17,6 +17,11 @@
 //! `--setting-sources user` ([`SettingSources::UserOnly`]), so the worktree's
 //! `.claude/settings.json` and `.claude/settings.local.json` (and the hooks
 //! in them) are not loaded. Reopening it passes the flag again.
+//!
+//! A Job never inherits den's Linear keys (#70, ADR-0007): `claude` runs under
+//! `env -u <VAR>…` for each variable in [`WindowCommand::removed_env`], in
+//! kitty, on the clipboard and when reopening, written into the command so
+//! the sheet shows exactly what runs. With none to remove there is no `env`.
 
 use crate::process::Invocation;
 use serde::{Deserialize, Serialize};
@@ -24,6 +29,10 @@ use std::path::PathBuf;
 
 pub const KITTY_PROGRAM: &str = "kitty";
 pub const CLAUDE_PROGRAM: &str = "claude";
+/// POSIX `env`, which runs `claude` without the variables a Job mustn't have.
+pub const ENV_PROGRAM: &str = "env";
+/// `env`'s flag for removing one variable from the environment.
+const ENV_UNSET_FLAG: &str = "-u";
 /// Claude Code's flag for the session's name.
 const CLAUDE_NAME_FLAG: &str = "-n";
 /// Claude Code's flag for resuming a session by its name (or ID), as
@@ -117,6 +126,10 @@ pub struct WindowCommand {
     /// [`SettingSources::All`]: no flag, as in milestone 1.
     #[serde(default, skip_serializing_if = "SettingSources::is_all")]
     pub setting_sources: SettingSources,
+    /// Environment variables `claude` runs without (#70): den's Linear key
+    /// variables. Empty: no `env`, as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_env: Vec<String>,
 }
 
 /// Whether the window starts a new Claude Code session or resumes one.
@@ -165,8 +178,25 @@ pub fn kitty_invocation(window: &WindowCommand) -> Invocation {
     Invocation::new(KITTY_PROGRAM)
         .args(["--detach", "--hold", "--directory"])
         .arg(window.directory.clone())
-        .arg(CLAUDE_PROGRAM)
+        .args(program_words(window))
         .args(claude_args(window))
+}
+
+/// What runs `claude`: `env -u <VAR>… claude` when variables are removed,
+/// else `claude` alone.
+fn program_words(window: &WindowCommand) -> Vec<String> {
+    if window.removed_env.is_empty() {
+        return vec![CLAUDE_PROGRAM.to_owned()];
+    }
+    std::iter::once(ENV_PROGRAM.to_owned())
+        .chain(
+            window
+                .removed_env
+                .iter()
+                .flat_map(|var| [ENV_UNSET_FLAG.to_owned(), var.clone()]),
+        )
+        .chain(std::iter::once(CLAUDE_PROGRAM.to_owned()))
+        .collect()
 }
 
 /// The exact command, as a shell line: the kitty invocation in kitty, else the
@@ -192,7 +222,8 @@ pub fn display(mode: &WindowMode, window: &WindowCommand) -> String {
 
 /// What the clipboard gets outside kitty: paste it into a terminal.
 pub fn clipboard_text(window: &WindowCommand) -> String {
-    let claude = std::iter::once(CLAUDE_PROGRAM.to_owned())
+    let claude = program_words(window)
+        .into_iter()
         .chain(claude_args(window))
         .map(|word| shell_quote(&word))
         .collect::<Vec<_>>()

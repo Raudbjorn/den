@@ -75,6 +75,18 @@ impl Config {
             .with_skips(self.skips.clone())
     }
 
+    /// The environment variables a Job's command removes (#70, ADR-0007):
+    /// every Linear Workflow's API key variable, each once, sorted. A Job
+    /// never needs den's Linear key: den makes its Linear writes itself.
+    pub fn job_removed_env(&self) -> Vec<String> {
+        self.linear
+            .iter()
+            .map(|workflow| workflow.api_key_env.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
     /// Checks that every Linear Workflow's API key variable is set and not
     /// empty in `env`, without keeping the key. The error names the variable
     /// and the line that names it.

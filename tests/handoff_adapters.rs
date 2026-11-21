@@ -38,7 +38,87 @@ fn window() -> WindowCommand {
         start: SessionStart::New,
         permission_mode: None,
         setting_sources: den::handoff::SettingSources::All,
+        removed_env: Vec::new(),
     }
+}
+
+/// The words den puts before `claude` to remove `removed_env` (#70), as the
+/// real kitty invocation carries them.
+fn env_words(removed_env: &[&str]) -> Vec<String> {
+    let window = WindowCommand {
+        removed_env: removed_env.iter().map(|v| (*v).to_owned()).collect(),
+        ..window()
+    };
+    let args: Vec<String> = command::kitty_invocation(&window)
+        .args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let env = args.iter().position(|a| a == "env").expect("env");
+    let claude = args.iter().position(|a| a == "claude").expect("claude");
+    args[env..claude].to_vec()
+}
+
+#[test]
+fn the_env_words_den_writes_really_remove_the_variables_and_keep_the_rest() {
+    let words = env_words(&["DEN_TEST_REMOVED_A", "DEN_TEST_REMOVED_B"]);
+    assert_eq!(
+        words,
+        [
+            "env",
+            "-u",
+            "DEN_TEST_REMOVED_A",
+            "-u",
+            "DEN_TEST_REMOVED_B"
+        ]
+    );
+    // Run them for real, with a shell standing in for claude.
+    let output = Command::new(&words[0])
+        .args(&words[1..])
+        .args([
+            "sh",
+            "-c",
+            r#"printf '%s %s %s' "${DEN_TEST_REMOVED_A-unset}" "${DEN_TEST_REMOVED_B-unset}" "${DEN_TEST_KEPT-unset}""#,
+        ])
+        .env("DEN_TEST_REMOVED_A", "secret-a")
+        .env("DEN_TEST_REMOVED_B", "secret-b")
+        .env("DEN_TEST_KEPT", "kept")
+        .output()
+        .expect("env runs");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "unset unset kept");
+}
+
+#[test]
+fn the_clipboard_command_removes_the_variables_in_a_pasted_shell_line() {
+    let window = WindowCommand {
+        removed_env: vec!["DEN_TEST_REMOVED".to_owned()],
+        prompt: "/gh-resolve x".to_owned(),
+        ..window()
+    };
+    let line = command::clipboard_text(&window);
+    assert_eq!(
+        line,
+        "cd /home/me/dev/app/.claude/worktrees/feature-7 && env -u DEN_TEST_REMOVED claude -n app-pr7-address-review '/gh-resolve x'"
+    );
+    // As pasted into a POSIX shell: the line without its `cd` (the worktree
+    // doesn't exist here), with a shell that reports what it inherited
+    // standing in for `claude`.
+    let pasted = line.replacen("cd /home/me/dev/app/.claude/worktrees/feature-7 && ", "", 1);
+    let output = Command::new("sh")
+        .args([
+            "-c",
+            &pasted.replacen(
+                "claude -n app-pr7-address-review '/gh-resolve x'",
+                r#"sh -c 'printf %s "${DEN_TEST_REMOVED-unset}"'"#,
+                1,
+            ),
+        ])
+        .env("DEN_TEST_REMOVED", "secret")
+        .output()
+        .expect("sh runs");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "unset");
 }
 
 #[test]
@@ -394,6 +474,7 @@ fn plan_for(clone: &Path, url: &str, head: &str) -> LaunchPlan {
         review_request: None,
         landing: None,
         window: WindowMode::Kitty,
+        removed_env: Vec::new(),
         command: String::new(),
     };
     plan.command = command::display(&plan.window, &plan.window_command());

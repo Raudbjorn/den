@@ -114,6 +114,9 @@ pub struct App {
     /// Each Owner's Linear Workflow policy for the decision engine, from the
     /// config: the empty policy for an Owner without a Linear Workflow.
     policies: Policies,
+    /// The environment variables every Job runs without (#70, ADR-0007):
+    /// the config's Linear key variables, sorted; empty without a config.
+    removed_env: Vec<String>,
     /// The Linear survey in flight, if any (#32).
     linear_running: Option<SurveyId>,
     /// A Linear answer that arrived while nothing was shown (before the cache
@@ -134,6 +137,10 @@ pub struct App {
 impl App {
     pub fn new(config: Result<Config, ConfigError>) -> Self {
         let policies = config.as_ref().map(Config::policies).unwrap_or_default();
+        let removed_env = config
+            .as_ref()
+            .map(Config::job_removed_env)
+            .unwrap_or_default();
         Self {
             config,
             running: None,
@@ -158,6 +165,7 @@ impl App {
             job_checks: Vec::new(),
             upstreams: UpstreamTargets::default(),
             policies,
+            removed_env,
             linear_running: None,
             unshown_linear: None,
             member_states_running: None,
