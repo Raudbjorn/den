@@ -231,6 +231,25 @@ impl Context<'_> {
     }
 }
 
+/// A Decision whose Next Step its Repo doesn't track (spec 0003), as no Next
+/// Step. The kind's rule held, so the reason keeps its words; whoever owed
+/// the step owes nothing now. A Linear Issue has no Repo and is never
+/// withheld.
+fn withhold_not_tracked(ctx: &Context<'_>, mut decision: Decision) -> Decision {
+    let step = match (decision.next_step, decision.item.id.repo()) {
+        (Some(step), Some(repo)) if ctx.skips(repo).contains(&step) => step,
+        _ => return decision,
+    };
+    let why = decision.explanation.winning_rule.take().unwrap_or_default();
+    decision.explanation.no_step_reason = Some(not_tracked_note(step, &why));
+    decision.next_step = None;
+    decision.not_tracked = Some(step);
+    decision.waiting_on = WaitingOn::Nobody;
+    decision.waiting_reason = "no Next Step, so nobody owes one".to_owned();
+    decision.unattributed = false;
+    decision
+}
+
 /// How an Explanation says that a kind's rule held in a Repo that doesn't
 /// track the kind (spec 0003).
 pub(crate) fn not_tracked_note(step: NextStep, why: &str) -> String {
@@ -285,9 +304,16 @@ pub fn decide_with(
     }
     // Land reads each member's own Decision.
     let linear_issues = linear_issue::decide_all(&ctx, &decisions);
-    decisions.extend(issue::decide_all(&ctx));
-    decisions.extend(branch::decide_all(&ctx));
-    decisions.extend(run::decide_all(&ctx));
+    // Issues, Branches and Runs have one candidate Next Step each, so a kind
+    // their Repo doesn't track leaves them with none (spec 0003). Pull
+    // Requests apply skips in their own rule table.
+    for kind in [
+        issue::decide_all(&ctx),
+        branch::decide_all(&ctx),
+        run::decide_all(&ctx),
+    ] {
+        decisions.extend(kind.into_iter().map(|d| withhold_not_tracked(&ctx, d)));
+    }
     decisions.extend(linear_issues);
     decisions
 }

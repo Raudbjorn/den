@@ -17,7 +17,6 @@ use den::{
     },
     ordering::same_work_item,
 };
-#[allow(unused_imports)]
 use support::build::{
     ME, ObservationBuilder, PrBuilder, branch, issue, linear_issue, now, pr, repo_id, run,
 };
@@ -43,7 +42,6 @@ fn pull_request<'d>(decisions: &'d [Decision], repo: &str, number: u64) -> &'d D
         .unwrap_or_else(|| panic!("no Decision for {repo}#{number}: {decisions:#?}"))
 }
 
-#[allow(dead_code)]
 fn of_kind(decisions: &[Decision], kind: WorkItemKind) -> &Decision {
     decisions
         .iter()
@@ -259,4 +257,68 @@ fn a_member_in_a_repo_that_skips_merge_still_lands_with_its_issue() {
         .find(|d| d.item.identifier.as_deref() == Some("TEAM-1"))
         .expect("TEAM-1 decided");
     assert_eq!(issue.next_step, Some(NextStep::Land), "{issue:#?}");
+}
+
+#[test]
+fn a_run_whose_fix_ci_is_skipped_has_no_next_step_and_says_why() {
+    let observation = acme().run(run("acme/app", "ci.yml", 1).failed()).build();
+    let tracked = decide_all(&observation, &Policies::default());
+    assert_eq!(
+        of_kind(&tracked, WorkItemKind::Run).next_step,
+        Some(NextStep::FixCi)
+    );
+
+    let decisions = decide_all(&observation, &skipping("acme/app", &[NextStep::FixCi]));
+    let decision = of_kind(&decisions, WorkItemKind::Run);
+    assert_eq!(decision.next_step, None, "{decision:#?}");
+    assert_eq!(decision.not_tracked, Some(NextStep::FixCi));
+    assert_eq!(decision.waiting_on, WaitingOn::Nobody);
+    assert!(!decision.unattributed);
+    assert_says(decision, &["Fix CI is not tracked in this Repo (skip): "]);
+    assert_eq!(decision.explanation.winning_rule, None);
+}
+
+#[test]
+fn a_skipped_triage_withholds_the_issue() {
+    let observation = acme().issue(issue("acme/app", 8)).build();
+    let decisions = decide_all(&observation, &skipping("acme/app", &[NextStep::Triage]));
+    let decision = of_kind(&decisions, WorkItemKind::Issue);
+    assert_eq!(decision.next_step, None, "{decision:#?}");
+    assert_eq!(decision.not_tracked, Some(NextStep::Triage));
+}
+
+#[test]
+fn a_skipped_prune_or_revive_never_turns_into_open_pr() {
+    let observation = acme()
+        .branch(branch("acme/app", "old").age_days(31).ahead(1).author(ME))
+        .build();
+    let tracked = decide_all(&observation, &Policies::default());
+    assert_eq!(
+        of_kind(&tracked, WorkItemKind::Branch).next_step,
+        Some(NextStep::PruneOrRevive)
+    );
+
+    let decisions = decide_all(
+        &observation,
+        &skipping("acme/app", &[NextStep::PruneOrRevive]),
+    );
+    let decision = of_kind(&decisions, WorkItemKind::Branch);
+    assert_eq!(decision.next_step, None, "{decision:#?}");
+    assert_eq!(decision.not_tracked, Some(NextStep::PruneOrRevive));
+}
+
+#[test]
+fn a_linear_issues_implement_is_never_withheld_by_a_repo_skip() {
+    let observation = acme()
+        .linear_viewer("acme", "acme")
+        .linear_issue(linear_issue("acme", "id-1", "TEAM-1"))
+        .build();
+    let decisions = decide_all(&observation, &skipping("acme/app", &[NextStep::Implement]));
+    let decision = of_kind(&decisions, WorkItemKind::LinearIssue);
+    assert_eq!(
+        decision.next_step,
+        Some(NextStep::Implement),
+        "{decision:#?}"
+    );
+    assert_eq!(decision.not_tracked, None);
 }
