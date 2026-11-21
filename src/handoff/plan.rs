@@ -13,14 +13,14 @@ use super::{
     kinds::{self, Facts},
     landing, names,
     prompts::{PromptFields, PromptKind, Prompts, PromptsError},
-    reviewers, trust, worktree_path,
+    resolutions, reviewers, trust, worktree_path,
 };
 use crate::{
     config::Config,
     decide::Decision,
     domain::{
         LinearWorkflowPolicy, MergeMethods, NextStep, Observation, RepoId, WorkItemId,
-        facts::Reviewer,
+        facts::{PullRequestRef, Reviewer},
     },
 };
 use std::{collections::BTreeMap, path::PathBuf};
@@ -91,6 +91,8 @@ pub struct PlanInput<'a> {
     /// Each Repo's merge method (#72), for Merge's and Land's
     /// `{merge_method}`. Unused for other kinds.
     pub merge_methods: &'a MergeMethods,
+    /// Review Point marker prefixes, shared with the decision and detail view.
+    pub legacy_marker_prefixes: &'a [String],
     /// The environment variables the Job runs without (#70,
     /// [`crate::config::Config::job_removed_env`]).
     pub removed_env: &'a [String],
@@ -390,6 +392,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         announces: prompts.uses(NextStep::RequestReview, "announcement"),
     });
     let fields = PromptFields {
+        resolutions: resolution_blocks(&facts, input)?,
         repo: facts.target.repo.to_string(),
         number: facts.number,
         url: decision.item.url.clone(),
@@ -536,6 +539,37 @@ fn clash_branch(facts: &Facts) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn resolution_blocks(facts: &Facts, input: &PlanInput<'_>) -> Result<String, Refusal> {
+    let members = match (facts.step, &facts.landing, &input.decision.item.id) {
+        (NextStep::Land, Some(group), _) => group
+            .members
+            .iter()
+            .map(|member| member.pr.clone())
+            .collect(),
+        (NextStep::Merge, _, WorkItemId::PullRequest { repo, number }) => {
+            vec![PullRequestRef::new(repo.clone(), *number)]
+        }
+        _ => return Ok(String::new()),
+    };
+    members
+        .iter()
+        .map(|member| {
+            let pr = input
+                .observation
+                .pull_requests
+                .iter()
+                .find(|pr| member.is(&pr.repo, pr.number))
+                .ok_or_else(|| Refusal::one(RefusalReason::WorkItemGone))?;
+            Ok(resolutions::render(
+                pr,
+                &input.observation.viewer.login,
+                input.legacy_marker_prefixes,
+            ))
+        })
+        .collect::<Result<Vec<_>, Refusal>>()
+        .map(|blocks| blocks.join("\n\n"))
 }
 
 /// A fresh start's local branch (`feature-7-2`) tracks a branch of another

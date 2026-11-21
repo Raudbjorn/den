@@ -92,6 +92,7 @@ pub mod names;
 mod plan;
 pub mod prompts;
 mod refusal;
+mod resolutions;
 pub mod reviewers;
 pub mod trust;
 pub mod workflows;
