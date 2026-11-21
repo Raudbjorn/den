@@ -157,12 +157,16 @@ fn the_linear_part_and_its_ages_load_back_unchanged() {
 /// to 10 and then 11, and #37's round 4 to 12 with its member attempts: the
 /// stored Observation gained fields each time. Every
 /// earlier assertion is unchanged. #37 had renamed this test to
-/// `milestone_2_s_shape_…`; the merge keeps integrate/m2-wave3's name.)
+/// `milestone_2_s_shape_…`; the merge keeps integrate/m2-wave3's name.
+/// #75 moved it to 13: a PR's details gained reviews, threads and marker
+/// comments for Review Points, each defaulting to empty, so this shape still
+/// loads back unchanged.)
 #[test]
 fn milestone_2_s_merged_shape_loads_back_unchanged() {
     // 12: #37's member attempts joined the Observation (round 4).
+    // 13: #75's Review Point facts joined a PR's details.
     assert_eq!(
-        CACHE_FORMAT, 12,
+        CACHE_FORMAT, 13,
         "the merged milestone-2 shape with member states and attempts"
     );
     let team_states = LinearTeamStates {

@@ -3,6 +3,7 @@
 //! (see `docs/architecture.md`).
 
 pub mod branch;
+pub mod feedback;
 pub mod issue;
 pub mod linear_issue;
 pub mod member_state;
@@ -10,6 +11,7 @@ pub mod pull_request;
 pub mod run;
 
 pub use branch::{Branch, ComparisonBranch};
+pub use feedback::{LegacyState, MarkedState, Marker, MarkerComment, ReviewRecord, ThreadRecord};
 pub use issue::{Issue, IssueLink, LinkKind, LinkedPrState};
 pub use linear_issue::{
     Attachment, Attachments, AttachmentsRead, LinearCycle, LinearIssue, LinearPriority,

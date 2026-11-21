@@ -180,7 +180,11 @@ fn with_facts(query: &str) -> String {
     format!("{query}\n{FACTS}")
 }
 
-pub fn fetch(session: &Session<'_>, owner: &str) -> Result<KindFetch<PullRequest>, SurveyFailure> {
+pub fn fetch(
+    session: &Session<'_>,
+    owner: &str,
+    viewer: &str,
+) -> Result<KindFetch<PullRequest>, SurveyFailure> {
     let owner_query = with_facts(OWNER_QUERY);
     let mut out = KindFetch::default();
     let mut found_prs: Vec<(String, PullRequest)> = Vec::new();
@@ -252,7 +256,7 @@ pub fn fetch(session: &Session<'_>, owner: &str) -> Result<KindFetch<PullRequest
         owner: owner.to_owned(),
         kind: SourceKind::PullRequests,
     }));
-    details::fill(session, &mut found_prs, &mut out.coverage)?;
+    details::fill(session, &mut found_prs, &mut out.coverage, viewer)?;
     out.items = found_prs.into_iter().map(|(_, pr)| pr).collect();
     Ok(out)
 }
