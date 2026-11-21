@@ -89,6 +89,45 @@ fn html_comments_never_count() {
     }
 }
 
+/// Review on #94: reference-style images (`![alt][label]`, `![label][]`,
+/// `![label]`) display as images when the body defines the label, anywhere,
+/// so they count. Labels match as CommonMark matches them, ignoring case
+/// and runs of whitespace. An undefined label displays as text, so it
+/// doesn't count, and neither does a definition inside an HTML comment or a
+/// footnote definition.
+#[test]
+fn reference_style_images_count_when_their_label_is_defined() {
+    for body in [
+        "## Screenshots\n\n![after][shot]\n\n[shot]: https://x/a.png\n",
+        "## Screenshots\n\n| Before | After |\n|---|---|\n| ![b][Before  Shot] | ![a][after] |\n\n[before shot]: https://x/b.png\n[AFTER]: <https://x/a.png> \"after\"\n",
+        "## Screenshots\n![shot][]\n\n[shot]: https://x/a.png",
+        "[shot]: https://x/a.png\n\n## Screenshots\n![shot]\n",
+    ] {
+        assert_eq!(
+            Screenshots::from_body(body),
+            Screenshots::Present,
+            "{body:?}"
+        );
+    }
+    for body in [
+        "## Screenshots\n\n![after][shot]\n",
+        "## Screenshots\n\n![shot]\n",
+        "## Screenshots\n\n![after][shot]\n<!-- [shot]: https://x/a.png -->\n",
+        "## Screenshots\n\nsoon\n\n## Notes\n\n![x][shot]\n\n[shot]: https://x/a.png\n",
+        // A full reference names its label; its alt text being defined
+        // doesn't make it an image.
+        "## Screenshots\n\n![shot][other]\n\n[shot]: https://x/a.png\n",
+        // A footnote definition defines no link.
+        "## Screenshots\n\n![^1]\n\n[^1]: a note\n",
+    ] {
+        assert_eq!(
+            Screenshots::from_body(body),
+            Screenshots::Missing,
+            "{body:?}"
+        );
+    }
+}
+
 // The decision.
 
 const APP: &str = "octo/app";
