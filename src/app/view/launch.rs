@@ -12,8 +12,8 @@ use crate::{
     handoff::{
         BaseRef, BranchStart, CloneSource, JobCheck, LandingGroupPlan, LaunchOutcome, LaunchPlan,
         LaunchReport, PathState, PermissionMode, ProjectSettings, Refusal, ReopenPlan,
-        ReviewRequest, WindowMode, WorktreeState, Writability, command, landing, reviewers,
-        short_commit, workflows,
+        ReviewRequest, WindowMode, WorktreeState, Writability, command, landing,
+        resolutions::Resolution, reviewers, short_commit, workflows,
     },
 };
 
@@ -497,6 +497,47 @@ fn landing_fields(group: &LandingGroupPlan) -> Vec<SheetField> {
     landed.chain(held).collect()
 }
 
+/// A Merge or Land sheet's resolution comments (#78): `COMMENT` (or
+/// `COMMENT 1`, `COMMENT 2`, … in landing order) with its Points' tally. The
+/// text itself is in the prompt, which `prompt` is as shown: an edit that no
+/// longer carries a comment word for word is a caution, since the Job posts
+/// what the prompt says.
+fn resolution_fields(resolutions: &[Resolution], prompt: &str) -> Vec<SheetField> {
+    let numbered = resolutions.len() > 1;
+    resolutions
+        .iter()
+        .enumerate()
+        .map(|(i, resolution)| {
+            let label = if numbered {
+                format!("COMMENT {}", i + 1)
+            } else {
+                "COMMENT".to_owned()
+            };
+            if prompt.contains(&resolution.body) {
+                field(
+                    &label,
+                    resolution.tally.clone(),
+                    Some(format!(
+                        "posted verbatim on {} immediately before it merges; the text is in the prompt",
+                        resolution.url
+                    )),
+                    Tone::Plain,
+                )
+            } else {
+                field(
+                    &label,
+                    resolution.tally.clone(),
+                    Some(format!(
+                        "the edited prompt no longer carries den's comment for {} word for word",
+                        resolution.url
+                    )),
+                    Tone::Caution,
+                )
+            }
+        })
+        .collect()
+}
+
 /// The label of a slash command's availability (#41).
 pub const WORKFLOW_LABEL: &str = "WORKFLOW";
 
@@ -716,6 +757,7 @@ fn fields(sheet: &Sheet, plan: &LaunchPlan, moved_from: Option<&str>) -> Vec<She
     if let Some(group) = &plan.landing {
         fields.extend(landing_fields(group));
     }
+    fields.extend(resolution_fields(&plan.resolutions, &sheet.prompt.text()));
     fields.extend(permissions_field(plan.permission_mode));
     fields.extend(project_settings_field(&plan.project_settings));
     // The prompt as shown, edited or not, against what the inspection read.

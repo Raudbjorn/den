@@ -1,5 +1,7 @@
-//! The launch sheet's prompt field: one line of text edited in place, with a
-//! cursor (a character index). The sheet wraps it over several rows.
+//! The launch sheet's prompt field: text edited in place, with a cursor (a
+//! character index). The sheet wraps it over several rows. Line breaks den
+//! put in it are kept (a resolution comment is Markdown, posted verbatim,
+//! #78); typing never adds one, since Enter launches.
 
 use super::Key;
 use crate::handoff::MAX_PROMPT_CHARS;
@@ -24,8 +26,9 @@ impl PromptEditor {
     pub fn new(text: &str) -> Self {
         let chars: Vec<char> = text
             .chars()
-            // One line: line breaks in a template become spaces.
-            .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+            // Line breaks stay; a carriage return is dropped, so a CRLF
+            // template reads as LF.
+            .filter(|c| *c != '\r')
             .take(MAX_PROMPT_CHARS)
             .collect();
         let cursor = chars.len();
@@ -66,5 +69,19 @@ impl PromptEditor {
             _ => return Edit::NotAnEdit,
         }
         Edit::Changed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PromptEditor;
+
+    /// den's line breaks survive the field (a resolution comment is posted
+    /// verbatim, #78); a carriage return doesn't, so CRLF reads as LF.
+    #[test]
+    fn line_breaks_are_kept_and_carriage_returns_dropped() {
+        let editor = PromptEditor::new("one\r\ntwo\n~~~");
+        assert_eq!(editor.text(), "one\ntwo\n~~~");
+        assert_eq!(editor.cursor(), "one\ntwo\n~~~".chars().count());
     }
 }

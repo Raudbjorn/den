@@ -32,6 +32,14 @@
 //! each member as merged, queued, failed or not attempted, and never merge a
 //! held member, undo a merge or touch another Pull Request.
 //!
+//! `merge` and `land` both have `{resolutions}` (#78, ADR-0010), which
+//! they must use: the resolution comment den writes from the Review Points
+//! it observed ([`super::resolutions`]), one per Pull Request the Job merges,
+//! each headed by that Pull Request's URL and fenced with `~~~`. The defaults
+//! tell the Job to post each one verbatim, without its fences, as one comment
+//! on its Pull Request immediately before merging it, and not to merge when
+//! posting fails.
+//!
 //! `review_linear` (#41) is the Review Job's template in an Owner with a
 //! Linear Workflow, beside `review` for every other Owner. It alone has
 //! `{linear_context}` (for a Pull Request in a Landing Group, its Linear
@@ -42,6 +50,7 @@
 //! `implement_linear` (#38) is a Linear Issue's Start or Implement template.
 //! It alone has `{identifier}`; defaults carry no issue title or description.
 
+use super::resolutions::{self, Resolution};
 use crate::config::{Location, location_of};
 use crate::domain::{LinearWorkflowPolicy, NextStep};
 use serde::Deserialize;
@@ -59,8 +68,15 @@ pub const MAX_TEMPLATE_CHARS: usize = 4_000;
 const PLACEHOLDERS: [&str; 5] = ["repo", "number", "url", "title", "branch"];
 /// Placeholders only the Request review template has (#39).
 const REQUEST_REVIEW_PLACEHOLDERS: [&str; 2] = ["reviewers", "announcement"];
-/// Placeholders only the Land template has (#40).
-const LAND_PLACEHOLDERS: [&str; 2] = ["members", "held"];
+/// Placeholders only the Land template has (#40), and the resolution
+/// comments it shares with Merge (#78).
+const LAND_PLACEHOLDERS: [&str; 3] = ["members", "held", "resolutions"];
+/// Placeholders only the Merge template has: the resolution comment (#78),
+/// which it shares with Land.
+const MERGE_PLACEHOLDERS: [&str; 1] = ["resolutions"];
+/// Why Merge and Land must use `{resolutions}`.
+const RESOLUTIONS_NEEDED: &str =
+    "or the Job never posts what happened to the review feedback before merging";
 /// Placeholders only the Review (Linear) template has (#41).
 const REVIEW_LINEAR_PLACEHOLDERS: [&str; 2] = ["linear_context", "verdict_only"];
 /// The prompts-file key of the Review (Linear) template.
@@ -128,6 +144,7 @@ impl PromptKind {
         match self {
             Self::Step(NextStep::RequestReview) => &REQUEST_REVIEW_PLACEHOLDERS,
             Self::Step(NextStep::Land) => &LAND_PLACEHOLDERS,
+            Self::Step(NextStep::Merge) => &MERGE_PLACEHOLDERS,
             Self::ReviewLinear => &REVIEW_LINEAR_PLACEHOLDERS,
             Self::ImplementLinear => &IMPLEMENT_LINEAR_PLACEHOLDERS,
             Self::Step(_) => &[],
@@ -138,15 +155,18 @@ impl PromptKind {
     /// Job would lose without it: a Request review Job learns whom to ask
     /// only from `{reviewers}`, a verdict-only Review Job its Linear Issue and
     /// its limits only from `{linear_context}` and `{verdict_only}`, and a
-    /// Land Job its approved member heads only from `{members}`.
+    /// Land Job its approved member heads only from `{members}`, and a Merge
+    /// or Land Job the resolution comments only from `{resolutions}`.
     fn required_placeholders(self) -> &'static [(&'static str, &'static str)] {
         match self {
             Self::Step(NextStep::RequestReview) => {
                 &[("reviewers", "or the Job never gets what the sheet chose")]
             }
-            Self::Step(NextStep::Land) => {
-                &[("members", "or the Job never gets what the sheet chose")]
-            }
+            Self::Step(NextStep::Land) => &[
+                ("members", "or the Job never gets what the sheet chose"),
+                ("resolutions", RESOLUTIONS_NEEDED),
+            ],
+            Self::Step(NextStep::Merge) => &[("resolutions", RESOLUTIONS_NEEDED)],
             Self::ReviewLinear => &[
                 (
                     "linear_context",
@@ -161,9 +181,11 @@ impl PromptKind {
         }
     }
 
-    /// The kind that owns `placeholder`, when only one kind has it.
-    fn owner_of(placeholder: &str) -> Option<Self> {
-        Self::all().find(|kind| kind.own_placeholders().contains(&placeholder))
+    /// The kinds that own `placeholder`, when it isn't every kind's.
+    fn owners_of(placeholder: &str) -> Vec<Self> {
+        Self::all()
+            .filter(|kind| kind.own_placeholders().contains(&placeholder))
+            .collect()
     }
 }
 
@@ -184,7 +206,7 @@ pub fn default_template(step: NextStep) -> &'static str {
             "Pull Request {repo}#{number} ({url}) conflicts with its base branch. You are on its head branch {branch}. Resolve the conflicts: merge the base branch in; don't rebase."
         }
         NextStep::Merge => {
-            "Pull Request {repo}#{number} ({url}) is approved and its checks pass. You are on its head branch {branch}. Check that it is ready, then merge it."
+            "Pull Request {repo}#{number} ({url}) is approved and its checks pass. You are on its head branch {branch}. Check that it is ready. Then post its resolution comment below on it as one comment: the lines between the ~~~ fences, verbatim, without the fences. Only once that comment is posted, merge it; if posting fails, stop and don't merge.\n\n{resolutions}"
         }
         NextStep::OpenPr => {
             "Branch {branch} in {repo} has unmerged commits and no Pull Request. Review its commits and open a Pull Request for it."
@@ -201,7 +223,7 @@ pub fn default_template(step: NextStep) -> &'static str {
             "Pull Request {repo}#{number} ({url}) needs review. Request reviews on GitHub from exactly these reviewers: {reviewers}. Change nothing else on the Pull Request.{announcement}"
         }
         NextStep::Land => {
-            "Land the Landing Group of Linear Issue {url}. Merge exactly these Pull Requests, one at a time and in this order, each pinned to its approved head commit (gh pr merge --match-head-commit <commit>): {members}. Before merging the next one, wait until GitHub shows the previous one as merged: queued in a merge queue or set to auto-merge is not merged. Stop at the first failure or anything unexpected, such as a head that moved, a failing check or a state you didn't expect, and merge nothing more. Never merge a Pull Request in a Held Repo{held}. Never undo or revert a merge, and never change any other Pull Request. When you stop or finish, report each Pull Request above as merged, queued, failed (with the error) or not attempted."
+            "Land the Landing Group of Linear Issue {url}. Merge exactly these Pull Requests, one at a time and in this order, each pinned to its approved head commit (gh pr merge --match-head-commit <commit>): {members}. Before merging the next one, wait until GitHub shows the previous one as merged: queued in a merge queue or set to auto-merge is not merged. Immediately before merging each one, post its resolution comment below on it as one comment: the lines between its ~~~ fences, verbatim, without the fences. Stop at the first failure or anything unexpected, such as a comment you couldn't post, a head that moved, a failing check or a state you didn't expect, and merge nothing more. Never merge a Pull Request in a Held Repo{held}. Never undo or revert a merge, and never change any other Pull Request. When you stop or finish, report each Pull Request above as merged, queued, failed (with the error) or not attempted.\n\n{resolutions}"
         }
         NextStep::MarkForRelease => {
             "Linear Issue {url} can move to its release state. den makes this change itself; do nothing remote."
@@ -277,6 +299,9 @@ pub struct PromptFields {
     pub landing_members: Vec<(String, String)>,
     /// Land only: the held members' URLs.
     pub held_members: Vec<String>,
+    /// Merge and Land only (#78): each merged Pull Request's resolution
+    /// comment, in the order the Job merges them.
+    pub resolutions: Vec<Resolution>,
     /// Review (Linear) only: the Linear Issues the Pull Request is attached
     /// to, as (identifier, URL).
     pub linear_issues: Vec<(String, String)>,
@@ -440,9 +465,14 @@ fn check(template: &str, kind: PromptKind) -> Result<Vec<String>, String> {
             '{' => {
                 let name: String = chars.by_ref().take_while(|&c| c != '}').collect();
                 if !usable.contains(&name.as_str()) {
-                    let what = match PromptKind::owner_of(&name) {
-                        Some(owner) => format!("the {}-only", owner.key()),
-                        None => "unknown".to_owned(),
+                    let owners: Vec<String> = PromptKind::owners_of(&name)
+                        .into_iter()
+                        .map(PromptKind::key)
+                        .collect();
+                    let what = match owners.as_slice() {
+                        [] => "unknown".to_owned(),
+                        [one] => format!("the {one}-only"),
+                        many => format!("the {}-only", many.join("- and ")),
                     };
                     return Err(format!(
                         "{what} placeholder {{{name}}}; use {}",
@@ -511,6 +541,7 @@ fn fill(template: &str, fields: &PromptFields) -> String {
                         out.push_str(": ");
                         out.push_str(&fields.held_members.join(", "));
                     }
+                    "resolutions" => out.push_str(&resolutions::placeholder(&fields.resolutions)),
                     "linear_context" => out.push_str(&linear_context(&fields.linear_issues)),
                     "verdict_only" => out.push_str(VERDICT_ONLY),
                     _ => {}

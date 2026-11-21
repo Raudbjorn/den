@@ -110,7 +110,9 @@ fn no_template_can_remove_or_change_the_ground_rules() {
         .map(|kind| {
             let required = match kind.key().as_str() {
                 "request_review" => " {reviewers}",
-                "land" => " {members}",
+                // #78: Merge and Land must also use {resolutions}.
+                "merge" => " {resolutions}",
+                "land" => " {members}{resolutions}",
                 "review_linear" => " {linear_context}{verdict_only}",
                 _ => "",
             };

@@ -255,9 +255,17 @@ fn team_1_id() -> WorkItemId {
 }
 
 /// The prompt for app #2 then api #1, with web #3 held.
+///
+/// #78 added the resolution comments: one per member, in landing order, each
+/// posted immediately before that member's merge. No member here has Review
+/// Points, so each comment says none, at the head the Job merges.
 fn land_prompt(head_1: &str) -> String {
     format!(
-        "Land the Landing Group of Linear Issue https://linear.app/acme/issue/team-1. Merge exactly these Pull Requests, one at a time and in this order, each pinned to its approved head commit (gh pr merge --match-head-commit <commit>): 1. https://github.com/acme/app/pull/2 at {HEAD_2}; 2. https://github.com/acme/api/pull/1 at {head_1}. Before merging the next one, wait until GitHub shows the previous one as merged: queued in a merge queue or set to auto-merge is not merged. Stop at the first failure or anything unexpected, such as a head that moved, a failing check or a state you didn't expect, and merge nothing more. Never merge a Pull Request in a Held Repo: https://github.com/acme/web/pull/3. Never undo or revert a merge, and never change any other Pull Request. When you stop or finish, report each Pull Request above as merged, queued, failed (with the error) or not attempted."
+        "Land the Landing Group of Linear Issue https://linear.app/acme/issue/team-1. Merge exactly these Pull Requests, one at a time and in this order, each pinned to its approved head commit (gh pr merge --match-head-commit <commit>): 1. https://github.com/acme/app/pull/2 at {HEAD_2}; 2. https://github.com/acme/api/pull/1 at {head_1}. Before merging the next one, wait until GitHub shows the previous one as merged: queued in a merge queue or set to auto-merge is not merged. Immediately before merging each one, post its resolution comment below on it as one comment: the lines between its ~~~ fences, verbatim, without the fences. Stop at the first failure or anything unexpected, such as a comment you couldn't post, a head that moved, a failing check or a state you didn't expect, and merge nothing more. Never merge a Pull Request in a Held Repo: https://github.com/acme/web/pull/3. Never undo or revert a merge, and never change any other Pull Request. When you stop or finish, report each Pull Request above as merged, queued, failed (with the error) or not attempted.\n\n\
+Resolution comment for https://github.com/acme/app/pull/2:\n~~~markdown\n**Review Points** at merge, as den observed them at {}: none.\n~~~\n\n\
+Resolution comment for https://github.com/acme/api/pull/1:\n~~~markdown\n**Review Points** at merge, as den observed them at {}: none.\n~~~",
+        &HEAD_2[..7],
+        &head_1[..7]
     )
 }
 
@@ -809,7 +817,98 @@ fn members_is_a_land_placeholder_that_land_must_use() {
             .contains("the land-only placeholder {members}"),
         "{error}"
     );
-    let land =
-        prompts::parse(path, "land = \"/land {url} {members}{held}\"\n").expect("a land template");
+    // #78: a usable `land` template now also needs {resolutions}, the
+    // comment each member gets before its merge (tested in
+    // tests/app_resolutions.rs); this case is about {members}, so it has both.
+    let land = prompts::parse(
+        path,
+        "land = \"/land {url} {members}{held}{resolutions}\"\n",
+    )
+    .expect("a land template");
     assert!(land.unusable(NextStep::Land).is_none());
+}
+
+/// #78: a Land launch carries one resolution comment per member, in landing
+/// order (app #2, then api #1), each from that member's own Review Points and
+/// at the head the Job merges; held web #3 gets none. The sheet numbers them
+/// like the members.
+#[test]
+fn a_land_launch_carries_one_resolution_comment_per_member_in_landing_order() {
+    let mut harness = Harness::new(Ok(config()));
+    harness
+        .workspace
+        .add_clone(CLONE, &[("origin", "git@github.com:acme/app.git")]);
+    harness
+        .workspace
+        .set_remote_head(CLONE, "origin", "feature-2", HEAD_2);
+    harness.workspace.host_pull_head(API_URL, 1, HEAD_1);
+    harness.workspace.host_pull_head(APP_URL, 2, HEAD_2);
+    let api = ready("acme/api", 1, HEAD_1)
+        .review_body(
+            10,
+            "bob",
+            ReviewVerdict::Commented,
+            "2026-11-10T10:00:00Z",
+            true,
+        )
+        .comment(
+            90,
+            ME,
+            "2026-11-11T10:00:00Z",
+            "<!-- den:point 10.1 fixed abcdef1 -->\nAdded the test",
+        );
+    let app = ready("acme/app", 2, HEAD_2).thread("PRRT_9", "carol", true);
+    queue_round(
+        &harness,
+        vec![api, app, pr("acme/web", 3).author(ME).conflicting()],
+        &ALL,
+    );
+    harness.start();
+
+    let ready = open_sheet(&mut harness, "TEAM-1");
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    assert_eq!(
+        field(&ready, "COMMENT 1").map(|f| f.0),
+        Some("1 Point: 1 resolved")
+    );
+    assert_eq!(
+        field(&ready, "COMMENT 2").map(|f| f.0),
+        Some("1 Point: 1 fixed")
+    );
+    assert_eq!(
+        field(&ready, "COMMENT 3"),
+        None,
+        "the held member gets none"
+    );
+    let comments = "Resolution comment for https://github.com/acme/app/pull/2:\n~~~markdown\n\
+**Review Points** at merge, as den observed them at 2222222:\n\n\
+- resolved: [thread](https://github.com/acme/app/pull/2#discussion_PRRT_9) by carol\n~~~\n\n\
+Resolution comment for https://github.com/acme/api/pull/1:\n~~~markdown\n\
+**Review Points** at merge, as den observed them at 1111111:\n\n\
+- fixed in abcdef1: [review 10.1](https://github.com/acme/api/pull/1#pullrequestreview-10) by bob — Added the test\n~~~";
+    let prompt = ready.prompt.as_ref().expect("a prompt").text.clone();
+    assert!(prompt.ends_with(&format!("\n\n{comments}")), "{prompt}");
+    assert!(
+        prompt.contains(
+            "Immediately before merging each one, post its resolution comment below on it"
+        ),
+        "{prompt}"
+    );
+
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1, "{}", messages(sheet(&harness)));
+    let urls: Vec<&str> = plans[0]
+        .resolutions
+        .iter()
+        .map(|r| r.url.as_str())
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            "https://github.com/acme/app/pull/2",
+            "https://github.com/acme/api/pull/1"
+        ]
+    );
+    assert_eq!(plans[0].prompt, prompt);
 }

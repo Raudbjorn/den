@@ -13,11 +13,12 @@ use super::{
     kinds::{self, Facts},
     landing, names,
     prompts::{PromptFields, PromptKind, Prompts, PromptsError},
+    resolutions::Resolution,
     reviewers, trust, worktree_path,
 };
 use crate::{
     config::Config,
-    decide::Decision,
+    decide::{Decision, points::review_points},
     domain::{LinearWorkflowPolicy, NextStep, Observation, RepoId, WorkItemId, facts::Reviewer},
 };
 use std::{collections::BTreeMap, path::PathBuf};
@@ -88,6 +89,9 @@ pub struct PlanInput<'a> {
     /// The environment variables the Job runs without (#70,
     /// [`crate::config::Config::job_removed_env`]).
     pub removed_env: &'a [String],
+    /// The configured `legacy_marker_prefixes` (#75): a Merge or Land Job's
+    /// resolution comments (#78) read the Review Points as the decision did.
+    pub legacy_marker_prefixes: &'a [String],
 }
 
 /// The facts for a launch, or every reason it can't happen. PRs here; a Land
@@ -421,10 +425,17 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             .flat_map(|group| &group.held)
             .map(|m| m.url.clone())
             .collect(),
+        resolutions: resolutions(&facts, input),
     };
     let prompt = prompts.render(kind, &fields);
     let permission_mode = job_permission_mode(facts.step, input.policy);
     let prompt = with_push_line(prompt, &facts, &branch_name, &remote, permission_mode);
+    // The sheet's editor would cut a longer prompt, and with it a
+    // resolution comment the Job posts verbatim (#78): refuse instead.
+    let chars = prompt.chars().count();
+    if chars > super::MAX_PROMPT_CHARS {
+        return Err(Refusal::one(RefusalReason::PromptTooLong { chars }));
+    }
     // One suffix rule for the Job's names: the session carries the suffix the
     // worktree got, whether for a fresh start or a name another Job has.
     let session_name = match &facts.identifier {
@@ -466,6 +477,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         renamed,
         session,
         prompt,
+        resolutions: fields.resolutions,
         permission_mode,
         project_settings: trust::project_settings(
             facts.step,
@@ -526,6 +538,42 @@ fn clash_branch(facts: &Facts) -> Option<String> {
 /// Never for a Job in the approval-required mode ([`job_permission_mode`]):
 /// a coordination Job or a verdict-only Review Job changes nothing on the
 /// branch, and its prompt says so.
+/// The resolution comment of each Pull Request a Merge or Land Job merges
+/// (#78), in the order it merges them, from the Review Points as the
+/// decision read them (the viewer's markers, the configured legacy
+/// prefixes); empty for every other kind. A member den no longer observes
+/// gets a comment saying its Points couldn't be read.
+fn resolutions(facts: &Facts, input: &PlanInput<'_>) -> Vec<Resolution> {
+    let observation = input.observation;
+    // `head`: the commit the Job merges (a Land member's pinned head), else
+    // the head den observed.
+    let of = |repo: &RepoId, number: u64, url: &str, head: Option<&str>| {
+        let pr = observation
+            .pull_requests
+            .iter()
+            .find(|p| p.repo.same(repo) && p.number == number);
+        let points = review_points(
+            pr.and_then(|p| p.details.as_ref()),
+            pr.and_then(|p| p.author.as_deref()),
+            &observation.viewer.login,
+            input.legacy_marker_prefixes,
+        );
+        let head = head.or(pr.map(|p| p.head_commit.as_str()));
+        Resolution::of(url, head.unwrap_or_default(), &points)
+    };
+    match (facts.step, &facts.landing, &input.decision.item.id) {
+        (NextStep::Land, Some(group), _) => group
+            .members
+            .iter()
+            .map(|m| of(&m.pr.repo, m.pr.number, &m.url, Some(&m.head_commit)))
+            .collect(),
+        (NextStep::Merge, _, WorkItemId::PullRequest { repo, number }) => {
+            vec![of(repo, *number, &input.decision.item.url, None)]
+        }
+        _ => Vec::new(),
+    }
+}
+
 fn with_push_line(
     prompt: String,
     facts: &Facts,
@@ -538,8 +586,10 @@ fn with_push_line(
     }
     match &facts.base {
         BaseRef::HeadBranch(branch) if !facts.new_branch && local != branch => {
+            // After a fenced resolution comment (#78), on a line of its own.
+            let gap = if prompt.contains('\n') { "\n\n" } else { " " };
             format!(
-                "{prompt} {PUSH_LINE_PREFIX} {} {}",
+                "{prompt}{gap}{PUSH_LINE_PREFIX} {} {}",
                 command::shell_quote(&remote.name),
                 command::shell_quote(&format!("HEAD:{branch}"))
             )

@@ -792,8 +792,11 @@ fn a_request_review_that_becomes_merge_while_the_sheet_is_open_is_shown_again_no
     );
     assert_eq!(field(&asked, "PERMISSIONS"), None);
     assert_eq!(asked.reviewers, None);
+    // #78: the Merge prompt now carries the resolution comment it posts
+    // before merging; this PR has no Review Points, so the comment says none.
     let merge_prompt = format!(
-        "Pull Request acme/api#2 ({URL_2}) is approved and its checks pass. You are on its head branch feature-2. Check that it is ready, then merge it."
+        "Pull Request acme/api#2 ({URL_2}) is approved and its checks pass. You are on its head branch feature-2. Check that it is ready. Then post its resolution comment below on it as one comment: the lines between the ~~~ fences, verbatim, without the fences. Only once that comment is posted, merge it; if posting fails, stop and don't merge.\n\n\
+Resolution comment for {URL_2}:\n~~~markdown\n**Review Points** at merge, as den observed them at 0000000: none.\n~~~"
     );
     assert_eq!(prompt(&asked), merge_prompt);
     let command = asked.command.clone().expect("a command");

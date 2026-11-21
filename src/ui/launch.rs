@@ -270,6 +270,12 @@ fn input_lines(
     let mut row = String::new();
     let mut cursor_row = 0;
     for (i, character) in chars.iter().enumerate() {
+        // A line break in the prompt (a fenced resolution comment, #78)
+        // starts a row; it takes no cell itself.
+        if character == "\n" {
+            rows.push(std::mem::take(&mut row));
+            continue;
+        }
         let previous_len = row.len();
         row.push_str(character);
         if previous_len > 0 && row.width() > width.max(1) {
@@ -449,6 +455,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A line break in the prompt (a fenced resolution comment, #78) starts a
+    /// row and takes no cell: each comment line shows as it will be posted.
+    #[test]
+    fn a_line_break_in_the_prompt_starts_a_row() {
+        let glyphs = glyphs::for_profile(GlyphProfile::Unicode);
+        let prompt = PromptField {
+            text: "Merge it.\n\n~~~markdown\n- fixed\n~~~".to_owned(),
+            cursor: 0,
+            editing: false,
+        };
+        let rows: Vec<String> = input_lines("PROMPT", &prompt, 58, 10, glyphs)
+            .into_iter()
+            .map(|(_, row, _)| row)
+            .collect();
+        assert_eq!(rows, ["Merge it.", "", "~~~markdown", "- fixed", "~~~"]);
     }
 
     /// A section cut to its row cap ends with the profile's ellipsis (`...` in

@@ -1125,6 +1125,7 @@ impl App {
             linear_repo: sheet.linear.as_ref().and_then(LinearLaunch::repo),
             policy: self.policies.for_owner(sheet.item.owner()),
             removed_env: &self.removed_env,
+            legacy_marker_prefixes: self.policies.legacy_marker_prefixes(),
         })?;
         Ok(match &sheet.accepted_head {
             Some(commit) => plan.on_commit(commit),
@@ -1373,6 +1374,12 @@ fn what_changed(
             return Some("the Landing Group changed".to_owned());
         }
         _ => {}
+    }
+    // Merge and Land (#78): the resolution comments are published as the
+    // sheet showed them, so a Point that changed asks again. After the
+    // Landing Group, whose changes change them too and say more.
+    if shown.resolutions != now.resolutions {
+        return Some("the resolution comment changed".to_owned());
     }
     shown_default
         .is_some_and(|default| default != now.prompt)

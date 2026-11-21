@@ -120,6 +120,17 @@ prefixes so those reviews don't reappear:
 legacy_marker_prefixes = ["example-tool"]
 ```
 
+Every merge records what happened to the feedback. A Merge Job's prompt
+carries a **resolution comment** den writes from the Points it observed: one
+line per Point, with its state, the commit when fixed, a link, the reviewer's
+login (without `@`, so it notifies no one) and the summary your marker kept.
+The Job posts it verbatim on the Pull Request immediately before merging, and
+doesn't merge if posting fails. A Land Job gets one per member and posts each
+immediately before that member's merge. The launch sheet shows each comment's
+tally (COMMENT) and its text in the prompt; a comment that changes before you
+press Enter makes den ask again. Custom `merge` and `land` templates must use
+`{resolutions}`, which only they have.
+
 ## Check local setup
 
 ```sh
