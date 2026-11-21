@@ -599,7 +599,8 @@ impl App {
                 let (check, view) = (check.clone(), view.clone());
                 let settings = self.reopen_settings(&check.job);
                 let policy = self.policies.for_owner(check.job.owner());
-                effects = open_existing(&mut sheet, &check, &view, policy, settings);
+                let unset_env = self.unset_env();
+                effects = open_existing(&mut sheet, &check, &view, policy, settings, &unset_env);
             }
             (
                 Key::Char('f'),
@@ -1075,6 +1076,16 @@ impl App {
         )
     }
 
+    /// The variables every Job runs without: den's Linear keys (ADR-0007).
+    /// Empty when the config didn't load, since then no Linear Workflow is
+    /// configured either.
+    fn unset_env(&self) -> Vec<String> {
+        self.config
+            .as_ref()
+            .map(crate::config::Config::linear_key_variables)
+            .unwrap_or_default()
+    }
+
     /// Where to look for Main Clones and the user's Claude directory.
     fn launch_settings(&self) -> LaunchSettings {
         LaunchSettings::from_config(
@@ -1106,6 +1117,7 @@ impl App {
             .ok_or_else(gone)?;
         let workflow = self.linear_workflow_of(&sheet.item);
         let slack_channel = workflow.and_then(|workflow| workflow.slack_channel.as_deref());
+        let unset_env = self.unset_env();
         let plan = handoff::plan(&PlanInput {
             decision,
             observation,
@@ -1117,6 +1129,7 @@ impl App {
             slack_channel,
             linear_repo: sheet.linear.as_ref().and_then(LinearLaunch::repo),
             policy: self.policies.for_owner(sheet.item.owner()),
+            unset_env: &unset_env,
         })?;
         Ok(match &sheet.accepted_head {
             Some(commit) => plan.on_commit(commit),
@@ -1467,8 +1480,9 @@ fn open_existing(
     view: &WorkspaceView,
     policy: &LinearWorkflowPolicy,
     settings: ProjectSettings,
+    unset_env: &[String],
 ) -> Vec<Effect> {
-    match live::plan_reopen(check, view, policy, settings) {
+    match live::plan_reopen(check, view, policy, settings, unset_env) {
         Ok(plan) => {
             sheet.state = SheetState::ReopenReady {
                 plan: Box::new(plan),

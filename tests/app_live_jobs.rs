@@ -13,7 +13,7 @@ use den::{
         Effect, Event, Key,
         view_model::{JobMarker, LaunchSheet, LaunchStatus, Overlay, ViewModel},
     },
-    config::Config,
+    config::{Config, LinearWorkflow},
     domain::{NextStep, RepoId, WorkItemId},
     handoff::{BranchStart, LaunchPlan, SessionStart, WindowCommand},
     jobs::{JobRecord, JobSubject},
@@ -25,7 +25,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 use support::{
     build::{ME, ObservationBuilder, now, pr},
     fakes::WorkspaceCall,
-    harness::Harness,
+    harness::{Harness, linear_workflow},
 };
 
 const ROOT: &str = "/home/me/dev";
@@ -77,11 +77,20 @@ fn harness_with(arrange: impl FnOnce(&Harness)) -> Harness {
 
 /// [`harness_with`], surveying `observed` instead.
 fn harness_observing(observed: ObservationBuilder, arrange: impl FnOnce(&Harness)) -> Harness {
+    harness_configured(Vec::new(), observed, arrange)
+}
+
+/// [`harness_observing`], with `linear` as the config's Linear Workflows.
+fn harness_configured(
+    linear: Vec<LinearWorkflow>,
+    observed: ObservationBuilder,
+    arrange: impl FnOnce(&Harness),
+) -> Harness {
     let config = Config {
         owners: vec!["octo".to_owned()],
         main_clone_root: Some(PathBuf::from(ROOT)),
         main_clones: BTreeMap::new(),
-        linear: Vec::new(),
+        linear,
         skips: den::domain::Skips::default(),
     };
     let mut harness = Harness::new(Ok(config));
@@ -374,6 +383,7 @@ fn open_existing_resumes_the_recorded_session_in_the_existing_worktree_with_a_wa
             start: SessionStart::Resume,
             permission_mode: None,
             setting_sources: den::handoff::SettingSources::All,
+            unset_env: Vec::new(),
         }]
     );
     // Nothing fetched, no worktree added, no new Job recorded, nothing deleted.
@@ -729,6 +739,7 @@ fn a_live_job_stays_reopenable_while_its_pr_has_no_next_step() {
             start: SessionStart::Resume,
             permission_mode: None,
             setting_sources: den::handoff::SettingSources::All,
+            unset_env: Vec::new(),
         }]
     );
     assert_eq!(sheet(&harness).status, LaunchStatus::Reopened);
@@ -1068,4 +1079,45 @@ fn a_job_milestone_1_recorded_is_still_recognised_as_a_live_job() {
     press(&mut harness, Key::Char('c'));
     let asked = sheet(&harness);
     assert_eq!(asked.status, LaunchStatus::LiveJob, "{}", messages(asked));
+}
+
+/// Reopening a Live Job removes den's Linear keys as a new Job's command does
+/// (#70, ADR-0007): every configured Workflow's, once each, sorted.
+#[test]
+fn reopening_a_live_job_removes_dens_linear_keys() {
+    let key = |owner: &str, variable: &str| LinearWorkflow {
+        api_key_env: variable.to_owned(),
+        ..linear_workflow(owner, owner)
+    };
+    let mut harness = harness_configured(
+        vec![
+            key("octo", "ZED_LINEAR_KEY"),
+            key("acme", "ACME_LINEAR_KEY"),
+        ],
+        observation(),
+        |h| live_job(h, 7),
+    );
+    select(&mut harness, 7);
+    press(&mut harness, Key::Char('c'));
+    press(&mut harness, Key::Char('o'));
+    let ready = sheet(&harness).clone();
+    assert_eq!(
+        ready.status,
+        LaunchStatus::ReopenReady,
+        "{}",
+        messages(&ready)
+    );
+    assert_eq!(
+        ready.command.as_deref(),
+        Some(
+            "kitty --detach --hold --directory /home/me/dev/app/.claude/worktrees/feature-7 env -u ACME_LINEAR_KEY -u ZED_LINEAR_KEY claude --resume app-pr7-address-review"
+        )
+    );
+
+    press(&mut harness, Key::Enter);
+
+    let windows = harness.launcher.windows();
+    assert_eq!(windows.len(), 1, "{windows:?}");
+    assert_eq!(windows[0].start, SessionStart::Resume);
+    assert_eq!(windows[0].unset_env, ["ACME_LINEAR_KEY", "ZED_LINEAR_KEY"]);
 }

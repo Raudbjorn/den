@@ -17,6 +17,12 @@
 //! `--setting-sources user` ([`SettingSources::UserOnly`]), so the worktree's
 //! `.claude/settings.json` and `.claude/settings.local.json` (and the hooks
 //! in them) are not loaded. Reopening it passes the flag again.
+//!
+//! No Job inherits den's Linear keys (ADR-0007): `claude` runs under
+//! `env -u <VAR> …`, one `-u` per variable in [`WindowCommand::unset_env`],
+//! in kitty, on the clipboard and when reopening. The removal is in the
+//! command, so the launch sheet shows it. With no variables to remove, the
+//! command is milestone 1's.
 
 use crate::process::Invocation;
 use serde::{Deserialize, Serialize};
@@ -24,6 +30,10 @@ use std::path::PathBuf;
 
 pub const KITTY_PROGRAM: &str = "kitty";
 pub const CLAUDE_PROGRAM: &str = "claude";
+/// POSIX `env`, which runs a program with variables removed (`-u NAME`).
+pub const ENV_PROGRAM: &str = "env";
+/// `env`'s flag for removing one variable from the program's environment.
+const ENV_UNSET_FLAG: &str = "-u";
 /// Claude Code's flag for the session's name.
 const CLAUDE_NAME_FLAG: &str = "-n";
 /// Claude Code's flag for resuming a session by its name (or ID), as
@@ -117,6 +127,11 @@ pub struct WindowCommand {
     /// [`SettingSources::All`]: no flag, as in milestone 1.
     #[serde(default, skip_serializing_if = "SettingSources::is_all")]
     pub setting_sources: SettingSources,
+    /// The variables `claude` runs without (`env -u`): den's Linear keys
+    /// ([`crate::config::Config::linear_key_variables`], ADR-0007), sorted and
+    /// each once. Empty: no `env`, as in milestone 1.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unset_env: Vec<String>,
 }
 
 /// Whether the window starts a new Claude Code session or resumes one.
@@ -158,6 +173,21 @@ pub fn claude_args(window: &WindowCommand) -> Vec<String> {
     mode.chain(session).collect()
 }
 
+/// What runs in the worktree, program first: `claude` and its
+/// [`claude_args`], under `env -u <VAR> …` when the window removes variables.
+pub fn session_words(window: &WindowCommand) -> Vec<String> {
+    let unset = window
+        .unset_env
+        .iter()
+        .flat_map(|variable| [ENV_UNSET_FLAG.to_owned(), variable.clone()]);
+    let env = (!window.unset_env.is_empty()).then(|| ENV_PROGRAM.to_owned());
+    env.into_iter()
+        .chain(unset)
+        .chain(std::iter::once(CLAUDE_PROGRAM.to_owned()))
+        .chain(claude_args(window))
+        .collect()
+}
+
 /// The kitty invocation that opens the Job's window: `--detach` so kitty
 /// returns at once and the window outlives den; `--hold` so a session that
 /// fails to start stays readable (it leaves a shell in the worktree).
@@ -165,8 +195,7 @@ pub fn kitty_invocation(window: &WindowCommand) -> Invocation {
     Invocation::new(KITTY_PROGRAM)
         .args(["--detach", "--hold", "--directory"])
         .arg(window.directory.clone())
-        .arg(CLAUDE_PROGRAM)
-        .args(claude_args(window))
+        .args(session_words(window))
 }
 
 /// The exact command, as a shell line: the kitty invocation in kitty, else the
@@ -192,9 +221,9 @@ pub fn display(mode: &WindowMode, window: &WindowCommand) -> String {
 
 /// What the clipboard gets outside kitty: paste it into a terminal.
 pub fn clipboard_text(window: &WindowCommand) -> String {
-    let claude = std::iter::once(CLAUDE_PROGRAM.to_owned())
-        .chain(claude_args(window))
-        .map(|word| shell_quote(&word))
+    let claude = session_words(window)
+        .iter()
+        .map(|word| shell_quote(word))
         .collect::<Vec<_>>()
         .join(" ");
     format!(

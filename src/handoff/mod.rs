@@ -365,6 +365,10 @@ pub struct LaunchPlan {
     /// heads, and the held members it leaves alone.
     pub landing: Option<LandingGroupPlan>,
     pub window: WindowMode,
+    /// The variables the Job's `claude` runs without: den's Linear keys
+    /// (ADR-0007, [`WindowCommand::unset_env`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unset_env: Vec<String>,
     /// The exact command, as shown on the sheet.
     pub command: String,
 }
@@ -442,6 +446,7 @@ impl LaunchPlan {
             start: SessionStart::New,
             permission_mode: self.permission_mode,
             setting_sources: self.project_settings.sources(),
+            unset_env: self.unset_env.clone(),
         }
     }
 

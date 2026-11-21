@@ -23,6 +23,7 @@ use den::{
     workspace::GitWorkspace,
 };
 use std::{
+    ffi::OsStr,
     path::{Path, PathBuf},
     process::Command,
     sync::Mutex,
@@ -38,6 +39,7 @@ fn window() -> WindowCommand {
         start: SessionStart::New,
         permission_mode: None,
         setting_sources: den::handoff::SettingSources::All,
+        unset_env: Vec::new(),
     }
 }
 
@@ -72,6 +74,79 @@ fn kitty_opens_a_new_os_window_in_the_worktree_running_claude_without_bypass_fla
         command::display(&WindowMode::Kitty, &window()),
         "kitty --detach --hold --directory /home/me/dev/app/.claude/worktrees/feature-7 claude -n app-pr7-address-review '/gh-resolve https://github.com/octo/app/pull/7 — it'\\''s fine'"
     );
+}
+
+/// Both command shapes really run `claude` without den's Linear keys (#70,
+/// ADR-0007), in the worktree, with the GitHub tokens left alone: the
+/// clipboard line through `sh`, and the words kitty runs after `--directory
+/// <worktree>`, in the worktree. A stand-in `claude` prints where it runs and
+/// its environment; no window opens.
+#[cfg(unix)]
+#[test]
+fn both_command_shapes_run_claude_without_dens_keys_but_with_the_github_tokens() {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = tempfile::tempdir().unwrap();
+    let worktree = tempfile::tempdir().unwrap();
+    let claude = bin.path().join("claude");
+    std::fs::write(&claude, "#!/bin/sh\npwd\nenv\n").unwrap();
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(std::iter::once(bin.path().to_path_buf()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .unwrap();
+    let window = WindowCommand {
+        directory: worktree.path().to_path_buf(),
+        unset_env: vec!["DEN_A_LINEAR_KEY".to_owned(), "DEN_B_LINEAR_KEY".to_owned()],
+        ..window()
+    };
+    let run = |command: &mut Command| {
+        let output = command
+            .env("PATH", &path)
+            .env("DEN_A_LINEAR_KEY", "a")
+            .env("DEN_B_LINEAR_KEY", "b")
+            .env("GH_TOKEN", "gh")
+            .env("GITHUB_TOKEN", "github")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+
+    let clipboard = run(Command::new("sh")
+        .arg("-c")
+        .arg(command::clipboard_text(&window)));
+    let invocation = command::kitty_invocation(&window);
+    assert_eq!(
+        invocation.args[..4],
+        [
+            OsStr::new("--detach"),
+            OsStr::new("--hold"),
+            OsStr::new("--directory"),
+            worktree.path().as_os_str(),
+        ]
+    );
+    let in_window = &invocation.args[4..];
+    let kitty = run(Command::new(&in_window[0])
+        .args(&in_window[1..])
+        .current_dir(worktree.path()));
+
+    let worktree = worktree.path().canonicalize().unwrap();
+    for (shape, output) in [("clipboard", clipboard), ("kitty", kitty)] {
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(
+            Path::new(lines[0]).canonicalize().unwrap(),
+            worktree,
+            "{shape}: {output}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.starts_with("DEN_A_LINEAR_KEY=") || l.starts_with("DEN_B_LINEAR_KEY=")),
+            "{shape}: {output}"
+        );
+        assert!(lines.contains(&"GH_TOKEN=gh"), "{shape}: {output}");
+        assert!(lines.contains(&"GITHUB_TOKEN=github"), "{shape}: {output}");
+    }
 }
 
 fn environment(in_kitty: bool, wayland: bool, x11: bool) -> LaunchEnvironment {
@@ -394,6 +469,7 @@ fn plan_for(clone: &Path, url: &str, head: &str) -> LaunchPlan {
         review_request: None,
         landing: None,
         window: WindowMode::Kitty,
+        unset_env: Vec::new(),
         command: String::new(),
     };
     plan.command = command::display(&plan.window, &plan.window_command());

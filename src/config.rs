@@ -52,6 +52,18 @@ pub struct Config {
 }
 
 impl Config {
+    /// The environment variables holding den's Linear keys: every Linear
+    /// Workflow's `api_key_env`, each once, sorted. Every Job's command
+    /// removes them (ADR-0007). Empty when no Owner has a Linear Workflow.
+    pub fn linear_key_variables(&self) -> Vec<String> {
+        self.linear
+            .iter()
+            .map(|w| w.api_key_env.clone())
+            .collect::<BTreeSet<String>>()
+            .into_iter()
+            .collect()
+    }
+
     /// The Linear Workflow of `owner`, if it has one.
     pub fn linear_workflow(&self, owner: &str) -> Option<&LinearWorkflow> {
         self.linear

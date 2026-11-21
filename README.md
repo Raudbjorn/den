@@ -39,6 +39,12 @@ the launch command using `wl-copy` on Wayland, or `xclip`/`xsel` on X11; you pas
 and run it yourself. Clipboard fallback still requires Claude Code. Git must be
 able to authenticate to the target Repo when a confirmed launch fetches or clones.
 
+A Job never inherits den's Linear keys. When Linear Workflows are configured, the
+launch command starts `claude` under `env -u <VAR>`, once for each distinct
+`api_key_env` variable, so the sheet shows exactly what is removed. The same
+applies in Kitty, on the clipboard and when reopening a Job. `GH_TOKEN`,
+`GITHUB_TOKEN` and other tools' variables are left alone. `env` must be on `PATH`.
+
 ## Configure
 
 Create `$XDG_CONFIG_HOME/den/config.toml`, or `~/.config/den/config.toml` when

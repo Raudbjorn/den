@@ -12,10 +12,10 @@ use den::{
         Effect, Key,
         view_model::{LaunchSheet, LaunchStatus, Overlay},
     },
-    config::Config,
+    config::{Config, LinearWorkflow},
     domain::Observation,
     handoff::{
-        BranchStart, LaunchPlan, SessionStart, SettingSources, WindowCommand,
+        BranchStart, LaunchPlan, SessionStart, SettingSources, WindowCommand, WindowMode, command,
         prompts::{self, Prompts},
     },
     jobs::JobStoreError,
@@ -25,7 +25,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 use support::{
     build::{ME, ObservationBuilder, now, pr},
     fakes::WorkspaceCall,
-    harness::Harness,
+    harness::{Harness, linear_workflow},
 };
 
 const ROOT: &str = "/home/me/dev";
@@ -199,6 +199,7 @@ fn c_then_enter_on_a_pr_produces_exactly_one_launch_plan_fetching_from_the_remot
             start: SessionStart::New,
             permission_mode: None,
             setting_sources: den::handoff::SettingSources::All,
+            unset_env: Vec::new(),
         }]
     );
     let job = harness.jobs.records();
@@ -947,4 +948,103 @@ fn a_job_on_a_pr_whose_author_den_cannot_tell_starts_with_user_settings_only() {
         harness.launcher.windows()[0].setting_sources,
         SettingSources::UserOnly
     );
+}
+
+// ---- Jobs don't get den's Linear keys (#70, ADR-0007) ----
+
+/// [`launch_config`] with a Linear Workflow per `(owner, api_key_env)`.
+fn with_linear_keys(keys: &[(&str, &str)]) -> Config {
+    Config {
+        linear: keys
+            .iter()
+            .map(|(owner, variable)| LinearWorkflow {
+                api_key_env: (*variable).to_owned(),
+                ..linear_workflow(owner, owner)
+            })
+            .collect(),
+        ..launch_config(&[])
+    }
+}
+
+/// Every Workflow's key, not only the Job's Owner's: octo has no Workflow
+/// (so PR 7's Next Step is milestone 1's), yet its Job loses both keys.
+/// Written unsorted, so the sort is den's.
+const TWO_KEYS: &[(&str, &str)] = &[("other", "ZED_LINEAR_KEY"), ("acme", "ACME_LINEAR_KEY")];
+
+#[test]
+fn every_linear_key_variable_is_removed_once_in_sorted_order_before_claude() {
+    let mut harness = started(with_linear_keys(TWO_KEYS), observation().build());
+    with_upstream_clone(&harness);
+
+    press(&mut harness, Key::Char('c'));
+    let ready = sheet(&harness).clone();
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    let command = "kitty --detach --hold --directory /home/me/dev/app/.claude/worktrees/feature-7 env -u ACME_LINEAR_KEY -u ZED_LINEAR_KEY claude -n app-pr7-address-review '/gh-resolve https://github.com/octo/app/pull/7'";
+    assert_eq!(ready.command.as_deref(), Some(command));
+    assert!(!command.contains("GH_TOKEN") && !command.contains("GITHUB_TOKEN"));
+
+    press(&mut harness, Key::Enter);
+
+    assert_eq!(sheet(&harness).status, LaunchStatus::Launched);
+    let windows = harness.launcher.windows();
+    assert_eq!(windows.len(), 1, "{windows:?}");
+    assert_eq!(windows[0].unset_env, ["ACME_LINEAR_KEY", "ZED_LINEAR_KEY"]);
+    // What the Launcher runs for that window is what the sheet showed.
+    let invocation = command::kitty_invocation(&windows[0]);
+    let args: Vec<String> = invocation
+        .args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        args[3..],
+        [
+            WORKTREE,
+            "env",
+            "-u",
+            "ACME_LINEAR_KEY",
+            "-u",
+            "ZED_LINEAR_KEY",
+            "claude",
+            "-n",
+            "app-pr7-address-review",
+            "/gh-resolve https://github.com/octo/app/pull/7",
+        ]
+    );
+    assert_eq!(command::display(&WindowMode::Kitty, &windows[0]), command);
+}
+
+#[test]
+fn workflows_naming_the_same_key_variable_remove_it_once() {
+    let mut harness = started(
+        with_linear_keys(&[("other", "DEN_LINEAR_KEY"), ("acme", "DEN_LINEAR_KEY")]),
+        observation().build(),
+    );
+    with_upstream_clone(&harness);
+
+    press(&mut harness, Key::Char('c'));
+    let ready = sheet(&harness).clone();
+    assert_eq!(
+        ready.command.as_deref(),
+        Some(
+            "kitty --detach --hold --directory /home/me/dev/app/.claude/worktrees/feature-7 env -u DEN_LINEAR_KEY claude -n app-pr7-address-review '/gh-resolve https://github.com/octo/app/pull/7'"
+        )
+    );
+}
+
+#[test]
+fn the_clipboard_command_removes_the_keys_after_cd() {
+    let mut harness = started(with_linear_keys(TWO_KEYS), observation().build());
+    with_upstream_clone(&harness);
+    harness.launcher.outside_kitty();
+
+    press(&mut harness, Key::Char('c'));
+    let command = "cd /home/me/dev/app/.claude/worktrees/feature-7 && env -u ACME_LINEAR_KEY -u ZED_LINEAR_KEY claude -n app-pr7-address-review '/gh-resolve https://github.com/octo/app/pull/7'";
+    assert_eq!(sheet(&harness).command.as_deref(), Some(command));
+    press(&mut harness, Key::Enter);
+
+    assert_eq!(harness.launcher.clipboard(), [command]);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1, "{plans:?}");
+    assert_eq!(plans[0].unset_env, ["ACME_LINEAR_KEY", "ZED_LINEAR_KEY"]);
 }

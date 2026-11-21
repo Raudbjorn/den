@@ -85,6 +85,9 @@ pub struct PlanInput<'a> {
     /// [`PromptKind::for_job`]).
     /// Land also reads its landing order and Held Repos.
     pub policy: &'a LinearWorkflowPolicy,
+    /// The variables the Job runs without: den's Linear keys, sorted, each
+    /// once ([`crate::config::Config::linear_key_variables`], ADR-0007).
+    pub unset_env: &'a [String],
 }
 
 /// The facts for a launch, or every reason it can't happen. PRs here; a Land
@@ -472,6 +475,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         review_request,
         landing: facts.landing,
         window: view.window.clone(),
+        unset_env: input.unset_env.to_vec(),
         command: String::new(),
     };
     plan.command = command::display(&plan.window, &plan.window_command());
