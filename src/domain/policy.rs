@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 /// One Owner's Linear Workflow policy. Its [`Default`] is the **empty** policy,
 /// the one every Owner without a Linear Workflow gets, and it must stay a
 /// policy that changes no Decision: it offers no Start, has no review rules,
-/// holds no Repo and names no release state.
+/// holds no Repo, names no release state and parks nothing.
 ///
 /// Fields arrive with the tickets that use them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -43,6 +43,11 @@ pub struct LinearWorkflowPolicy {
     /// (#40); every other member lands after them. Empty in the empty
     /// policy, where no Linear Issue (and so no Land) exists.
     pub landing_order: Vec<RepoId>,
+    /// Linear states that park a Linear Issue (#74): one in them, with no
+    /// Landing Group that decides, has no Next Step instead of Implement or
+    /// Start. Compared with the issue's state name, ignoring case, like
+    /// [`Self::release_state`]. Empty in the empty policy.
+    pub parked_states: Vec<String>,
 }
 
 impl LinearWorkflowPolicy {
@@ -66,6 +71,13 @@ impl LinearWorkflowPolicy {
     /// without a Linear Workflow keeps milestone 1's Review Job.
     pub fn reviews_verdict_only(&self) -> bool {
         self.review.is_some()
+    }
+
+    /// Whether `state_name` is one of this workflow's parked states.
+    pub fn is_parked_state(&self, state_name: &str) -> bool {
+        self.parked_states
+            .iter()
+            .any(|parked| parked.eq_ignore_ascii_case(state_name))
     }
 
     /// Whether `state_name` is this workflow's release state.
@@ -202,6 +214,7 @@ static EMPTY_POLICY: LinearWorkflowPolicy = LinearWorkflowPolicy {
     held_repos: Vec::new(),
     release_state: None,
     landing_order: Vec::new(),
+    parked_states: Vec::new(),
 };
 
 impl Policies {

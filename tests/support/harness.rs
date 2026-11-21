@@ -62,6 +62,7 @@ pub fn linear_workflow(owner: &str, workspace: &str) -> LinearWorkflow {
         slack_channel: None,
         in_progress_state: None,
         release_state: None,
+        parked_states: Vec::new(),
         exact_head_approval: true,
         comment_reviews_need_rereview: true,
     }

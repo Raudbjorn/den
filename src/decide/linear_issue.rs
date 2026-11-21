@@ -49,7 +49,13 @@
 //! The release-state rule also covers an issue with no members at all: an
 //! issue already in its release state is never offered Implement.
 //!
-//! 3. Then, with no members and every attachment read, the assignment decides:
+//! 3. Then, with no members and every attachment read, a **parked** state
+//!    (the workflow's `parked_states`, #74) comes first: no Next Step,
+//!    "parked in <state>", Waiting On nobody. A parked issue whose group
+//!    decides (Land, Mark for release, or a reason its Pull Requests carry the
+//!    work) is decided by its group above, never parked.
+//!
+//! 4. Otherwise the assignment decides:
 //!
 //! - assigned → **Implement** (#32), Waiting On the Linear assignee: me when
 //!   that is the Linear viewer of the issue's workspace (by Linear user ID,
@@ -602,7 +608,8 @@ fn why_unread(ctx: &Context<'_>, member: &Member) -> String {
     }
 }
 
-/// No members and every attachment read: the assignment decides.
+/// No members and every attachment read: a parked state, then the assignment,
+/// decides.
 fn by_assignment(
     ctx: &Context<'_>,
     issue: &LinearIssue,
@@ -610,6 +617,23 @@ fn by_assignment(
     other_conditions: Vec<String>,
     unknowns: Vec<String>,
 ) -> Decision {
+    if ctx.policy(&issue.owner).is_parked_state(&issue.state.name) {
+        return Decision::new(
+            ctx,
+            item,
+            None,
+            Attribution::nobody(format!(
+                "nobody: it is parked in {}, so no step is owed until it leaves that state",
+                issue.state.name
+            )),
+            Explanation {
+                no_step_reason: Some(format!("parked in {}", issue.state.name)),
+                other_conditions,
+                unknowns,
+                ..Explanation::default()
+            },
+        );
+    }
     match &issue.assignee {
         Some(person) => Decision::new(
             ctx,
