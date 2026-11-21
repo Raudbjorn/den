@@ -102,6 +102,7 @@ fn config(workflow: LinearWorkflow) -> Config {
         linear: vec![workflow],
         skips: den::domain::Skips::default(),
         merge_methods: den::domain::MergeMethods::default(),
+        legacy_marker_prefixes: Vec::new(),
     }
 }
 

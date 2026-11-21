@@ -698,3 +698,44 @@ fn a_bad_merge_method_names_the_line() {
         );
     }
 }
+
+/// #75: `legacy_marker_prefixes` is a top-level list of marker prefixes,
+/// handed to the decision engine through the policies.
+#[test]
+fn legacy_marker_prefixes_are_read_in_order() {
+    let config = parse("owners = [\"acme\"]\nlegacy_marker_prefixes = [\"acme-bot\", \"tool2\"]\n")
+        .expect("valid");
+    assert_eq!(config.legacy_marker_prefixes, ["acme-bot", "tool2"]);
+    assert_eq!(
+        config.policies().legacy_marker_prefixes(),
+        ["acme-bot", "tool2"]
+    );
+    let none = parse("owners = [\"acme\"]\n").expect("valid");
+    assert!(none.legacy_marker_prefixes.is_empty());
+}
+
+#[test]
+fn a_bad_legacy_marker_prefix_is_an_error_naming_its_line() {
+    for (prefix, says) in [
+        (
+            "Acme",
+            "is not a marker prefix: use lowercase letters, digits and -",
+        ),
+        ("acme_bot", "is not a marker prefix"),
+        ("", "is not a marker prefix"),
+        ("den", "is den's own marker prefix"),
+    ] {
+        let text =
+            format!("owners = [\"acme\"]\n\nlegacy_marker_prefixes = [\"ok\", \"{prefix}\"]\n");
+        let error = parse(&text).expect_err(prefix);
+        assert!(error.to_string().contains(says), "{prefix:?}: {error}");
+        assert_eq!(
+            location(&error).map(|l| l.line),
+            Some(3),
+            "{prefix:?}: {error}"
+        );
+    }
+    let twice = parse("owners = [\"acme\"]\nlegacy_marker_prefixes = [\"a\", \"a\"]\n")
+        .expect_err("listed twice");
+    assert!(twice.to_string().contains("listed twice"), "{twice}");
+}

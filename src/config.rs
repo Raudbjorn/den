@@ -24,6 +24,7 @@ pub use linear::{LinearWorkflow, Reviewer};
 
 use crate::domain::{
     MergeMethod, MergeMethods, NextStep, Policies, RepoId, Skips,
+    facts::feedback::{DEN_MARKER_PREFIX, is_marker_prefix},
     ids::{MAX_LOGIN_CHARS, is_valid_login, is_valid_repo_name},
 };
 use serde::Deserialize;
@@ -53,6 +54,10 @@ pub struct Config {
     /// Each Repo's merge method (`[repos."OWNER/REPO"] merge_method`, #72),
     /// for Merge and Land Jobs. A Repo without one names none.
     pub merge_methods: MergeMethods,
+    /// `legacy_marker_prefixes` (#75, ADR-0010): earlier tooling's marker
+    /// prefixes whose `<prefix>:review-notes:` markers set Review Points.
+    /// Lowercase letters, digits and `-`, never `den`.
+    pub legacy_marker_prefixes: Vec<String>,
 }
 
 impl Config {
@@ -73,6 +78,7 @@ impl Config {
                 policies.with(w.owner.clone(), w.policy())
             })
             .with_skips(self.skips.clone())
+            .with_legacy_marker_prefixes(self.legacy_marker_prefixes.clone())
     }
 
     /// The environment variables a Job's command removes (#70, ADR-0007):
@@ -121,6 +127,8 @@ struct RawConfig {
     linear: BTreeMap<Spanned<String>, Spanned<linear::RawLinearWorkflow>>,
     #[serde(default)]
     repos: BTreeMap<Spanned<String>, RawRepo>,
+    #[serde(default)]
+    legacy_marker_prefixes: Vec<Spanned<String>>,
 }
 
 /// One `[repos."OWNER/REPO"]` table (spec 0003).
@@ -243,6 +251,8 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
         .map_err(|(span, message)| malformed(Some(span), message))?;
     let (skips, merge_methods) =
         repo_tables(raw.repos).map_err(|(span, message)| malformed(Some(span), message))?;
+    let legacy_marker_prefixes = marker_prefixes(raw.legacy_marker_prefixes)
+        .map_err(|(span, message)| malformed(Some(span), message))?;
     Ok(Config {
         owners,
         main_clone_root,
@@ -250,7 +260,40 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
         linear,
         skips,
         merge_methods,
+        legacy_marker_prefixes,
     })
+}
+
+/// `legacy_marker_prefixes` (#75): each lowercase letters, digits and `-`,
+/// not den's own prefix, none twice.
+fn marker_prefixes(raw: Vec<Spanned<String>>) -> Result<Vec<String>, (Range<usize>, String)> {
+    let mut prefixes: Vec<String> = Vec::with_capacity(raw.len());
+    for entry in raw {
+        let span = entry.span();
+        let prefix = entry.into_inner();
+        if !is_marker_prefix(&prefix) {
+            return Err((
+                span,
+                format!(
+                    "{prefix:?} is not a marker prefix: use lowercase letters, digits and -, as in <!-- {{prefix}}:review-notes:<review id>:addressed -->"
+                ),
+            ));
+        }
+        if prefix == DEN_MARKER_PREFIX {
+            return Err((
+                span,
+                format!("{prefix:?} is den's own marker prefix, not a legacy one: leave it out"),
+            ));
+        }
+        if prefixes.contains(&prefix) {
+            return Err((
+                span,
+                format!("{prefix:?} is listed twice in `legacy_marker_prefixes`"),
+            ));
+        }
+        prefixes.push(prefix);
+    }
+    Ok(prefixes)
 }
 
 /// A configured folder, which must be absolute: a relative one would mean

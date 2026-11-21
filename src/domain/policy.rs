@@ -288,6 +288,9 @@ pub struct Policies {
     by_owner: Vec<(String, LinearWorkflowPolicy)>,
     /// The Next Step kinds each Repo doesn't track (spec 0003).
     skips: Skips,
+    /// `legacy_marker_prefixes` (#75, ADR-0010): whose `review-notes`
+    /// markers set Review Points, besides den's own.
+    legacy_marker_prefixes: Vec<String>,
 }
 
 /// The policy of every Owner without a Linear Workflow.
@@ -336,6 +339,18 @@ impl Policies {
     /// The Next Step kinds each Repo doesn't track.
     pub fn skips(&self) -> &Skips {
         &self.skips
+    }
+
+    /// The legacy marker prefixes whose markers set Review Points (#75).
+    #[must_use]
+    pub fn with_legacy_marker_prefixes(mut self, prefixes: Vec<String>) -> Self {
+        self.legacy_marker_prefixes = prefixes;
+        self
+    }
+
+    /// The legacy marker prefixes, as configured; empty by default.
+    pub fn legacy_marker_prefixes(&self) -> &[String] {
+        &self.legacy_marker_prefixes
     }
 }
 

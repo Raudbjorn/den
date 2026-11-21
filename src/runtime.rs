@@ -324,6 +324,7 @@ mod tests {
             linear: Vec::new(),
             skips: crate::domain::Skips::default(),
             merge_methods: crate::domain::MergeMethods::default(),
+            legacy_marker_prefixes: Vec::new(),
         }));
         let (mut view, effects) = app.handle(Event::Started {
             now: Timestamp::UNIX_EPOCH,

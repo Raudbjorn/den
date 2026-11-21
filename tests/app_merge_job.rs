@@ -47,6 +47,7 @@ fn config(merge_methods: MergeMethods) -> Config {
         linear: Vec::new(),
         skips: den::domain::Skips::default(),
         merge_methods,
+        legacy_marker_prefixes: Vec::new(),
     }
 }
 

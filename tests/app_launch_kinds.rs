@@ -46,6 +46,7 @@ fn launch_config() -> Config {
         linear: Vec::new(),
         skips: den::domain::Skips::default(),
         merge_methods: den::domain::MergeMethods::default(),
+        legacy_marker_prefixes: Vec::new(),
     }
 }
 
