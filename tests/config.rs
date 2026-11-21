@@ -27,8 +27,11 @@ fn location(error: &ConfigError) -> Option<Location> {
 #[test]
 fn owners_are_read_in_order() {
     let config =
-        parse("owners = [\"Raudbjorn\", \"massif-network\", \"AldaOryggi\"]\n").expect("valid");
-    assert_eq!(config.owners, ["Raudbjorn", "massif-network", "AldaOryggi"]);
+        parse("owners = [\"Raudbjorn\", \"massif-network\", \"example-org\"]\n").expect("valid");
+    assert_eq!(
+        config.owners,
+        ["Raudbjorn", "massif-network", "example-org"]
+    );
     assert_eq!(config.main_clone_root, None);
     assert!(config.main_clones.is_empty());
 }
