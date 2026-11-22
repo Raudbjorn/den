@@ -13,6 +13,10 @@ pub enum NextStep {
     FixCi,
     /// A Pull Request has requested changes or unresolved review threads.
     AddressReview,
+    /// The viewer's own Pull Request, in a Repo with `screenshots = true`,
+    /// has neither a Screenshots section with an image nor a "No visual
+    /// change" line (#79).
+    AddScreenshots,
     /// A Pull Request is waiting for a requested review.
     Review,
     /// A Pull Request is approved, passing and mergeable.
@@ -36,11 +40,12 @@ pub enum NextStep {
 }
 
 impl NextStep {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::FinishDraft,
         Self::ResolveConflicts,
         Self::FixCi,
         Self::AddressReview,
+        Self::AddScreenshots,
         Self::Review,
         Self::Merge,
         Self::Triage,
@@ -60,6 +65,7 @@ impl NextStep {
             Self::ResolveConflicts => "Resolve conflicts",
             Self::FixCi => "Fix CI",
             Self::AddressReview => "Address review",
+            Self::AddScreenshots => "Add screenshots",
             Self::Review => "Review",
             Self::Merge => "Merge",
             Self::Triage => "Triage",

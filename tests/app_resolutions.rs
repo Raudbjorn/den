@@ -51,6 +51,7 @@ fn config() -> Config {
         linear: Vec::new(),
         skips: den::domain::Skips::default(),
         merge_methods: den::domain::MergeMethods::default(),
+        screenshot_repos: Vec::new(),
         legacy_marker_prefixes: vec![PREFIX.to_owned()],
     }
 }

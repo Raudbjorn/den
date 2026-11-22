@@ -30,6 +30,7 @@ fn sheet_open((cols, rows): (u16, u16)) -> Harness {
         main_clones: BTreeMap::new(),
         linear: Vec::new(),
         skips: den::domain::Skips::default(),
+        screenshot_repos: Vec::new(),
         merge_methods: den::domain::MergeMethods::default(),
         legacy_marker_prefixes: Vec::new(),
     };
@@ -178,6 +179,7 @@ fn upstream_sheet_open((cols, rows): (u16, u16)) -> Harness {
         main_clones: BTreeMap::new(),
         linear: Vec::new(),
         skips: den::domain::Skips::default(),
+        screenshot_repos: Vec::new(),
         merge_methods: den::domain::MergeMethods::default(),
         legacy_marker_prefixes: Vec::new(),
     };

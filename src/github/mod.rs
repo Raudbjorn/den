@@ -49,6 +49,22 @@ pub fn survey_with(
     upstreams: &UpstreamTargets,
     observed_at: Timestamp,
 ) -> Result<Observation, SurveyFailure> {
+    let request = SurveyRequest {
+        owners: owners.to_vec(),
+        upstreams: upstreams.clone(),
+        screenshot_repos: Vec::new(),
+    };
+    survey_request(gql, &request, observed_at)
+}
+
+/// The survey `request` asks for: its Owners, its forks' Upstream targets
+/// (#13), and the Repos whose PR bodies are read for screenshots (#79).
+pub fn survey_request(
+    gql: &dyn GraphQl,
+    request: &SurveyRequest,
+    observed_at: Timestamp,
+) -> Result<Observation, SurveyFailure> {
+    let owners = request.owners.as_slice();
     let rate_limit = RateLimitMemo::default();
     let (viewer, viewer_coverage) = viewer::fetch(&Session::new(gql, &rate_limit))?;
     let mut observation = Observation::empty(observed_at, viewer, owners.to_vec());
@@ -60,7 +76,7 @@ pub fn survey_with(
                 let rate_limit = &rate_limit;
                 let viewer = observation.viewer.login.as_str();
                 scope.spawn(move || {
-                    survey_owner(&Session::new(gql, rate_limit), owner, viewer, upstreams)
+                    survey_owner(&Session::new(gql, rate_limit), owner, viewer, request)
                 })
             })
             .collect();
@@ -106,10 +122,11 @@ fn survey_owner(
     session: &Session<'_>,
     owner: &str,
     viewer: &str,
-    upstreams: &UpstreamTargets,
+    request: &SurveyRequest,
 ) -> Result<OwnerSurvey, SurveyFailure> {
+    let upstreams = &request.upstreams;
     let repos = repos::fetch(session, owner)?;
-    let pull_requests = pull_requests::fetch(session, owner, viewer)?;
+    let pull_requests = pull_requests::fetch(session, owner, viewer, &request.screenshot_repos)?;
     let issues = issues::fetch(session, owner, &repos.items)?;
     let comparison = |repo: &Repo| comparison_branch(repo, upstreams);
     let branches = branches::fetch_against(session, owner, &repos.items, &comparison)?;
@@ -165,12 +182,7 @@ impl<G: GraphQl> GhSource<G> {
 
 impl<G: GraphQl> GitHubSource for GhSource<G> {
     fn survey(&self, request: &SurveyRequest) -> Result<Observation, SurveyFailure> {
-        survey_with(
-            &self.gql,
-            &request.owners,
-            &request.upstreams,
-            Timestamp::now(),
-        )
+        survey_request(&self.gql, request, Timestamp::now())
     }
 
     fn member_states(&self, request: &MemberStatesRequest) -> MemberStatesRead {

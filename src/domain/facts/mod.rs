@@ -9,6 +9,7 @@ pub mod linear_issue;
 pub mod member_state;
 pub mod pull_request;
 pub mod run;
+pub mod screenshots;
 
 pub use branch::{Branch, ComparisonBranch};
 pub use feedback::{LegacyState, MarkedState, Marker, MarkerComment, ReviewRecord, ThreadRecord};
@@ -23,3 +24,4 @@ pub use pull_request::{
     Review, ReviewDecision, ReviewVerdict, Reviewer,
 };
 pub use run::{Run, RunConclusion, RunStatus};
+pub use screenshots::Screenshots;

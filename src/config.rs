@@ -11,6 +11,7 @@
 //! # "Raudbjorn/den" = "/home/me/dev/den"
 //! # [repos."octo/app"]                Next Steps a Repo doesn't track (spec 0003)
 //! # skip = ["Fix CI", "Triage"]
+//! # screenshots = true                 my PRs here need screenshots (#79)
 //! # merge_method = "squash"           how Merge and Land merge here (#72)
 //! ```
 //!
@@ -51,6 +52,9 @@ pub struct Config {
     /// The Next Step kinds each Repo doesn't track (`[repos."OWNER/REPO"]
     /// skip`, spec 0003). Repos outside the watched Owners may be listed.
     pub skips: Skips,
+    /// The Repos with `screenshots = true` (#79): the viewer's own PRs there
+    /// need a Screenshots section with an image, or a "No visual change" line.
+    pub screenshot_repos: Vec<RepoId>,
     /// Each Repo's merge method (`[repos."OWNER/REPO"] merge_method`, #72),
     /// for Merge and Land Jobs. A Repo without one names none.
     pub merge_methods: MergeMethods,
@@ -78,6 +82,7 @@ impl Config {
                 policies.with(w.owner.clone(), w.policy())
             })
             .with_skips(self.skips.clone())
+            .with_screenshot_repos(self.screenshot_repos.clone())
             .with_legacy_marker_prefixes(self.legacy_marker_prefixes.clone())
     }
 
@@ -137,6 +142,9 @@ struct RawConfig {
 struct RawRepo {
     #[serde(default)]
     skip: Vec<Spanned<String>>,
+    /// Off unless written (#79).
+    #[serde(default)]
+    screenshots: bool,
     merge_method: Option<Spanned<String>>,
 }
 
@@ -249,7 +257,7 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
     }
     let linear = linear::workflows(raw.linear, &owners, text)
         .map_err(|(span, message)| malformed(Some(span), message))?;
-    let (skips, merge_methods) =
+    let (skips, screenshot_repos, merge_methods) =
         repo_tables(raw.repos).map_err(|(span, message)| malformed(Some(span), message))?;
     let legacy_marker_prefixes = marker_prefixes(raw.legacy_marker_prefixes)
         .map_err(|(span, message)| malformed(Some(span), message))?;
@@ -259,6 +267,7 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
         main_clones,
         linear,
         skips,
+        screenshot_repos,
         merge_methods,
         legacy_marker_prefixes,
     })
@@ -314,14 +323,16 @@ fn absolute(path: Spanned<PathBuf>, what: &str) -> Result<PathBuf, (Range<usize>
     ))
 }
 
+type RepoTables = (Skips, Vec<RepoId>, MergeMethods);
+
 /// The `[repos."OWNER/REPO"]` tables: their `skip` lists (spec 0003, "Not
 /// tracking a flow"), each value a skippable Next Step spelled as
-/// `CONTEXT.md` spells it, and their `merge_method` (#72), spelled as `gh`
-/// spells it.
+/// `CONTEXT.md` spells it, plus screenshot requirements (#79) and merge methods (#72).
 fn repo_tables(
     raw: BTreeMap<Spanned<String>, RawRepo>,
-) -> Result<(Skips, MergeMethods), (Range<usize>, String)> {
+) -> Result<RepoTables, (Range<usize>, String)> {
     let mut skips = Skips::default();
+    let mut screenshot_repos = Vec::new();
     let mut merge_methods = MergeMethods::default();
     for (key, table) in raw {
         let key_span = key.span();
@@ -366,6 +377,9 @@ fn repo_tables(
             }
             steps.push(step);
         }
+        if table.screenshots {
+            screenshot_repos.push(repo.clone());
+        }
         if let Some(entry) = table.merge_method {
             let span = entry.span();
             let name = entry.into_inner();
@@ -381,7 +395,7 @@ fn repo_tables(
         }
         skips = skips.with(repo, steps);
     }
-    Ok((skips, merge_methods))
+    Ok((skips, screenshot_repos, merge_methods))
 }
 
 /// The skippable Next Steps, quoted, in glossary order.

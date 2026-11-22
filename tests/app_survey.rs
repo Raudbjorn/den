@@ -37,6 +37,7 @@ fn startup_surveys_the_configured_owners_and_lists_their_open_prs() {
         [SurveyRequest {
             owners: vec!["alpha".to_owned(), "beta".to_owned()],
             upstreams: UpstreamTargets::default(),
+            screenshot_repos: Vec::new(),
         }]
     );
     assert_eq!(harness.survey_effects(), 1);

@@ -1,5 +1,7 @@
 # The facts den keeps per open PR. Appended to both PR queries. Checks and
 # reviews come from pull_request_details.graphql, one query per batch of PRs.
+# `body` is read only when $bodies is true (an Owner with a Repo that requires
+# screenshots, #79); den keeps only the Screenshots state it gives, never the body.
 fragment PullRequestFacts on PullRequest {
   id
   number
@@ -17,4 +19,5 @@ fragment PullRequestFacts on PullRequest {
   mergeStateStatus
   reviewDecision
   isInMergeQueue
+  body @include(if: $bodies)
 }

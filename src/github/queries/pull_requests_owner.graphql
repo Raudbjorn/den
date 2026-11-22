@@ -3,7 +3,7 @@
 # is the batch size: a page too costly for GitHub is read again with fewer.
 # PRs are ordered by creation time, which never changes, so a PR updated
 # mid-read cannot move ahead of a cursor and be skipped.
-query OwnerPullRequests($owner: String!, $after: String, $repos: Int!) {
+query OwnerPullRequests($owner: String!, $after: String, $repos: Int!, $bodies: Boolean!) {
   rateLimit { remaining resetAt }
   repositoryOwner(login: $owner) {
     repositories(first: $repos, after: $after, ownerAffiliations: [OWNER], orderBy: {field: NAME, direction: ASC}) {
