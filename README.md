@@ -257,4 +257,4 @@ See [architecture](docs/architecture.md), [domain terminology](CONTEXT.md), and
 [GitHub issues](https://github.com/Raudbjorn/den/issues). Linear Workflows and
 Landing Groups are pending [milestone 2](https://github.com/Raudbjorn/den/issues/30)
 work, not capabilities of this GitHub-only baseline. Periodic refresh, text search
-and Board Scope are proposals, not implemented features.
+and a [Board screen](docs/research/projects-v2-feasibility.md) are proposals, not implemented features.
