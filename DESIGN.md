@@ -71,12 +71,12 @@ Values are as of the token file's recorded IRONMAW commit (`2bf753e`). Never edi
 
 ## 4. Glyphs (`src/ui/glyphs.rs`)
 
-Every colour-coded meaning is also carried by a glyph or words (story 37). These are the glyphs, in both glyph profiles. Focus (a teal panel border and title) and the active tab have no glyph yet: in mono and no-colour the kit must carry them another way, and how is undecided.
+Every colour-coded meaning must also be carried by a glyph or explicit words, in every colour profile including mono/no-colour and ASCII (story 37). This table lists the dedicated glyphs in [src/ui/glyphs.rs](src/ui/glyphs.rs); additional caution and failure cues follow it. Focus (a teal panel border and title) and the active tab have no glyph yet: in mono and no-colour the kit must carry them another way, and how is undecided.
 
 | Meaning | Unicode | ASCII |
 |---|---|---|
 | current row (rust tick) | `▌` | `>` |
-| incomplete / partial | `⚠` | `!` |
+| incomplete / partial; launch-sheet caution | `⚠` | `!` |
 | unattributed | `?` | `?` |
 | complete | `✓` | `+` |
 | Live Job | `●` | `*` |
@@ -84,6 +84,18 @@ Every colour-coded meaning is also carried by a glyph or words (story 37). These
 | worktree gone / unknown | `○` / `◌` | `o` / `~` |
 | Linear | `◇` | `[L]` |
 | separator, ellipsis, Enter | `·` `…` `⏎` | `-` `...` `RET` |
+
+**Cautions and failures.** A dedicated glyph is not required for every colour role. The shared caution mark or explicit words must identify the meaning in both glyph profiles:
+
+| Meaning | Unicode cue | ASCII cue |
+|---|---|---|
+| launch refusal | `⚠ Refused: ...`, with the reason | `! Refused: ...`, with the reason |
+| moved head on the launch sheet | `⚠ ... moved from <old> to <new> ...` | `! ... moved from <old> to <new> ...` |
+| failed launch | `⚠ Stopped: could not <step>`, with the cause | `! Stopped: could not <step>`, with the cause |
+| rate limit | `rate limited until <time>`, or words saying the reset time is unknown | `rate limited until <time>`, or words saying the reset time is unknown |
+| a failure styled with the `error` role | words naming the failure and cause, such as `failed: ...` or `could not ...` | words naming the failure and cause, such as `failed: ...` or `could not ...` |
+
+The launch-sheet wording comes from [src/app/view/launch.rs](src/app/view/launch.rs); [src/ui/launch.rs](src/ui/launch.rs) uses `Glyphs::incomplete` for `Tone::Caution`, including refusals, moved heads and failed launches. Rate-limit words come from [src/app/view/coverage.rs](src/app/view/coverage.rs) and appear in the [header status](src/app/view/header.rs); incomplete coverage also carries `⚠` / `!`. There is no dedicated `error` glyph in `Glyphs`; any use of that palette role must retain the failure and cause in words.
 
 **Undecided.** The target screens use glyphs that `glyphs.rs` doesn't define yet, and their ASCII forms aren't chosen. The engine's `ascii_fallback` would draw each as `?`, which already means "unattributed".
 
