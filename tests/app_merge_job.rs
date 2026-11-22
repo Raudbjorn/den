@@ -151,6 +151,41 @@ fn merge_shows_and_launches_exact_resolutions_without_foreign_comment_text() {
 }
 
 #[test]
+fn marker_summary_mentions_are_neutralized_before_merge_launch() {
+    let pr = pr("octo/app", 7)
+        .author(ME)
+        .approved()
+        .passing("ci")
+        .review_body(
+            100,
+            "alice",
+            ReviewVerdict::Approved,
+            "2026-11-10T10:00:00Z",
+            true,
+        )
+        .comment(
+            201,
+            ME,
+            "2026-11-11T10:00:00Z",
+            "<!-- den:point 100.1 answered -->\nFollow up with @alice and @acme/security.",
+        );
+    let mut harness = started_with_pr(config(MergeMethods::default()), pr);
+    press(&mut harness, Key::Char('c'));
+    let ready = sheet(&harness).clone();
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    let shown = prompt(&ready);
+    assert!(
+        shown.contains("Follow up with @\u{200b}alice and @\u{200b}acme/security."),
+        "{shown}"
+    );
+    assert!(!shown.contains("@alice"), "{shown}");
+    assert!(!shown.contains("@acme/security"), "{shown}");
+    press(&mut harness, Key::Enter);
+    assert_eq!(launch_plans(&harness)[0].prompt, shown);
+    assert_eq!(harness.launcher.windows()[0].prompt, shown);
+}
+
+#[test]
 fn merge_resolutions_honor_the_configured_legacy_marker_prefixes() {
     let mut config = config(MergeMethods::default());
     config.legacy_marker_prefixes = vec!["legacy".to_owned()];

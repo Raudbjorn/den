@@ -61,6 +61,10 @@ fn text(value: &str) -> String {
             escaped.push('\\');
         }
         escaped.push(ch);
+        if ch == '@' {
+            // GitHub still links backslash-escaped mentions; break the token instead.
+            escaped.push('\u{200b}');
+        }
     }
     escaped
 }

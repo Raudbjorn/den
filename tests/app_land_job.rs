@@ -304,7 +304,7 @@ fn land_shows_one_resolution_comment_per_member_in_landing_order() {
                 201,
                 ME,
                 "2026-11-11T10:00:00Z",
-                "<!-- den:point 100.1 fixed abc1234 -->\nUpdated the caller.",
+                "<!-- den:point 100.1 fixed abc1234 -->\nUpdated the caller for @alice and @acme/security.",
             ),
         pr("acme/web", 3).author(ME).conflicting(),
     ];
@@ -312,13 +312,17 @@ fn land_shows_one_resolution_comment_per_member_in_landing_order() {
     press(&mut harness, Key::Char('r'));
     let ready = open_sheet(&mut harness, "TEAM-1");
     assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
-    let expected = "## Review resolutions for [acme/app#2](https://github.com/acme/app/pull/2)\n- [100.1](https://github.com/acme/app/pull/2#pullrequestreview-100); author: bob; state: fixed; commit: abc1234; Updated the caller.\n\n## Review resolutions for [acme/api#1](https://github.com/acme/api/pull/1)\n- [thread api1](https://github.com/acme/api/pull/1#discussion_api1); author: alice; state: resolved";
+    // Keep mention text readable without republishing active user or team mentions.
+    let expected = "## Review resolutions for [acme/app#2](https://github.com/acme/app/pull/2)\n- [100.1](https://github.com/acme/app/pull/2#pullrequestreview-100); author: bob; state: fixed; commit: abc1234; Updated the caller for @\u{200b}alice and @\u{200b}acme/security.\n\n## Review resolutions for [acme/api#1](https://github.com/acme/api/pull/1)\n- [thread api1](https://github.com/acme/api/pull/1#discussion_api1); author: alice; state: resolved";
     let prompt = &ready.prompt.as_ref().expect("prompt").text;
     assert!(prompt.ends_with(expected), "{prompt}");
+    assert!(!prompt.contains("@alice"), "{prompt}");
+    assert!(!prompt.contains("@acme/security"), "{prompt}");
     assert!(!prompt.contains("## Review resolutions for [acme/web#3]"));
     // Enter now rereads both services before authorizing Land (#109).
     queue_round(&harness, prs, &ALL);
     press(&mut harness, Key::Enter);
+    assert_eq!(&launch_plans(&harness)[0].prompt, prompt);
     assert_eq!(&harness.launcher.windows()[0].prompt, prompt);
 }
 
