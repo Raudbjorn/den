@@ -239,3 +239,50 @@ fn a_claude_process_naming_the_session_reads_as_running_then_idle_once_it_exits(
     child.wait().expect("reaped");
     assert_eq!(live::activity(&session, &read()), SessionActivity::Idle);
 }
+
+/// #68, stories 67-69: a bounded read must not turn a hidden session flag
+/// into evidence that a Live Job is idle.
+#[cfg(target_os = "linux")]
+#[test]
+fn command_line_overflow_is_unknown_even_one_byte_past_the_limit() {
+    use den::{
+        handoff::SessionActivity,
+        processes::{MAX_CMDLINE_BYTES, read_user_processes},
+    };
+
+    let proc_root = tempfile::tempdir().unwrap();
+    fs::create_dir(proc_root.path().join("self")).unwrap();
+    fs::create_dir(proc_root.path().join("42")).unwrap();
+    let path = proc_root.path().join("42/cmdline");
+    let read = || {
+        read_user_processes(proc_root.path()).map(|processes| live::running_sessions(&processes))
+    };
+
+    let tail = b"\0-n\0at-limit\0";
+    let mut complete = b"claude\0".to_vec();
+    complete.resize(MAX_CMDLINE_BYTES as usize - tail.len(), b'x');
+    complete.extend_from_slice(tail);
+    fs::write(&path, &complete).unwrap();
+    assert_eq!(
+        live::activity("at-limit", &read()),
+        SessionActivity::Running
+    );
+
+    for suffix in [b"x".as_slice(), b"-n\0past-limit\0"] {
+        let mut oversized = complete.clone();
+        oversized.extend_from_slice(suffix);
+        fs::write(&path, oversized).unwrap();
+        let result = read();
+        assert!(
+            matches!(
+                live::activity("past-limit", &result),
+                SessionActivity::Unknown(_)
+            ),
+            "an incomplete process read must not report idle: {result:?}"
+        );
+        let error = result.unwrap_err();
+        assert!(error.contains("42/cmdline"), "{error}");
+        assert!(error.contains(&MAX_CMDLINE_BYTES.to_string()), "{error}");
+        assert!(!error.contains("at-limit") && !error.contains("past-limit"));
+    }
+}
