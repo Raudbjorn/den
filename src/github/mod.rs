@@ -84,13 +84,7 @@ pub fn survey_request(
         handles
             .into_iter()
             .zip(owners)
-            .map(|(handle, owner)| {
-                handle.join().unwrap_or_else(|_| {
-                    Err(SurveyFailure::Interrupted {
-                        detail: format!("the survey of {owner} stopped unexpectedly"),
-                    })
-                })
-            })
+            .map(|(handle, owner)| joined(handle.join(), owner))
             .collect()
     });
     for owner in per_owner {
@@ -102,9 +96,7 @@ pub fn survey_request(
         observation.branches.extend(owner.branches);
         observation.runs.extend(owner.runs);
     }
-    for entry in observation.coverage.entries() {
-        tracing::info!(source = %entry.source.label(), state = %entry.state.describe(), "coverage");
-    }
+    log_coverage(&observation);
     Ok(observation)
 }
 
@@ -151,6 +143,7 @@ pub fn survey_repo_with(
                 .coverage
                 .record(source, SourceState::NotYetFetched);
         }
+        log_coverage(&observation);
         return Ok(observation);
     };
     let id = &found.id;
@@ -179,6 +172,7 @@ pub fn survey_repo_with(
         )
     });
     let (pull_requests, issues, branches, runs) = (pull_requests?, issues?, branches?, runs?);
+    let listing_state = listing.state.clone();
     let entries = [
         vec![listing],
         pull_requests.coverage,
@@ -199,27 +193,46 @@ pub fn survey_repo_with(
         };
         observation.coverage.record(source, entry.state);
     }
+    // A kind is never more complete than the Repo's listing, as for an Owner's
+    // Repo list (`Coverage::record`): an error beside the Repo's data may have
+    // nulled what a kind needs (its default branch), and reading nothing then
+    // is not "there are none".
+    if !listing_state.is_complete() {
+        for kind in SourceKind::WORK_ITEMS {
+            let source = Source::Repo {
+                repo: found.id.clone(),
+                kind,
+            };
+            observation.coverage.record(source, listing_state.clone());
+        }
+    }
     observation.pull_requests = pull_requests.items;
     observation.issues = issues.items;
     observation.branches = branches.items;
     observation.runs = runs.items;
     observation.repos.push(found);
-    for entry in observation.coverage.entries() {
-        tracing::info!(source = %entry.source.label(), state = %entry.state.describe(), "coverage");
-    }
+    log_coverage(&observation);
     Ok(observation)
 }
 
-/// A Repo Survey's read that panicked stops the survey, as an Owner's does.
+/// A survey's read that panicked stops the survey: `what` names what was
+/// being read (an Owner, or the Repo of a Repo Survey).
 fn joined<T>(
     joined: std::thread::Result<Result<T, SurveyFailure>>,
-    repo: &RepoId,
+    what: &dyn std::fmt::Display,
 ) -> Result<T, SurveyFailure> {
     joined.unwrap_or_else(|_| {
         Err(SurveyFailure::Interrupted {
-            detail: format!("the survey of {repo} stopped unexpectedly"),
+            detail: format!("the survey of {what} stopped unexpectedly"),
         })
     })
+}
+
+/// Logs a finished survey's coverage, one line per source.
+fn log_coverage(observation: &Observation) {
+    for entry in observation.coverage.entries() {
+        tracing::info!(source = %entry.source.label(), state = %entry.state.describe(), "coverage");
+    }
 }
 
 /// Everything read for one Owner.

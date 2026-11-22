@@ -11,9 +11,9 @@
 mod support;
 
 use den::{
-    domain::{RepoId, Source, SourceKind, SourceState, UpstreamTargets},
+    domain::{Incompleteness, RepoId, Source, SourceKind, SourceState, UpstreamTargets},
     github::{
-        graphql::{GraphQlRequest, GraphQlResponse, TransportError},
+        graphql::{GraphQlError, GraphQlRequest, GraphQlResponse, TransportError},
         survey_repo, survey_repo_with,
     },
 };
@@ -91,6 +91,11 @@ fn no_pr_details(request: &GraphQlRequest) -> Value {
 /// GitHub, where the Repo asked for as `acme/app` is spelled `Acme/App`, or
 /// is missing when `repository` is null.
 fn github(repository: Value) -> ScriptedGraphQl {
+    github_answering(data(json!({ "repository": repository })))
+}
+
+/// [`github`], answering `OneRepo` with `one_repo`, errors and all.
+fn github_answering(one_repo: GraphQlResponse) -> ScriptedGraphQl {
     ScriptedGraphQl::new(move |request| {
         if let Some(answer) = only_default_branches(request) {
             return answer;
@@ -103,7 +108,7 @@ fn github(repository: Value) -> ScriptedGraphQl {
             "ViewerTeams" => Ok(data(json!({
                 "viewer": { "organizations": { "pageInfo": { "hasNextPage": false }, "nodes": [] } }
             }))),
-            "OneRepo" => Ok(data(json!({ "repository": repository.clone() }))),
+            "OneRepo" => Ok(one_repo.clone()),
             "RepoPullRequests" => Ok(data(json!({ "repository": { "pullRequests": {
                 "pageInfo": page_info(), "nodes": [pr_node(4)]
             }}}))),
@@ -256,4 +261,108 @@ fn a_repo_survey_asks_for_pr_bodies_only_for_a_screenshots_repo() {
         [json!(false)]
     );
     assert_eq!(bodies_asked(&[RepoId::new("ACME", "App")]), [json!(true)]);
+}
+
+fn one_repo_error(kind: &str, message: &str) -> GraphQlError {
+    GraphQlError {
+        message: message.to_owned(),
+        kind: Some(kind.to_owned()),
+    }
+}
+
+/// A Repo listing read only partly (an error beside the data, which here
+/// nulled its default branch) leaves no Work Item kind of the Repo complete,
+/// as an Owner's incomplete Repo list does for the Owner's kinds: Branches
+/// and Runs read nothing for want of the default branch, which is not
+/// "there are none".
+#[test]
+fn a_partly_read_repo_leaves_none_of_its_work_items_complete() {
+    let mut repository = acme_app();
+    repository["defaultBranchRef"] = Value::Null;
+    let gql = github_answering(GraphQlResponse {
+        data: Some(json!({
+            "rateLimit": { "remaining": 4000, "resetAt": RESET_AT },
+            "repository": repository
+        })),
+        errors: vec![one_repo_error(
+            "SERVICE_UNAVAILABLE",
+            "defaultBranchRef timed out",
+        )],
+    });
+    let observation = survey_repo(
+        &gql,
+        &RepoId::new("acme", "app"),
+        &UpstreamTargets::default(),
+        now(),
+    )
+    .expect("a survey");
+
+    let spelled = RepoId::new("Acme", "App");
+    for kind in SourceKind::WORK_ITEMS {
+        let state = observation.coverage.get(&Source::Repo {
+            repo: spelled.clone(),
+            kind,
+        });
+        assert!(
+            state.is_some_and(|s| !s.is_complete()),
+            "{kind:?} is {state:?}"
+        );
+    }
+}
+
+/// A Repo GitHub answered null for because of the rate limit keeps the rate
+/// limit and its reset time; it is not "no such Repo".
+#[test]
+fn a_rate_limited_repo_read_says_so_rather_than_that_the_repo_is_missing() {
+    let gql = github_answering(GraphQlResponse {
+        data: Some(json!({
+            "rateLimit": { "remaining": 0, "resetAt": RESET_AT },
+            "repository": null
+        })),
+        errors: vec![one_repo_error("RATE_LIMITED", "API rate limit exceeded")],
+    });
+    let asked = RepoId::new("acme", "app");
+    let observation =
+        survey_repo(&gql, &asked, &UpstreamTargets::default(), now()).expect("a survey");
+
+    assert_eq!(
+        observation.coverage.get(&Source::Repo {
+            repo: asked,
+            kind: SourceKind::Repos,
+        }),
+        Some(&SourceState::Partial(Incompleteness::RateLimited {
+            resets_at: Some(ts(RESET_AT))
+        }))
+    );
+}
+
+/// When GitHub says why it answered null (SSO, permissions, not found), the
+/// failed listing keeps GitHub's words beside den's.
+#[test]
+fn a_repo_github_refuses_keeps_githubs_reason() {
+    let gql = github_answering(GraphQlResponse {
+        data: Some(json!({
+            "rateLimit": { "remaining": 4000, "resetAt": RESET_AT },
+            "repository": null
+        })),
+        errors: vec![one_repo_error(
+            "FORBIDDEN",
+            "Resource protected by organization SAML enforcement.",
+        )],
+    });
+    let asked = RepoId::new("acme", "app");
+    let observation =
+        survey_repo(&gql, &asked, &UpstreamTargets::default(), now()).expect("a survey");
+
+    assert_eq!(
+        observation.coverage.get(&Source::Repo {
+            repo: asked,
+            kind: SourceKind::Repos,
+        }),
+        Some(&SourceState::Failed {
+            error: "GitHub has no Repo acme/app that den can see \
+                    (Resource protected by organization SAML enforcement.)"
+                .to_owned()
+        })
+    );
 }

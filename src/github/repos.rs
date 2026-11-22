@@ -2,7 +2,7 @@
 
 use super::session::{Actor, Connection, Fetched, KindFetch, Pager, Session};
 use crate::{
-    domain::{CoverageEntry, Repo, RepoId, Source, SourceKind, SourceState},
+    domain::{CoverageEntry, Incompleteness, Repo, RepoId, Source, SourceKind, SourceState},
     ports::SurveyFailure,
 };
 use jiff::Timestamp;
@@ -155,14 +155,11 @@ pub fn fetch_one(
         }
     };
     let Some(node) = node else {
-        let state = SourceState::Failed {
-            error: format!("GitHub has no Repo {repo} that den can see"),
-        };
         return Ok((
             None,
             CoverageEntry {
                 source: asked,
-                state,
+                state: not_found(repo, state),
             },
         ));
     };
@@ -181,6 +178,28 @@ pub fn fetch_one(
         kind: SourceKind::Repos,
     };
     Ok((Some(found), CoverageEntry { source, state }))
+}
+
+/// The state of a Repo GitHub answered null for. A rate limit stays a rate
+/// limit (with its reset time). Otherwise den can't see the Repo, and GitHub's
+/// own reason (not found, SSO, permissions), when it gave one, is kept.
+fn not_found(repo: &RepoId, state: SourceState) -> SourceState {
+    match state {
+        SourceState::Partial(Incompleteness::RateLimited { .. }) => state,
+        SourceState::Partial(Incompleteness::ErrorsAlongsideData { errors })
+            if !errors.is_empty() =>
+        {
+            SourceState::Failed {
+                error: format!(
+                    "GitHub has no Repo {repo} that den can see ({})",
+                    errors.join("; ")
+                ),
+            }
+        }
+        _ => SourceState::Failed {
+            error: format!("GitHub has no Repo {repo} that den can see"),
+        },
+    }
 }
 
 pub fn no_such_owner(owner: &str) -> SourceState {

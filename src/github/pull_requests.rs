@@ -261,8 +261,10 @@ pub fn fetch(
                     RestOfRepo {
                         first_page: page_state.clone(),
                         cursor: prs.page_info.end_cursor,
-                        screenshot_repos,
-                        bodies,
+                        pages: RepoPages {
+                            screenshot_repos,
+                            bodies,
+                        },
                     },
                     &mut found_prs,
                     &mut out.coverage,
@@ -329,8 +331,7 @@ struct RestOfRepo<'a> {
     /// The state of the Owner page its first PRs came on.
     first_page: SourceState,
     cursor: Option<String>,
-    screenshot_repos: &'a [RepoId],
-    bodies: bool,
+    pages: RepoPages<'a>,
 }
 
 /// Reads one Repo's remaining PR pages; records that Repo's own coverage.
@@ -344,8 +345,7 @@ fn fetch_rest_of_repo(
     let RestOfRepo {
         first_page,
         cursor,
-        screenshot_repos,
-        bodies,
+        pages,
     } = rest;
     let mut pager = Pager::new(None);
     // The first page came with the Owner query, so it carries that page's
@@ -355,10 +355,6 @@ fn fetch_rest_of_repo(
         coverage.push(pager.finish(repo_source(repo)));
         return Ok(());
     }
-    let pages = RepoPages {
-        screenshot_repos,
-        bodies,
-    };
     coverage.push(read_repo_pages(session, repo, pager, pages, found_prs)?);
     Ok(())
 }
