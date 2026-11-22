@@ -51,7 +51,15 @@ Colour is assigned by **job**, not by component:
 | `success` | `#5CB38B` | checked and fine (`✓ complete`) |
 | `error` | `#E86052` | failures |
 
-Values are as of the token file's recorded IRONMAW commit (`2bf753e`). Never edit a colour in code: copy a newer token file (`SOURCE.md`) and rebuild, then update this page's tables from it. Nothing checks these hex values against the token file.
+These hex values are reference copies from `assets/tokens/oxide.tokens.json`, at the IRONMAW commit recorded in `assets/tokens/SOURCE.md` (`2bf753e`). Do not hand-pick or tune token colours in Rust, templates or generated palette code.
+
+When adopting newer IRONMAW tokens:
+
+1. Copy the resolved token file byte for byte using the instructions in [`assets/tokens/SOURCE.md`](assets/tokens/SOURCE.md), and update its recorded upstream commit.
+2. Run `cargo build --locked`. `build.rs` regenerates `$OUT_DIR/oxide_palette.rs`; do not edit that generated file.
+3. Update this page's copied hex values and recorded commit from the same token source in the same change.
+
+If only this page is stale, correct its tables from the committed token file; no token or code change is needed. The source wins. No automated check compares this page's hex values with the tokens.
 
 ### Colour profiles (`src/palette.rs`)
 
