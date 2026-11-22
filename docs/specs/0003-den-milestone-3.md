@@ -277,7 +277,7 @@ skip = ["Fix CI", "Triage", "Prune or revive"]
 - After a Repo Survey and the Linear survey have answered, the open PR members of this Repo's Landing Groups that sit in other Repos of the same Owner are read by number: their facts and state. This is #37's member read, widened from state to facts (`pull_request_facts.graphql` and the details query), still bounded by `MAX_MEMBER_STATES` and recorded under `SourceKind::MemberStates`.
 - Without this read, Land and Mark for release would see those members as not surveyed. Members in other Owners' Repos stay not surveyed, as today.
 
-**Cache** (format 13)
+**Cache** (next format: 14 after the Review Point format 13; recheck allocation before implementation)
 - Still one file per viewer, now keyed by Repo:
   - each Repo's facts (Repo, PRs, Issues, Branches, Runs), its coverage per source with read times, and the ages of carried data;
   - the index (Repo lists and requests, with read time);
@@ -346,7 +346,7 @@ skip = ["Fix CI", "Triage", "Prune or revive"]
 | `config.rs` | `[repos."OWNER/REPO"] skip` |
 | `ports/` | `SurveyTarget`, `index`, `Workspace::repo_at`, member facts |
 | `github/` | `repo.graphql`, `repos.graphql` fields, search, per-Repo fetch, cancellation and rate-limit floor |
-| `cache/` | per-Repo keying, read-time guard, format 13 |
+| `cache/` | per-Repo keying, read-time guard, next cache format (14 after Review Points) |
 | `runtime.rs` | `LaneKind::Sweep` |
 | `recent.rs` | new |
 | `ui/` | the kit and screens |
@@ -402,7 +402,7 @@ Tests go through the two seams, plus thin adapter checks, as in milestones 1 and
   - the same when that Sweep's answer is partial (interrupted or paused at the rate-limit floor): it neither replaces the Repo Survey's facts nor changes their coverage;
   - partial reads keep ages;
   - a per-Repo coverage split from an Owner listing;
-  - format 12 rejected and rebuilt.
+  - formats 12 and 13 rejected and rebuilt.
 - Out-of-Repo Landing Group members:
   - read by number after both surveys;
   - Land decided with them;
