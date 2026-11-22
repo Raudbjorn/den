@@ -198,6 +198,164 @@ fn a_long_list_keeps_the_selection_in_view() {
     assert!(text.contains("40 of 40"), "{text}");
 }
 
+/// #155: ownership controls title ink even when selection moves onto the row.
+#[test]
+fn waiting_on_controls_row_ink_without_dimming_the_you_label() {
+    use den::{
+        domain::{
+            Coverage, LinearPart, LinearSourceKind, NextStep, Source, SourceKind, SourceState,
+            WaitingOn, facts::LinearStateKind,
+        },
+        ports::LinearSurvey,
+    };
+    use support::{
+        build::{linear_issue, linear_viewer},
+        harness::config_with_linear,
+    };
+    let mut config = config_with_linear(&["acme"], &[("acme", "acme")]);
+    config.linear[0].start_teams = vec!["TEAM".to_owned()];
+    config.linear[0].parked_states = vec!["Paused".to_owned()];
+    let mut harness = Harness::new(Ok(config));
+    harness.answer(Ok(ObservationBuilder::new()
+        .fully_read_owner("acme")
+        .repo("acme/app")
+        .pull_request(pr("acme/app", 1).author(ME).draft().title("Mine"))
+        .pull_request(pr("acme/app", 2).draft().title("Others"))
+        .build()));
+    let mut coverage = Coverage::default();
+    for kind in [
+        LinearSourceKind::Viewer,
+        LinearSourceKind::AssignedIssues,
+        LinearSourceKind::TeamStates,
+        LinearSourceKind::StartTeamIssues,
+    ] {
+        coverage.record(
+            Source::Owner {
+                owner: "acme".to_owned(),
+                kind: SourceKind::Linear(kind),
+            },
+            SourceState::Complete,
+        );
+    }
+    harness.linear.push_answer(LinearSurvey {
+        part: LinearPart {
+            viewers: vec![linear_viewer("acme", "acme")],
+            issues: vec![
+                linear_issue("acme", "start", "TEAM-3")
+                    .up_for_grabs()
+                    .listed_by(LinearSourceKind::StartTeamIssues)
+                    .title("Available")
+                    .build(),
+                linear_issue("acme", "parked", "TEAM-4")
+                    .state("Paused", LinearStateKind::Started)
+                    .title("Parked")
+                    .build(),
+            ],
+            ..LinearPart::default()
+        },
+        coverage,
+    });
+    harness.start();
+    let cases = [
+        (
+            "Mine",
+            WaitingOn::Me,
+            Some(NextStep::FinishDraft),
+            OXIDE_TRUECOLOR.text_strong,
+        ),
+        (
+            "Others",
+            WaitingOn::SomeoneElse,
+            Some(NextStep::FinishDraft),
+            OXIDE_TRUECOLOR.text_muted,
+        ),
+        (
+            "Available",
+            WaitingOn::Nobody,
+            Some(NextStep::Start),
+            OXIDE_TRUECOLOR.text_faint,
+        ),
+        (
+            "Parked",
+            WaitingOn::Nobody,
+            None,
+            OXIDE_TRUECOLOR.text_faint,
+        ),
+    ];
+    assert_eq!(harness.view.list.rows.len(), cases.len());
+    for (cols, rows) in [DESIGN_SIZE, MINIMUM_SIZE] {
+        harness.send(Event::Resized { cols, rows });
+        for glyphs in [GlyphProfile::Unicode, GlyphProfile::Ascii] {
+            let theme =
+                Theme::new(TerminalProfile::new(ColorProfile::TrueColor, glyphs)).expect("theme");
+            let mut view = harness.view.clone();
+            for selected in 0..view.list.rows.len() {
+                view.list.selected = Some(selected);
+                let buffer = frame::render(&theme, &view, cols, rows).expect("renders");
+                let area = frame::regions(buffer.area, &view.layout).list;
+                for (title, waiting, step, ink) in cases {
+                    let index = view
+                        .list
+                        .rows
+                        .iter()
+                        .position(|r| r.title == title)
+                        .unwrap();
+                    let row = &view.list.rows[index];
+                    assert_eq!((row.waiting_on, row.next_step), (waiting, step), "{title}");
+                    let y = (area.top()..area.bottom())
+                        .find(|&y| {
+                            region_lines(&buffer, Rect::new(area.x, y, area.width, 1))[0]
+                                .contains(title)
+                        })
+                        .expect("the title is visible");
+                    let x = (area.left()..=area.right() - title.len() as u16)
+                        .find(|&x| {
+                            (0..title.len())
+                                .all(|i| buffer[(x + i as u16, y)].symbol() == &title[i..i + 1])
+                        })
+                        .expect("the title's cells");
+                    for i in 0..title.len() {
+                        let cell = &buffer[(x + i as u16, y)];
+                        assert_eq!(
+                            cell.fg, ink,
+                            "{title}, selected={selected}, {glyphs:?}, {cols}x{rows}"
+                        );
+                        assert_eq!(
+                            cell.bg,
+                            if index == selected {
+                                OXIDE_TRUECOLOR.selected
+                            } else {
+                                OXIDE_TRUECOLOR.bg
+                            }
+                        );
+                    }
+                    if index == selected {
+                        let tick = if glyphs == GlyphProfile::Unicode {
+                            "▌"
+                        } else {
+                            ">"
+                        };
+                        assert_eq!(buffer[(area.x, y)].symbol(), tick);
+                        assert_eq!(buffer[(area.x, y)].fg, OXIDE_TRUECOLOR.accent_rust);
+                    }
+                    if waiting == WaitingOn::Me {
+                        let x = (area.left()..area.right().saturating_sub(2))
+                            .find(|&x| {
+                                buffer[(x, y)].symbol() == "y"
+                                    && buffer[(x + 1, y)].symbol() == "o"
+                                    && buffer[(x + 2, y)].symbol() == "u"
+                            })
+                            .expect("you stays visible");
+                        for offset in 0..3 {
+                            assert_eq!(buffer[(x + offset, y)].fg, OXIDE_TRUECOLOR.accent);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn the_detail_plate_appears_at_the_wide_threshold_and_not_below_it() {
     use den::layout::WIDE_LAYOUT_MIN_COLS;

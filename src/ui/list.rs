@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     app::view_model::{JobActivity, JobMarker, List, Row},
-    domain::WorkItemKind,
+    domain::{WaitingOn, WorkItemKind},
 };
 use crepuscularity_tui::TemplateContext;
 use ratatui::{Frame, layout::Rect};
@@ -170,6 +170,7 @@ fn row_context(
     let mut ctx = TemplateContext::default();
     ctx.set("selected", selected)
         .set("dimmed", row.dimmed)
+        .set("waiting_you", row.waiting_on == WaitingOn::Me)
         .set("has_step", row.next_step.is_some())
         .set("tick", if selected { glyphs.tick } else { " " })
         .set("step", row.step_label.as_str())

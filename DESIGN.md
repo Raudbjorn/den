@@ -45,7 +45,7 @@ Colour is assigned by **job**, not by component:
 | `mark-bg` | `#101715` | the mark plate |
 | `border` | `#2A3940` | quiet rules |
 | `text` | `#D9E1E4` | body |
-| `text-strong` | `#F3F6F7` | titles, the Repo's name, the selected item |
+| `text-strong` | `#F3F6F7` | panel titles, the Repo's name, items Waiting On you |
 | `text-muted` | `#9EB1BA` | secondary facts, reasons |
 | `text-faint` | `#86999F` | metadata, hints, "not swept yet" |
 | `success` | `#5CB38B` | checked and fine (`✓ complete`) |
@@ -64,7 +64,8 @@ Values are as of the token file's recorded IRONMAW commit (`2bf753e`). Never edi
 ## 3. Type and text
 
 - **The terminal's monospace font.** den sets no font. The reference renders use Iosevka, which is IRONMAW's `font-mono`.
-- **Emphasis by weight and tone, not size.** Panel titles and section labels are uppercase (`NEXT STEPS`, `WAITING ON`). Titles and the Repo name are `text-strong`; reasons are muted.
+- **Emphasis by weight and tone, not size.** Panel titles and section labels are uppercase (`NEXT STEPS`, `WAITING ON`). Panel titles and the Repo name are `text-strong`; reasons are muted.
+- **Row ink says whose turn it is (#155).** In the Next Steps list, item titles Waiting On you are `text-strong`, someone else's are `text-muted`, and nobody's (Start, Parked) are `text-faint`. Selection keeps its fill and rust cursor without changing this ramp. The teal "you" label stays visible on every row Waiting On you; caution and Job markers keep their own meanings. The milestone 3 DataTable inherits this rule.
 - **The lockup:** `D  E  N`, letter-spaced, with its tagline, on the Repo screen (spec 0003). The reference render's tagline is "Next Steps for GitHub work, one Repo at a time".
 - **Words** come from `CONTEXT.md` (Next Step, Waiting On, Live Job, Landing Group, …). Its `_Avoid_` lists apply on screen too.
 - **Separators and truncation** go through the ViewModel's `SEPARATOR` (`·`), `ELLIPSIS` (`…`) and `ENTER_KEY` (`⏎`). Each glyph profile renders them, and text is cut between graphemes (`Glyphs::fit`).
@@ -103,7 +104,7 @@ ratatui widgets wrapped in `src/ui/kit/`. Each takes its style from the theme (`
 | Component | Built from | Look |
 |---|---|---|
 | **Panel** | `Block`, rounded, `merge_borders(Fuzzy)` | uppercase title top-left, status title top-right (`✓ 14 · complete`); slate border at rest, teal when focused, as is the focused panel's title in the reference renders |
-| **DataTable** | `Table` + `Scrollbar` | header row, group rows (`WAITING ON YOU`, `RECENT`), rust `▌` cursor on the focused table, `selected` tone on the row, empty and coverage states |
+| **DataTable** | `Table` + `Scrollbar` | header row, group rows (`WAITING ON YOU`, `RECENT`), Waiting On ink ramp (§3), rust `▌` cursor on the focused table, `selected` tone on the row, empty and coverage states |
 | **Chip** | styled span | the Next Step label on a `surface` fill: teal when Waiting On you, structure text otherwise |
 | **TabBar** | `Tabs` | active tab teal on charcoal |
 | **Field** | `app/editor.rs` | the filter fields |
