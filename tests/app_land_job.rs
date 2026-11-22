@@ -1228,6 +1228,171 @@ fn land_uses_each_members_repo_merge_method() {
     assert!(prompt.contains("Merge each using --rebase."), "{prompt}");
 }
 
+/// The members and heads a launched Land plan lands, in order.
+fn landed(plan: &LaunchPlan) -> Vec<(PullRequestRef, String)> {
+    plan.landing
+        .as_ref()
+        .expect("a Land plan")
+        .members
+        .iter()
+        .map(|m| (m.pr.clone(), m.head_commit.clone()))
+        .collect()
+}
+
+/// #102: a PR attached to TEAM-1 after the sheet showed it, at a head that
+/// never moved, is read when `Enter` confirms: nothing launches, the sheet
+/// lists the new member in landing order and says it joined, and the next
+/// `Enter` lands the group the sheet now shows. (`a_membership_change_asks_again`
+/// covers a join and a leave together; this is a join alone.)
+#[test]
+fn a_pr_attached_after_the_sheet_at_an_unchanged_head_asks_again_then_lands_the_new_group() {
+    let head_4 = "4".repeat(40);
+    let with_4 = || {
+        let mut prs = members();
+        prs.push(ready("acme/app", 4, &head_4));
+        prs
+    };
+    let attached = [
+        ("acme/api", 1),
+        ("acme/app", 2),
+        ("acme/app", 4),
+        ("acme/web", 3),
+    ];
+    let mut harness = started();
+    let shown = open_sheet(&mut harness, "TEAM-1");
+    assert_eq!(field(&shown, "LAND 3"), None, "two members when shown");
+
+    queue_round(&harness, with_4(), &attached);
+    press(&mut harness, Key::Enter);
+    assert!(launch_plans(&harness).is_empty(), "nothing launched");
+    assert!(harness.launcher.windows().is_empty());
+    let asked = sheet(&harness).clone();
+    assert_eq!(asked.status, LaunchStatus::Ready, "{}", messages(&asked));
+    assert!(
+        messages(&asked).contains("the Landing Group of TEAM-1 changed (acme/app#4 joined)"),
+        "{}",
+        messages(&asked)
+    );
+    assert_eq!(
+        field(&asked, "LAND 1").map(|f| f.0),
+        Some("acme/app#2 @ 2222222")
+    );
+    assert_eq!(
+        field(&asked, "LAND 2").map(|f| f.0),
+        Some("acme/app#4 @ 4444444")
+    );
+    assert_eq!(
+        field(&asked, "LAND 3").map(|f| f.0),
+        Some("acme/api#1 @ 1111111")
+    );
+
+    harness.workspace.host_pull_head(APP_URL, 4, &head_4);
+    queue_round(&harness, with_4(), &attached);
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1, "{}", messages(sheet(&harness)));
+    assert_eq!(
+        landed(&plans[0]),
+        [
+            (member("acme/app", 2), HEAD_2.to_owned()),
+            (member("acme/app", 4), head_4.clone()),
+            (member("acme/api", 1), HEAD_1.to_owned()),
+        ]
+    );
+    assert!(
+        plans[0]
+            .prompt
+            .contains(&format!("https://github.com/acme/app/pull/4 at {head_4}")),
+        "{}",
+        plans[0].prompt
+    );
+    assert_eq!(sheet(&harness).status, LaunchStatus::Launched);
+}
+
+/// #102: a PR attached after the sheet showed it that isn't ready (it
+/// conflicts) leaves the group nothing to land: `Enter` reads it, launches
+/// nothing and refuses, saying TEAM-1 has no Next Step now; pressing `Enter`
+/// again (which dismisses a refused sheet) still launches nothing.
+#[test]
+fn a_pr_attached_after_the_sheet_that_isnt_ready_refuses_land() {
+    let mut prs = members();
+    prs.push(pr("acme/app", 4).author(ME).conflicting());
+    let attached = [
+        ("acme/api", 1),
+        ("acme/app", 2),
+        ("acme/app", 4),
+        ("acme/web", 3),
+    ];
+    let mut harness = started();
+    open_sheet(&mut harness, "TEAM-1");
+    queue_round(&harness, prs, &attached);
+    press(&mut harness, Key::Enter);
+    let refused = sheet(&harness).clone();
+    assert_eq!(
+        refused.status,
+        LaunchStatus::Refused,
+        "{}",
+        messages(&refused)
+    );
+    assert!(
+        messages(&refused).contains("this Work Item has no Next Step to hand off"),
+        "{}",
+        messages(&refused)
+    );
+    press(&mut harness, Key::Enter);
+    assert!(launch_plans(&harness).is_empty(), "nothing launched");
+    assert!(harness.launcher.windows().is_empty());
+    assert!(harness.jobs.records().is_empty());
+}
+
+/// #102: a member detached from TEAM-1 after the sheet showed it (its PR
+/// still open, its head unchanged) is read when `Enter` confirms: nothing
+/// launches, the sheet drops it and says it left, and the next `Enter` lands
+/// only the members still attached, never the one that left.
+#[test]
+fn a_member_detached_after_the_sheet_asks_again_then_lands_without_it() {
+    let attached = [("acme/app", 2), ("acme/web", 3)];
+    let mut harness = started();
+    let shown = open_sheet(&mut harness, "TEAM-1");
+    assert_eq!(
+        field(&shown, "LAND 2").map(|f| f.0),
+        Some("acme/api#1 @ 1111111")
+    );
+
+    queue_round(&harness, members(), &attached);
+    press(&mut harness, Key::Enter);
+    assert!(launch_plans(&harness).is_empty(), "nothing launched");
+    assert!(harness.launcher.windows().is_empty());
+    let asked = sheet(&harness).clone();
+    assert_eq!(asked.status, LaunchStatus::Ready, "{}", messages(&asked));
+    assert!(
+        messages(&asked).contains("the Landing Group of TEAM-1 changed (acme/api#1 left)"),
+        "{}",
+        messages(&asked)
+    );
+    assert_eq!(
+        field(&asked, "LAND 1").map(|f| f.0),
+        Some("acme/app#2 @ 2222222")
+    );
+    assert_eq!(field(&asked, "LAND 2"), None, "api #1 is no longer listed");
+
+    queue_round(&harness, members(), &attached);
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1, "{}", messages(sheet(&harness)));
+    assert_eq!(
+        landed(&plans[0]),
+        [(member("acme/app", 2), HEAD_2.to_owned())]
+    );
+    assert!(
+        !plans[0]
+            .prompt
+            .contains("https://github.com/acme/api/pull/1"),
+        "{}",
+        plans[0].prompt
+    );
+}
+
 // A settled Point can change publication text without changing readiness or heads.
 #[test]
 fn changed_resolutions_require_confirmation_again_even_when_heads_are_unchanged() {
