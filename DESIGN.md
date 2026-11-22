@@ -98,20 +98,22 @@ In the kit's ASCII profile, borders are `+-|`, chips are `[text]`, and the curso
 
 ## 5. Components: the den kit (ADR-0006; spec 0003)
 
-ratatui widgets wrapped in `src/ui/kit/`. Each takes its style from the theme (`kit/theme.rs`), which resolves IRONMAW roles for the active profile.
+The planned kit wraps ratatui widgets in `src/ui/kit/`. Its planned theme, `src/ui/kit/theme.rs`, will resolve IRONMAW roles for the active profile. The Field's editing model and the Bear renderer already exist outside the kit, as noted below.
 
 | Component | Built from | Look |
 |---|---|---|
-| **Panel** | `Block`, rounded, `merge_borders(Fuzzy)` | uppercase title top-left, status title top-right (`✓ 14 · complete`); slate border at rest, teal when focused, as is the focused panel's title in the reference renders |
+| **Panel** | `Block`, rounded, `.merge_borders(MergeStrategy::Fuzzy)` (see below) | uppercase title top-left, status title top-right (`✓ 14 · complete`); slate border at rest, teal when focused, as is the focused panel's title in the reference renders |
 | **DataTable** | `Table` + `Scrollbar` | header row, group rows (`WAITING ON YOU`, `RECENT`), rust `▌` cursor on the focused table, `selected` tone on the row, empty and coverage states |
 | **Chip** | styled span | the Next Step label on a `surface` fill: teal when Waiting On you, structure text otherwise |
 | **TabBar** | `Tabs` | active tab teal on charcoal |
-| **Field** | `app/editor.rs` | the filter fields |
+| **Field** | planned wrapper reusing `PromptEditor` from [src/app/editor.rs](src/app/editor.rs), the existing text-editing model outside the kit | the filter fields |
 | **Gauge** | `LineGauge` | teal fill, with its words beside it (`119 of 163 Repos swept`) |
 | **KeyBar** | kbd chips | key hints at the bottom left, the glyph legend at the bottom right |
 | **Button** | rust span | **the one action** (`c  Reopen the Live Job…`) |
 | **Sheet** | `Clear` + Panel | overlays: launch sheet, detail sheet |
-| **Bear** | `ui::bear` | the lettered SVEINBJORN bear (`assets/brand/bear-mark.svg`), drawn with kitty graphics where the terminal answers to it, half-blocks in truecolor otherwise, and left out in every other colour profile (`Graphics::choose`; `DEN_GRAPHICS` overrides) |
+| **Bear** | existing renderer in [src/ui/bear.rs](src/ui/bear.rs), retained outside the kit | the lettered SVEINBJORN bear (`assets/brand/bear-mark.svg`), drawn with kitty graphics where the terminal answers to it, half-blocks in truecolor otherwise, and left out in every other colour profile (`Graphics::choose`; `DEN_GRAPHICS` overrides) |
+
+**Border merging:** [Ratatui 0.30.2](Cargo.lock), the pinned version, provides [`Block::merge_borders`](https://docs.rs/ratatui/0.30.2/ratatui/widgets/struct.Block.html#method.merge_borders). Its argument here is [`ratatui::symbols::merge::MergeStrategy::Fuzzy`](https://docs.rs/ratatui/0.30.2/ratatui/symbols/merge/enum.MergeStrategy.html#variant.Fuzzy): overlapping border symbols are combined, using a close match when no exact Unicode junction exists. Borders must occupy the same cells to merge; Ratatui's [collapse-borders recipe](https://ratatui.rs/recipes/layout/collapse-borders/) shows the layout with `Spacing::Overlap(1)`.
 
 **Bear rule:** the full bear where there is room, otherwise no bear. Never an emblem or a shrunken bear (spec 0003, story 36). On the Repo screen it needs at least `REPO_LIST_MIN_ROWS` (10) table rows beside it. In the rail it must fit together with the identity block and every section without scrolling.
 
