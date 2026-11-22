@@ -92,6 +92,7 @@ pub mod names;
 mod plan;
 pub mod prompts;
 mod refusal;
+pub mod resolutions;
 pub mod reviewers;
 pub mod trust;
 pub mod workflows;
@@ -367,6 +368,10 @@ pub struct LaunchPlan {
     pub renamed: Option<Renamed>,
     pub session: String,
     pub prompt: String,
+    /// Merge and Land only (#78): the resolution comment of each Pull
+    /// Request the Job merges, in order, as the prompt carries them.
+    #[serde(default)]
+    pub resolutions: Vec<resolutions::Resolution>,
     /// The approval-required mode for a coordination Job and for a Review Job
     /// in a Linear Workflow; `None` for any other Job, whose command is
     /// milestone 1's ([`job_permission_mode`]).

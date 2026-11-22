@@ -213,7 +213,8 @@ These apply only to Owners with a Linear Workflow. The first matching rule wins.
 
 1. The issue has open, **attached** member PRs:
    - Every open member outside a Held Repo has its own decision "would Merge" (see below), none is ambiguous or not surveyed, attachment and member coverage are complete, and no member is in a merge queue → **Land**.
-   - Otherwise → no Next Step. The Explanation lists each blocking member with its own Next Step or reason (queued, not surveyed, ambiguous, unknown), and lists held members as "held; not blocking".
+   - Otherwise → no Next Step. The Explanation lists each blocking member with its own Next Step or reason (queued, not surveyed, ambiguous, unknown), and lists the other held members as "held; not blocking".
+   - A held member blocks only when it is queued, not surveyed or reported open again: den can't tell it isn't merging right now. Its own state (failing checks, conflicts, ambiguity, facts read in part) never blocks (ADR-0011, #101).
 2. No open members, at least one merged member, and the state is neither the release state nor of type completed or canceled → **Mark for release**. Already in the release state → no Next Step, with "in <release state>; release is outside den".
 3. No members at all, and attachment coverage complete:
    - assigned → **Implement**;
@@ -320,7 +321,7 @@ No organization-specific slash commands are defaults. A user can point a kind at
 - **Policy taken from the organization's existing tooling, not yet confirmed by the user** (each is config or a switch, so changing it is cheap):
   - exact-head approval (*superseded by ADR-0009, #73: that tooling counts an approval given before a later push and doesn't wait for pending requests, matching the organization's own branch rules, so den's defaults now follow GitHub*);
   - plain COMMENTED reviews need re-review;
-  - a Held Repo doesn't block Land even when its PR is broken;
+  - a Held Repo doesn't block Land even when its PR is broken (*decided by ADR-0011, #101: confirmed for a held PR's own state, but a held member that is queued, not surveyed or reported open again still blocks*);
   - the landing order.
 - **This spec's own choices, flagged:** Request review's place in the order; changes requested on an older head falling through to Request review (story 43, which may also be wanted for Owners without a Linear Workflow); Start Waiting On nobody; Land and Request review Jobs getting worktrees for consistency, though they need no code.
 - **Milestone 1 decisions still awaiting the user** affect this spec: the "Merge without approval when a Repo requires no review" rule doesn't apply inside a Linear Workflow when exact-head approval is on.

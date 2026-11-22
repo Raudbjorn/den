@@ -103,6 +103,7 @@ fn config(workflow: LinearWorkflow) -> Config {
         skips: den::domain::Skips::default(),
         screenshot_repos: Vec::new(),
         merge_methods: den::domain::MergeMethods::default(),
+        refresh_interval_secs: None,
         legacy_marker_prefixes: Vec::new(),
     }
 }

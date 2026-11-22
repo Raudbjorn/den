@@ -556,6 +556,53 @@ impl Coverage {
         viewer.chain(of_repo).cloned().collect()
     }
 
+    /// Splits an Owner survey's coverage per Repo (spec 0003, "Coverage per
+    /// Repo"): each of `repos`, the Repos the Owner's listing returned, gets
+    /// an entry of its own for its Repo fact (complete: den read it when it
+    /// listed it) and for every Work Item kind it has none for yet, in the
+    /// Owner's state for that kind. So a Repo's PRs are complete when the
+    /// Owner listing was complete or the Repo's own pages were read
+    /// completely, and otherwise carry the Owner's reason. A Repo Survey and
+    /// an Owner survey then record the same sources, which the cache's
+    /// read-time guard compares. Repos of other Owners are skipped, and an
+    /// entry a Repo already has is kept.
+    pub fn split_by_repo(&mut self, owner: &str, repos: &[RepoId]) {
+        for repo in repos.iter().filter(|r| same_login(&r.owner, owner)) {
+            let own = |coverage: &Self, kind: SourceKind| {
+                coverage.entries.iter().any(|e| {
+                    matches!(&e.source, Source::Repo { repo: r, kind: k } if *k == kind && r.same(repo))
+                })
+            };
+            if !own(self, SourceKind::Repos) {
+                self.record(
+                    Source::Repo {
+                        repo: repo.clone(),
+                        kind: SourceKind::Repos,
+                    },
+                    SourceState::Complete,
+                );
+            }
+            for kind in SourceKind::WORK_ITEMS {
+                let owner_state = self
+                    .entries
+                    .iter()
+                    .find(|e| {
+                        matches!(&e.source, Source::Owner { owner: o, kind: k } if *k == kind && same_login(o, owner))
+                    })
+                    .map(|e| e.state.clone());
+                if let Some(state) = owner_state.filter(|_| !own(self, kind)) {
+                    self.record(
+                        Source::Repo {
+                            repo: repo.clone(),
+                            kind,
+                        },
+                        state,
+                    );
+                }
+            }
+        }
+    }
+
     /// The sources behind one Repo's facts (spec 0003, "Coverage per Repo"):
     /// the Repo's own entries, and its Owner's entries of every kind the
     /// Repo has no entry of its own for (the Owner's Linear sources and
