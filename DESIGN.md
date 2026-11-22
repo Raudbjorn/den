@@ -9,8 +9,9 @@ The look of den on one page. It gathers decisions recorded elsewhere and points 
 | ADR-0001 | the colour roles |
 | ADR-0006, spec 0003 "Look: the den kit" | widgets, panels, the kit |
 | `src/layout.rs` | sizes and breakpoints |
-| `src/app/view_model.rs` | the semantic separator, ellipsis and Enter (`SEPARATOR`, `ELLIPSIS`, `ENTER_KEY`) |
-| `src/ui/glyphs.rs` | glyphs, per glyph profile, including how each profile draws those three |
+| `src/app/view_model.rs` | canonical semantic constants (`SEPARATOR`, `ELLIPSIS`, `ENTER_KEY`); some callers still copy their literal values (section 3) |
+| `src/ui/glyphs.rs` | shared glyphs per profile, including how each profile draws those three |
+| `src/ui/sidebar.rs` (`repo_glyphs`) | Repo rail marks per profile (section 4) |
 | `CONTEXT.md` | the words on screen |
 
 > **Current state.** `main` still draws milestone 1's *Tonal plates* with `.crepus` templates. The design below is the decided target: ratatui widgets through `src/ui/kit/` (ADR-0006, milestone 3), which supersedes Tonal plates. Until the kit lands, the templates are the running code, and this page describes where they are headed. (One visible difference: milestone 1's templates also draw a fork's Upstream target in rust. Spec 0003 drops that.)
@@ -68,15 +69,20 @@ Values are as of the token file's recorded IRONMAW commit (`2bf753e`). Never edi
 - **Emphasis by weight and tone, not size.** Panel titles and section labels are uppercase (`NEXT STEPS`, `WAITING ON`). Titles and the Repo name are `text-strong`; reasons are muted.
 - **The lockup:** `D  E  N`, letter-spaced, with its tagline, on the Repo screen (spec 0003). The reference render's tagline is "Next Steps for GitHub work, one Repo at a time".
 - **Words** come from `CONTEXT.md` (Next Step, Waiting On, Live Job, Landing Group, …). Its `_Avoid_` lists apply on screen too.
-- **Separators, truncation and Enter have two layers.** The ViewModel (`src/app/view_model.rs`) writes the semantic characters `SEPARATOR` (`·`), `ELLIPSIS` (`…`) and `ENTER_KEY` (`⏎`), and never picks a profile. The renderer (`src/ui`) draws every piece of ViewModel text through `Glyphs::text`, or through `Glyphs::fit`, which also cuts between graphemes. These swap in the active profile's form: Unicode `·` `…` `⏎`, ASCII `-` `...` `RET` (the table below). Outside a per-profile glyph table (`glyphs.rs`, or a screen's own, such as `sidebar.rs`'s `repo_glyphs`), UI code never writes these characters or their ASCII forms as literals. Text drawn without `Glyphs` shows `?` in ASCII (the engine's `ascii_fallback`), which already means "unattributed" (#151 is one such case).
+- **Semantic text has two layers.** The ViewModel should use `SEPARATOR` between sentence parts, `ELLIPSIS` for work under way and `ENTER_KEY` for key hints, from `src/app/view_model.rs`. It never picks a glyph profile or marks width-dependent cuts. Their profile forms are listed once in section 4.
+- **Convert before measuring.** The renderer must apply `Glyphs::text` before measuring, wrapping or cutting semantic text, using terminal-cell widths (`src/ui/text.rs`), not character counts. `Glyphs::fit` combines conversion with a cut between graphemes. When inserting a separator, ellipsis or Enter hint, use the appropriate constant or glyph field rather than spelling its form outside a per-profile table (`src/ui/glyphs.rs`, or `repo_glyphs` in `src/ui/sidebar.rs`). This rule is about those semantic uses, not hyphens in words, command flags, borders or gauge fills.
+- **Truncation belongs to the renderer.** `text::fit` / `text::end_with` append `glyphs.ellipsis` when cutting. If the slot is narrower than the mark, only its prefix fits: ASCII widths 1 and 2 produce `.` and `..`; width 0 produces nothing. Such a fragment is not an unambiguous standalone status glyph. An ellipsis already in work-under-way or Button copy does not mean the text was cut.
 
-## 4. Glyphs (`src/ui/glyphs.rs`)
+**Known gaps in the current templates.** These are requirements, not a claim that every path already complies. ViewModel callers in `src/app/view/launch.rs`, `src/app/view/footer.rs` and `src/app/view/scope.rs` still copy semantic literals; changing a constant requires auditing those copies too. `src/ui/launch.rs` draws raw text and inserts a literal separator for inline field notes (#151). The sidebar label in `src/ui/sidebar.rs`, list labels / Next Step names / Waiting On text in `src/ui/list.rs`, and header segment labels in `src/ui/header.rs` also bypass conversion. The header budgets its scope and cuts segment labels by character count. Unconverted semantic characters reach the engine's `ascii_fallback` as `?`, which already means "unattributed". This documentation change neither fixes those paths nor installs a central conversion guard.
 
-Every colour-coded meaning is also carried by a glyph or words (story 37). These are the glyphs, in both glyph profiles. Focus (a teal panel border and title) and the active tab have no glyph yet: in mono and no-colour the kit must carry them another way, and how is undecided.
+## 4. Glyphs
+
+Every colour-coded meaning is also carried by a glyph or words (story 37). The first table lists shared glyphs from `src/ui/glyphs.rs`; Repo rail marks follow it. Focus (a teal panel border and title) and the active tab have no glyph yet: in mono and no-colour the kit must carry them another way, and how is undecided.
 
 | Meaning | Unicode | ASCII |
 |---|---|---|
 | current row (rust tick) | `▌` | `>` |
+| text-input cursor | `▏` | `\|` |
 | incomplete / partial | `⚠` | `!` |
 | unattributed | `?` | `?` |
 | complete | `✓` | `+` |
@@ -86,16 +92,25 @@ Every colour-coded meaning is also carried by a glyph or words (story 37). These
 | Linear | `◇` | `[L]` |
 | separator, ellipsis, Enter | `·` `…` `⏎` | `-` `...` `RET` |
 
+**Repo rail** (`src/ui/sidebar.rs::repo_glyphs`). These marks are contextual: the Repo's current scope, a Job's state and an empty count occupy different places. They are not globally unique identifiers. In particular, the rail's "none" mark comes from `repo_glyphs`, not the semantic separator constant.
+
+| Meaning in the rail | Unicode | ASCII |
+|---|---|---|
+| fork | `⑂` | `Y` |
+| Upstream target | `upstream →` | `upstream >` |
+| archived | `▣` | `#` |
+| current scope | `●` | `*` |
+| no count | `·` | `.` |
+
 **Undecided.** The target screens use glyphs that `glyphs.rs` doesn't define yet, and their ASCII forms aren't chosen. The engine's `ascii_fallback` would draw each as `?`, which already means "unattributed".
 
 | Meaning | Unicode | ASCII |
 |---|---|---|
 | a Main Clone is found (the Repo screen's CLONE column; the rail's identity block) | `◆` | undecided |
-| a fork (the reference render's legend) | undecided | undecided |
 | search (the filter Field in the reference renders) | `⌕` | undecided |
 | Job state unknown | spec 0003's JOB column writes `? unknown`; `glyphs.rs` has `◌` | `~` in `glyphs.rs`; the spec's `?` would collide with "unattributed" |
 
-In the kit's ASCII profile, borders are `+-|`, chips are `[text]`, the cursor is `>` (spec 0003), and the separator, ellipsis and Enter are `-`, `...` and `RET`.
+In the kit's ASCII profile, borders are `+-|` and chips are `[text]` (spec 0003). Row selection uses `Glyphs::tick`; a Field's text-input cursor uses `Glyphs::cursor`. Take their forms, and the separator, ellipsis and Enter forms, from the tables above. A form can occupy several cells; measure after conversion.
 
 ## 5. Components: the den kit (ADR-0006; spec 0003)
 
@@ -103,16 +118,18 @@ ratatui widgets wrapped in `src/ui/kit/`. Each takes its style from the theme (`
 
 | Component | Built from | Look |
 |---|---|---|
-| **Panel** | `Block`, rounded, `merge_borders(Fuzzy)` | uppercase title top-left, status title top-right (`✓ 14 · complete`, ASCII `+ 14 - complete`); slate border at rest, teal when focused, as is the focused panel's title in the reference renders |
+| **Panel** | `Block`, rounded, `merge_borders(Fuzzy)` | uppercase title top-left, status title top-right (count and explicit `complete`, with marks from section 4); slate border at rest, teal when focused, as is the focused panel's title in the reference renders |
 | **DataTable** | `Table` + `Scrollbar` | header row, group rows (`WAITING ON YOU`, `RECENT`), rust `▌` cursor on the focused table, `selected` tone on the row, empty and coverage states |
 | **Chip** | styled span | the Next Step label on a `surface` fill: teal when Waiting On you, structure text otherwise |
 | **TabBar** | `Tabs` | active tab teal on charcoal |
 | **Field** | `app/editor.rs` | the filter fields |
 | **Gauge** | `LineGauge` | teal fill, with its words beside it (`119 of 163 Repos swept`) |
 | **KeyBar** | kbd chips | key hints at the bottom left, the glyph legend at the bottom right |
-| **Button** | rust span | **the one action** (`c  Reopen the Live Job…`, ASCII `c  Reopen the Live Job...`) |
+| **Button** | rust span | **the one action** (`c  Reopen the Live Job`, followed by the profile's ellipsis from section 4) |
 | **Sheet** | `Clear` + Panel | overlays: launch sheet, detail sheet |
 | **Bear** | `ui::bear` | the lettered SVEINBJORN bear (`assets/brand/bear-mark.svg`), drawn with kitty graphics where the terminal answers to it, half-blocks in truecolor otherwise, and left out in every other colour profile (`Graphics::choose`; `DEN_GRAPHICS` overrides) |
+
+**Panel status:** the table describes content, not a verified ASCII border layout. Spacing must distinguish the status from corners and rules; that still needs a mono ASCII rendering fixture when the kit lands.
 
 **Bear rule:** the full bear where there is room, otherwise no bear. Never an emblem or a shrunken bear (spec 0003, story 36). On the Repo screen it needs at least `REPO_LIST_MIN_ROWS` (10) table rows beside it. In the rail it must fit together with the identity block and every section without scrolling.
 
@@ -122,7 +139,7 @@ ratatui widgets wrapped in `src/ui/kit/`. Each takes its style from the theme (`
 |---|---|
 | Designed for | 160×45 (`DESIGN_COLS` × `DESIGN_ROWS`); to be verified at 200×56 too (spec 0003) |
 | Minimum | 80×24 (`MIN_COLS` × `MIN_ROWS`); smaller still draws, and says so |
-| Detail pane | at ≥ 110 columns (`WIDE_LAYOUT_MIN_COLS`), 25% clamped to 32–48; below that, `⏎` (ASCII `RET`) opens the detail as a Sheet |
+| Detail pane | at ≥ 110 columns (`WIDE_LAYOUT_MIN_COLS`), 25% clamped to 32–48; below that, Enter (profile form in section 4) opens the detail as a Sheet |
 | Rail | 22% clamped to 30–40 columns |
 
 - **Repo screen:** the top bar (`den ┊ Open a Repo`, the viewer and `gh` sign-in), the bear and lockup, one filter Field, the Linear pointer line, one REPOS DataTable (owner tabs; RECENT, then BY LAST PUSH), the Sweep Gauge, and the KeyBar. Content is centred and capped at `REPO_SCREEN_MAX_COLS` (140; a spec 0003 constant, not yet in `src/layout.rs`).

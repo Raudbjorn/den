@@ -295,7 +295,7 @@ skip = ["Fix CI", "Triage", "Prune or revive"]
 - **Theme:** `src/ui/kit/theme.rs` maps IRONMAW roles to ratatui `Style`s for the active colour profile.
   - Roles: bg, surfaces 1–3, border, text, strong, muted, faint, structure text, teal, rust, amber, slate, selected, mark plate, success, error.
   - Colours come from the generated Oxide palette (`build.rs`), quantised for ansi256/ansi16/mono by the vendored profile code.
-  - The ASCII glyph profile gives every glyph and border a one-cell ASCII form: borders `+-|`, chips `[text]`, cursor `>`.
+  - The ASCII glyph profile gives each glyph and border an ASCII form: borders `+-|`, chips `[text]`, row-selection tick `>`. Border cells are one cell wide; text forms such as the ellipsis, Enter hint and Linear marker can occupy several cells (`src/ui/glyphs.rs`). Convert semantic text with `Glyphs::text` before measuring terminal-cell widths or fitting it to a slot. The row-selection tick (`Glyphs::tick`) is distinct from a Field's text-input cursor (`Glyphs::cursor`).
 
 **Widgets**
 

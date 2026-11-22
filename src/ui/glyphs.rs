@@ -59,7 +59,8 @@ impl Glyphs {
 
     /// ViewModel text drawn in this profile (see [`Self::text`]) in at most
     /// `width` cells: whole when it fits, otherwise cut between graphemes and
-    /// ended with the profile's form of [`ELLIPSIS`] (see [`super::text::fit`]).
+    /// ended with as much of the profile's [`ELLIPSIS`] as fits (see
+    /// [`super::text::fit`]).
     pub fn fit(&self, text: &str, width: usize) -> String {
         super::text::fit(&self.text(text), width, self.ellipsis)
     }
