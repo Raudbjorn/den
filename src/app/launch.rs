@@ -79,6 +79,9 @@ use crate::{
     ports::{LinearIssueRead, LinearIssueRequest, LinearWriteKind, LinearWriteOutcome},
 };
 
+/// The merge methods of a den without a usable config: none.
+static NO_MERGE_METHODS: crate::domain::MergeMethods = crate::domain::MergeMethods::new();
+
 /// One open launch sheet.
 #[derive(Debug, Clone)]
 pub(super) struct Sheet {
@@ -1124,11 +1127,18 @@ impl App {
             slack_channel,
             linear_repo: sheet.linear.as_ref().and_then(LinearLaunch::repo),
             policy: self.policies.for_owner(sheet.item.owner()),
+            merge_methods: self
+                .config
+                .as_ref()
+                .map_or(&NO_MERGE_METHODS, |config| &config.merge_methods),
             removed_env: &self.removed_env,
         })?;
         Ok(match &sheet.accepted_head {
-            Some(commit) => plan.on_commit(commit),
-            None => plan,
+            // Merge never offers to accept a moved head (#72): it is pinned to
+            // the head den observed, so a head accepted for another kind on
+            // this sheet never applies to it.
+            Some(commit) if plan.next_step != NextStep::Merge => plan.on_commit(commit),
+            _ => plan,
         })
     }
 

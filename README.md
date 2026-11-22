@@ -103,6 +103,20 @@ Names are spelled as den shows them. Start, Land and Mark for release belong to
 Linear Issues and can't be skipped per Repo. Skipping a kind never unblocks
 another one: with Fix CI skipped, a PR with failing checks still doesn't Merge.
 
+A Repo can also say how its Pull Requests merge. Merge and Land Jobs pass that
+method to `gh pr merge`; without one, the Job uses what the repository allows
+and asks you when it allows more than one:
+
+```toml
+[repos."example-owner/app"]
+merge_method = "squash"   # or "merge", "rebase"
+```
+
+A Merge Job runs in Claude Code's ask-first permission mode and is pinned to
+the head den observed (`--match-head-commit`). If the head moved before launch,
+den refuses and asks you to refresh. A custom `merge` template must use
+`{head}` (that head commit) and may use `{merge_method}`, as `land` may.
+
 Every Pull Request's feedback is a list of **Review Points**: each review
 thread, and each review body that says more than a stock approval ("LGTM",
 "ship it", 👍), from someone other than the author and not a bot. A body is

@@ -11,6 +11,7 @@
 //! # "Raudbjorn/den" = "/home/me/dev/den"
 //! # [repos."octo/app"]                Next Steps a Repo doesn't track (spec 0003)
 //! # skip = ["Fix CI", "Triage"]
+//! # merge_method = "squash"           how Merge and Land merge here (#72)
 //! ```
 //!
 //! A Linear Workflow binds one Owner to one Linear workspace (spec 0002,
@@ -22,7 +23,7 @@ pub mod linear;
 pub use linear::{LinearWorkflow, Reviewer};
 
 use crate::domain::{
-    NextStep, Policies, RepoId, Skips,
+    MergeMethod, MergeMethods, NextStep, Policies, RepoId, Skips,
     facts::feedback::{DEN_MARKER_PREFIX, is_marker_prefix},
     ids::{MAX_LOGIN_CHARS, is_valid_login, is_valid_repo_name},
 };
@@ -50,6 +51,9 @@ pub struct Config {
     /// The Next Step kinds each Repo doesn't track (`[repos."OWNER/REPO"]
     /// skip`, spec 0003). Repos outside the watched Owners may be listed.
     pub skips: Skips,
+    /// Each Repo's merge method (`[repos."OWNER/REPO"] merge_method`, #72),
+    /// for Merge and Land Jobs. A Repo without one names none.
+    pub merge_methods: MergeMethods,
     /// `legacy_marker_prefixes` (#75, ADR-0010): earlier tooling's marker
     /// prefixes whose `<prefix>:review-notes:` markers set Review Points.
     /// Lowercase letters, digits and `-`, never `den`.
@@ -133,6 +137,7 @@ struct RawConfig {
 struct RawRepo {
     #[serde(default)]
     skip: Vec<Spanned<String>>,
+    merge_method: Option<Spanned<String>>,
 }
 
 /// A 1-based line and column in the config file.
@@ -244,7 +249,8 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
     }
     let linear = linear::workflows(raw.linear, &owners, text)
         .map_err(|(span, message)| malformed(Some(span), message))?;
-    let skips = repo_skips(raw.repos).map_err(|(span, message)| malformed(Some(span), message))?;
+    let (skips, merge_methods) =
+        repo_tables(raw.repos).map_err(|(span, message)| malformed(Some(span), message))?;
     let legacy_marker_prefixes = marker_prefixes(raw.legacy_marker_prefixes)
         .map_err(|(span, message)| malformed(Some(span), message))?;
     Ok(Config {
@@ -253,6 +259,7 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
         main_clones,
         linear,
         skips,
+        merge_methods,
         legacy_marker_prefixes,
     })
 }
@@ -307,11 +314,15 @@ fn absolute(path: Spanned<PathBuf>, what: &str) -> Result<PathBuf, (Range<usize>
     ))
 }
 
-/// The `[repos."OWNER/REPO"]` tables' `skip` lists (spec 0003, "Not tracking
-/// a flow"). Each value must be a skippable Next Step spelled as `CONTEXT.md`
+/// The `[repos."OWNER/REPO"]` tables: their `skip` lists (spec 0003, "Not
+/// tracking a flow"), each value a skippable Next Step spelled as
+/// `CONTEXT.md` spells it, and their `merge_method` (#72), spelled as `gh`
 /// spells it.
-fn repo_skips(raw: BTreeMap<Spanned<String>, RawRepo>) -> Result<Skips, (Range<usize>, String)> {
+fn repo_tables(
+    raw: BTreeMap<Spanned<String>, RawRepo>,
+) -> Result<(Skips, MergeMethods), (Range<usize>, String)> {
     let mut skips = Skips::default();
+    let mut merge_methods = MergeMethods::default();
     for (key, table) in raw {
         let key_span = key.span();
         let name = key.into_inner();
@@ -355,9 +366,22 @@ fn repo_skips(raw: BTreeMap<Spanned<String>, RawRepo>) -> Result<Skips, (Range<u
             }
             steps.push(step);
         }
+        if let Some(entry) = table.merge_method {
+            let span = entry.span();
+            let name = entry.into_inner();
+            let Some(method) = MergeMethod::from_name(&name) else {
+                return Err((
+                    span,
+                    format!(
+                        "merge_method {name:?} is not a merge method: use \"squash\", \"merge\" or \"rebase\""
+                    ),
+                ));
+            };
+            merge_methods = merge_methods.with(repo.clone(), method);
+        }
         skips = skips.with(repo, steps);
     }
-    Ok(skips)
+    Ok((skips, merge_methods))
 }
 
 /// The skippable Next Steps, quoted, in glossary order.
