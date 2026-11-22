@@ -1,4 +1,4 @@
-//! Glyphs per glyph profile. Every colour-coded meaning also has one of these.
+//! Glyphs per glyph profile. Colour-coded meanings use these or explicit words.
 
 use crate::app::view_model::{ELLIPSIS, ENTER_KEY, SEPARATOR};
 use raudbjorn_tui::profile::GlyphProfile;
@@ -9,6 +9,7 @@ pub struct Glyphs {
     /// The rust tick on the current row.
     pub tick: &'static str,
     /// Some source behind an item or view was not read completely.
+    /// Also the shared marker for cautions on the launch sheet.
     pub incomplete: &'static str,
     /// Waiting On could not be established.
     pub unattributed: &'static str,
