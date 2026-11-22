@@ -14,6 +14,7 @@ use den::{
     },
     ports::{
         LinearIssueRequest, LinearSource, LinearSurvey, LinearSurveyRequest, Ports, SurveyRequest,
+        SurveyTarget,
     },
     runtime::{Flow, Worker},
 };
@@ -105,7 +106,7 @@ fn github_and_local_writes_answer_while_a_linear_survey_hangs() {
         Effect::Survey {
             id,
             request: SurveyRequest {
-                owners: vec!["acme".to_owned()],
+                target: SurveyTarget::Owners(vec!["acme".to_owned()]),
                 upstreams: Default::default(),
                 screenshot_repos: Vec::new(),
             },
