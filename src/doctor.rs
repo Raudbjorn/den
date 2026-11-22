@@ -5,9 +5,13 @@ use den::{
     launcher::{self, LaunchEnvironment},
     paths::Paths,
     ports::Workspace,
+    start::{self, Start, StartArg},
     workspace::GitWorkspace,
 };
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    path::Path,
+};
 
 pub fn run(
     paths: &Paths,
@@ -120,6 +124,8 @@ pub fn run(
             passed &= check(out, &format!("Main Clone {repo:?} at {path:?}"), result)?;
         }
     }
+    writeln!(out, "\nStart directory:")?;
+    passed &= start_directory(out, git_available)?;
     writeln!(
         out,
         "\nLocal checks only: authentication, remote availability, remote Git access, filesystem writability,"
@@ -133,6 +139,54 @@ pub fn run(
         "No survey, automatic clone search, state files or Job launch was performed."
     )?;
     Ok(passed)
+}
+
+/// What `den` would open here (spec 0003, "Startup"): bounded read-only git,
+/// and none at all outside any folder holding a `.git`. git's own output is
+/// never echoed, as for the configured Main Clones.
+fn start_directory(out: &mut impl Write, git_available: bool) -> io::Result<bool> {
+    let Ok(dir) = std::env::current_dir() else {
+        return check(
+            out,
+            "start directory",
+            Err("cannot read the current directory".to_owned()),
+        );
+    };
+    let name = format!("start directory {dir:?}");
+    let opened = if !in_a_clone(&dir) {
+        Start::default()
+    } else if !git_available {
+        return check(
+            out,
+            &name,
+            Err("cannot tell which Repo it is in without git on PATH".to_owned()),
+        );
+    } else {
+        match GitWorkspace::new().repo_at(&dir) {
+            Ok(found) => start::resolve(&StartArg::Auto, || Ok(found)),
+            Err(_) => {
+                return check(
+                    out,
+                    &name,
+                    Err("cannot read it with git; check repository ownership and local Git configuration".to_owned()),
+                );
+            }
+        }
+    };
+    let opens = match opened {
+        Start::Repo(repo) => format!("opens Repo {repo}"),
+        Start::Unchosen { notice: None } => "opens the watched Owners".to_owned(),
+        Start::Unchosen {
+            notice: Some(notice),
+        } => format!("opens the watched Owners: {notice}"),
+    };
+    check(out, &format!("{name} {opens}"), Ok(()))
+}
+
+/// Whether `dir` or a folder above it holds a `.git` (a directory in a Main
+/// Clone, a file in a worktree). Only then can git say it is in a work tree.
+fn in_a_clone(dir: &Path) -> bool {
+    dir.ancestors().any(|folder| folder.join(".git").exists())
 }
 
 fn executable(
