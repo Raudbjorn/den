@@ -352,6 +352,10 @@ Tests go through milestone 3's seams: `decide`, the App with fake ports, and ren
   - the Implement prompt's stop line;
   - the Sweep reading the same facts;
   - what's out of scope.
+- **Decided after this spec, from the gap review's residuals (#100):**
+  - a held Landing Group member blocks Land only when queued, not surveyed or reported open again (ADR-0011, #101);
+  - a complete, empty check rollup doesn't block Merge, and the Explanation says "no checks reported" (ADR-0012, #103);
+  - Jobs launch from the facts den shows; the only confirmation-time re-reads are every launch's base commit, Linear writes' issue and Land's fresh survey round (ADR-0013, #104).
 - **Decided while writing this spec and not yet reviewed:**
   - the exact Ground Rules wording, including den filling in the pull requests a Job may change rather than a template;
   - which kinds get the coding rule (Triage and Prune or revive included);
