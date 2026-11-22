@@ -18,9 +18,13 @@ use den::{
     domain::{Observation, UpstreamTargets},
     handoff::{BaseRef, BranchStart, LaunchPlan},
     ordering::Scope,
+    palette::OXIDE_TRUECOLOR,
     ports::{WorktreeAdd, WorktreeStart},
+    ui::{Theme, frame},
     upstreams::UpstreamStoreError,
 };
+use ratatui::{buffer::Buffer, layout::Rect, style::Color};
+use raudbjorn_tui::profile::{ColorProfile, GlyphProfile, TerminalProfile};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use support::{
     build::{ME, ObservationBuilder, branch, issue, pr, repo_id, run},
@@ -864,11 +868,11 @@ fn a_cross_repo_pr_ref_missing_from_the_target_remote_refuses_at_launch_doing_no
 }
 
 #[test]
-fn the_upstream_target_carries_the_upstream_label_as_well_as_the_rust_tone() {
+fn the_upstream_target_carries_the_upstream_label_as_well_as_the_upstream_tone() {
     let store = Arc::new(FakeUpstreams::holding(targets(&[FORK])));
     let mut harness = started_with(&store, forked());
-    // The sheet: rust tone and the text label (an Issue's sheet follows the
-    // fork's setting; a PR's starts on the fork, decision b).
+    // The sheet: the Upstream tone and the text label (an Issue's sheet follows
+    // the fork's setting; a PR's starts on the fork, decision b).
     open_sheet(&mut harness, ISSUE_9);
     let (value, _, tone) = target(sheet(&harness));
     assert!(value.starts_with("upstream → "), "{value}");
@@ -884,6 +888,62 @@ fn the_upstream_target_carries_the_upstream_label_as_well_as_the_rust_tone() {
     assert_eq!(
         harness.view.header.scope,
         format!("Repo · {FORK} · fork of {UPSTREAM} · upstream → {UPSTREAM}")
+    );
+}
+
+/// The colour of every cell of the first `text` drawn inside `area`.
+fn colours_of(buffer: &Buffer, area: Rect, text: &str) -> Vec<Color> {
+    let width = text.chars().count();
+    (area.top()..area.bottom())
+        .find_map(|y| {
+            let row: String = (area.left()..area.right())
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            let start = row.find(text)?;
+            let column = row[..start].chars().count();
+            let x0 = area.left() + u16::try_from(column).ok()?;
+            Some(
+                (x0..x0 + u16::try_from(width).ok()?)
+                    .map(|x| buffer[(x, y)].fg)
+                    .collect(),
+            )
+        })
+        .unwrap_or_else(|| panic!("{text:?} is drawn:\n{}", frame::buffer_text(buffer)))
+}
+
+#[test]
+fn the_upstream_target_is_strong_text_never_the_action_rust() {
+    // #157: rust is spent on the cursor tick and the one action Button. An
+    // Upstream target says so in words ("upstream →") drawn as strong text,
+    // on the launch sheet's TARGET field and on the fork's sidebar row alike.
+    let store = Arc::new(FakeUpstreams::holding(targets(&[FORK])));
+    let mut harness = started_with(&store, forked());
+    let (cols, rows) = (160, 45);
+    harness.send(Event::Resized { cols, rows });
+    let theme = Theme::new(TerminalProfile::new(
+        ColorProfile::TrueColor,
+        GlyphProfile::Unicode,
+    ))
+    .expect("theme");
+    let strong = vec![OXIDE_TRUECOLOR.text_strong; "upstream →".chars().count()];
+
+    open_sheet(&mut harness, ISSUE_9);
+    let buffer = frame::render(&theme, &harness.view, cols, rows).expect("renders");
+    let target = format!("upstream → {UPSTREAM}");
+    let drawn = colours_of(&buffer, buffer.area, &target);
+    assert!(
+        !drawn.contains(&OXIDE_TRUECOLOR.accent_rust),
+        "TARGET in rust: {drawn:?}"
+    );
+    assert_eq!(drawn[..strong.len()], strong[..], "TARGET label");
+
+    press(&mut harness, Key::Esc);
+    let buffer = frame::render(&theme, &harness.view, cols, rows).expect("renders");
+    let sidebar = frame::regions(buffer.area, &harness.view.layout).sidebar;
+    assert_eq!(
+        colours_of(&buffer, sidebar, "upstream →"),
+        strong,
+        "sidebar"
     );
 }
 

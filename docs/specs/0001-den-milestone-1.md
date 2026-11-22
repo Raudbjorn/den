@@ -135,7 +135,7 @@ It looks like IRONMAW Oxide (the "Tonal plates" variant chosen in the prototype)
 86. As the user, I want `u` on a fork in the sidebar to switch that fork's target to its Upstream, and back, so that I can choose to contribute upstream.
 87. As the user, I want that per-fork choice remembered across restarts, so that I set it once.
 88. As the user, I want to override the target for a single Job on the launch sheet, so that a one-off upstream contribution doesn't change the fork's setting.
-89. As the user, I want an Upstream target shown in rust with an explicit "upstream →" label, so that I can't miss it even in a monochrome terminal.
+89. As the user, I want an Upstream target shown in rust with an explicit "upstream →" label, so that I can't miss it even in a monochrome terminal. *(Superseded in part by #157: the target is strong text with its "upstream →" label, not rust. Rust is kept for the cursor tick and the one action.)*
 90. As the user, I want the `u` toggle to do nothing on Repos that aren't forks, so that it can't create a meaningless target.
 
 ### Live Jobs
