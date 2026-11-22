@@ -281,6 +281,24 @@ fn the_comment_carries_no_reviewer_written_text_and_notifies_no_one() {
 }
 
 #[test]
+fn viewer_summary_mentions_are_neutralized_before_reaching_the_launch() {
+    let mut harness = started(surveyed(settled(
+        "<!-- den:point 100.1 fixed abcdef1234567 -->\nFollow up with @alice and @acme/security; &#64;bob",
+    )));
+    let expected = "Follow up with @\u{200b}alice and @\u{200b}acme/security; &amp;#64;bob";
+    let ready = open_sheet(&mut harness, "#4");
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    assert!(prompt(&ready).contains(expected), "{}", prompt(&ready));
+
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1);
+    assert!(plans[0].resolutions[0].body.contains(expected));
+    assert!(plans[0].prompt.contains(expected));
+    assert_eq!(harness.launcher.windows()[0].prompt, plans[0].prompt);
+}
+
+#[test]
 fn a_pr_without_points_still_gets_a_comment_saying_so() {
     let bare = pr("acme/api", 4)
         .author(ME)

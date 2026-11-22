@@ -7,7 +7,7 @@
 //! the commit when a marker names one), its reference linked to GitHub, its
 //! reviewer's login, and the summary the viewer's marker kept, when there is
 //! one. Nothing else: no reviewer-written text reaches the comment (story
-//! 53), and logins are written without `@`, so posting it notifies no one.
+//! 53). Logins omit `@`, and summaries break mention syntax before publication.
 //!
 //! `{resolutions}` puts each comment in the prompt between `~~~` fences,
 //! headed by the Pull Request it is for: one for a Merge Job, one per member
@@ -162,7 +162,7 @@ fn is_login(login: &str) -> bool {
 }
 
 /// The summary on one line: control characters become spaces, runs of
-/// whitespace one space.
+/// whitespace one space. Break mentions and escape entities that could recreate `@`.
 fn one_line(summary: &str) -> String {
     summary
         .chars()
@@ -171,4 +171,6 @@ fn one_line(summary: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+        .replace('&', "&amp;")
+        .replace('@', "@\u{200b}")
 }

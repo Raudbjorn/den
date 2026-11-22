@@ -88,6 +88,25 @@ fn a_summary_stays_on_its_line() {
 }
 
 #[test]
+fn summaries_neutralize_user_team_and_entity_encoded_mentions() {
+    for (summary, expected) in [
+        (
+            "Follow up with @alice and @acme/security",
+            "Follow up with @\u{200b}alice and @\u{200b}acme/security",
+        ),
+        (
+            "Follow up with &#64;alice and &#x40;acme/security",
+            "Follow up with &amp;#64;alice and &amp;#x40;acme/security",
+        ),
+    ] {
+        let mut p = point(PointState::Fixed);
+        p.summary = Some(summary.to_owned());
+        let text = body(vec![p]);
+        assert!(text.ends_with(expected), "{text}");
+    }
+}
+
+#[test]
 fn points_den_couldnt_read_in_full_say_so() {
     let resolution = Resolution::of(
         URL,
