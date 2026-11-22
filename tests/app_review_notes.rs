@@ -65,8 +65,16 @@ fn started(
     prompts: Result<prompts::Prompts, prompts::PromptsError>,
     first: Observation,
 ) -> Harness {
-    let mut harness = Harness::new(Ok(config()));
-    harness.app = den::app::App::new(Ok(config())).with_launch_settings(prompts, None);
+    started_with(config(), prompts, first)
+}
+
+fn started_with(
+    config: Config,
+    prompts: Result<prompts::Prompts, prompts::PromptsError>,
+    first: Observation,
+) -> Harness {
+    let mut harness = Harness::new(Ok(config.clone()));
+    harness.app = den::app::App::new(Ok(config)).with_launch_settings(prompts, None);
     harness
         .workspace
         .add_clone(CLONE, &[("origin", "git@github.com:octo/app.git")]);
@@ -135,17 +143,140 @@ fn the_prompt_names_the_reviews_left_to_split_by_url_and_id_only() {
         "{prompt}"
     );
     for wanted in [
-        "<!-- den:point <review id>.<n> <state> [<commit>] -->",
+        // Both marker forms spelled out: a Job copying a bracketed `[<commit>]`
+        // writes a marker den's parser drops (review on #106).
+        "exactly <!-- den:point <review id>.<n> <state> -->, or <!-- den:point <review id>.<n> fixed <commit> --> for a fixed point,",
         "(gh pr comment, not a reply in a review thread)",
-        "Push your commits with a plain push, never a force-push, before you reply.",
+        // "Plain" means never forced, not a bare `git push`: den's own push
+        // line may name the remote branch (review on #106).
+        "Push your commits before you reply, never with force.",
         "a one-line summary of what you did in your own words, not the reviewer's",
-        "open, fixed, declined, follow-up or needs-decision",
+        "<state> is open, declined, follow-up or needs-decision.",
     ] {
         assert!(prompt.contains(wanted), "{wanted:?} not in {prompt}");
     }
-    for unwanted in ["review 101", "review 102", "TITLE-TEXT", "Renamed the flag"] {
+    for unwanted in [
+        "review 101",
+        "review 102",
+        "TITLE-TEXT",
+        "Renamed the flag",
+        "[<commit>]",
+        "plain push",
+        // Complete coverage: nothing to warn about.
+        "couldn't read every",
+    ] {
         assert!(!prompt.contains(unwanted), "{unwanted:?} in {prompt}");
     }
+}
+
+/// Review on #106: a review already split is named with the Points still to
+/// address, so the Job works on those and never re-splits it from 1 (which
+/// would re-mark settled Points, the later marker winning).
+#[test]
+fn a_split_review_names_only_the_points_still_to_address() {
+    let pr = ready()
+        .review_body(100, "alice", ReviewVerdict::ChangesRequested, T1, true)
+        .comment(
+            900,
+            ME,
+            T2,
+            "<!-- den:point 100.1 fixed abcdef1 -->\nValidated the input.\n\
+<!-- den:point 100.2 declined -->\nKept the name.\n\
+<!-- den:point 100.3 open -->\nNeeds a test first.",
+        );
+    let mut harness = started(Ok(prompts::Prompts::default()), observed(pr));
+
+    let prompt = prompt_of(&mut harness);
+    assert!(
+        prompt.contains(&format!(
+            "{PR_URL}#pullrequestreview-100 (review 100: points 100.3)."
+        )),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains(
+            "in a review that names points, work only on those points and keep their numbers."
+        ),
+        "{prompt}"
+    );
+    for settled in ["100.1", "100.2"] {
+        assert!(!prompt.contains(settled), "{settled} in {prompt}");
+    }
+}
+
+/// Review on #106: a Point that needs my decision is mine to settle. A review
+/// held only by such Points (a `den:point` marker, or a legacy prefix's
+/// `needs-decision`) is never listed, so the Job is never told to split or
+/// mark it; in a review with other Points too, only those are named.
+#[test]
+fn points_that_need_my_decision_are_never_handed_to_the_job() {
+    let only_mine = ready()
+        .review_body(100, "alice", ReviewVerdict::ChangesRequested, T1, true)
+        .comment(
+            900,
+            ME,
+            T2,
+            "<!-- den:point 100.1 needs-decision -->\nWhich name do we keep?",
+        );
+    let mut harness = started(Ok(prompts::Prompts::default()), observed(only_mine));
+    assert_eq!(prompt_of(&mut harness), format!("/gh-resolve {PR_URL}"));
+
+    let legacy = ready()
+        .review_body(100, "alice", ReviewVerdict::ChangesRequested, T1, true)
+        .comment(900, ME, T2, "<!-- acme:review-notes:100:needs-decision -->");
+    let mut harness = started_with(
+        Config {
+            legacy_marker_prefixes: vec!["acme".to_owned()],
+            ..config()
+        },
+        Ok(prompts::Prompts::default()),
+        observed(legacy),
+    );
+    assert_eq!(prompt_of(&mut harness), format!("/gh-resolve {PR_URL}"));
+
+    let mixed = ready()
+        .review_body(100, "alice", ReviewVerdict::ChangesRequested, T1, true)
+        .comment(
+            900,
+            ME,
+            T2,
+            "<!-- den:point 100.1 needs-decision -->\nWhich name?\n\
+<!-- den:point 100.2 open -->\nAdd a test.",
+        );
+    let mut harness = started(Ok(prompts::Prompts::default()), observed(mixed));
+    let prompt = prompt_of(&mut harness);
+    assert!(
+        prompt.contains(&format!(
+            "{PR_URL}#pullrequestreview-100 (review 100: points 100.2)."
+        )),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("100.1"), "{prompt}");
+}
+
+/// Review on #106: when den didn't read every comment, my earlier markers may
+/// be unseen, so a review that reads as not yet split may already be split.
+/// The Job is told so, and to continue from the markers already posted.
+#[test]
+fn partly_read_comments_tell_the_job_to_check_the_markers_already_posted() {
+    let pr = ready()
+        .review_body(100, "alice", ReviewVerdict::ChangesRequested, T1, true)
+        .comments_truncated();
+    let mut harness = started(Ok(prompts::Prompts::default()), observed(pr));
+
+    let prompt = prompt_of(&mut harness);
+    assert!(
+        prompt.contains(&format!("{PR_URL}#pullrequestreview-100 (review 100).")),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains(
+            "den couldn't read every review or comment on this pull request, so a review may already be split: \
+before you split one, read the den:point markers already posted for it on the conversation, \
+keep their numbers, and leave the points they settle or flag for my decision as they are."
+        ),
+        "{prompt}"
+    );
 }
 
 #[test]
