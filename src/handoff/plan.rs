@@ -13,7 +13,8 @@ use super::{
     kinds::{self, Facts},
     landing, names,
     prompts::{PromptFields, PromptKind, Prompts, PromptsError, ReviewNote, ReviewNotes},
-    resolutions, reviewers, trust, worktree_path,
+    resolutions::{self, Resolution},
+    reviewers, trust, worktree_path,
 };
 use crate::{
     config::Config,
@@ -397,8 +398,13 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         slack_channel: input.slack_channel.map(str::to_owned),
         announces: prompts.uses(NextStep::RequestReview, "announcement"),
     });
+    let resolutions = resolutions(&facts, input)?;
     let fields = PromptFields {
-        resolutions: resolution_blocks(&facts, input)?,
+        resolutions: resolutions
+            .iter()
+            .map(|r| r.body.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
         repo: facts.target.repo.to_string(),
         number: facts.number,
         url: decision.item.url.clone(),
@@ -501,6 +507,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         renamed,
         session,
         prompt,
+        resolutions,
         permission_mode,
         project_settings: trust::project_settings(
             facts.step,
@@ -597,7 +604,9 @@ fn clash_branch(facts: &Facts) -> Option<String> {
     }
 }
 
-fn resolution_blocks(facts: &Facts, input: &PlanInput<'_>) -> Result<String, Refusal> {
+/// The resolution comment of each Pull Request a Merge or Land Job merges
+/// (#78), in the order it merges them; empty for every other kind.
+fn resolutions(facts: &Facts, input: &PlanInput<'_>) -> Result<Vec<Resolution>, Refusal> {
     let members = match (facts.step, &facts.landing, &input.decision.item.id) {
         (NextStep::Land, Some(group), _) => group
             .members
@@ -607,7 +616,7 @@ fn resolution_blocks(facts: &Facts, input: &PlanInput<'_>) -> Result<String, Ref
         (NextStep::Merge, _, WorkItemId::PullRequest { repo, number }) => {
             vec![PullRequestRef::new(repo.clone(), *number)]
         }
-        _ => return Ok(String::new()),
+        _ => return Ok(Vec::new()),
     };
     members
         .iter()
@@ -618,14 +627,13 @@ fn resolution_blocks(facts: &Facts, input: &PlanInput<'_>) -> Result<String, Ref
                 .iter()
                 .find(|pr| member.is(&pr.repo, pr.number))
                 .ok_or_else(|| Refusal::one(RefusalReason::WorkItemGone))?;
-            Ok(resolutions::render(
+            Ok(resolutions::of(
                 pr,
                 &input.observation.viewer.login,
                 input.legacy_marker_prefixes,
             ))
         })
-        .collect::<Result<Vec<_>, Refusal>>()
-        .map(|blocks| blocks.join("\n\n"))
+        .collect()
 }
 
 /// A fresh start's local branch (`feature-7-2`) tracks a branch of another
@@ -648,8 +656,11 @@ fn with_push_line(
     }
     match &facts.base {
         BaseRef::HeadBranch(branch) if !facts.new_branch && local != branch => {
+            // After a multi-line prompt (a resolution comment, #78), on a
+            // line of its own.
+            let gap = if prompt.contains('\n') { "\n\n" } else { " " };
             format!(
-                "{prompt} {PUSH_LINE_PREFIX} {} {}",
+                "{prompt}{gap}{PUSH_LINE_PREFIX} {} {}",
                 command::shell_quote(&remote.name),
                 command::shell_quote(&format!("HEAD:{branch}"))
             )

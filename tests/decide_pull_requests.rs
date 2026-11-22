@@ -910,3 +910,47 @@ fn a_review_den_cannot_rule_out_as_mine_is_unattributed_not_someone_else_s() {
         );
     }
 }
+
+/// #103 (ADR-0012): a complete check rollup with no checks in it doesn't keep
+/// a PR from Merge (GitHub's own merge state still holds it for required
+/// checks that haven't reported), and the Explanation says there were no
+/// checks rather than "checks passing".
+#[test]
+fn a_pr_with_no_checks_merges_and_says_no_checks_were_reported() {
+    let observation = ObservationBuilder::new()
+        .fully_read_owner("acme")
+        .repo("acme/app")
+        .pull_request(pr("acme/app", 1).author(ME).approved())
+        .pull_request(pr("acme/app", 2).author(ME).approved().passing("ci"))
+        .build();
+    let decided = decisions(&observation);
+
+    let empty = find(&decided, &pr_id("acme/app", 1));
+    assert_eq!(empty.next_step, Some(NextStep::Merge), "{empty:#?}");
+    assert_eq!(
+        empty.explanation.winning_rule.as_deref(),
+        Some("approved, no checks reported and mergeable into main")
+    );
+    let passing = find(&decided, &pr_id("acme/app", 2));
+    assert_eq!(
+        passing.explanation.winning_rule.as_deref(),
+        Some("approved, checks passing and mergeable into main"),
+        "a PR with checks says they pass, as before"
+    );
+
+    // GitHub holding the merge (a required check that hasn't reported
+    // leaves the merge state BLOCKED) still keeps an empty rollup from Merge.
+    let blocked = ObservationBuilder::new()
+        .fully_read_owner("acme")
+        .repo("acme/app")
+        .pull_request(
+            pr("acme/app", 3)
+                .author(ME)
+                .approved()
+                .merge_state(MergeState::Blocked),
+        )
+        .build();
+    let decided = decisions(&blocked);
+    let held = find(&decided, &pr_id("acme/app", 3));
+    assert_ne!(held.next_step, Some(NextStep::Merge), "{held:#?}");
+}

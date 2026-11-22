@@ -48,6 +48,7 @@ fn config(merge_methods: MergeMethods) -> Config {
         skips: den::domain::Skips::default(),
         merge_methods,
         screenshot_repos: Vec::new(),
+        refresh_interval_secs: None,
         legacy_marker_prefixes: Vec::new(),
     }
 }
@@ -416,9 +417,10 @@ fn a_merge_whose_head_moved_before_launch_is_refused() {
 #[test]
 fn a_merge_template_without_head_makes_only_merge_unusable() {
     let path = Path::new("/home/me/.config/den/prompts.toml");
+    // Supply #78's resolutions so only the missing head makes this unusable.
     let loaded = prompts::parse(
         path,
-        "fix_ci = \"/fix {url}\"\nmerge = \"gh pr merge {url} {merge_method}\"\n",
+        "fix_ci = \"/fix {url}\"\nmerge = \"gh pr merge {url} {merge_method} {resolutions}\"\n",
     )
     .expect("well formed");
     let unusable = loaded

@@ -67,3 +67,20 @@ impl PromptEditor {
         Edit::Changed
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::PromptEditor;
+
+    /// den's line breaks survive the field (a resolution comment is posted
+    /// verbatim, #78); a carriage return becomes a space.
+    #[test]
+    fn line_breaks_are_kept_and_carriage_returns_become_spaces() {
+        // #111 dropped a carriage return; main (#110) makes it a space, and
+        // main's editor wins the merge. Line breaks stay either way: a
+        // resolution comment is multi-line Markdown posted verbatim (#78).
+        let editor = PromptEditor::new("one\r\ntwo\nthree");
+        assert_eq!(editor.text(), "one \ntwo\nthree");
+        assert_eq!(editor.cursor(), "one \ntwo\nthree".chars().count());
+    }
+}

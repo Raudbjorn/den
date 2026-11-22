@@ -132,8 +132,11 @@ Markdown line per observed Review Point: reference and link, author, state,
 fixed commit when present, and your Job's summary. Reviewers' body text never
 enters it. The launch sheet shows the comment text; the default Jobs post it
 verbatim immediately before each pinned merge (one comment per Land member,
-in landing order), and stop if posting fails. A custom template missing the
-placeholder disables only that Job kind and names the file and line to fix.
+in landing order), and stop if posting fails. Its COMMENT field (COMMENT 1,
+COMMENT 2, … for a Land Job) tallies each comment's Points by state, and
+turns to a caution when an edited prompt no longer carries the comment word
+for word. A custom template missing the placeholder disables only that Job
+kind and names the file and line to fix.
 
 Every Pull Request's feedback is a list of **Review Points**: each review
 thread, and each review body that says more than a stock approval ("LGTM",
@@ -155,6 +158,22 @@ prefixes so those reviews don't reappear:
 ```toml
 legacy_marker_prefixes = ["example-tool"]
 ```
+
+den surveys at startup and when you press `r`. To have it survey again on its
+own while it is open, set an interval in seconds (60 at least, a day at most):
+
+```toml
+refresh_interval_secs = 300
+```
+
+A timed refresh surveys GitHub and Linear, as `r` does, once that long has
+passed since the last survey answered. den checks on its 30-second tick, so a
+refresh can start up to 30 seconds late. It never starts while a survey is
+still running, never catches up on missed intervals, and waits for GitHub's
+rate limit to reset. It also waits while a launch or Mark for release sheet is
+open, so the sheet never changes under you; it runs once you close the sheet.
+After a failure, the last good survey stays on screen and the header says the
+refresh failed.
 
 ## Check local setup
 
@@ -274,5 +293,5 @@ prove a real GitHub survey, interactive rendering, or a Kitty/Claude launch.
 See [architecture](docs/architecture.md), [domain terminology](CONTEXT.md), and
 [GitHub issues](https://github.com/Raudbjorn/den/issues). Linear Workflows and
 Landing Groups are pending [milestone 2](https://github.com/Raudbjorn/den/issues/30)
-work, not capabilities of this GitHub-only baseline. Periodic refresh, text search
+work, not capabilities of this GitHub-only baseline. Text search
 and a [Board screen](docs/research/projects-v2-feasibility.md) are proposals, not implemented features.
