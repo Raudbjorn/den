@@ -38,7 +38,7 @@ use crate::{
     ordering,
     ports::{
         LinearSurvey, LinearSurveyRequest, MemberStatesRead, MemberStatesRequest, SurveyFailure,
-        SurveyRequest,
+        SurveyRequest, SurveyTarget,
     },
     start::Start,
 };
@@ -306,7 +306,7 @@ impl App {
         match &self.config {
             Ok(config) => {
                 let request = SurveyRequest {
-                    owners: config.owners.clone(),
+                    target: SurveyTarget::Owners(config.owners.clone()),
                     upstreams: self.upstreams.clone(),
                     screenshot_repos: config.screenshot_repos.clone(),
                 };
@@ -430,12 +430,7 @@ impl App {
         self.running = Some(id);
         let mut effects = vec![Effect::log(
             LogLevel::Info,
-            format!(
-                "survey {} started for {} Owner(s): {}",
-                id.0,
-                request.owners.len(),
-                request.owners.join(", ")
-            ),
+            format!("survey {} started for {}", id.0, request.target),
         )];
         let workflows = self
             .config
@@ -626,7 +621,7 @@ impl App {
         match &self.config {
             Ok(config) => {
                 let request = SurveyRequest {
-                    owners: config.owners.clone(),
+                    target: SurveyTarget::Owners(config.owners.clone()),
                     upstreams: self.upstreams.clone(),
                     screenshot_repos: config.screenshot_repos.clone(),
                 };

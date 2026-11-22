@@ -25,7 +25,10 @@ use crate::{
         UpstreamTargets, comparison_for,
         facts::{Branch, ComparisonBranch, Issue, PullRequest, Run},
     },
-    ports::{GitHubSource, MemberStatesRead, MemberStatesRequest, SurveyFailure, SurveyRequest},
+    ports::{
+        GitHubSource, MemberStatesRead, MemberStatesRequest, SurveyFailure, SurveyRequest,
+        SurveyTarget,
+    },
 };
 use graphql::GraphQl;
 use jiff::Timestamp;
@@ -51,21 +54,41 @@ pub fn survey_with(
     observed_at: Timestamp,
 ) -> Result<Observation, SurveyFailure> {
     let request = SurveyRequest {
-        owners: owners.to_vec(),
+        target: SurveyTarget::Owners(owners.to_vec()),
         upstreams: upstreams.clone(),
         screenshot_repos: Vec::new(),
     };
     survey_request(gql, &request, observed_at)
 }
 
-/// The survey `request` asks for: its Owners, its forks' Upstream targets
-/// (#13), and the Repos whose PR bodies are read for screenshots (#79).
+/// The survey `request` asks for: its target (one Repo, or the Owners), its
+/// forks' Upstream targets (#13), and the Repos whose PR bodies are read for
+/// screenshots (#79).
 pub fn survey_request(
     gql: &dyn GraphQl,
     request: &SurveyRequest,
     observed_at: Timestamp,
 ) -> Result<Observation, SurveyFailure> {
-    let owners = request.owners.as_slice();
+    match &request.target {
+        SurveyTarget::Repo(repo) => survey_repo_with(
+            gql,
+            repo,
+            &request.upstreams,
+            &request.screenshot_repos,
+            observed_at,
+        ),
+        SurveyTarget::Owners(owners) => survey_owners(gql, owners, request, observed_at),
+    }
+}
+
+/// An Owner survey of `owners`, with `request`'s Upstream targets and
+/// screenshots Repos.
+fn survey_owners(
+    gql: &dyn GraphQl,
+    owners: &[String],
+    request: &SurveyRequest,
+    observed_at: Timestamp,
+) -> Result<Observation, SurveyFailure> {
     let rate_limit = RateLimitMemo::default();
     let (viewer, viewer_coverage) = viewer::fetch(&Session::new(gql, &rate_limit))?;
     let mut observation = Observation::empty(observed_at, viewer, owners.to_vec());

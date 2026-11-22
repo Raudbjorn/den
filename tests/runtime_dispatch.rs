@@ -11,7 +11,7 @@ use den::{
     domain::{Observation, upstream::UpstreamTargets},
     ports::{
         GitHubSource, MemberStatesRead, MemberStatesRequest, Ports, SurveyFailure, SurveyRequest,
-        UpstreamStore,
+        SurveyTarget, UpstreamStore,
     },
     runtime::{FinishError, Flow, Worker},
     upstreams::UpstreamStoreError,
@@ -95,7 +95,7 @@ fn survey() -> Effect {
     Effect::Survey {
         id: SurveyId(0),
         request: SurveyRequest {
-            owners: vec!["octo".to_owned()],
+            target: SurveyTarget::Owners(vec!["octo".to_owned()]),
             upstreams: UpstreamTargets::default(),
             screenshot_repos: Vec::new(),
         },

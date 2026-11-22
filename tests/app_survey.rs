@@ -13,7 +13,7 @@ use den::{
         Coverage, Incompleteness, LinearPart, LinearSourceKind, NextStep, Source, SourceKind,
         SourceState, UpstreamTargets, WaitingOn,
     },
-    ports::{LinearSurvey, SurveyFailure, SurveyRequest},
+    ports::{LinearSurvey, SurveyFailure, SurveyRequest, SurveyTarget},
 };
 use std::path::{Path, PathBuf};
 use support::{
@@ -35,7 +35,7 @@ fn startup_surveys_the_configured_owners_and_lists_their_open_prs() {
     assert_eq!(
         harness.github.requests(),
         [SurveyRequest {
-            owners: vec!["alpha".to_owned(), "beta".to_owned()],
+            target: SurveyTarget::Owners(vec!["alpha".to_owned(), "beta".to_owned()]),
             upstreams: UpstreamTargets::default(),
             screenshot_repos: Vec::new(),
         }]

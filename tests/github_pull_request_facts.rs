@@ -26,7 +26,7 @@ use den::{
         graphql::{GraphQlError, GraphQlRequest, GraphQlResponse, TransportError},
         survey, survey_request,
     },
-    ports::SurveyRequest,
+    ports::{SurveyRequest, SurveyTarget},
 };
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
@@ -725,7 +725,7 @@ fn bodies_are_read_only_where_screenshots_are_required_and_kept_only_as_the_stat
     let survey_for = |screenshot_repos: Vec<den::domain::RepoId>| {
         let gql = octo(nodes(), each(no_details()));
         let request = SurveyRequest {
-            owners: vec!["octo".to_owned()],
+            target: SurveyTarget::Owners(vec!["octo".to_owned()]),
             upstreams: den::domain::UpstreamTargets::default(),
             screenshot_repos,
         };
