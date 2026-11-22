@@ -7,8 +7,8 @@
 **Architecture:**
 - `domain::Coverage` judges a Repo by its own entries when it has them (`applicable_to_repo`). An Owner survey splits its coverage per listed Repo (`split_by_repo`), so both kinds of survey record the same per-Repo sources.
 - `github::survey_repo` reads the viewer, the Repo (new `repo.graphql`), and its PRs, Issues, Branches and Runs. It reuses the existing one-Repo fetchers and records every entry as `Source::Repo`. `SurveyRequest.target: SurveyTarget::{Repo, Owners}` picks between `survey_repo` and today's `survey_with`.
-- Cache format 13 adds `CachedObservation.reads`: when each Repo's source was last read. The read-time guard in `merge_github` drops a fresh answer's data for any (Repo, listing) that den holds from a read that started later. `merge_repo` merges a Repo Survey into that Repo's sources only and leaves everything else as it was.
-- `Workspace::repo_at` asks git for the Main Clone and its remotes. The pure `app::start` module applies the spec's startup rules. `main` resolves where den starts before it takes over the terminal and hands the result to `App::with_start`, which sets the Repo Scope and the survey target.
+- Cache format 14 adds `CachedObservation.reads`: when each Repo's source was last read. The read-time guard in `merge_github` drops a fresh answer's data for any (Repo, listing) that den holds from a read that started later. `merge_repo` merges a Repo Survey into that Repo's sources only and leaves everything else as it was.
+- `Workspace::repo_at` asks git for the Main Clone and its remotes. The existing pure `start` module applies the spec's startup rules. `main` resolves where den starts before it takes over the terminal and hands the result to `App::with_start`, which sets the Repo Scope and the survey target.
 
 **Tech Stack:** Rust 2024 (toolchain 1.96.1, pinned), `serde`/`serde_json`, `jiff`, `std::thread::scope`, `tempfile` (dev), den's seam tests (`tests/support/{build,harness,fakes,scripted}`).
 
@@ -16,14 +16,59 @@
 
 **Not in this plan (Plans 3 and 4):** the Sweep (`LaneKind::Sweep`, cancellation, the rate-limit floor, per-Owner answers), `GitHubSource::index` and the requests search, `recent.json`, reading Landing Group members by number, the kit, and the Repo, Linear and workbench screens. Where Plan 2 would need one of these, it keeps today's behaviour, and "Decided while planning" says where.
 
-## Global Constraints
+## Implementation checkpoint (2026-11-22, issue #89)
+
+The plan document was delivered by [PR #96](https://github.com/Raudbjorn/den/pull/96).
+This checkpoint reconciles its examples with `main` at `834885b`; it does not
+claim that all ten tasks have shipped. Recheck the target branch before starting
+a remaining task. The original diffs below are design and test references, not
+patches to apply verbatim over later work.
+
+| Task | State at this checkpoint | Current code and next action |
+|---|---|---|
+| 1 | Delivered, #99 | `src/domain/coverage.rs::applicable_to_repo`, `src/app/view/coverage.rs`, `tests/coverage_per_repo.rs`; keep the per-Repo authority and age rules. |
+| 2 | Delivered, #115 / PR #118 | `Coverage::split_by_repo`, `src/github/mod.rs`, `tests/github_source.rs` and `tests/coverage_seams.rs`; retain incomplete-list propagation. |
+| 3 | Delivered, #117 / PR #120 | `survey_repo` / `survey_repo_with`, `src/github/queries/repo.graphql`, `tests/github_repo_survey.rs`; retain screenshot-body selection and partial/error coverage. |
+| 4 | Delivered, #123 / PR #124 | `SurveyTarget` and `SurveyRequest.target` are on main. Reuse them and preserve `screenshot_repos` alongside the target and Upstream choices. |
+| 5-6 | Remaining | `src/cache/{mod,merge,file}.rs` has no per-source `reads` or `merge_repo` yet. Add them to the current cache shape; do not replace Review Point facts. |
+| 7 | Delivered, #90 / PR #92 | `Workspace::repo_at` returns `start::GitDir`; `src/workspace.rs` and `tests/workspace_repo_at.rs` already implement and exercise the adapter. Do not add a second port or replace it with the older example below. |
+| 8 | Partly delivered, #90 / PR #92 | `src/start.rs`, `App::with_start`, `tests/start.rs` and `tests/app_start_in_repo.rs` already resolve startup. Remaining: Repo-target surveys, scoped cache merging, an unwatched Repo, and keeping refresh aligned with the open Repo. |
+| 9 | Partly delivered, #90 / PR #92 | `src/main.rs` already parses interactive `OWNER/REPO` and `--pick`. Remaining: the `--dump` selectors and Repo-target `--launch` read; reuse `parse_args` and `parse_repo` in `src/main.rs`. |
+| 10 | Remaining | Extend `src/doctor.rs` and the current README, architecture and glossary; preserve their newer Job and review contracts. |
+
+Use the shipped startup names when adapting Tasks 8–10:
+
+| Original example | Current seam to extend |
+|---|---|
+| `ports::RepoAt` | `start::GitDir` (`NotAWorkTree`, `WorkTree`) |
+| `app::start::Start::{Pick, Named, Here}` | `start::StartArg` plus `start::resolve` |
+| `app::start::Opened` | `start::Start::{Repo, Unchosen}` |
+| new `tests/app_startup.rs` | existing `tests/app_start_in_repo.rs`, plus `tests/start.rs` |
+
+**Cache allocation:** format 13 is already the Review Point shape (#75), as
+`src/cache/file.rs` records. Task 5 therefore uses **14**, preserving that history
+and rejecting both 12 and 13. Recheck `CACHE_FORMAT` immediately before coding:
+if another stored shape lands first, take the next unused number and update the
+examples and rejection tests together. These docs do not change the running
+cache format or invalidate a user's cache.
+
+**Integration constraints:** preserve `SurveyRequest.screenshot_repos`, current
+Review Point facts, `Config::refresh_interval_secs`, and the App's timed-refresh
+and fresh-Land confirmation paths. Make timed refresh use the open target while
+preserving fresh Land confirmation's cross-Repo member coverage. Reuse
+`src/start.rs` rather than adding `src/app/start.rs`; startup's current types and error handling take precedence
+over the old diffs. The equal-timestamp exception in planning decision 4 remains
+an explicit review item: this checkpoint does not approve a deviation from
+ADR-0005's strictly-later rule.
+
+## Global Constraints (for remaining tasks)
 
 - CI runs exactly these, and each task ends with all four green:
   - `cargo fmt --all --check`
   - `cargo clippy --workspace --all-targets --locked -- -D warnings`
   - `cargo test --workspace --locked --no-fail-fast -- --test-threads=1`
   - `git diff --check`
-- Commands in this plan set `CARGO_TARGET_DIR=/mnt/mrgr/cargo-target/den-plan2` so they share one build. Drop it if you build elsewhere.
+- The command prefixes record the original scratch target, `/mnt/mrgr/cargo-target/den-plan2`. For remaining work, replace that path with a target unique to your worktree and set `CARGO_BUILD_JOBS=2`; do not share it with concurrent builds.
 - GitHub stays read-only (ADR-0002). The one new query, `repo.graphql`, is a `query`. Nothing here adds a mutation, a REST write or a `gh` subcommand that writes.
 - Errors are values. There is no `unwrap`/`expect`/`panic` in `src/` (clippy denies them). Tests use them under their file's existing `#![allow(...)]` header. A Repo GitHub doesn't have, or a read that is lost, is coverage (`SourceState::Failed`/`Partial`), never a `SurveyFailure`. Only the viewer read and transport failures fail a survey, as today.
 - Paging stays bounded by the existing constants: `github::session::MAX_PAGES` (50) per list, through the shared `paging::Pager`. A Repo Survey reads one Repo's lists from their first page, never an Owner's. The Repo query is a single request. `start_for` runs git once, under `GitWorkspace`'s existing timeout and `GIT_TERMINAL_PROMPT=0`.
@@ -38,10 +83,12 @@ Five inputs are the riskiest. Each is pinned to a named test:
 1. **A clone whose `origin` is not on GitHub and has one GitHub remote.** The GitHub remote opens. `origin` wins only when it names a GitHub Repo. Pinned in Task 8, `a_clone_or_its_worktree_opens_the_repo_its_remotes_name`, case "origin elsewhere and one GitHub remote". If there are several GitHub remotes and none is a GitHub `origin`, den opens the watched Owners and names the candidates: case "several GitHub remotes, origin elsewhere" in `a_start_that_names_no_one_repo_opens_the_owners_saying_why`.
 2. **A Job worktree.** It resolves to its Main Clone and that clone's remotes, not to the worktree's own path. git's common directory decides it. Pinned in Task 7, `a_worktree_is_in_its_main_clone` (real git), and in Task 8, case "a worktree, found in its Main Clone".
 3. **A Repo spelled in another case** (`ACME/App` against GitHub's `acme/app`). The guard matches it, a Repo Survey merges into it, and its facts aren't doubled. Pinned in Task 5, `the_guard_matches_a_repo_whatever_its_case`; in Task 3, `a_repo_survey_reads_one_repo_as_github_spells_it_and_records_every_source_for_it`; and in Task 8, case "no origin, one GitHub Repo by two remotes" (`git@github.com:ACME/App.git` beside `https://github.com/acme/app.git`).
-4. **A format-12 cache file.** It is rejected and rebuilt with a fresh survey, never read as format 13. Pinned in Task 5, `a_repo_keyed_cache_loads_back_and_a_format_12_one_is_rebuilt`.
+4. **Format-12 and format-13 cache files.** Both are rejected by version and rebuilt with a fresh survey, never decoded as the Repo-keyed format 14. Pinned in Task 5, `a_repo_keyed_cache_loads_back_and_formats_12_and_13_are_rebuilt`.
 5. **An answer that started before the read den holds, partial ones included.** It changes nothing for that Repo's source: not its facts, not its coverage, not its age. Pinned in Task 5, `an_answer_that_started_before_the_held_read_changes_nothing_of_that_repo` and `a_partial_answer_that_started_earlier_neither_replaces_nor_downgrades_the_held_read`; in Task 6, `a_repo_survey_older_than_the_held_read_of_its_repo_changes_nothing`; and through the App in Task 8, `a_repo_survey_older_than_the_cached_read_of_its_repo_leaves_it`.
 
-## File map
+## Original file map
+
+Use the checkpoint's current module and type mappings when adapting remaining tasks.
 
 | File | Responsibility | Tasks |
 |---|---|---|
@@ -55,7 +102,7 @@ Five inputs are the riskiest. Each is pinned to a named test:
 | `src/github/mod.rs` | `survey_with` splits coverage per Repo; `survey_repo`; `GhSource::survey` dispatches on the target | 2, 3, 4 |
 | `src/ports/mod.rs` | `SurveyRequest.target`, `SurveyTarget`; `Workspace::repo_at`, `RepoAt` | 4, 7 |
 | `src/cache/mod.rs` | `SourceRead`, `CachedObservation.reads`, `read_started`; `restricted_to(owners, open)` | 5, 6 |
-| `src/cache/file.rs` | `CACHE_FORMAT` 13 | 5 |
+| `src/cache/file.rs` | `CACHE_FORMAT` 14 | 5 |
 | `src/cache/merge.rs` | The read-time guard (`Guarded`, `merged_reads`, `as_new_as_held`); `merge_repo` (`Elsewhere`) | 5, 6 |
 | `src/workspace.rs` | `GitWorkspace::repo_at` (`git rev-parse --path-format=absolute --show-toplevel --git-common-dir`, then `remotes`) | 7 |
 | `src/app/start.rs` (new) | `Start`, `Opened`, `resolve` (the startup rules), `github_repo(url)` | 8, 10 |
@@ -74,7 +121,7 @@ Five inputs are the riskiest. Each is pinned to a named test:
 | `tests/workspace_repo_at.rs` (new) | Adapter: `repo_at` against real temporary git repos | 7 |
 | `tests/app_startup.rs` (new) | Seam 2: the startup rules, Repo Survey at start and on `r`, cache | 8 |
 | `tests/decide_runs.rs`, `tests/github_source.rs`, `tests/app_launch_kinds.rs`, `tests/github_runs.rs`, `tests/app_survey.rs`, `tests/worker_lanes.rs`, `tests/runtime_dispatch.rs`, `tests/cache_file.rs`, `tests/cli_diagnostics.rs` | Existing tests adjusted or extended (each change says why) | 1–5, 9, 10 |
-| `README.md`, `docs/architecture.md`, `CONTEXT.md` | CLI, doctor, modules, format 13, glossary | 9, 10 |
+| `README.md`, `docs/architecture.md`, `CONTEXT.md` | CLI, doctor, modules, format 14, glossary | 9, 10 |
 
 `tests/app_start.rs` already exists (Start Next Step, #33). The startup tests go in a new `tests/app_startup.rs`, and `tests/app_start.rs` is not touched.
 
@@ -83,6 +130,8 @@ Run every command from the repository root.
 ---
 
 ### Task 1: Per-Repo coverage is authoritative
+
+> **Checkpoint:** Delivered in #99. Keep the current implementation and tests; the steps below are historical acceptance detail.
 
 **Seam:** 1 (`decide` reads `Coverage::applicable_to`) and 2 (the header and detail coverage). **Spec:** "Cache", the **Coverage per Repo** bullet.
 
@@ -428,6 +477,8 @@ Expected: every test passes, and `tests/fixtures/milestone-1/decisions.json` sti
 
 ### Task 2: An Owner survey records coverage per Repo
 
+> **Checkpoint:** Delivered in #115 / PR #118. Preserve the current partial-coverage handling; do not replay these older patches.
+
 **Seam:** adapter (`github::survey_with`) and 2 (`Coverage` through `decide`). **Spec:** "Cache", **Coverage per Repo**: "every Work Item source is recorded per Repo in both surveys … a Repo's PRs are complete when the Owner listing was complete or the Repo's own pages were read completely. Otherwise they are partial with the Owner's reason."
 
 The read-time guard (Task 5) compares the same `Source::Repo` entries whichever survey recorded them. So an Owner survey must record one per listed Repo and kind, as a Repo Survey does (Task 3).
@@ -700,6 +751,8 @@ Expected: every test passes. Existing tests that build observations by hand don'
 ---
 
 ### Task 3: The one-Repo GitHub read (`repo.graphql`, `survey_repo`)
+
+> **Checkpoint:** Delivered in #117 / PR #120. Keep the current screenshot and error-handling paths; do not replay these older patches.
 
 **Seam:** adapter (thin checks over `ScriptedGraphQl`, like `tests/github_source.rs`). **Spec:** "Surveys, the index, the Sweep and the cache", **Repo Survey**: the viewer, the Repo (`repo.graphql`: the `repos.graphql` fields plus `description` and `pushedAt`), and its open PRs (`pull_requests_repo.graphql`), Issues (`issues_repo.graphql`), Branches and default-branch Runs, with the existing fetchers taking one Repo.
 
@@ -1395,6 +1448,8 @@ Expected: every test passes. Nothing calls `survey_repo` yet outside its tests. 
 
 ### Task 4: `SurveyTarget` in `SurveyRequest`
 
+> **Checkpoint:** Delivered in #123 / PR #124. Reuse its target dispatch and preserve `screenshot_repos` in every request.
+
 **Seam:** adapter (`GhSource` dispatch) and 2 (the App's requests, unchanged in effect). **Spec:** "Repo Survey": "`SurveyRequest` gains `target: SurveyTarget::{Repo(RepoId), Owners(Vec<String>)}`."
 
 **Files:**
@@ -1645,15 +1700,15 @@ Expected: every test passes, and den behaves as before. Nothing sends `SurveyTar
 
 ---
 
-### Task 5: Cache format 13: read times and the read-time guard
+### Task 5: Cache format 14: read times and the read-time guard
 
-**Seam:** 2 (pure `cache::merge`, and the App showing a cache, through `Harness`). **Spec:** "Cache (format 13)": the "Merge" bullets, "Older formats are rejected and rebuilt", and Testing Decisions, Cache ("a Sweep that started before a Repo Survey doesn't overwrite it …"; "the same when that Sweep's answer is partial …"; "format 12 rejected and rebuilt").
+**Seam:** 2 (pure `cache::merge`, and the App showing a cache, through `Harness`). **Spec:** "Cache (format 14)": the "Merge" bullets, "Older formats are rejected and rebuilt", and Testing Decisions, Cache ("a Sweep that started before a Repo Survey doesn't overwrite it …"; "the same when that Sweep's answer is partial …"; "formats 12 and 13 rejected and rebuilt").
 
 "Keyed by Repo" is realised this way. Every Repo source has its own coverage entry (Tasks 1–2) and now its own read time (`reads`), all inside the one per-viewer file. `merge_github` compares the two read times before it replaces anything. The facts stay in the Observation's flat lists, so `decide`, the view and Jobs don't change.
 
 **Files:**
 - Modify: `src/cache/mod.rs` (`SourceRead`, `CachedObservation.reads`, `read_started`; `fresh` fills `reads`; `carried_since` stops at a Repo's own entry, as Task 1's view does; `restricted_to` keeps the watched Owners' reads)
-- Modify: `src/cache/file.rs` (`CACHE_FORMAT` 13 and its history line)
+- Modify: `src/cache/file.rs` (`CACHE_FORMAT` 14 and its history line)
 - Modify: `src/cache/merge.rs` (`Guarded`, `GUARDS_NOTHING`, `listing`, `has_data`, `merged_reads`, `as_new_as_held`; `merge_github` applies the guard; `Reading.guarded` and `Reading::guarding`; the destructuring sites add `reads`)
 - Modify: `tests/cache_file.rs` (the format assertion, with the reasoning beside it, and one new test)
 - Test: `tests/cache_guard.rs` (new)
@@ -1664,7 +1719,7 @@ Expected: every test passes, and den behaves as before. Nothing sends `SurveyTar
   - `cache::SourceRead { source: Source, started_at: Timestamp }` (`Serialize`, `Deserialize`, `Clone`, `PartialEq`, `Eq`, `Debug`);
   - `CachedObservation.reads: Vec<SourceRead>` (`#[serde(default)]`);
   - `CachedObservation::read_started(&self, repo: &RepoId, kind: SourceKind) -> Option<Timestamp>`;
-  - `cache::CACHE_FORMAT == 13`;
+  - `cache::CACHE_FORMAT == 14`;
   - `cache::merge(previous, fresh)` keeps its signature. For each (Repo, listing kind) whose held read started strictly after `fresh.observed_at`, whether or not `fresh` recorded that Repo, the fresh facts of that Repo and kind (and its details) are dropped. The held facts, coverage, age and read time stay. Every other source merges as before, and its read time becomes `fresh.observed_at`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1997,32 +2052,32 @@ In `tests/cache_file.rs`, import `ME`, update the format assertion, and add the 
 
  fn cached(viewer: &str, number: u64) -> CachedObservation {
      let mut cached = CachedObservation::fresh(
-@@ -160,10 +160,12 @@ fn the_linear_part_and_its_ages_load_back_unchanged() {
+@@ -160,11 +160,13 @@ fn the_linear_part_and_its_ages_load_back_unchanged() {
  /// `milestone_2_s_shape_…`; the merge keeps integrate/m2-wave3's name.)
  #[test]
  fn milestone_2_s_merged_shape_loads_back_unchanged() {
--    // 12: #37's member attempts joined the Observation (round 4).
-+    // 12: #37's member attempts joined the Observation (round 4). 13: the
-+    // cache is keyed by Repo (spec 0003); this test's milestone-2 facts still
-+    // load back unchanged in it, which is what it checks.
+     // 12: #37's member attempts joined the Observation (round 4).
+     // 13: #75's Review Point facts joined a PR's details.
++    // 14: the cache gains per-Repo read times (spec 0003); milestone-2
++    // facts still load back unchanged, which is what this test checks.
      assert_eq!(
--        CACHE_FORMAT, 12,
+-        CACHE_FORMAT, 13,
 -        "the merged milestone-2 shape with member states and attempts"
-+        CACHE_FORMAT, 13,
++        CACHE_FORMAT, 14,
 +        "milestone 2's shape inside the Repo-keyed cache"
      );
      let team_states = LinearTeamStates {
          owner: "acme".to_owned(),
-@@ -729,3 +731,40 @@ fn a_login_that_could_escape_the_directory_is_refused() {
+@@ -729,3 +731,43 @@ fn a_login_that_could_escape_the_directory_is_refused() {
      }
      assert!(!dir.path().join("evil.json").exists());
  }
 +
-+/// Format 13 (spec 0003): the Repo-keyed cache records when the read behind
-+/// each Repo source started, and loads it back. A format-12 cache is refused
-+/// by its version and rebuilt by the next survey.
++/// Format 14 (spec 0003): the Repo-keyed cache records when the read behind
++/// each Repo source started, and loads it back. Formats 12 and 13 are refused
++/// by version and rebuilt by the next survey; 13 already stores Review Points.
 +#[test]
-+fn a_repo_keyed_cache_loads_back_and_a_format_12_one_is_rebuilt() {
++fn a_repo_keyed_cache_loads_back_and_formats_12_and_13_are_rebuilt() {
 +    let dir = tempfile::tempdir().unwrap();
 +    let cache = FileCache::in_state_dir(dir.path());
 +    let observation = ObservationBuilder::new()
@@ -2041,22 +2096,25 @@ In `tests/cache_file.rs`, import `ME`, update the format assertion, and add the 
 +
 +    let file = cache.file_for("me").unwrap();
 +    let mut body: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
-+    body["format"] = serde_json::json!(12);
-+    fs::write(&file, serde_json::to_vec(&body).unwrap()).unwrap();
-+    assert!(matches!(
-+        cache.load(),
-+        Err(CacheError::Format {
-+            found: 12,
-+            expected: 13,
-+            ..
-+        })
-+    ));
++    // Neither the milestone-2 nor Review Point cache has per-source reads.
++    for old_format in [12, 13] {
++        body["format"] = serde_json::json!(old_format);
++        fs::write(&file, serde_json::to_vec(&body).unwrap()).unwrap();
++        assert!(matches!(
++            cache.load(),
++            Err(CacheError::Format {
++                found,
++                expected: 14,
++                ..
++            }) if found == old_format
++        ));
++    }
 +    cache.store(&stored).unwrap();
 +    assert_eq!(cache.load(), Ok(Some(stored)));
 +}
 ```
 
-The format assertion changes from 12 to 13 because the cache gained `reads`. What the test protects, that milestone 2's facts load back unchanged, is what it still checks, and the comment says so.
+The format assertion changes from 13 to 14 because the cache gains `reads`; 13 already stores Review Points. Keep that published history intact. What the test protects, that milestone 2's facts load back unchanged, is what it still checks, and the comment says so.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -2081,7 +2139,7 @@ Expected: compile errors, `error[E0599]: no method named 'read_started' found fo
      pub observed_at: Timestamp,
  }
 
-+/// When the read behind one Repo source's coverage started (cache format 13,
++/// When the read behind one Repo source's coverage started (cache format 14,
 +/// ADR-0005): what the read-time guard compares a later answer with.
 +#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 +pub struct SourceRead {
@@ -2167,21 +2225,25 @@ Expected: compile errors, `error[E0599]: no method named 'read_started' found fo
  }
 ```
 
-- [ ] **Step 4: Format 13** (`src/cache/file.rs`)
+- [ ] **Step 4: Format 14** (`src/cache/file.rs`)
 
 ```diff
 --- a/src/cache/file.rs
 +++ b/src/cache/file.rs
-@@ -52,7 +52,11 @@ pub const CACHE_SUBDIR: &str = "cache";
+@@ -52,10 +52,13 @@ pub const CACHE_SUBDIR: &str = "cache";
  /// plus Land and Mark for release.
  /// 12: an Observation records the members den asked about and got no state
  /// for, with when it last asked (#37), so a bounded read rotates past them.
--pub const CACHE_FORMAT: u32 = 12;
-+/// 13: keyed by Repo (spec 0003, ADR-0005): every Work Item source is
+ /// 13: a PR's details carry its reviews, review threads and marker comments
+-/// for Review Points (#75). Milestone 3's Plan 2 also wants a new number:
+-/// whichever lands second takes the next one.
+-pub const CACHE_FORMAT: u32 = 13;
++/// for Review Points (#75).
++/// 14: keyed by Repo (spec 0003, ADR-0005): every Work Item source is
 +/// recorded per Repo, a Repo carries its description and last push, and the
 +/// cache records when the read behind each Repo source started, for the
 +/// read-time guard.
-+pub const CACHE_FORMAT: u32 = 13;
++pub const CACHE_FORMAT: u32 = 14;
  /// The largest cache file den will read, in bytes.
  pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
  /// Names the viewer whose cache startup shows.
@@ -2465,7 +2527,7 @@ CARGO_TARGET_DIR=/mnt/mrgr/cargo-target/den-plan2 cargo clippy --workspace --all
 CARGO_TARGET_DIR=/mnt/mrgr/cargo-target/den-plan2 cargo test --workspace --locked --no-fail-fast -- --test-threads=1
 git diff --check
 git add src/cache/mod.rs src/cache/file.rs src/cache/merge.rs tests/cache_guard.rs tests/cache_file.rs
-git commit -m "feat(cache): format 13 records read times and never merges an earlier read over a later one"
+git commit -m "feat(cache): format 14 records read times and never merges an earlier read over a later one"
 ```
 
 Expected: every test passes. The existing cache tests (`app_cache`, `cache_file`) are unchanged, because a survey with no later held read guards nothing.
@@ -3074,6 +3136,8 @@ Expected: every test passes. `merge` behaves exactly as before, since `github_on
 
 ### Task 7: `Workspace::repo_at`
 
+> **Checkpoint:** Delivered in #90 / PR #92 as `Workspace::repo_at` returning `start::GitDir`. Reuse the adapter and its tests; the `RepoAt` implementation below is historical, not replacement code.
+
 **Seam:** adapter (real git in temporary directories, as the spec's Testing Decisions ask: "a clone, a worktree, several remotes, none"). **Spec:** "Screens and navigation", Startup rule 3: "`git rev-parse --git-common-dir` finds the Main Clone, so a Job worktree resolves to its Main Clone's Repo", and "Resolving the start directory is a new `Workspace` port read (`Workspace::repo_at(path)`), with git's timeout and `GIT_TERMINAL_PROMPT=0`."
 
 **Files:**
@@ -3420,6 +3484,8 @@ Expected: every test passes. The module comment of `tests/workspace_repo_at.rs` 
 ---
 
 ### Task 8: Startup rules: den opens a Repo Scope and surveys it alone
+
+> **Checkpoint:** Partly delivered by #90 / PR #92. Extend `src/start.rs`, `App::with_start`, and `tests/app_start_in_repo.rs` using the checkpoint mappings; add only the remaining survey/cache integration.
 
 **Seam:** 2 (the App with fake ports; `Harness::opening`). **Spec:** "Screens and navigation", **Startup** rules 1–4 and "A Repo outside the watched Owners opens too"; "Cache": "The workbench shows the cached Repo at once … with its age, while its Repo Survey runs"; Testing Decisions, Seam 2, Startup resolution ("an argument; a clone; a worktree resolving to its Main Clone's Repo; `origin` versus a single other GitHub remote; several GitHub remotes with no GitHub `origin`, including an `origin` elsewhere; no GitHub remote; `--pick` inside a clone") and workbench "`r` emits a Repo Survey only".
 
@@ -4328,6 +4394,8 @@ Expected: every test passes. `main` doesn't call `with_start` yet, so `den` itse
 
 ### Task 9: CLI: `den OWNER/REPO`, `--pick`, `--dump`/`--launch` targets
 
+> **Checkpoint:** Interactive startup already shipped in #90 / PR #92. Extend the current parser for dump selectors and Repo-target launch reads; preserve the existing interactive flags and diagnostics.
+
 **Seam:** 2 at the binary's edge (`main`'s argument parsing as unit tests; `cli_diagnostics` runs the built binary). **Spec:** "Screens and navigation", **CLI**: "`--dump COLSxROWS [OWNER/REPO | --pick]` follows the startup rules. `--launch OWNER/REPO#N` surveys only that Repo." Startup rules 1–2 (`--pick`, `den OWNER/REPO`).
 
 `main` decides where den starts before it takes over the terminal. `start_for` runs `Workspace::repo_at` once, bounded by git's timeout, and hands the `Start` to `App::with_start`. There is no new effect or lane: the result is needed before the first frame, and the read is local and bounded.
@@ -4989,7 +5057,7 @@ In the Modules table, append to these rows:
 - `app/`:
   > **Startup (spec 0003):** `start.rs` is pure. `Start::{Pick, Named, Here { dir, found }}` resolves (`resolve`, `Start::opens`) to `Opened::{Repo, Owners { notice }}`. `origin` wins if it names a GitHub Repo, then the only GitHub Repo the remotes name. `github_repo(url)` accepts `github.com`, `www.github.com` and `ssh.github.com`. `App::with_start` opens a Repo as its Repo Scope. `survey_request` asks for `SurveyTarget::Repo` at start and on `r`, and a Repo Survey merges with `cache::merge_repo`. Until Plan 4's Repo screen, the other outcomes open the watched Owners, and the header shows `notice`.
 - `cache/`:
-  > **Format 13 (spec 0003, ADR-0005):** `CachedObservation.reads` (`SourceRead { source, started_at }`, one per Repo source) and `read_started`. `merge_github`'s read-time guard (`Guarded`) leaves a (Repo, listing kind) as held when den's read of it started after the fresh one did. Details go with their list. `as_new_as_held` keeps the held time when anything was guarded. `merge_repo` merges a Repo Survey into its Repo only (`Elsewhere::split`/`put`). `restricted_to(owners, open)` keeps an open Repo of an unwatched Owner.
+  > **Format 14 (spec 0003, ADR-0005):** `CachedObservation.reads` (`SourceRead { source, started_at }`, one per Repo source) and `read_started`. `merge_github`'s read-time guard (`Guarded`) leaves a (Repo, listing kind) as held when den's read of it started after the fresh one did. Details go with their list. `as_new_as_held` keeps the held time when anything was guarded. `merge_repo` merges a Repo Survey into its Repo only (`Elsewhere::split`/`put`). `restricted_to(owners, open)` keeps an open Repo of an unwatched Owner.
 - `ports/`:
   > `SurveyRequest.target: SurveyTarget::{Repo(RepoId), Owners(Vec<String>)}`. `Workspace::repo_at(dir) -> Result<RepoAt, WorkspaceError>` (`RepoAt::{NotARepo, Clone { main_clone, remotes }}`).
 - `github/`:
@@ -4997,7 +5065,7 @@ In the Modules table, append to these rows:
 - `workspace.rs`, …:
   > `GitWorkspace::repo_at`: no git outside any folder holding a `.git`; otherwise `git rev-parse --path-format=absolute --show-toplevel --git-common-dir`. The common directory's parent is the Main Clone (a worktree's included), and that clone's remotes are listed.
 
-In the paragraph after the Modules table, replace `Cache format 12 (milestone 2's merged shape:` with `Cache format 13 (milestone 3's Repo-keyed shape: every Work Item source recorded per Repo, with when each Repo source's read started, for the read-time guard, and a Repo's description and last push; inside it, milestone 2's merged shape:`. Then replace `and format 11 included` with `, format 11 and format 12 included`.
+Update the current cache paragraph to describe format 14: per-Repo source read times and the read-time guard, preserving the format-13 Review Point facts and milestone-2 fields. State that formats 12 and 13 are rejected and rebuilt. Keep the existing format history; do not replace the paragraph with the older milestone-2-only wording.
 
 - [ ] **Step 8: `CONTEXT.md`**
 
@@ -5036,7 +5104,7 @@ Expected: every test passes.
 
 ## How this plan was checked
 
-The plan's code is not a sketch. Every task was implemented, in order, on a scratch copy whose tree is identical to this branch's base (`7e807b2`, tree `66cd770`). After each task, all four CI commands passed there. The test failures quoted in each "verify they fail" step were captured by applying only that task's tests to the previous task's result. The code blocks above are taken verbatim from those commits. That is one run, on one machine (git 2.56.0, Linux). The `docs/architecture.md`, `CONTEXT.md` and README doctor text in Task 10, Steps 6–8, was written for this plan and has not been through a build. It doesn't need one.
+PR #96 recorded a drafting-agent scratch implementation at `7e807b2` (tree `66cd770`), with all four CI commands reported passing after each task. That scratch tree was not retained, and those results were not independently rerun for this checkpoint. They are historical evidence for that base, not proof that the current examples compile on main. The 2026-11-22 checkpoint above was source-checked against `834885b` and the linked delivery issues/PRs. The revised format-14 snippets have not been executed as a Repo-cache implementation; remaining tasks still need their named tests and CI checks on the actual landing base.
 
 ## Self-review: coverage
 
@@ -5046,8 +5114,8 @@ The plan's code is not a sketch. Every task was implemented, in order, on a scra
 | One-Repo GitHub read (`repo.graphql`) | 3 | `a_repo_survey_reads_one_repo_as_github_spells_it_and_records_every_source_for_it`, `a_repo_github_doesnt_have_fails_its_listing_and_asks_nothing_more` |
 | Per-Repo coverage for every Work Item source | 1, 2, 3 | `coverage_per_repo.rs` (4 tests); `an_owner_survey_records_each_listed_repos_coverage_as_its_own`; Task 3's first test |
 | Spec: "a per-Repo coverage split from an Owner listing" | 2 | `an_owner_survey_records_each_listed_repos_sources_as_its_own` |
-| Cache format 13 keyed by Repo | 5, 6 | `a_repo_keyed_cache_loads_back_and_a_format_12_one_is_rebuilt`; `cache_repo_survey.rs` |
-| Spec: "format 12 rejected and rebuilt" | 5 | `a_repo_keyed_cache_loads_back_and_a_format_12_one_is_rebuilt` |
+| Cache format 14 keyed by Repo | 5, 6 | `a_repo_keyed_cache_loads_back_and_formats_12_and_13_are_rebuilt`; `cache_repo_survey.rs` |
+| Spec: "formats 12 and 13 rejected and rebuilt" | 5 | `a_repo_keyed_cache_loads_back_and_formats_12_and_13_are_rebuilt` |
 | Read-time guard: an earlier read never overwrites a later one, even if its answer arrives later | 5, 6, 8 | `an_answer_that_started_before_the_held_read_changes_nothing_of_that_repo`, `a_cached_read_another_den_made_later_survives_this_dens_earlier_survey`, `a_repo_survey_older_than_the_held_read_of_its_repo_changes_nothing`, `a_repo_survey_older_than_the_cached_read_of_its_repo_leaves_it` |
 | Spec: "the same when that answer is partial" | 5 | `a_partial_answer_that_started_earlier_neither_replaces_nor_downgrades_the_held_read` |
 | Spec: "partial reads keep ages" | 6 | `a_partial_repo_survey_keeps_its_repos_earlier_facts_with_their_age` |
@@ -5075,7 +5143,7 @@ Left to later plans, as the roadmap assigns them: the Repo screen and workbench 
 3. **`split_by_repo` records each listed Repo's `Repos` entry as complete**, because den read it when it listed it. Each Work Item kind is copied in the Owner's state, unless the Repo already has its own entry. The Owner's own entries stay beside them for the per-Owner kinds and the cross-kind rule (Task 2).
 4. **Equal start times merge.** The guard refuses only an answer whose held read started *strictly* later. The spec says "merged only if it **started later**", which read literally refuses equal ones too. I chose to merge them so that an answer at the same instant behaves as den does today, where the latest answer wins. Review this one.
 5. **A guarded merge keeps the held `observed_at`** when the held Observation is newer, so the cache file, which refuses an older survey, still takes it. The fresh survey's own sources are marked carried at the fresh time, so they show their true age (Task 5, `as_new_as_held`).
-6. **"Keyed by Repo" is per-Repo coverage plus per-Repo read times inside today's flat Observation**, not a nested per-Repo file layout. `decide`, the view and Jobs are untouched. The index part of the format-13 cache (Repo lists and requests) comes with Plan 3, as another format bump.
+6. **"Keyed by Repo" is per-Repo coverage plus per-Repo read times inside today's flat Observation**, not a nested per-Repo file layout. `decide`, the view and Jobs are untouched. The index part of the format-14 cache (Repo lists and requests) comes with Plan 3, as another format bump.
 7. **`merge_repo` keeps `previous`'s watched Owners and everything outside the Repo** with their ages, and starts afresh for a different GitHub viewer, as `merge` does (Task 6).
 8. **`restricted_to` keeps only the open Repo of an unwatched Owner.** Plan 3 widens this to the Recent Repos.
 9. **`main` resolves the start synchronously, before the TUI**, with one bounded git call (30 s timeout). There is no Effect or lane: the answer decides the first survey's target, and the read is local (Task 9).
