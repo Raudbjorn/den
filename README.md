@@ -121,6 +121,14 @@ the head den observed (`--match-head-commit`). If the head moved before launch,
 den refuses and asks you to refresh. A custom `merge` template must use
 `{head}` (that head commit) and may use `{merge_method}`, as `land` may.
 
+Both `merge` and `land` templates must use `{resolutions}`. It contains one
+Markdown line per observed Review Point: reference and link, author, state,
+fixed commit when present, and your Job's summary. Reviewers' body text never
+enters it. The launch sheet shows the comment text; the default Jobs post it
+verbatim immediately before each pinned merge (one comment per Land member,
+in landing order), and stop if posting fails. A custom template missing the
+placeholder disables only that Job kind and names the file and line to fix.
+
 Every Pull Request's feedback is a list of **Review Points**: each review
 thread, and each review body that says more than a stock approval ("LGTM",
 "ship it", 👍), from someone other than the author and not a bot. A body is
