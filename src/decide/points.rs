@@ -24,6 +24,7 @@
 //! in full make the coverage partial, which withholds Merge with an unknown.
 
 use crate::domain::{
+    Observation, WorkItemId,
     facts::{
         ActorKind, LegacyState, MarkedState, Marker, MarkerComment, PrDetails, ReviewRecord,
         ReviewVerdict,
@@ -166,6 +167,23 @@ impl ReviewPoints {
             .iter()
             .filter(|p| matches!(p.reference, PointRef::Review { .. }) && p.state.blocks())
     }
+}
+
+/// The Review Points of `id`, when it is a Pull Request in `observation`: for
+/// the GitHub viewer, applying the configured legacy `prefixes`. The one
+/// lookup the detail's REVIEW POINTS section and the Address review Job's
+/// `{review_notes}` share, so the two never disagree (review on #106).
+pub fn of(observation: &Observation, prefixes: &[String], id: &WorkItemId) -> Option<ReviewPoints> {
+    let pr = observation
+        .pull_requests
+        .iter()
+        .find(|pr| pr.id().same(id))?;
+    Some(review_points(
+        pr.details.as_ref(),
+        pr.author.as_deref(),
+        &observation.viewer.login,
+        prefixes,
+    ))
 }
 
 /// The Review Points of a Pull Request by `pr_author`, from `details`

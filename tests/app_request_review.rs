@@ -1332,7 +1332,7 @@ fn reviewers_and_announcement_are_request_review_placeholders_only() {
 fn a_request_review_template_without_reviewers_refuses_only_request_review() {
     let prompts = prompts::parse(
         std::path::Path::new("/cfg/den/prompts.toml"),
-        "address_review = \"/gh-resolve {url} carefully\"\nrequest_review = \"Ask me which reviewers to request on {url}.\"\n",
+        "address_review = \"/gh-resolve {url} carefully{review_notes}\"\nrequest_review = \"Ask me which reviewers to request on {url}.\"\n",
     );
     let mut harness = started_with_prompts(config(None), surveyed(pr_2(), pr_4()), prompts);
 
