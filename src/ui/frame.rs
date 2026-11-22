@@ -4,8 +4,8 @@
 //!
 //! Which plates exist and how wide they are comes from `view.layout`
 //! ([`crate::layout`]); this module only turns that into rectangles. Order of
-//! drawing: plates, then bears (each skipped if an overlay covers it), then
-//! overlays, so a sheet never has bear pixels over it.
+//! drawing: plates, then bears (each skipped if a detail sheet covers it), then
+//! the detail sheet. A launch sheet replaces the workbench with a blank backdrop.
 
 use super::{
     Theme, UiError,
@@ -172,6 +172,24 @@ pub fn draw(
     }
     let area = frame.area();
     let r = regions(area, &view.layout);
+    if view.layout.undersized {
+        draw_undersized_notice(frame, theme, &view.layout, r.footer)?;
+    } else {
+        footer::draw(frame, theme, &view.footer, r.footer)?;
+    }
+    if let Some(Overlay::LaunchSheet(sheet)) = &view.overlay {
+        let backdrop = Rect {
+            height: area.height.saturating_sub(FOOTER_ROWS),
+            ..area
+        };
+        theme.draw(
+            frame,
+            templates::LAUNCH_BACKDROP,
+            &TemplateContext::default(),
+            backdrop,
+        )?;
+        return draw_launch_sheet(frame, theme, sheet, area);
+    }
     let overlay = overlay_area(view, area);
 
     let header_bear = header_bear_area(r.header, bear);
@@ -200,12 +218,6 @@ pub fn draw(
         detail::draw(frame, theme, &view.detail, r.detail)?;
         draw_chamfer(frame, theme, r.detail)?;
     }
-    if view.layout.undersized {
-        draw_undersized_notice(frame, theme, &view.layout, r.footer)?;
-    } else {
-        footer::draw(frame, theme, &view.footer, r.footer)?;
-    }
-
     let uncovered = |b: Rect| !b.is_empty() && !overlay.is_some_and(|o| o.intersects(b));
     if uncovered(header_bear) {
         bear.draw(
@@ -221,11 +233,8 @@ pub fn draw(
         bear.draw(frame, Placement::Empty, empty_bear, OXIDE_TRUECOLOR.bg);
     }
 
-    if let Some(overlay) = &view.overlay {
-        match overlay {
-            Overlay::DetailSheet => draw_detail_sheet(frame, theme, view, r.body)?,
-            Overlay::LaunchSheet(sheet) => draw_launch_sheet(frame, theme, sheet, area)?,
-        }
+    if let Some(Overlay::DetailSheet) = &view.overlay {
+        draw_detail_sheet(frame, theme, view, r.body)?;
     }
     Ok(())
 }

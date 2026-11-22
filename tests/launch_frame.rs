@@ -21,7 +21,7 @@ use support::{
     harness::Harness,
 };
 
-const SIZES: [(u16, u16); 2] = [(160, 45), (80, 24)];
+const SIZES: [(u16, u16); 3] = [(160, 45), (200, 56), (80, 24)];
 
 fn sheet_open((cols, rows): (u16, u16)) -> Harness {
     let config = Config {
@@ -66,7 +66,7 @@ fn bear_cells(buffer: &Buffer, area: Rect) -> usize {
 }
 
 #[test]
-fn the_launch_sheet_draws_its_fields_prompt_command_and_keys_at_both_sizes() {
+fn the_launch_sheet_draws_its_fields_prompt_command_and_keys_at_supported_sizes() {
     for size in SIZES {
         let harness = sheet_open(size);
         let (cols, rows) = size;
@@ -100,6 +100,37 @@ fn the_launch_sheet_draws_its_fields_prompt_command_and_keys_at_both_sizes() {
                     "free",
                 ] {
                     assert!(text.contains(expected), "{size:?}: no {expected:?}\n{text}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_launch_sheet_has_a_blank_backdrop_instead_of_clipped_workbench_text() {
+    for (cols, rows) in SIZES {
+        for harness in [sheet_open((cols, rows)), upstream_sheet_open((cols, rows))] {
+            for (color, glyphs) in [
+                (ColorProfile::TrueColor, GlyphProfile::Unicode),
+                (ColorProfile::Mono, GlyphProfile::Ascii),
+            ] {
+                let theme = Theme::new(TerminalProfile::new(color, glyphs)).expect("theme");
+                let buffer = frame::render(&theme, &harness.view, cols, rows).expect("renders");
+                let sheet = frame::overlay_area(&harness.view, buffer.area).expect("the sheet");
+                let footer = frame::regions(buffer.area, &harness.view.layout).footer;
+                for y in buffer.area.top()..footer.top() {
+                    for x in buffer.area.left()..buffer.area.right() {
+                        if sheet.contains((x, y).into()) {
+                            continue;
+                        }
+                        let cell = &buffer[(x, y)];
+                        assert_eq!(
+                            cell.symbol(),
+                            " ",
+                            "{cols}x{rows} {color:?}/{glyphs:?}: workbench leaks at ({x}, {y})"
+                        );
+                        assert_eq!(cell.bg, buffer[(0, footer.y)].bg);
+                    }
                 }
             }
         }
@@ -150,10 +181,9 @@ fn no_bear_is_drawn_under_the_launch_sheet() {
         "{}",
         frame::buffer_text(&buffer)
     );
-    // At 160 columns the centred sheet leaves the header bear uncovered, so it
-    // is still drawn beside the sheet.
+    // #150's backdrop hides the whole workbench, including the uncovered bear.
     let header = Rect::new(0, 0, sheet.x, frame::HEADER_PLATE_ROWS);
-    assert!(bear_cells(&buffer, header) > 0);
+    assert_eq!(bear_cells(&buffer, header), 0);
 }
 
 /// Prints the sheet (run with `--ignored --nocapture` to look at it).

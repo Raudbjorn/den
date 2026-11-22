@@ -53,6 +53,9 @@ div w-full h-full bg-[#aa0000] text-[#aa0002]
 --- MarkPlate
 div w-full h-full bg-[#aa0018]
 
+--- LaunchBackdrop
+div w-full h-full bg-[#aa0000]
+
 --- Splash
 div w-full h-full flex-col bg-[#aa0018]
   div flex-1
