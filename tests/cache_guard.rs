@@ -329,3 +329,53 @@ fn an_answer_that_started_when_the_held_read_did_replaces_it() {
         Some(ts(LATER))
     );
 }
+
+/// When the guard keeps the Observation as new as the held read, the
+/// refresh's own sources carry the refresh's age, but only those holding
+/// data: a source the refresh couldn't read at all (acme/lib's Pull Requests
+/// failed, and den held nothing of acme/lib, not even through acme's
+/// coverage, since it held a read of acme/app alone) has no data to date, so
+/// it gets no age.
+#[test]
+fn a_guarded_merge_dates_only_the_refreshs_sources_that_hold_data() {
+    let failed = SourceState::Failed {
+        error: "boom".to_owned(),
+    };
+    let builder = ObservationBuilder::new()
+        .observed_at("2026-11-19T12:00:00Z")
+        .fully_read_owner("acme");
+    let builder = read_whole(builder, "acme/app", &SourceState::Complete);
+    let fresh = read_whole(builder, "acme/lib", &SourceState::Complete)
+        .repo_coverage("acme/lib", SourceKind::PullRequests, failed.clone())
+        .pull_request(pr("acme/app", 1).author(ME).title("answer"))
+        .build();
+
+    let app_alone = read_whole(
+        ObservationBuilder::new().observed_at(LATER),
+        "acme/app",
+        &SourceState::Complete,
+    )
+    .pull_request(pr("acme/app", 1).author(ME).title("held"))
+    .build();
+    let merged = cache::merge(Some(CachedObservation::fresh(app_alone)), fresh);
+
+    assert_eq!(merged.observation.observed_at, ts(LATER), "as new as held");
+    let lib = |kind| Source::Repo {
+        repo: repo_id("acme/lib"),
+        kind,
+    };
+    assert_eq!(
+        state(&merged, "acme/lib", SourceKind::PullRequests),
+        Some(failed)
+    );
+    assert_eq!(
+        merged.carried_since(&lib(SourceKind::PullRequests)),
+        None,
+        "no data, so no age"
+    );
+    assert_eq!(
+        merged.carried_since(&lib(SourceKind::Issues)),
+        Some(now()),
+        "the refresh's data is as old as the refresh"
+    );
+}

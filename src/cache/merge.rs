@@ -43,9 +43,9 @@
 use super::{CachedObservation, Carried, LinearReads, SourceRead, source_owner};
 use crate::{
     domain::{
-        Coverage, CoverageEntry, LinearPart, LinearSourceKind, Observation, RepoId, Source,
+        Coverage, CoverageEntry, LinearPart, LinearSourceKind, Observation, Repo, RepoId, Source,
         SourceKind, SourceState,
-        facts::{MemberStateAttempt, PullRequestRef},
+        facts::{Branch, Issue, MemberStateAttempt, PullRequest, PullRequestRef, Run},
         ids::same_login,
     },
     ports::{LinearSurvey, MemberStatesRead},
@@ -71,12 +71,7 @@ pub struct LinearMerge {
 /// drops it when that one changes. Whatever Linear part or Linear coverage
 /// `fresh` carries is ignored: a GitHub survey says nothing about Linear.
 pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> CachedObservation {
-    fresh.linear = LinearPart::default();
-    fresh.member_states.clear();
-    fresh.member_attempts.clear();
-    fresh
-        .coverage
-        .retain(|e| !e.source.is_linear() && !e.source.is_member_states());
+    github_only(&mut fresh);
     let Some(mut previous) = previous else {
         return CachedObservation::fresh(fresh);
     };
@@ -88,6 +83,243 @@ pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> Cac
     };
     linear.put(&mut merged);
     merged
+}
+
+/// Merges a Repo Survey of `repo` into `previous` (spec 0003, ADR-0005). It
+/// speaks for that Repo's sources only, by [`merge`]'s rule and read-time
+/// guard. Everything else den holds (the Owner's other Repos and its own
+/// sources, other Owners, the Linear part, the members' states) stays as it
+/// was, each with its own age, and the watched Owners stay `previous`'s. The
+/// GitHub facts of another GitHub viewer are never merged.
+pub fn merge_repo(
+    previous: Option<CachedObservation>,
+    mut fresh: Observation,
+    repo: &RepoId,
+) -> CachedObservation {
+    github_only(&mut fresh);
+    let Some(mut previous) = previous else {
+        return CachedObservation::fresh(fresh);
+    };
+    let linear = LinearKept::take(&mut previous);
+    let mut merged = if previous.observation.viewer.is(&fresh.viewer.login) {
+        let (inside, elsewhere) = Elsewhere::split(previous, repo);
+        // The Repo's own Owner, so its earlier facts are judged by the rule
+        // rather than dropped as an unwatched Owner's.
+        fresh.owners = vec![repo.owner.clone()];
+        let mut merged = merge_github(inside, fresh);
+        elsewhere.put(&mut merged);
+        merged
+    } else {
+        CachedObservation::fresh(fresh)
+    };
+    linear.put(&mut merged);
+    merged
+}
+
+/// A GitHub survey says nothing about Linear or the members' states: whatever
+/// of them it carries is dropped before merging.
+fn github_only(fresh: &mut Observation) {
+    fresh.linear = LinearPart::default();
+    fresh.member_states.clear();
+    fresh.member_attempts.clear();
+    fresh
+        .coverage
+        .retain(|e| !e.source.is_linear() && !e.source.is_member_states());
+}
+
+/// What den holds that a Repo Survey doesn't speak for: every fact, coverage
+/// entry, age and read time of other Repos and of Owners, and the watched
+/// Owners, as of `held_at`.
+struct Elsewhere {
+    held_at: Timestamp,
+    owners: Vec<String>,
+    repos: Vec<Repo>,
+    pull_requests: Vec<PullRequest>,
+    issues: Vec<Issue>,
+    branches: Vec<Branch>,
+    runs: Vec<Run>,
+    coverage: Vec<CoverageEntry>,
+    carried: Vec<Carried>,
+    reads: Vec<SourceRead>,
+}
+
+impl Elsewhere {
+    /// Splits `previous` (without Linear data) into what `repo`'s Survey
+    /// speaks for (its facts and Repo sources, with the viewer and the
+    /// members' states, which [`merge_github`] handles) and the rest.
+    fn split(mut previous: CachedObservation, repo: &RepoId) -> (CachedObservation, Self) {
+        owner_aged_as_repo(&mut previous, repo);
+        let ours = |source: &Source| match source {
+            Source::Repo { repo: r, .. } => r.same(repo),
+            Source::Viewer => true,
+            Source::Owner { .. } => source.is_member_states(),
+        };
+        let o = &mut previous.observation;
+        let (repos, mine) = std::mem::take(&mut o.repos)
+            .into_iter()
+            .partition(|r| !r.id.same(repo));
+        o.repos = mine;
+        let (pull_requests, mine) = std::mem::take(&mut o.pull_requests)
+            .into_iter()
+            .partition(|i| !i.repo.same(repo));
+        o.pull_requests = mine;
+        let (issues, mine) = std::mem::take(&mut o.issues)
+            .into_iter()
+            .partition(|i| !i.repo.same(repo));
+        o.issues = mine;
+        let (branches, mine) = std::mem::take(&mut o.branches)
+            .into_iter()
+            .partition(|i| !i.repo.same(repo));
+        o.branches = mine;
+        let (runs, mine) = std::mem::take(&mut o.runs)
+            .into_iter()
+            .partition(|i| !i.repo.same(repo));
+        o.runs = mine;
+        let coverage: Vec<CoverageEntry> = o
+            .coverage
+            .entries()
+            .iter()
+            .filter(|e| !ours(&e.source))
+            .cloned()
+            .collect();
+        o.coverage.retain(|e| ours(&e.source));
+        let (carried, mine) = std::mem::take(&mut previous.carried)
+            .into_iter()
+            .partition(|c| !ours(&c.source));
+        previous.carried = mine;
+        let (reads, mine) = std::mem::take(&mut previous.reads)
+            .into_iter()
+            .partition(|r| !ours(&r.source));
+        previous.reads = mine;
+        let elsewhere = Self {
+            held_at: previous.observation.observed_at,
+            owners: previous.observation.owners.clone(),
+            repos,
+            pull_requests,
+            issues,
+            branches,
+            runs,
+            coverage,
+            carried,
+            reads,
+        };
+        (previous, elsewhere)
+    }
+
+    /// Puts it back beside the merged Repo. Whichever is older carries its
+    /// age, so the Observation is as new as its newest data and nothing reads
+    /// newer than it is.
+    fn put(self, merged: &mut CachedObservation) {
+        let merged_at = merged.observation.observed_at;
+        if self.held_at > merged_at {
+            carry_uncarried(merged, merged_at);
+            merged.observation.observed_at = self.held_at;
+        }
+        let o = &mut merged.observation;
+        o.owners = self.owners;
+        o.repos.extend(self.repos);
+        o.pull_requests.extend(self.pull_requests);
+        o.issues.extend(self.issues);
+        o.branches.extend(self.branches);
+        o.runs.extend(self.runs);
+        for entry in &self.coverage {
+            o.coverage.record(entry.source.clone(), entry.state.clone());
+        }
+        merged.carried.extend(self.carried);
+        merged.reads.extend(self.reads);
+        if merged_at > self.held_at {
+            let older: Vec<Source> = self
+                .coverage
+                .into_iter()
+                .filter(|e| has_data(&e.state))
+                .map(|e| e.source)
+                .filter(|s| !merged.carried.iter().any(|c| c.source.same(s)))
+                .collect();
+            merged
+                .carried
+                .extend(older.into_iter().map(|source| Carried {
+                    source,
+                    observed_at: self.held_at,
+                }));
+        }
+    }
+}
+
+/// Gives `repo`'s sources that den judges by its Owner's (no coverage entry
+/// of their own: an Owner survey cut off before the Repo, say) a copy of that
+/// Owner source's coverage and age, as [`CachedObservation::carried_since`]
+/// reads them. The Owner's sources stay behind when a Repo Survey splits
+/// `previous`, and fitting the cache drops them when the Owner is no longer
+/// watched but the Repo is open, so without this the Repo's kept facts would
+/// lose their age and read as new.
+pub(super) fn owner_aged_as_repo(previous: &mut CachedObservation, repo: &RepoId) {
+    let own = |kind: SourceKind| Source::Repo {
+        repo: repo.clone(),
+        kind,
+    };
+    let owner_entries: Vec<CoverageEntry> = previous
+        .observation
+        .coverage
+        .entries()
+        .iter()
+        .filter(|e| {
+            matches!(&e.source, Source::Owner { owner, .. } if same_login(owner, &repo.owner))
+                && !e.source.is_linear()
+                && !e.source.is_member_states()
+        })
+        .cloned()
+        .collect();
+    for entry in owner_entries {
+        let Source::Owner { kind, .. } = entry.source else {
+            continue;
+        };
+        let source = own(kind);
+        let recorded = |cached: &CachedObservation| {
+            cached
+                .observation
+                .coverage
+                .entries()
+                .iter()
+                .any(|e| e.source.same(&source))
+        };
+        if recorded(previous) || previous.carried.iter().any(|c| c.source.same(&source)) {
+            continue;
+        }
+        if let Some(age) = previous
+            .carried
+            .iter()
+            .find(|c| c.source.same(&entry.source))
+            .map(|c| c.observed_at)
+        {
+            previous.carried.push(Carried {
+                source: source.clone(),
+                observed_at: age,
+            });
+        }
+        previous.observation.coverage.record(source, entry.state);
+    }
+}
+
+/// Every source of `cached` holding data and no age of its own yet carries
+/// `at`, the time its Observation is about to stop being.
+fn carry_uncarried(cached: &mut CachedObservation, at: Timestamp) {
+    let older: Vec<Source> = cached
+        .observation
+        .coverage
+        .entries()
+        .iter()
+        .filter(|e| {
+            has_data(&e.state) && e.source != Source::Viewer && !e.source.is_member_states()
+        })
+        .map(|e| e.source.clone())
+        .filter(|s| !cached.carried.iter().any(|c| c.source.same(s)))
+        .collect();
+    cached
+        .carried
+        .extend(older.into_iter().map(|source| Carried {
+            source,
+            observed_at: at,
+        }));
 }
 
 /// The Linear part of what den showed, its Linear coverage and the ages of
@@ -315,6 +547,12 @@ impl Guarded {
     }
 }
 
+/// Whether a source in this state holds facts den shows: one that failed or
+/// wasn't fetched holds none of its own (kept ones carry their age already).
+fn has_data(state: &SourceState) -> bool {
+    matches!(state, SourceState::Complete | SourceState::Partial(_))
+}
+
 /// The source that lists a kind's facts: a PR's or an Issue's details are
 /// read with its list, so they are guarded with it.
 fn listing(kind: SourceKind) -> SourceKind {
@@ -367,6 +605,7 @@ fn as_new_as_held(
         .coverage
         .entries()
         .iter()
+        .filter(|e| has_data(&e.state))
         .map(|e| &e.source)
         .filter(|s| **s != Source::Viewer && !s.is_member_states() && !guarded.holds_source(s))
         .filter(|s| !cached.carried.iter().any(|c| c.source.same(s)))
