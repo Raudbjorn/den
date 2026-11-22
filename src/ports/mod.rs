@@ -24,6 +24,7 @@ use crate::{
 };
 use jiff::Timestamp;
 use std::{
+    fmt,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -31,13 +32,32 @@ use std::{
 /// What to survey.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurveyRequest {
-    pub owners: Vec<String>,
+    pub target: SurveyTarget,
     /// The forks whose target is their Upstream: their Branches are compared
     /// against the Upstream's default branch (#13).
     pub upstreams: UpstreamTargets,
     /// The Repos with `screenshots = true` (#79): their open PRs' bodies are
     /// read for the Screenshots state, and no other Repo's.
     pub screenshot_repos: Vec<RepoId>,
+}
+
+/// What one survey reads (spec 0003, ADR-0005).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SurveyTarget {
+    /// A Repo Survey: the viewer, one Repo and its Work Items, every source
+    /// recorded for that Repo.
+    Repo(RepoId),
+    /// Every Repo of each watched Owner, in config order.
+    Owners(Vec<String>),
+}
+
+impl fmt::Display for SurveyTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Repo(repo) => write!(f, "Repo {repo}"),
+            Self::Owners(owners) => write!(f, "{} Owner(s): {}", owners.len(), owners.join(", ")),
+        }
+    }
 }
 
 /// A survey that produced no Observation at all. Per-source trouble (a failed

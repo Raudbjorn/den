@@ -51,7 +51,6 @@ const T3: &str = "2026-11-12T10:00:00Z";
 fn config() -> Config {
     Config {
         owners: vec!["acme".to_owned()],
-        refresh_interval_secs: None,
         main_clone_root: Some(PathBuf::from(ROOT)),
         main_clones: std::collections::BTreeMap::new(),
         linear: Vec::new(),

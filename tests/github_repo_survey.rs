@@ -13,9 +13,11 @@ mod support;
 use den::{
     domain::{Incompleteness, RepoId, Source, SourceKind, SourceState, UpstreamTargets},
     github::{
+        GhSource,
         graphql::{GraphQlError, GraphQlRequest, GraphQlResponse, TransportError},
         survey_repo, survey_repo_with,
     },
+    ports::{GitHubSource, SurveyRequest, SurveyTarget},
 };
 use serde_json::{Value, json};
 use support::{
@@ -364,5 +366,52 @@ fn a_repo_github_refuses_keeps_githubs_reason() {
                     (Resource protected by organization SAML enforcement.)"
                 .to_owned()
         })
+    );
+}
+
+#[test]
+fn the_gh_source_surveys_one_repo_for_a_repo_target() {
+    let source = GhSource::new(github(acme_app()));
+    let observation = source
+        .survey(&SurveyRequest {
+            target: SurveyTarget::Repo(RepoId::new("acme", "app")),
+            upstreams: UpstreamTargets::default(),
+            screenshot_repos: Vec::new(),
+        })
+        .expect("a survey");
+    let repos: Vec<String> = observation.repos.iter().map(|r| r.id.to_string()).collect();
+    assert_eq!(repos, ["Acme/App"]);
+    assert!(observation.owners.is_empty());
+}
+
+/// Beyond the plan's Task 4 (#79 landed after it): a Repo target passes its
+/// request's screenshots Repos on, so a screenshots Repo's PR bodies are read.
+#[test]
+fn a_repo_target_reads_pr_bodies_for_a_screenshots_repo() {
+    let gql = github(acme_app());
+    let request = SurveyRequest {
+        target: SurveyTarget::Repo(RepoId::new("acme", "app")),
+        upstreams: UpstreamTargets::default(),
+        screenshot_repos: vec![RepoId::new("acme", "app")],
+    };
+    den::github::survey_request(&gql, &request, now()).expect("a survey");
+    let bodies: Vec<Value> = gql
+        .requests()
+        .iter()
+        .filter(|r| operation(r) == "RepoPullRequests")
+        .map(|r| r.variables["bodies"].clone())
+        .collect();
+    assert_eq!(bodies, [json!(true)]);
+}
+
+#[test]
+fn a_survey_target_names_itself_in_the_log() {
+    assert_eq!(
+        SurveyTarget::Repo(RepoId::new("acme", "app")).to_string(),
+        "Repo acme/app"
+    );
+    assert_eq!(
+        SurveyTarget::Owners(vec!["alpha".to_owned(), "beta".to_owned()]).to_string(),
+        "2 Owner(s): alpha, beta"
     );
 }
