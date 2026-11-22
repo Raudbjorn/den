@@ -430,6 +430,8 @@ fn an_empty_repo_has_no_default_branch_to_start_from() {
                 is_archived: false,
                 default_branch: None,
                 parent: None,
+                description: None,
+                pushed_at: None,
             })
             .issue(issue("octo/app", 9).assignee(ME).label("feature"))
             .build(),

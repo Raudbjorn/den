@@ -299,6 +299,31 @@ fn smaller_batch(batch: u32, lost: &SourceState) -> Option<u32> {
     Some((batch / 2).max(MIN_OWNER_REPOS_PER_PAGE))
 }
 
+/// Every open PR of one Repo, with their checks and reviews, for a Repo
+/// Survey (spec 0003): `pull_requests_repo.graphql` from its first page.
+/// Coverage is the Repo's own; no Owner listing is read. `viewer` and
+/// `screenshot_repos` are as for [`fetch`]; bodies are asked for only when
+/// `repo` is one of `screenshot_repos`.
+pub fn fetch_repo(
+    session: &Session<'_>,
+    repo: &RepoId,
+    viewer: &str,
+    screenshot_repos: &[RepoId],
+) -> Result<KindFetch<PullRequest>, SurveyFailure> {
+    let bodies = screenshot_repos.iter().any(|r| r.same(repo));
+    let mut out = KindFetch::default();
+    let mut found_prs: Vec<(String, PullRequest)> = Vec::new();
+    let pages = RepoPages {
+        screenshot_repos,
+        bodies,
+    };
+    let entry = read_repo_pages(session, repo, Pager::new(None), pages, &mut found_prs)?;
+    out.coverage.push(entry);
+    details::fill(session, &mut found_prs, &mut out.coverage, viewer)?;
+    out.items = found_prs.into_iter().map(|(_, pr)| pr).collect();
+    Ok(out)
+}
+
 /// Where a Repo's further PR pages start, and how to read them.
 struct RestOfRepo<'a> {
     /// The state of the Owner page its first PRs came on.
@@ -322,7 +347,6 @@ fn fetch_rest_of_repo(
         screenshot_repos,
         bodies,
     } = rest;
-    let query = with_facts(REPO_QUERY);
     let mut pager = Pager::new(None);
     // The first page came with the Owner query, so it carries that page's
     // state: an error there may have nulled some of this Repo's PRs.
@@ -331,6 +355,36 @@ fn fetch_rest_of_repo(
         coverage.push(pager.finish(repo_source(repo)));
         return Ok(());
     }
+    let pages = RepoPages {
+        screenshot_repos,
+        bodies,
+    };
+    coverage.push(read_repo_pages(session, repo, pager, pages, found_prs)?);
+    Ok(())
+}
+
+/// How a Repo's PR pages are read: whether bodies are asked for, and the
+/// Repos whose bodies are decoded for screenshots (#79).
+#[derive(Clone, Copy)]
+struct RepoPages<'a> {
+    screenshot_repos: &'a [RepoId],
+    bodies: bool,
+}
+
+/// Reads one Repo's PR pages from `pager`'s cursor to the end (or den's
+/// bound); returns that Repo's own coverage.
+fn read_repo_pages(
+    session: &Session<'_>,
+    repo: &RepoId,
+    mut pager: Pager,
+    pages: RepoPages<'_>,
+    found_prs: &mut Vec<(String, PullRequest)>,
+) -> Result<CoverageEntry, SurveyFailure> {
+    let RepoPages {
+        screenshot_repos,
+        bodies,
+    } = pages;
+    let query = with_facts(REPO_QUERY);
     while pager.may_continue() {
         let variables = json!({ "owner": repo.owner, "name": repo.name, "after": pager.cursor, "bodies": bodies });
         let (page, page_complete) = match session.run::<RepoData>(&query, variables)? {
@@ -361,8 +415,7 @@ fn fetch_rest_of_repo(
             break;
         }
     }
-    coverage.push(pager.finish(repo_source(repo)));
-    Ok(())
+    Ok(pager.finish(repo_source(repo)))
 }
 
 fn repo_source(repo: &RepoId) -> Source {
