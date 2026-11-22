@@ -8,6 +8,7 @@ The look of den on one page. It gathers decisions recorded elsewhere and points 
 | `build/palette_gen.rs` (`SLOTS`) | which token fills each palette slot, the 16- and 8-colour colours by role, and the 256-colour pins |
 | ADR-0001 | the colour roles |
 | ADR-0006, spec 0003 "Look: the den kit" | widgets, panels, the kit |
+| [Issue #158, adopted rules](https://github.com/Raudbjorn/den/issues/158#issuecomment-7085808425) | italic, panel-title styling, permitted motion |
 | `src/layout.rs` | sizes and breakpoints |
 | `src/ui/glyphs.rs` | glyphs, per glyph profile |
 | `CONTEXT.md` | the words on screen |
@@ -45,7 +46,7 @@ Colour is assigned by **job**, not by component:
 | `mark-bg` | `#101715` | the mark plate |
 | `border` | `#2A3940` | quiet rules |
 | `text` | `#D9E1E4` | body |
-| `text-strong` | `#F3F6F7` | titles, the Repo's name, the selected item |
+| `text-strong` | `#F3F6F7` | screen titles, the Repo's name, the selected item |
 | `text-muted` | `#9EB1BA` | secondary facts, reasons |
 | `text-faint` | `#86999F` | metadata, hints, "not swept yet" |
 | `success` | `#5CB38B` | checked and fine (`✓ complete`) |
@@ -64,7 +65,8 @@ Values are as of the token file's recorded IRONMAW commit (`2bf753e`). Never edi
 ## 3. Type and text
 
 - **The terminal's monospace font.** den sets no font. The reference renders use Iosevka, which is IRONMAW's `font-mono`.
-- **Emphasis by weight and tone, not size.** Panel titles and section labels are uppercase (`NEXT STEPS`, `WAITING ON`). Titles and the Repo name are `text-strong`; reasons are muted.
+- **Emphasis by weight and tone, not size.** Section labels are uppercase (`NEXT STEPS`, `WAITING ON`). Screen titles and the Repo name are `text-strong`; reasons are muted. Panel titles follow §5.
+- **Do** use italic only for "not known yet" text (`not swept yet`, `not read`), in `text-faint`. **Don't** use italic for general emphasis or known facts.
 - **The lockup:** `D  E  N`, letter-spaced, with its tagline, on the Repo screen (spec 0003). The reference render's tagline is "Next Steps for GitHub work, one Repo at a time".
 - **Words** come from `CONTEXT.md` (Next Step, Waiting On, Live Job, Landing Group, …). Its `_Avoid_` lists apply on screen too.
 - **Separators and truncation** go through the ViewModel's `SEPARATOR` (`·`), `ELLIPSIS` (`…`) and `ENTER_KEY` (`⏎`). Each glyph profile renders them, and text is cut between graphemes (`Glyphs::fit`).
@@ -102,7 +104,7 @@ ratatui widgets wrapped in `src/ui/kit/`. Each takes its style from the theme (`
 
 | Component | Built from | Look |
 |---|---|---|
-| **Panel** | `Block`, rounded, `merge_borders(Fuzzy)` | uppercase title top-left, status title top-right (`✓ 14 · complete`); slate border at rest, teal when focused, as is the focused panel's title in the reference renders |
+| **Panel** | `Block`, rounded, `merge_borders(Fuzzy)` | title top-left, status top-right (`✓ 14 · complete`); titles follow the rule below; slate border at rest, teal when focused |
 | **DataTable** | `Table` + `Scrollbar` | header row, group rows (`WAITING ON YOU`, `RECENT`), rust `▌` cursor on the focused table, `selected` tone on the row, empty and coverage states |
 | **Chip** | styled span | the Next Step label on a `surface` fill: teal when Waiting On you, structure text otherwise |
 | **TabBar** | `Tabs` | active tab teal on charcoal |
@@ -112,6 +114,8 @@ ratatui widgets wrapped in `src/ui/kit/`. Each takes its style from the theme (`
 | **Button** | rust span | **the one action** (`c  Reopen the Live Job…`) |
 | **Sheet** | `Clear` + Panel | overlays: launch sheet, detail sheet |
 | **Bear** | `ui::bear` | the lettered SVEINBJORN bear (`assets/brand/bear-mark.svg`), drawn with kitty graphics where the terminal answers to it, half-blocks in truecolor otherwise, and left out in every other colour profile (`Graphics::choose`; `DEN_GRAPHICS` overrides) |
+
+**Panel titles:** **Do** set panel titles in CAPS and bold, using `structure-text` when unfocused and teal when focused. **Don't** use `text-strong` for panel titles or drop the bold weight.
 
 **Bear rule:** the full bear where there is room, otherwise no bear. Never an emblem or a shrunken bear (spec 0003, story 36). On the Repo screen it needs at least `REPO_LIST_MIN_ROWS` (10) table rows beside it. In the rail it must fit together with the identity block and every section without scrolling.
 
@@ -133,6 +137,7 @@ ratatui widgets wrapped in `src/ui/kit/`. Each takes its style from the theme (`
 - **Do** give every new meaning a role, and a glyph or words, before it gets a colour.
 - **Do** take colours from the theme's roles. Never write hex or ANSI colours in UI code.
 - **Do** mark partial data in amber with `⚠`, and say what wasn't read.
+- **Do** limit motion to the Sweep gauge and the running-survey spinner. **Don't** animate any other UI.
 - **Don't** use rust for anything but the one action Button, the cursor tick and an Upstream target.
 - **Don't** let amber and rust share an ANSI colour, or the selected fill match the page.
 - **Don't** shrink or crop the bear. Omit it.
