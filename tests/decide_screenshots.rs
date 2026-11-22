@@ -91,6 +91,56 @@ fn html_comments_never_count() {
     }
 }
 
+/// #68: code examples render as text, so neither their images, declarations,
+/// headings nor reference definitions can satisfy the screenshot gate.
+#[test]
+fn fenced_examples_keep_the_screenshot_job_required() {
+    for body in [
+        "## Screenshots\n```markdown\n![example](https://x/e.png)\n```",
+        "```\nNo visual change\n```",
+        "~~~text\nNo visual change\n~~~",
+        "```markdown\n## Screenshots\n```\n![outside](https://x/e.png)",
+        "## Screenshots\n![example][shot]\n```\n[shot]: https://x/e.png\n```",
+        "## Screenshots\n```html\n<img src=\"https://x/e.png\">",
+        "## Screenshots\n````\n```\n![example](https://x/e.png)\n````",
+        "## Screenshots\n~~~\n```\n![example](https://x/e.png)\n~~~",
+        "## Screenshots\n```\n``` not a closing fence\n![example](https://x/e.png)\n```",
+        "## Screenshots\n   ```\n![example](https://x/e.png)\n   ```",
+    ] {
+        let state = Screenshots::from_body(body);
+        assert_eq!(state, Screenshots::Missing, "{body:?}");
+        let decision = decide_one(mine_ready(1).screenshots(state), &screenshots_in_app());
+        assert_eq!(
+            decision.next_step,
+            Some(NextStep::AddScreenshots),
+            "{body:?}"
+        );
+    }
+}
+
+#[test]
+fn real_content_after_fenced_examples_still_counts() {
+    for body in [
+        "## Screenshots\n```\n## Not a heading\n```\n![real](https://x/r.png)",
+        "~~~markdown\nexample\n~~~~\n## Screenshots\n![real](https://x/r.png)",
+        // Comment delimiters in code are literal, and fences in comments are ignored.
+        "```html\n<!--\n```\n## Screenshots\n![real](https://x/r.png)",
+        "<!--\n```\n-->\n## Screenshots\n![real](https://x/r.png)",
+        // A backtick in the info string means this isn't a fence opener.
+        "```not `a fence\n## Screenshots\n![real](https://x/r.png)",
+    ] {
+        assert_eq!(
+            Screenshots::from_body(body),
+            Screenshots::Present,
+            "{body:?}"
+        );
+    }
+    assert_eq!(
+        Screenshots::from_body("```\nexample\n```\nNo visual change"),
+        Screenshots::NoVisualChange
+    );
+}
+
 /// Review on #94: reference-style images (`![alt][label]`, `![label][]`,
 /// `![label]`) display as images when the body defines the label, anywhere,
 /// so they count. Labels match as CommonMark matches them, ignoring case

@@ -15,6 +15,8 @@ const NO_VISUAL_CHANGE: &str = "no visual change";
 const SECTION_LEVEL: usize = 2;
 /// What opens a Markdown image.
 const IMAGE_OPEN: &str = "![";
+const MIN_FENCE_LENGTH: usize = 3;
+const MAX_FENCE_INDENT: usize = 3;
 
 /// What a PR body says about how the change looks.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,11 +34,10 @@ pub enum Screenshots {
 }
 
 impl Screenshots {
-    /// The state `body` gives. HTML comments are ignored, so a PR template's
-    /// commented-out example or hint never counts; an unterminated comment
-    /// runs to the end of the body, as it does when GitHub renders it.
+    /// The state `body` gives. HTML comments and top-level fenced code examples
+    /// never count; an unterminated comment or fence runs to the end of the body.
     pub fn from_body(body: &str) -> Self {
-        let text = without_html_comments(body);
+        let text = without_examples(body);
         let labels = reference_labels(&text);
         let mut in_section = false;
         let mut present = false;
@@ -68,18 +69,54 @@ impl Screenshots {
     }
 }
 
-/// `body` without `<!-- … -->` comments.
-fn without_html_comments(body: &str) -> String {
+/// Remove comments and code together: delimiters in either are literal in the other.
+/// shortcut: handles top-level fences; use a Markdown parser for nested containers.
+fn without_examples(body: &str) -> String {
     let mut out = String::with_capacity(body.len());
-    let mut rest = body;
-    while let Some(start) = rest.find("<!--") {
-        out.push_str(&rest[..start]);
-        match rest[start..].find("-->") {
-            Some(end) => rest = &rest[start + end + "-->".len()..],
-            None => return out,
+    let mut in_comment = false;
+    let mut fence = None;
+    for line in body.split_inclusive('\n') {
+        let trimmed = line.trim_start_matches(' ');
+        if !in_comment
+            && line.len() - trimmed.len() <= MAX_FENCE_INDENT
+            && let Some(marker @ (b'`' | b'~')) = trimmed.bytes().next()
+        {
+            let length = trimmed.bytes().take_while(|&b| b == marker).count();
+            let rest = &trimmed[length..];
+            if let Some((opening, minimum)) = fence {
+                if marker == opening
+                    && length >= minimum
+                    && rest.trim_matches([' ', '\t', '\r', '\n']).is_empty()
+                {
+                    fence = None;
+                    continue;
+                }
+            } else if length >= MIN_FENCE_LENGTH && (marker != b'`' || !rest.contains('`')) {
+                fence = Some((marker, length));
+                continue;
+            }
+        }
+        if fence.is_some() {
+            continue;
+        }
+        let mut rest = line;
+        while !rest.is_empty() {
+            if in_comment {
+                let Some(end) = rest.find("-->") else {
+                    break;
+                };
+                rest = &rest[end + "-->".len()..];
+                in_comment = false;
+            } else if let Some(start) = rest.find("<!--") {
+                out.push_str(&rest[..start]);
+                rest = &rest[start + "<!--".len()..];
+                in_comment = true;
+            } else {
+                out.push_str(rest);
+                break;
+            }
         }
     }
-    out.push_str(rest);
     out
 }
 
