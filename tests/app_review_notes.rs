@@ -282,6 +282,29 @@ keep their numbers, and leave the points they settle or flag for my decision as 
 }
 
 #[test]
+fn oversized_point_lists_are_refused_without_cutting_off_instructions() {
+    let mut pr = ready();
+    // A full review page with GitHub-sized IDs exceeds the prompt limit.
+    for id in 1_000_000_000..1_000_000_100 {
+        pr = pr.review_body(id, "alice", ReviewVerdict::Commented, T1, true);
+    }
+    let mut harness = started(Ok(prompts::Prompts::default()), observed(pr));
+    press(&mut harness, Key::Char('c'));
+    let prompt = &sheet(&harness).prompt.as_ref().unwrap().text;
+    assert!(prompt.chars().count() > den::handoff::MAX_PROMPT_CHARS);
+    assert!(prompt.contains("(review 1000000099)"), "{prompt}");
+    assert!(
+        prompt.ends_with("<state> is open, declined, follow-up or needs-decision."),
+        "{prompt}"
+    );
+    // Length validation runs on Enter and leaves the sheet editable for a retry.
+    press(&mut harness, Key::Enter);
+    assert!(messages(sheet(&harness)).contains("prompt is longer"));
+    assert!(harness.launcher.windows().is_empty());
+    assert!(harness.jobs.records().is_empty());
+}
+
+#[test]
 fn without_review_body_points_review_notes_is_empty() {
     // Requested changes and a thread, but no review body to split.
     let pr = pr("octo/app", 7)
