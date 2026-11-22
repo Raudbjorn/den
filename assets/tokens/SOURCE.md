@@ -33,6 +33,12 @@ IRONMAW's:
   terminals, and nearest-colour matching breaks IRONMAW's rules there (rust and amber
   both land on yellow; the selected fill lands on black, the page colour). So each slot
   names an ANSI colour chosen by role: teal → cyan, rust → red, amber → yellow,
-  slate → dark grey, selected → blue.
-
-256-colour terminals use the token colours, quantised to the nearest xterm colour.
+  slate → dark grey, selected → blue;
+- the 8-colour colour for each slot (#128), chosen by role the same way, since
+  folding the 16-colour palette into eight would draw errors in rust's red and
+  slate in body-text grey: error → magenta, slate lines → blue (never a role drawn
+  on the selected fill, which is blue too);
+- the 256-colour pins (#128). 256-colour terminals use the token colours,
+  quantised to the nearest xterm colour, except where that would merge two roles
+  (the page and the mark plate, surfaces 1 and 2, surface 3 and the selected row,
+  error and rust hover). Those slots name an xterm index instead.
