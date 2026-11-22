@@ -126,8 +126,11 @@ Markdown line per observed Review Point: reference and link, author, state,
 fixed commit when present, and your Job's summary. Reviewers' body text never
 enters it. The launch sheet shows the comment text; the default Jobs post it
 verbatim immediately before each pinned merge (one comment per Land member,
-in landing order), and stop if posting fails. A custom template missing the
-placeholder disables only that Job kind and names the file and line to fix.
+in landing order), and stop if posting fails. Its COMMENT field (COMMENT 1,
+COMMENT 2, … for a Land Job) tallies each comment's Points by state, and
+turns to a caution when an edited prompt no longer carries the comment word
+for word. A custom template missing the placeholder disables only that Job
+kind and names the file and line to fix.
 
 Every Pull Request's feedback is a list of **Review Points**: each review
 thread, and each review body that says more than a stock approval ("LGTM",

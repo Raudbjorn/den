@@ -1096,6 +1096,104 @@ fn members_is_a_land_placeholder_that_land_must_use() {
     assert!(land.unusable(NextStep::Land).is_none());
 }
 
+/// #78: a Land launch carries one resolution comment per member, in landing
+/// order (app #2, then api #1), each from that member's own Review Points and
+/// at the head the Job merges; held web #3 gets none. The sheet numbers them
+/// like the members.
+#[test]
+fn a_land_launch_carries_one_resolution_comment_per_member_in_landing_order() {
+    let mut harness = Harness::new(Ok(config()));
+    harness
+        .workspace
+        .add_clone(CLONE, &[("origin", "git@github.com:acme/app.git")]);
+    harness
+        .workspace
+        .set_remote_head(CLONE, "origin", "feature-2", HEAD_2);
+    harness.workspace.host_pull_head(API_URL, 1, HEAD_1);
+    harness.workspace.host_pull_head(APP_URL, 2, HEAD_2);
+    let api = ready("acme/api", 1, HEAD_1)
+        .review_body(
+            10,
+            "bob",
+            ReviewVerdict::Commented,
+            "2026-11-10T10:00:00Z",
+            true,
+        )
+        .comment(
+            90,
+            ME,
+            "2026-11-11T10:00:00Z",
+            "<!-- den:point 10.1 fixed abcdef1 -->\nAdded the test",
+        );
+    let app = ready("acme/app", 2, HEAD_2).thread("PRRT_9", "carol", true);
+    let members = vec![api, app, pr("acme/web", 3).author(ME).conflicting()];
+    queue_round(&harness, members.clone(), &ALL);
+    harness.start();
+
+    let ready = open_sheet(&mut harness, "TEAM-1");
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    assert_eq!(
+        field(&ready, "COMMENT 1").map(|f| f.0),
+        Some("1 Point: 1 resolved")
+    );
+    assert_eq!(
+        field(&ready, "COMMENT 2").map(|f| f.0),
+        Some("1 Point: 1 fixed")
+    );
+    assert_eq!(
+        field(&ready, "COMMENT 3"),
+        None,
+        "the held member gets none"
+    );
+    let prompt = ready.prompt.as_ref().expect("a prompt").text.clone();
+    // #111 pinned its own fenced comment text here; main's renderer (#110)
+    // won the merge and its tests pin that text. This test keeps what #111
+    // adds: the sheet's COMMENT fields above, and one comment per non-held
+    // member at the prompt's end, in landing order, as the plan carries them.
+    assert!(
+        prompt.contains(
+            "Immediately before merging each member, post its resolution comment below verbatim on that member's Pull Request."
+        ),
+        "{prompt}"
+    );
+
+    // #109 requires a fresh confirmation read, carrying the same settled Points.
+    queue_round(&harness, members, &ALL);
+    press(&mut harness, Key::Enter);
+    let plans = launch_plans(&harness);
+    assert_eq!(plans.len(), 1, "{}", messages(sheet(&harness)));
+    let urls: Vec<&str> = plans[0]
+        .resolutions
+        .iter()
+        .map(|r| r.url.as_str())
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            "https://github.com/acme/app/pull/2",
+            "https://github.com/acme/api/pull/1"
+        ]
+    );
+    assert_eq!(plans[0].prompt, prompt);
+    let bodies: Vec<&str> = plans[0]
+        .resolutions
+        .iter()
+        .map(|r| r.body.as_str())
+        .collect();
+    assert!(prompt.ends_with(&bodies.join("\n\n")), "{prompt}");
+    assert!(
+        bodies[0].contains("carol") && bodies[0].contains("resolved"),
+        "{}",
+        bodies[0]
+    );
+    assert!(
+        bodies[1].contains("bob") && bodies[1].contains("fixed") && bodies[1].contains("abcdef1"),
+        "{}",
+        bodies[1]
+    );
+    assert!(bodies[1].contains("Added the test"), "{}", bodies[1]);
+}
+
 /// Acceptance (#72): a Repo's `merge_method` reaches the Land prompt. Members
 /// in Repos that differ get each Repo's own method, in landing order; when
 /// every member's Repo agrees, the prompt names that one method.
