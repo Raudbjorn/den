@@ -205,6 +205,21 @@ fn a_file_with_a_permission_mode_is_a_format_an_older_den_refuses() {
     );
 }
 
+/// Acceptance (#72): a Merge Job recorded before Merge became a Coordination
+/// Job has no stored mode; reopening it runs in Merge's mode now, ask-first.
+#[test]
+fn a_merge_record_from_before_its_mode_reopens_ask_first() {
+    let earlier = JobRecord {
+        next_step: NextStep::Merge,
+        permission_mode: None,
+        ..store_record()
+    };
+    assert_eq!(
+        earlier.reopen_mode(&den::domain::LinearWorkflowPolicy::default()),
+        Some(PermissionMode::ApprovalRequired)
+    );
+}
+
 #[test]
 fn a_format_2_file_loads_and_the_next_append_writes_the_current_format() {
     let temp = tempfile::tempdir().unwrap();

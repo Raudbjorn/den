@@ -95,7 +95,8 @@ pub fn lane_of(effect: &Effect) -> Option<LaneKind> {
         | Effect::ReadLinearIssue { .. }
         | Effect::AssignLinearIssue { .. }
         | Effect::MoveLinearIssue { .. }
-        | Effect::Reopen { .. } => Some(LaneKind::Remote),
+        | Effect::Reopen { .. }
+        | Effect::CopyToClipboard { .. } => Some(LaneKind::Remote),
         Effect::Quit | Effect::Log(_) => None,
     }
 }
@@ -324,6 +325,7 @@ mod tests {
             linear: Vec::new(),
             skips: crate::domain::Skips::default(),
             screenshot_repos: Vec::new(),
+            merge_methods: crate::domain::MergeMethods::default(),
             legacy_marker_prefixes: Vec::new(),
         }));
         let (mut view, effects) = app.handle(Event::Started {

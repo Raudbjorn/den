@@ -64,6 +64,7 @@ fn config() -> Config {
         linear: vec![workflow],
         skips: den::domain::Skips::default(),
         screenshot_repos: Vec::new(),
+        merge_methods: den::domain::MergeMethods::default(),
         legacy_marker_prefixes: Vec::new(),
     }
 }
@@ -144,7 +145,11 @@ fn queue_round(harness: &Harness, prs: Vec<PrBuilder>, attached: &[(&str, u64)])
 /// The workspace has acme/app's Main Clone, and GitHub has each member at
 /// its head.
 fn started() -> Harness {
-    let mut harness = Harness::new(Ok(config()));
+    started_with(config())
+}
+
+fn started_with(config: Config) -> Harness {
+    let mut harness = Harness::new(Ok(config));
     harness
         .workspace
         .add_clone(CLONE, &[("origin", "git@github.com:acme/app.git")]);
@@ -256,9 +261,11 @@ fn team_1_id() -> WorkItemId {
 }
 
 /// The prompt for app #2 then api #1, with web #3 held.
+// #72 added the "Merge each using {merge_method}" sentence to the default Land
+// prompt; neither Repo names a merge_method here, so it asks.
 fn land_prompt(head_1: &str) -> String {
     format!(
-        "Land the Landing Group of Linear Issue https://linear.app/acme/issue/team-1. Merge exactly these Pull Requests, one at a time and in this order, each pinned to its approved head commit (gh pr merge --match-head-commit <commit>): 1. https://github.com/acme/app/pull/2 at {HEAD_2}; 2. https://github.com/acme/api/pull/1 at {head_1}. Before merging the next one, wait until GitHub shows the previous one as merged: queued in a merge queue or set to auto-merge is not merged. Stop at the first failure or anything unexpected, such as a head that moved, a failing check or a state you didn't expect, and merge nothing more. Never merge a Pull Request in a Held Repo: https://github.com/acme/web/pull/3. Never undo or revert a merge, and never change any other Pull Request. When you stop or finish, report each Pull Request above as merged, queued, failed (with the error) or not attempted."
+        "Land the Landing Group of Linear Issue https://linear.app/acme/issue/team-1. Merge exactly these Pull Requests, one at a time and in this order, each pinned to its approved head commit (gh pr merge --match-head-commit <commit>): 1. https://github.com/acme/app/pull/2 at {HEAD_2}; 2. https://github.com/acme/api/pull/1 at {head_1}. Merge each using the merge method the repository allows; if it allows more than one, ask me which to use. Before merging the next one, wait until GitHub shows the previous one as merged: queued in a merge queue or set to auto-merge is not merged. Stop at the first failure or anything unexpected, such as a head that moved, a failing check or a state you didn't expect, and merge nothing more. Never merge a Pull Request in a Held Repo: https://github.com/acme/web/pull/3. Never undo or revert a merge, and never change any other Pull Request. When you stop or finish, report each Pull Request above as merged, queued, failed (with the error) or not attempted."
     )
 }
 
@@ -813,4 +820,37 @@ fn members_is_a_land_placeholder_that_land_must_use() {
     let land =
         prompts::parse(path, "land = \"/land {url} {members}{held}\"\n").expect("a land template");
     assert!(land.unusable(NextStep::Land).is_none());
+}
+
+/// Acceptance (#72): a Repo's `merge_method` reaches the Land prompt. Members
+/// in Repos that differ get each Repo's own method, in landing order; when
+/// every member's Repo agrees, the prompt names that one method.
+#[test]
+fn land_uses_each_members_repo_merge_method() {
+    use den::domain::{MergeMethod, MergeMethods};
+    let mixed = Config {
+        merge_methods: MergeMethods::default()
+            .with(RepoId::new("acme", "app"), MergeMethod::Squash),
+        ..config()
+    };
+    let mut harness = started_with(mixed);
+    let ready = open_sheet(&mut harness, "TEAM-1");
+    let prompt = &ready.prompt.as_ref().expect("a prompt").text;
+    assert!(
+        prompt.contains(
+            "Merge each using its Repo's own method (acme/app: --squash; acme/api: the method it allows, asking me if it allows more than one)."
+        ),
+        "{prompt}"
+    );
+
+    let same = Config {
+        merge_methods: MergeMethods::default()
+            .with(RepoId::new("acme", "app"), MergeMethod::Rebase)
+            .with(RepoId::new("acme", "api"), MergeMethod::Rebase),
+        ..config()
+    };
+    let mut harness = started_with(same);
+    let ready = open_sheet(&mut harness, "TEAM-1");
+    let prompt = &ready.prompt.as_ref().expect("a prompt").text;
+    assert!(prompt.contains("Merge each using --rebase."), "{prompt}");
 }

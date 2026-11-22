@@ -12,6 +12,7 @@
 //! # [repos."octo/app"]                Next Steps a Repo doesn't track (spec 0003)
 //! # skip = ["Fix CI", "Triage"]
 //! # screenshots = true                 my PRs here need screenshots (#79)
+//! # merge_method = "squash"           how Merge and Land merge here (#72)
 //! ```
 //!
 //! A Linear Workflow binds one Owner to one Linear workspace (spec 0002,
@@ -23,7 +24,7 @@ pub mod linear;
 pub use linear::{LinearWorkflow, Reviewer};
 
 use crate::domain::{
-    NextStep, Policies, RepoId, Skips,
+    MergeMethod, MergeMethods, NextStep, Policies, RepoId, Skips,
     facts::feedback::{DEN_MARKER_PREFIX, is_marker_prefix},
     ids::{MAX_LOGIN_CHARS, is_valid_login, is_valid_repo_name},
 };
@@ -54,6 +55,9 @@ pub struct Config {
     /// The Repos with `screenshots = true` (#79): the viewer's own PRs there
     /// need a Screenshots section with an image, or a "No visual change" line.
     pub screenshot_repos: Vec<RepoId>,
+    /// Each Repo's merge method (`[repos."OWNER/REPO"] merge_method`, #72),
+    /// for Merge and Land Jobs. A Repo without one names none.
+    pub merge_methods: MergeMethods,
     /// `legacy_marker_prefixes` (#75, ADR-0010): earlier tooling's marker
     /// prefixes whose `<prefix>:review-notes:` markers set Review Points.
     /// Lowercase letters, digits and `-`, never `den`.
@@ -141,6 +145,7 @@ struct RawRepo {
     /// Off unless written (#79).
     #[serde(default)]
     screenshots: bool,
+    merge_method: Option<Spanned<String>>,
 }
 
 /// A 1-based line and column in the config file.
@@ -252,7 +257,7 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
     }
     let linear = linear::workflows(raw.linear, &owners, text)
         .map_err(|(span, message)| malformed(Some(span), message))?;
-    let (skips, screenshot_repos) =
+    let (skips, screenshot_repos, merge_methods) =
         repo_tables(raw.repos).map_err(|(span, message)| malformed(Some(span), message))?;
     let legacy_marker_prefixes = marker_prefixes(raw.legacy_marker_prefixes)
         .map_err(|(span, message)| malformed(Some(span), message))?;
@@ -263,6 +268,7 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
         linear,
         skips,
         screenshot_repos,
+        merge_methods,
         legacy_marker_prefixes,
     })
 }
@@ -317,14 +323,17 @@ fn absolute(path: Spanned<PathBuf>, what: &str) -> Result<PathBuf, (Range<usize>
     ))
 }
 
+type RepoTables = (Skips, Vec<RepoId>, MergeMethods);
+
 /// The `[repos."OWNER/REPO"]` tables: their `skip` lists (spec 0003, "Not
 /// tracking a flow"), each value a skippable Next Step spelled as
-/// `CONTEXT.md` spells it, and the Repos with `screenshots = true` (#79).
+/// `CONTEXT.md` spells it, plus screenshot requirements (#79) and merge methods (#72).
 fn repo_tables(
     raw: BTreeMap<Spanned<String>, RawRepo>,
-) -> Result<(Skips, Vec<RepoId>), (Range<usize>, String)> {
+) -> Result<RepoTables, (Range<usize>, String)> {
     let mut skips = Skips::default();
     let mut screenshot_repos = Vec::new();
+    let mut merge_methods = MergeMethods::default();
     for (key, table) in raw {
         let key_span = key.span();
         let name = key.into_inner();
@@ -371,9 +380,22 @@ fn repo_tables(
         if table.screenshots {
             screenshot_repos.push(repo.clone());
         }
+        if let Some(entry) = table.merge_method {
+            let span = entry.span();
+            let name = entry.into_inner();
+            let Some(method) = MergeMethod::from_name(&name) else {
+                return Err((
+                    span,
+                    format!(
+                        "merge_method {name:?} is not a merge method: use \"squash\", \"merge\" or \"rebase\""
+                    ),
+                ));
+            };
+            merge_methods = merge_methods.with(repo.clone(), method);
+        }
         skips = skips.with(repo, steps);
     }
-    Ok((skips, screenshot_repos))
+    Ok((skips, screenshot_repos, merge_methods))
 }
 
 /// The skippable Next Steps, quoted, in glossary order.

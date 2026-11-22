@@ -602,11 +602,16 @@ fn no_repos_table_skips_nothing() {
 #[test]
 fn repos_can_require_screenshots_and_skip_add_screenshots() {
     let config = parse(
-        "owners = [\"acme\"]\n\n[repos.\"acme/web\"]\nscreenshots = true\nskip = [\"Add screenshots\"]\n\n[repos.\"acme/api\"]\nscreenshots = false\n\n[repos.\"acme/cli\"]\nskip = []\n",
+        "owners = [\"acme\"]\n\n[repos.\"acme/web\"]\nscreenshots = true\nmerge_method = \"squash\"\nskip = [\"Add screenshots\"]\n\n[repos.\"acme/api\"]\nscreenshots = false\n\n[repos.\"acme/cli\"]\nskip = []\n",
     )
     .expect("valid");
     let web = RepoId::new("acme", "web");
     assert_eq!(config.screenshot_repos, std::slice::from_ref(&web));
+    // Both settings share a Repo table after integrating #72 and #79.
+    assert_eq!(
+        config.merge_methods.for_repo(&web),
+        Some(den::domain::MergeMethod::Squash)
+    );
     let policies = config.policies();
     assert!(policies.requires_screenshots(&RepoId::new("ACME", "Web")));
     assert!(!policies.requires_screenshots(&RepoId::new("acme", "api")));
@@ -676,6 +681,62 @@ fn bad_skips_name_the_line() {
             "{name}: {error}"
         );
         assert!(error.to_string().contains(message), "{name}: {error}");
+    }
+}
+
+// Merge method per Repo (#72, spec 0004 story 23).
+
+#[test]
+fn a_repo_can_name_its_merge_method() {
+    use den::domain::MergeMethod;
+    let config = parse(
+        "owners = [\"acme\"]\n\n[repos.\"acme/app\"]\nmerge_method = \"squash\"\n\n[repos.\"acme/api\"]\nskip = [\"Triage\"]\nmerge_method = \"rebase\"\n\n[repos.\"acme/web\"]\nskip = [\"Fix CI\"]\n",
+    )
+    .expect("valid");
+    let method = |name: &str| config.merge_methods.for_repo(&RepoId::new("acme", name));
+    assert_eq!(method("app"), Some(MergeMethod::Squash));
+    assert_eq!(
+        method("API"),
+        Some(MergeMethod::Rebase),
+        "Repo names compare without case"
+    );
+    assert_eq!(
+        method("web"),
+        None,
+        "a Repo table without merge_method names none"
+    );
+    assert_eq!(method("other"), None);
+    assert_eq!(MergeMethod::Squash.flag(), "--squash");
+    assert_eq!(MergeMethod::Merge.flag(), "--merge");
+    assert_eq!(MergeMethod::Rebase.flag(), "--rebase");
+}
+
+#[test]
+fn a_bad_merge_method_names_the_line() {
+    for (name, text, line) in [
+        (
+            "not a method",
+            "owners = [\"a\"]\n[repos.\"a/b\"]\nmerge_method = \"fast-forward\"\n",
+            3,
+        ),
+        (
+            "methods are lowercase, as gh spells them",
+            "owners = [\"a\"]\n[repos.\"a/b\"]\nskip = []\nmerge_method = \"Squash\"\n",
+            4,
+        ),
+    ] {
+        let error = parse(text).expect_err(name);
+        assert_eq!(
+            location(&error).map(|l| l.line),
+            Some(line),
+            "{name}: {error}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("merge_method")
+                && message.contains("\"squash\", \"merge\" or \"rebase\""),
+            "{name}: {message}"
+        );
     }
 }
 

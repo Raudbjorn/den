@@ -402,32 +402,27 @@ fn the_request_review_sheet_says_when_the_suggestions_are_not_filtered_in_full()
 #[test]
 fn coding_plans_carry_no_permission_mode_and_keep_milestone_1s_command() {
     let mut harness = started(Some("#team-dev"));
-    for (reference, step) in [("#3", "Address review"), ("#4", "Merge")] {
-        let ready = open_sheet(&mut harness, reference);
-        assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
-        assert_eq!(ready.next_step, step);
-        assert_eq!(field(&ready, "PERMISSIONS"), None, "{step}");
-        assert_eq!(field(&ready, "ANNOUNCE"), None, "{step}");
-        assert_eq!(ready.reviewers, None, "{step}");
-        let command = ready.command.clone().expect("a command");
-        // Since #71 the Ground Rules follow `claude` (ADR-0008): Address
-        // review changes code and gets the coding rule; Merge doesn't.
-        let rules = match step {
-            "Merge" => common_rules("acme/api#4"),
-            _ => coding_rules("acme/api#3"),
-        };
-        assert!(
-            command.contains(&format!(
-                " claude --append-system-prompt {} -n ",
-                quoted(&rules)
-            )) && !command.contains("--permission-mode"),
-            "{command}"
-        );
-        press(&mut harness, Key::Enter);
-        press(&mut harness, Key::Esc);
-    }
+    // Merge was the second coding kind here until #72 made it a Coordination
+    // Job (ask-first, `tests/app_merge_job.rs`); Address review still is one.
+    let ready = open_sheet(&mut harness, "#3");
+    assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    assert_eq!(ready.next_step, "Address review");
+    assert_eq!(field(&ready, "PERMISSIONS"), None);
+    assert_eq!(field(&ready, "ANNOUNCE"), None);
+    assert_eq!(ready.reviewers, None);
+    let command = ready.command.clone().expect("a command");
+    // #71 adds the coding Ground Rules; #72 keeps coding Jobs without a mode.
+    assert!(
+        command.contains(&format!(
+            " claude --append-system-prompt {} -n ",
+            quoted(&coding_rules("acme/api#3"))
+        )) && !command.contains("--permission-mode"),
+        "{command}"
+    );
+    press(&mut harness, Key::Enter);
+    press(&mut harness, Key::Esc);
     let plans = launch_plans(&harness);
-    assert_eq!(plans.len(), 2, "{plans:?}");
+    assert_eq!(plans.len(), 1, "{plans:?}");
     assert!(
         plans
             .iter()
@@ -448,16 +443,14 @@ fn coding_plans_carry_no_permission_mode_and_keep_milestone_1s_command() {
             .iter()
             .all(|j| j.permission_mode.is_none())
     );
-    // Only the coordination kinds ever get a mode, and (#41) a Review in a
-    // Linear Workflow. #41 widened the function with the Owner's policy: the
-    // empty policy keeps #39's expectation exactly; a workflow's policy adds
-    // Review and nothing else, so every coding kind still gets none. Add
-    // screenshots (#79) asks first too, without being a coordination Job.
+    // Coordination Jobs, workflow Reviews (#41), and Add screenshots (#79)
+    // ask first; Add screenshots still keeps the coding Ground Rules.
     let workflow = harness_policy();
     for step in NextStep::ALL {
+        // #72 adds Merge; #79 keeps Add screenshots approval-required too.
         let asks_first = matches!(
             step,
-            NextStep::RequestReview | NextStep::Land | NextStep::AddScreenshots
+            NextStep::RequestReview | NextStep::Land | NextStep::Merge | NextStep::AddScreenshots
         );
         let expected = asks_first.then_some(PermissionMode::ApprovalRequired);
         assert_eq!(
@@ -794,24 +787,39 @@ fn a_request_review_that_becomes_merge_while_the_sheet_is_open_is_shown_again_no
         "{}",
         messages(&asked)
     );
-    assert_eq!(field(&asked, "PERMISSIONS"), None);
+    // Since #72 Merge is a Coordination Job too: ask-first, and pinned to
+    // the head den observed. What this test guards is unchanged: the Request
+    // review prompt never runs as the Merge Job.
+    assert_eq!(
+        field(&asked, "PERMISSIONS").map(|f| f.0),
+        Some("approval-required: Claude asks before acting")
+    );
     assert_eq!(asked.reviewers, None);
     let merge_prompt = format!(
-        "Pull Request acme/api#2 ({URL_2}) is approved and its checks pass. You are on its head branch feature-2. Check that it is ready, then merge it."
+        "Pull Request acme/api#2 ({URL_2}) is approved and its checks pass. You are on its head branch feature-2. Check that it is ready, then merge it pinned to the head den observed: gh pr merge {URL_2} --match-head-commit {HEAD_2}, using the merge method the repository allows; if it allows more than one, ask me which to use. If GitHub refuses because the head moved, stop and tell me; never merge another head."
     );
     assert_eq!(prompt(&asked), merge_prompt);
     let command = asked.command.clone().expect("a command");
-    assert!(!command.contains("--permission-mode"), "{command}");
+    assert!(command.contains("--permission-mode manual"), "{command}");
 
     press(&mut harness, Key::Enter);
     let plans = launch_plans(&harness);
     assert_eq!(plans.len(), 1, "{plans:?}");
     assert_eq!(plans[0].next_step, NextStep::Merge);
-    assert_eq!(plans[0].permission_mode, None);
+    assert_eq!(
+        plans[0].permission_mode,
+        Some(PermissionMode::ApprovalRequired)
+    );
     assert_eq!(plans[0].review_request, None);
     assert_eq!(plans[0].prompt, merge_prompt);
-    assert_eq!(harness.launcher.windows()[0].permission_mode, None);
-    assert_eq!(harness.jobs.records()[0].permission_mode, None);
+    assert_eq!(
+        harness.launcher.windows()[0].permission_mode,
+        Some(PermissionMode::ApprovalRequired)
+    );
+    assert_eq!(
+        harness.jobs.records()[0].permission_mode,
+        Some(PermissionMode::ApprovalRequired)
+    );
 }
 
 #[test]
@@ -836,7 +844,8 @@ fn a_merge_that_becomes_request_review_while_the_sheet_is_open_is_shown_again_in
     press(&mut harness, Key::Enter);
     assert!(
         launch_plans(&harness).is_empty(),
-        "the Merge prompt never runs in the approval-required mode"
+        // Both kinds are ask-first since #72; the Next Step change alone asks again.
+        "the Merge prompt never runs as the Request review Job"
     );
     let asked = sheet(&harness).clone();
     assert_eq!(asked.status, LaunchStatus::Ready, "{}", messages(&asked));
@@ -1138,7 +1147,11 @@ fn editing_the_reviewers_after_the_next_step_changed_shows_the_new_plan_and_says
         messages(&asked)
     );
     assert_eq!(asked.reviewers, None, "a Merge asks no reviewers");
-    assert_eq!(field(&asked, "PERMISSIONS"), None);
+    // Merge is ask-first since #72, like the Request review it replaced.
+    assert_eq!(
+        field(&asked, "PERMISSIONS").map(|f| f.0),
+        Some("approval-required: Claude asks before acting")
+    );
 
     press(&mut harness, Key::Enter);
     let plans = launch_plans(&harness);

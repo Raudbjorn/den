@@ -18,7 +18,10 @@ use super::{
 use crate::{
     config::Config,
     decide::Decision,
-    domain::{LinearWorkflowPolicy, NextStep, Observation, RepoId, WorkItemId, facts::Reviewer},
+    domain::{
+        LinearWorkflowPolicy, MergeMethods, NextStep, Observation, RepoId, WorkItemId,
+        facts::Reviewer,
+    },
 };
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -85,6 +88,9 @@ pub struct PlanInput<'a> {
     /// [`PromptKind::for_job`]).
     /// Land also reads its landing order and Held Repos.
     pub policy: &'a LinearWorkflowPolicy,
+    /// Each Repo's merge method (#72), for Merge's and Land's
+    /// `{merge_method}`. Unused for other kinds.
+    pub merge_methods: &'a MergeMethods,
     /// The environment variables the Job runs without (#70,
     /// [`crate::config::Config::job_removed_env`]).
     pub removed_env: &'a [String],
@@ -420,6 +426,20 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             .iter()
             .flat_map(|group| &group.held)
             .map(|m| m.url.clone())
+            .collect(),
+        // Merge is pinned to the commit the plan starts on, which `execute`
+        // re-verifies on GitHub before anything changes (#72).
+        head: if facts.step == NextStep::Merge {
+            commit.clone()
+        } else {
+            String::new()
+        },
+        merge_methods: merged_repos(&facts, decision)
+            .into_iter()
+            .map(|repo| {
+                let method = input.merge_methods.for_repo(&repo);
+                (repo.to_string(), method)
+            })
             .collect(),
     };
     let prompt = prompts.render(kind, &fields);
@@ -854,4 +874,22 @@ fn recorded_job(
         .rev()
         .find(|job| job.subject.covers(item) && job.worktree == worktree)
         .map(|job| (job.session.clone(), job.launched_at))
+}
+
+/// The Repos a Job merges in, in order (#72): a Merge Job's Pull Request's,
+/// or each Land member's, once each; none for any other Job.
+fn merged_repos(facts: &Facts, decision: &Decision) -> Vec<RepoId> {
+    match (facts.step, &facts.landing) {
+        (NextStep::Merge, _) => decision.item.id.repo().cloned().into_iter().collect(),
+        (NextStep::Land, Some(group)) => {
+            let mut repos: Vec<RepoId> = Vec::new();
+            for member in &group.members {
+                if !repos.iter().any(|repo| repo.same(&member.pr.repo)) {
+                    repos.push(member.pr.repo.clone());
+                }
+            }
+            repos
+        }
+        _ => Vec::new(),
+    }
 }
