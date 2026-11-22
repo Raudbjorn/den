@@ -22,7 +22,9 @@ mod file;
 mod merge;
 
 pub use file::{CACHE_FORMAT, CACHE_SUBDIR, FileCache, MAX_CACHE_BYTES};
-pub use merge::{LinearMerge, merge, merge_linear, merge_member_states, settle_member_states};
+pub use merge::{
+    LinearMerge, merge, merge_linear, merge_member_states, merge_repo, settle_member_states,
+};
 
 use crate::domain::{
     LinearSourceKind, Observation, RepoId, Source, SourceKind, SourceState, ids::same_login,
@@ -123,15 +125,22 @@ impl CachedObservation {
 
     /// Fits a cached Observation to the configured Owners: drops what belongs to
     /// Owners no longer watched, and marks newly watched Owners as not fetched yet
-    /// so their absence never reads as a complete, empty survey.
-    pub fn restricted_to(mut self, owners: &[String]) -> Self {
+    /// so their absence never reads as a complete, empty survey. The `open`
+    /// Repo's facts and Repo sources stay even when its Owner isn't watched:
+    /// den opens Repos outside the watched Owners too (spec 0003, "Startup").
+    pub fn restricted_to(mut self, owners: &[String], open: Option<&RepoId>) -> Self {
         let watched = |owner: &str| owners.iter().any(|o| o.eq_ignore_ascii_case(owner));
+        let kept = |repo: &RepoId| watched(&repo.owner) || open.is_some_and(|o| o.same(repo));
+        let source_kept = |source: &Source| match source {
+            Source::Repo { repo, .. } => kept(repo),
+            other => source_owner(other).is_none_or(watched),
+        };
         let observation = &mut self.observation;
-        observation.repos.retain(|r| watched(&r.id.owner));
-        observation.pull_requests.retain(|i| watched(&i.repo.owner));
-        observation.issues.retain(|i| watched(&i.repo.owner));
-        observation.branches.retain(|i| watched(&i.repo.owner));
-        observation.runs.retain(|i| watched(&i.repo.owner));
+        observation.repos.retain(|r| kept(&r.id));
+        observation.pull_requests.retain(|i| kept(&i.repo));
+        observation.issues.retain(|i| kept(&i.repo));
+        observation.branches.retain(|i| kept(&i.repo));
+        observation.runs.retain(|i| kept(&i.repo));
         observation.linear.issues.retain(|i| watched(&i.owner));
         observation.linear.viewers.retain(|v| watched(&v.owner));
         observation.linear.team_states.retain(|t| watched(&t.owner));
@@ -143,7 +152,7 @@ impl CachedObservation {
             .retain(|a| watched(&a.pr.repo.owner));
         let mut coverage = crate::domain::Coverage::default();
         for entry in observation.coverage.entries() {
-            if source_owner(&entry.source).is_none_or(watched) {
+            if source_kept(&entry.source) {
                 coverage.record(entry.source.clone(), entry.state.clone());
             }
         }
@@ -164,10 +173,8 @@ impl CachedObservation {
         }
         observation.coverage = coverage;
         observation.owners = owners.to_vec();
-        self.carried
-            .retain(|c| source_owner(&c.source).is_none_or(watched));
-        self.reads
-            .retain(|r| source_owner(&r.source).is_none_or(watched));
+        self.carried.retain(|c| source_kept(&c.source));
+        self.reads.retain(|r| source_kept(&r.source));
         self
     }
 }

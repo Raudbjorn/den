@@ -744,7 +744,7 @@ impl App {
             return Vec::new();
         };
         let mut cached = cached
-            .restricted_to(&config.owners)
+            .restricted_to(&config.owners, None)
             .restricted_to_linear(&linear_reads(config));
         // shortcut: without cached query scopes, re-fetch; persist scopes to reuse startup coverage.
         cached.observation.coverage.retain(|entry| {
