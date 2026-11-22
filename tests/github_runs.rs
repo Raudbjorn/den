@@ -191,6 +191,8 @@ fn repo(name: &str, default_branch: Option<&str>, archived: bool) -> Repo {
         is_archived: archived,
         default_branch: default_branch.map(str::to_owned),
         parent: None,
+        description: None,
+        pushed_at: None,
     }
 }
 

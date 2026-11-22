@@ -111,5 +111,7 @@ pub fn fork(full_name: &str, parent: &str, default_branch: &str) -> Repo {
         is_archived: false,
         default_branch: Some(default_branch.to_owned()),
         parent: Some(Box::new(super::upstream_repo(parent))),
+        description: None,
+        pushed_at: None,
     }
 }

@@ -21,7 +21,8 @@ pub mod viewer;
 
 use crate::{
     domain::{
-        Comparison, CoverageEntry, Observation, Repo, RepoId, UpstreamTargets, comparison_for,
+        Comparison, CoverageEntry, Observation, Repo, RepoId, Source, SourceKind, SourceState,
+        UpstreamTargets, comparison_for,
         facts::{Branch, ComparisonBranch, Issue, PullRequest, Run},
     },
     ports::{GitHubSource, MemberStatesRead, MemberStatesRequest, SurveyFailure, SurveyRequest},
@@ -83,13 +84,7 @@ pub fn survey_request(
         handles
             .into_iter()
             .zip(owners)
-            .map(|(handle, owner)| {
-                handle.join().unwrap_or_else(|_| {
-                    Err(SurveyFailure::Interrupted {
-                        detail: format!("the survey of {owner} stopped unexpectedly"),
-                    })
-                })
-            })
+            .map(|(handle, owner)| joined(handle.join(), owner))
             .collect()
     });
     for (owner, login) in per_owner.into_iter().zip(owners) {
@@ -105,10 +100,143 @@ pub fn survey_request(
         observation.branches.extend(owner.branches);
         observation.runs.extend(owner.runs);
     }
+    log_coverage(&observation);
+    Ok(observation)
+}
+
+/// A Repo Survey (spec 0003, ADR-0005) of `repo`, with no PR bodies read for
+/// screenshots. [`survey_repo_with`] says what it reads.
+pub fn survey_repo(
+    gql: &dyn GraphQl,
+    repo: &RepoId,
+    upstreams: &UpstreamTargets,
+    observed_at: Timestamp,
+) -> Result<Observation, SurveyFailure> {
+    survey_repo_with(gql, repo, upstreams, &[], observed_at)
+}
+
+/// A Repo Survey (spec 0003, ADR-0005): the viewer, then `repo` and its open
+/// Pull Requests, Issues, Branches and default-branch Runs, read at once.
+/// Facts carry the Repo as GitHub spells it, and every source is recorded for
+/// the Repo itself, never its Owner, so the cache merges it beside the
+/// Owner's other Repos. It covers no Owner (`owners` is empty). A fork
+/// targeting its Upstream compares its Branches there, as an Owner survey
+/// does. PR bodies are read for screenshots when `repo` is one of
+/// `screenshot_repos` (#79). `observed_at` is when it started.
+pub fn survey_repo_with(
+    gql: &dyn GraphQl,
+    repo: &RepoId,
+    upstreams: &UpstreamTargets,
+    screenshot_repos: &[RepoId],
+    observed_at: Timestamp,
+) -> Result<Observation, SurveyFailure> {
+    let rate_limit = RateLimitMemo::default();
+    let session = Session::new(gql, &rate_limit);
+    let (viewer, viewer_coverage) = viewer::fetch(&session)?;
+    let mut observation = Observation::empty(observed_at, viewer, Vec::new());
+    record(&mut observation, [viewer_coverage]);
+    let (found, listing) = repos::fetch_one(&session, repo)?;
+    let Some(found) = found else {
+        record(&mut observation, [listing]);
+        for kind in SourceKind::WORK_ITEMS {
+            let source = Source::Repo {
+                repo: repo.clone(),
+                kind,
+            };
+            observation
+                .coverage
+                .record(source, SourceState::NotYetFetched);
+        }
+        log_coverage(&observation);
+        return Ok(observation);
+    };
+    let id = &found.id;
+    let listed = std::slice::from_ref(&found);
+    let comparison = |r: &Repo| comparison_branch(r, upstreams);
+    let comparison = &comparison;
+    let rate_limit = &rate_limit;
+    let viewer = observation.viewer.login.as_str();
+    let (pull_requests, issues, branches, runs) = std::thread::scope(|scope| {
+        let prs = scope.spawn(move || {
+            let session = Session::new(gql, rate_limit);
+            pull_requests::fetch_repo(&session, id, viewer, screenshot_repos)
+        });
+        let issues = scope.spawn(move || issues::fetch_one(&Session::new(gql, rate_limit), id));
+        let branches = scope.spawn(move || {
+            let session = Session::new(gql, rate_limit);
+            branches::fetch_against(&session, &id.owner, listed, comparison)
+        });
+        let runs =
+            scope.spawn(move || runs::fetch(&Session::new(gql, rate_limit), &id.owner, listed));
+        (
+            joined(prs.join(), id),
+            joined(issues.join(), id),
+            joined(branches.join(), id),
+            joined(runs.join(), id),
+        )
+    });
+    let (pull_requests, issues, branches, runs) = (pull_requests?, issues?, branches?, runs?);
+    let listing_state = listing.state.clone();
+    let entries = [
+        vec![listing],
+        pull_requests.coverage,
+        issues.coverage,
+        branches.coverage,
+        runs.coverage,
+    ]
+    .concat();
+    // The fetchers record what spans an Owner as the Owner's; here that
+    // Owner is this one Repo.
+    for entry in entries {
+        let source = match entry.source {
+            Source::Owner { kind, .. } => Source::Repo {
+                repo: found.id.clone(),
+                kind,
+            },
+            other => other,
+        };
+        observation.coverage.record(source, entry.state);
+    }
+    // A kind is never more complete than the Repo's listing, as for an Owner's
+    // Repo list (`Coverage::record`): an error beside the Repo's data may have
+    // nulled what a kind needs (its default branch), and reading nothing then
+    // is not "there are none".
+    if !listing_state.is_complete() {
+        for kind in SourceKind::WORK_ITEMS {
+            let source = Source::Repo {
+                repo: found.id.clone(),
+                kind,
+            };
+            observation.coverage.record(source, listing_state.clone());
+        }
+    }
+    observation.pull_requests = pull_requests.items;
+    observation.issues = issues.items;
+    observation.branches = branches.items;
+    observation.runs = runs.items;
+    observation.repos.push(found);
+    log_coverage(&observation);
+    Ok(observation)
+}
+
+/// A survey's read that panicked stops the survey: `what` names what was
+/// being read (an Owner, or the Repo of a Repo Survey).
+fn joined<T>(
+    joined: std::thread::Result<Result<T, SurveyFailure>>,
+    what: &dyn std::fmt::Display,
+) -> Result<T, SurveyFailure> {
+    joined.unwrap_or_else(|_| {
+        Err(SurveyFailure::Interrupted {
+            detail: format!("the survey of {what} stopped unexpectedly"),
+        })
+    })
+}
+
+/// Logs a finished survey's coverage, one line per source.
+fn log_coverage(observation: &Observation) {
     for entry in observation.coverage.entries() {
         tracing::info!(source = %entry.source.label(), state = %entry.state.describe(), "coverage");
     }
-    Ok(observation)
 }
 
 /// Everything read for one Owner.

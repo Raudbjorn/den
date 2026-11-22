@@ -216,6 +216,14 @@ pub fn fetch(
     Ok(out)
 }
 
+/// Every open Issue of one Repo, for a Repo Survey (spec 0003). Coverage is
+/// the Repo's own: no Owner count is read.
+pub fn fetch_one(session: &Session<'_>, repo: &RepoId) -> Result<KindFetch<Issue>, SurveyFailure> {
+    let mut out = KindFetch::default();
+    fetch_repo(session, repo, &mut out)?;
+    Ok(out)
+}
+
 /// Whether GitHub answered for a Repo at all.
 enum RepoRead {
     Reached,

@@ -85,6 +85,13 @@ pub struct Repo {
     /// Upstream den can see. Its own `parent` is never read (always `None`).
     /// den ignores it unless the Upstream is chosen as the target (ADR-0003).
     pub parent: Option<Box<Repo>>,
+    /// GitHub's description of the Repo; read by a Repo Survey (spec 0003),
+    /// `None` when it has none or den didn't read it.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// When anything was last pushed to the Repo; read by a Repo Survey.
+    #[serde(default)]
+    pub pushed_at: Option<Timestamp>,
 }
 
 /// One survey. Each Work Item kind has its own slot; a slot is empty either

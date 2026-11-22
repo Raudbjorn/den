@@ -35,6 +35,8 @@ pub fn upstream_repo(full_name: &str) -> Repo {
         is_archived: false,
         default_branch: Some("main".to_owned()),
         parent: None,
+        description: None,
+        pushed_at: None,
     }
 }
 
@@ -138,6 +140,8 @@ impl ObservationBuilder {
             is_archived: false,
             default_branch: Some("main".to_owned()),
             parent: None,
+            description: None,
+            pushed_at: None,
         });
         self
     }

@@ -1,0 +1,17 @@
+# One Repo, for a Repo Survey (spec 0003): the fields repos.graphql reads for
+# each of an Owner's Repos, as GitHub spells its Owner and name, plus its
+# description and last push.
+query OneRepo($owner: String!, $name: String!) {
+  rateLimit { remaining resetAt }
+  repository(owner: $owner, name: $name) {
+    name
+    owner { login }
+    url
+    isFork
+    isArchived
+    description
+    pushedAt
+    defaultBranchRef { name }
+    parent { name owner { login } url isFork isArchived defaultBranchRef { name } }
+  }
+}

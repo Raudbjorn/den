@@ -1,14 +1,16 @@
 //! An Owner's own Repos, with fork / archived / default branch / Upstream.
 
-use super::session::{Connection, Fetched, KindFetch, Pager, Session};
+use super::session::{Actor, Connection, Fetched, KindFetch, Pager, Session};
 use crate::{
-    domain::{Repo, RepoId, Source, SourceKind, SourceState},
+    domain::{CoverageEntry, Incompleteness, Repo, RepoId, Source, SourceKind, SourceState},
     ports::SurveyFailure,
 };
+use jiff::Timestamp;
 use serde::Deserialize;
 use serde_json::json;
 
 const QUERY: &str = include_str!("queries/repos.graphql");
+const ONE_QUERY: &str = include_str!("queries/repo.graphql");
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,7 +45,7 @@ struct Named {
 #[serde(rename_all = "camelCase")]
 struct Parent {
     name: String,
-    owner: super::session::Actor,
+    owner: Actor,
     url: String,
     is_fork: bool,
     is_archived: bool,
@@ -59,6 +61,8 @@ impl Parent {
             is_archived: self.is_archived,
             default_branch: self.default_branch_ref.map(|r| r.name),
             parent: None,
+            description: None,
+            pushed_at: None,
         }
     }
 }
@@ -91,6 +95,8 @@ pub fn fetch(session: &Session<'_>, owner: &str) -> Result<KindFetch<Repo>, Surv
                 is_archived: node.is_archived,
                 default_branch: node.default_branch_ref.map(|r| r.name),
                 parent: node.parent.map(|p| Box::new(p.into_repo())),
+                description: None,
+                pushed_at: None,
             }));
         if !pager.advance(repos.page_info.has_next_page, repos.page_info.end_cursor) {
             break;
@@ -101,6 +107,99 @@ pub fn fetch(session: &Session<'_>, owner: &str) -> Result<KindFetch<Repo>, Surv
         kind: SourceKind::Repos,
     }));
     Ok(out)
+}
+
+#[derive(Deserialize)]
+struct OneData {
+    repository: Option<OneRepo>,
+}
+
+/// One Repo as a Repo Survey reads it (`repo.graphql`).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OneRepo {
+    name: String,
+    owner: Actor,
+    url: String,
+    is_fork: bool,
+    is_archived: bool,
+    description: Option<String>,
+    pushed_at: Option<Timestamp>,
+    default_branch_ref: Option<Named>,
+    parent: Option<Parent>,
+}
+
+/// Reads one Repo for a Repo Survey (spec 0003), identified as GitHub spells
+/// its Owner and name, with its coverage as `Source::Repo { kind: Repos }`.
+/// `None` when GitHub has no such Repo den can see, or the read was lost;
+/// the coverage says which.
+pub fn fetch_one(
+    session: &Session<'_>,
+    repo: &RepoId,
+) -> Result<(Option<Repo>, CoverageEntry), SurveyFailure> {
+    let asked = Source::Repo {
+        repo: repo.clone(),
+        kind: SourceKind::Repos,
+    };
+    let variables = json!({ "owner": repo.owner, "name": repo.name });
+    let (node, state) = match session.run::<OneData>(ONE_QUERY, variables)? {
+        Fetched::Data { data, state } => (data.repository, state),
+        Fetched::Lost(state) => {
+            return Ok((
+                None,
+                CoverageEntry {
+                    source: asked,
+                    state,
+                },
+            ));
+        }
+    };
+    let Some(node) = node else {
+        return Ok((
+            None,
+            CoverageEntry {
+                source: asked,
+                state: not_found(repo, state),
+            },
+        ));
+    };
+    let found = Repo {
+        id: RepoId::new(node.owner.login, node.name),
+        url: node.url,
+        is_fork: node.is_fork,
+        is_archived: node.is_archived,
+        default_branch: node.default_branch_ref.map(|r| r.name),
+        parent: node.parent.map(|p| Box::new(p.into_repo())),
+        description: node.description,
+        pushed_at: node.pushed_at,
+    };
+    let source = Source::Repo {
+        repo: found.id.clone(),
+        kind: SourceKind::Repos,
+    };
+    Ok((Some(found), CoverageEntry { source, state }))
+}
+
+/// The state of a Repo GitHub answered null for. A rate limit stays a rate
+/// limit (with its reset time). Otherwise den can't see the Repo, and GitHub's
+/// own reason (not found, SSO, permissions), when it gave one, is kept.
+fn not_found(repo: &RepoId, state: SourceState) -> SourceState {
+    match state {
+        SourceState::Partial(Incompleteness::RateLimited { .. }) => state,
+        SourceState::Partial(Incompleteness::ErrorsAlongsideData { errors })
+            if !errors.is_empty() =>
+        {
+            SourceState::Failed {
+                error: format!(
+                    "GitHub has no Repo {repo} that den can see ({})",
+                    errors.join("; ")
+                ),
+            }
+        }
+        _ => SourceState::Failed {
+            error: format!("GitHub has no Repo {repo} that den can see"),
+        },
+    }
 }
 
 pub fn no_such_owner(owner: &str) -> SourceState {
