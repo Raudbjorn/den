@@ -110,9 +110,11 @@ fn no_template_can_remove_or_change_the_ground_rules() {
         .map(|kind| {
             let required = match kind.key().as_str() {
                 "request_review" => " {reviewers}",
-                // #72 and #78 require both the pinned head and resolution comments.
+                // #72 and #78 require the pinned head and resolution comments,
+                // #76 the review notes, even for this hostile-template fixture.
                 "merge" => " {head}{resolutions}",
                 "land" => " {members}{resolutions}",
+                "address_review" => " {review_notes}",
                 "review_linear" => " {linear_context}{verdict_only}",
                 _ => "",
             };
