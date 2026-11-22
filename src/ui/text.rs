@@ -29,7 +29,7 @@ pub fn prefix(text: &str, width: usize) -> &str {
 }
 
 /// `text` in at most `width` cells: whole when it fits, otherwise cut and
-/// ended with `ellipsis` (see [`end_with`]), so a cut is never silent.
+/// ended with as much of `ellipsis` as fits (see [`end_with`]).
 pub fn fit(text: &str, width: usize, ellipsis: &str) -> String {
     if cells(text) <= width {
         return text.to_owned();
