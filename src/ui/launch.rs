@@ -43,28 +43,30 @@ pub fn draw(
 ) -> Result<(), UiError> {
     let width = usize::from(area.width.saturating_sub(PADDING_COLS + LABEL_COLS)).max(1);
     let rows = usize::from(area.height.saturating_sub(CHROME_ROWS));
-    let lines = lines(
-        sheet,
-        width,
-        rows,
-        glyphs::for_profile(theme.profile().glyphs),
-    );
+    let glyphs = glyphs::for_profile(theme.profile().glyphs);
+    let lines = lines(sheet, width, rows, glyphs);
     let items = lines.into_iter().map(|(label, text, style)| {
         let mut ctx = text::line_context(&text, style);
         ctx.set("label", label);
         ctx
     });
     let mut ctx = TemplateContext::default();
-    ctx.set("sheet_label", sheet.label.as_str())
+    ctx.set("sheet_label", glyphs.text(&sheet.label).as_ref())
         .set("lines", TemplateValue::List(items.collect()));
     theme.draw(frame, templates::LAUNCH_SHEET, &ctx, area)
 }
 
 /// The sheet's lines for a text width of `width` and at most `rows` rows.
 pub fn lines(sheet: &LaunchSheet, width: usize, rows: usize, glyphs: glyphs::Glyphs) -> Vec<Line> {
-    let mut head = labelled("WORK ITEM", &sheet.reference, width, LineStyle::Strong);
+    let mut head = labelled(
+        "WORK ITEM",
+        &sheet.reference,
+        width,
+        LineStyle::Strong,
+        glyphs,
+    );
     head.extend(
-        labelled("", &sheet.title, width, LineStyle::Plain)
+        labelled("", &sheet.title, width, LineStyle::Plain, glyphs)
             .into_iter()
             .take(TITLE_MAX_ROWS),
     );
@@ -73,6 +75,7 @@ pub fn lines(sheet: &LaunchSheet, width: usize, rows: usize, glyphs: glyphs::Gly
         &sheet.next_step,
         width,
         LineStyle::Step,
+        glyphs,
     ));
     let (glyph, style) = tone(status_tone(sheet.status), glyphs);
     head.extend(labelled(
@@ -80,6 +83,7 @@ pub fn lines(sheet: &LaunchSheet, width: usize, rows: usize, glyphs: glyphs::Gly
         &prefixed(glyph, &sheet.headline),
         width,
         style,
+        glyphs,
     ));
 
     let messages: Vec<Line> = sheet
@@ -87,7 +91,7 @@ pub fn lines(sheet: &LaunchSheet, width: usize, rows: usize, glyphs: glyphs::Gly
         .iter()
         .flat_map(|m| {
             let (glyph, style) = tone(m.tone, glyphs);
-            labelled("", &prefixed(glyph, &m.text), width, style)
+            labelled("", &prefixed(glyph, &m.text), width, style, glyphs)
         })
         .collect();
     let prompt = sheet
@@ -103,7 +107,7 @@ pub fn lines(sheet: &LaunchSheet, width: usize, rows: usize, glyphs: glyphs::Gly
     let command: Vec<Line> = sheet
         .command
         .as_ref()
-        .map(|c| labelled("COMMAND", c, width, LineStyle::Muted))
+        .map(|c| labelled("COMMAND", c, width, LineStyle::Muted, glyphs))
         .unwrap_or_default();
     let linear_writes: Vec<Line> = sheet
         .linear_writes
@@ -167,12 +171,13 @@ pub fn lines(sheet: &LaunchSheet, width: usize, rows: usize, glyphs: glyphs::Gly
 /// `text` on one row of `width` cells, cut with the profile's ellipsis when
 /// longer.
 fn one_line(text: &str, width: usize, glyphs: glyphs::Glyphs) -> String {
-    let rows = text::wrap(text, width);
+    let text = glyphs.text(text);
+    let rows = text::wrap(&text, width);
     if rows.len() <= 1 {
         return rows.into_iter().next().unwrap_or_default();
     }
     // Room for the ellipsis's cells.
-    let first = text::wrap(text, width.saturating_sub(text::cells(glyphs.ellipsis)))
+    let first = text::wrap(&text, width.saturating_sub(text::cells(glyphs.ellipsis)))
         .into_iter()
         .next()
         .unwrap_or_default();
@@ -233,8 +238,14 @@ fn field_lines(
         };
         match (&field.note, notes) {
             (Some(note), Notes::OwnLine) => {
-                lines.extend(labelled(&field.label, &field.value, width, value_style));
-                lines.extend(labelled("", &prefixed(glyph, note), width, style));
+                lines.extend(labelled(
+                    &field.label,
+                    &field.value,
+                    width,
+                    value_style,
+                    glyphs,
+                ));
+                lines.extend(labelled("", &prefixed(glyph, note), width, style, glyphs));
             }
             (Some(note), Notes::Inline) => {
                 let style = if matches!(style, LineStyle::Caution | LineStyle::Upstream) {
@@ -243,9 +254,15 @@ fn field_lines(
                     LineStyle::Plain
                 };
                 let text = format!("{} · {}", field.value, prefixed(glyph, note));
-                lines.extend(labelled(&field.label, &text, width, style));
+                lines.extend(labelled(&field.label, &text, width, style, glyphs));
             }
-            _ => lines.extend(labelled(&field.label, &field.value, width, value_style)),
+            _ => lines.extend(labelled(
+                &field.label,
+                &field.value,
+                width,
+                value_style,
+                glyphs,
+            )),
         }
     }
     lines
@@ -274,12 +291,15 @@ fn input_lines(
             rows.push(std::mem::take(&mut row));
             continue;
         }
-        let previous_len = row.len();
-        row.push_str(character);
-        if previous_len > 0 && row.width() > width.max(1) {
-            row.truncate(previous_len);
-            rows.push(std::mem::take(&mut row));
-            row.push_str(character);
+        // Expand after locating the cursor, but before measuring display cells.
+        for rendered in glyphs.text(character).chars() {
+            let previous_len = row.len();
+            row.push(rendered);
+            if previous_len > 0 && row.width() > width.max(1) {
+                row.truncate(previous_len);
+                rows.push(std::mem::take(&mut row));
+                row.push(rendered);
+            }
         }
         if i == cursor {
             cursor_row = rows.len();
@@ -306,13 +326,19 @@ fn input_lines(
 }
 
 /// Word-wrapped `text`, the label on its first line only.
-fn labelled(label: &str, text: &str, width: usize, style: LineStyle) -> Vec<Line> {
-    text::wrap(text, width)
+fn labelled(
+    label: &str,
+    text: &str,
+    width: usize,
+    style: LineStyle,
+    glyphs: glyphs::Glyphs,
+) -> Vec<Line> {
+    text::wrap(&glyphs.text(text), width)
         .into_iter()
         .enumerate()
         .map(|(i, line)| {
             let label = if i == 0 { label } else { "" };
-            (label.to_owned(), line, style)
+            (glyphs.text(label).into_owned(), line, style)
         })
         .collect()
 }
@@ -354,7 +380,103 @@ fn tone(tone: Tone, glyphs: glyphs::Glyphs) -> (Option<&'static str>, LineStyle)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::view_model::SheetMessage;
     use raudbjorn_tui::profile::GlyphProfile;
+
+    #[test]
+    fn every_sheet_text_path_uses_the_active_glyph_profile_before_wrapping() {
+        let text = "⏎ · …";
+        let input = PromptField {
+            text: text.to_owned(),
+            cursor: 0,
+            editing: false,
+        };
+        let sheet = LaunchSheet {
+            label: "LAUNCH".to_owned(),
+            reference: text.to_owned(),
+            title: text.to_owned(),
+            next_step: text.to_owned(),
+            status: LaunchStatus::Ready,
+            headline: text.to_owned(),
+            fields: vec![SheetField {
+                label: "FIELD".to_owned(),
+                value: text.to_owned(),
+                note: Some(text.to_owned()),
+                tone: Tone::Plain,
+            }],
+            reviewers: Some(input.clone()),
+            prompt: Some(input),
+            linear_writes: vec![text.to_owned()],
+            command: Some(text.to_owned()),
+            messages: vec![SheetMessage {
+                text: text.to_owned(),
+                tone: Tone::Plain,
+            }],
+        };
+        for (profile, expected) in [
+            (GlyphProfile::Unicode, "⏎ · …"),
+            (GlyphProfile::Ascii, "RET - ..."),
+        ] {
+            let glyphs = glyphs::for_profile(profile);
+            let rendered = lines(&sheet, 60, 40, glyphs);
+            let text_rows: Vec<_> = rendered
+                .iter()
+                .filter(|(_, text, _)| !text.is_empty())
+                .collect();
+            assert_eq!(text_rows.len(), 11, "all text paths remain visible");
+            for (_, text, _) in text_rows {
+                assert_eq!(text, expected, "{profile:?}");
+            }
+            let inline = field_lines(&sheet.fields, 60, glyphs, Notes::Inline);
+            assert_eq!(
+                inline[0].1,
+                format!("{expected} {} {expected}", glyphs.separator)
+            );
+            if profile == GlyphProfile::Ascii {
+                // Expansion must precede the width check: nine cells, not five.
+                assert_eq!(one_line(text, 7, glyphs), "RET...");
+            }
+        }
+    }
+
+    #[test]
+    fn expanded_input_glyphs_keep_the_cursor_at_its_original_character_position() {
+        let text = "⏎·…⏎";
+        for profile in [GlyphProfile::Unicode, GlyphProfile::Ascii] {
+            let glyphs = glyphs::for_profile(profile);
+            for cursor in 0..=text.chars().count() {
+                let input = PromptField {
+                    text: text.to_owned(),
+                    cursor,
+                    editing: true,
+                };
+                let before: String = text.chars().take(cursor).collect();
+                let after: String = text.chars().skip(cursor).collect();
+                let expected = format!(
+                    "{}{}{}",
+                    glyphs.text(&before),
+                    glyphs.cursor,
+                    glyphs.text(&after)
+                );
+                for width in [1, 2, 5, 58] {
+                    let rows = input_lines("PROMPT", &input, width, 100, glyphs);
+                    assert!(rows.iter().all(|(_, row, _)| row.width() <= width));
+                    let displayed: String = rows.iter().map(|(_, row, _)| row.as_str()).collect();
+                    assert_eq!(
+                        displayed, expected,
+                        "{profile:?}, cursor {cursor}, width {width}"
+                    );
+                    let scrolled = input_lines("PROMPT", &input, width, 2, glyphs);
+                    assert!(
+                        scrolled
+                            .iter()
+                            .take(2)
+                            .any(|(_, row, _)| row.contains(glyphs.cursor))
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn publication_lines_and_blank_lines_survive_prompt_display() {

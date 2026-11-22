@@ -91,6 +91,23 @@ fn the_launch_sheet_draws_its_fields_prompt_command_and_keys_at_both_sizes() {
                     "{size:?} {glyphs:?}: no {expected:?}\n{text}"
                 );
             }
+            // #151: the status must spell Enter like the footer, not leave
+            // the engine to replace an unsupported glyph with `?`.
+            let enter = match glyphs {
+                GlyphProfile::Unicode => "⏎",
+                GlyphProfile::Ascii => "RET",
+            };
+            assert!(text.contains(&format!("Ready: {enter} launches")), "{text}");
+            if glyphs == GlyphProfile::Ascii {
+                // This fixture has no literal question marks.
+                let area = frame::overlay_area(&harness.view, buffer.area).expect("sheet");
+                assert!(
+                    (area.top()..area.bottom()).all(|y| {
+                        (area.left()..area.right()).all(|x| buffer[(x, y)].symbol() != "?")
+                    }),
+                    "{text}"
+                );
+            }
             if rows >= 45 {
                 for expected in [
                     "MAIN CLONE",
