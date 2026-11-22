@@ -476,6 +476,8 @@ fn points_apply_to_an_owner_with_a_linear_workflow_too() {
         LinearWorkflowPolicy {
             review: Some(ReviewPolicy {
                 exact_head_approval: true,
+                // Keep this fixture's strict review policy after ADR-0009.
+                pending_requests_hold_merge: true,
                 comment_reviews_need_rereview: true,
                 pending_requests_hold_merge: true,
                 reviewers: Vec::new(),
@@ -500,6 +502,8 @@ fn a_landing_group_member_with_open_points_blocks_land() {
         LinearWorkflowPolicy {
             review: Some(ReviewPolicy {
                 exact_head_approval: true,
+                // Keep this fixture's strict review policy after ADR-0009.
+                pending_requests_hold_merge: true,
                 comment_reviews_need_rereview: true,
                 pending_requests_hold_merge: true,
                 reviewers: Vec::new(),

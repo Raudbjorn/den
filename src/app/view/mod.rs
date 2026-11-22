@@ -9,6 +9,7 @@ mod jobs;
 mod landing;
 mod launch;
 mod list;
+pub(crate) mod points;
 mod scope;
 mod sidebar;
 
@@ -19,7 +20,7 @@ use crate::{
     cache::Carried,
     config::{Config, ConfigError},
     decide::Decision,
-    domain::{Observation, UpstreamTargets},
+    domain::{Observation, UpstreamTargets, WorkItemId},
     handoff::JobCheck,
     layout::Layout,
     ordering::Scope,
@@ -57,6 +58,10 @@ pub struct State<'a> {
     pub upstreams: &'a UpstreamTargets,
     /// Something wrong with the Upstream choices, for the header.
     pub upstream_note: Option<String>,
+    /// The config's legacy marker prefixes (#75), for the Review Points.
+    pub legacy_marker_prefixes: &'a [String],
+    /// What the last `m` did (#77), and for which Work Item.
+    pub copied: Option<&'a (WorkItemId, Result<(), String>)>,
     /// What the start rules said about where den opened (#90), for the header.
     pub start_note: Option<&'a str>,
 }
