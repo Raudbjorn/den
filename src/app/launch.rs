@@ -752,10 +752,11 @@ impl App {
             return Vec::new();
         };
         let (shown, view, moved_from) = (shown.clone(), view.clone(), moved_from.clone());
-        // A different first Land member needs its own clone inspection before planning.
-        if shown.landing.is_some()
-            && let (Some(decision), Some(observed)) =
-                (self.decision_of(&sheet.item), self.shown.as_ref())
+        // Becoming Land changes the worktree, even if its first member uses the
+        // same Repo; a different first Land member also needs a new inspection.
+        if let (Some(decision), Some(observed)) =
+            (self.decision_of(&sheet.item), self.shown.as_ref())
+            && (shown.landing.is_some() || decision.next_step == Some(NextStep::Land))
         {
             let settings = self.launch_settings();
             let request = match handoff::inspect_request(
@@ -769,15 +770,24 @@ impl App {
                 Ok(request) => request,
                 Err(refusal) => return refuse(sheet, refusal),
             };
-            if !request.target.same(&shown.target.repo) {
-                sheet.notice = Some(format!(
-                    "Not launched: the Landing Group target changed from {} to {}. The prompt is rebuilt; check the updated sheet, then press Enter to launch",
-                    shown.target.repo, request.target
-                ));
+            let becoming_land =
+                shown.landing.is_none() && decision.next_step == Some(NextStep::Land);
+            if becoming_land || !request.target.same(&shown.target.repo) {
+                sheet.notice = Some(if becoming_land {
+                    "Not launched: the Next Step is now Land. Check its workspace, members and prompt, then press Enter to launch".to_owned()
+                } else {
+                    format!(
+                        "Not launched: the Landing Group target changed from {} to {}. The prompt is rebuilt; check the updated sheet, then press Enter to launch",
+                        shown.target.repo, request.target
+                    )
+                });
                 sheet.accepted_head = None;
                 sheet.edited_prompt = None;
                 sheet.fresh = None;
-                return self.inspect_for(sheet, "Landing Group target changed");
+                if becoming_land {
+                    sheet.linear = None;
+                }
+                return self.inspect_for(sheet, "Landing Group workspace changed");
             }
         }
         sync_reviewers(sheet, self.decision_of(&sheet.item));
