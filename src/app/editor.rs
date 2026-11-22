@@ -22,11 +22,11 @@ pub enum Edit {
 impl PromptEditor {
     /// A field holding `text`, the cursor at its end.
     pub fn new(text: &str) -> Self {
+        // Retain generated instructions so the length check can refuse launch.
         let chars: Vec<char> = text
             .chars()
             // One line: line breaks in a template become spaces.
             .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
-            .take(MAX_PROMPT_CHARS)
             .collect();
         let cursor = chars.len();
         Self { chars, cursor }

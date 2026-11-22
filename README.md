@@ -77,11 +77,17 @@ address_review = "Read the review threads on {url}, address valid findings, and 
 ```
 
 Supported placeholders are `{repo}`, `{number}`, `{url}`, `{title}` and `{branch}`.
-`address_review` must also use `{review_notes}`: the reviews whose bodies still
-hold Review Points, named by URL and id (never their text), with den's
-instructions for splitting them and posting the `den:point` markers den reads
-back. It is empty when there are none. A template without it makes only Address
-review unusable. Use `{{` and `}}` for literal braces. Malformed configuration or prompts are
+`address_review` must also use `{review_notes}`: the reviews with open or unsplit
+body Points, named by URL and id (never their text). Split reviews name only the
+open Point numbers to work on; settled Points and Points needing your decision
+are excluded. With incomplete coverage, the Job is warned to read existing
+markers before splitting, preserve their numbers, and leave settled Points and
+pending decisions alone. It posts `den:point` markers as conversation comments,
+using separate forms with or without an unbracketed commit. The notes are empty
+when no review is named. A template without the placeholder makes only Address
+review unusable. Generated prompts exceeding the length limit are retained and
+launch is refused, so instructions are never silently cut. Use `{{` and `}}` for
+literal braces. Malformed configuration or prompts are
 reported instead of silently replaced.
 
 Templates set a Job's task; they can't change its **Ground Rules**. Every Job
