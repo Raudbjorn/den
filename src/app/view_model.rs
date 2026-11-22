@@ -417,8 +417,8 @@ pub enum Tone {
     /// Needs attention: a refusal, a failure, a moved head.
     Caution,
     Muted,
-    /// The target is a fork's Upstream (rust); the text always carries the
-    /// "upstream →" label too.
+    /// The target is a fork's Upstream (strong text, never rust: #157); the
+    /// text always carries the "upstream →" label.
     Upstream,
 }
 

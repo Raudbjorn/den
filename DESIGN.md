@@ -12,13 +12,13 @@ The look of den on one page. It gathers decisions recorded elsewhere and points 
 | `src/ui/glyphs.rs` | glyphs, per glyph profile |
 | `CONTEXT.md` | the words on screen |
 
-> **Current state.** `main` still draws milestone 1's *Tonal plates* with `.crepus` templates. The design below is the decided target: ratatui widgets through `src/ui/kit/` (ADR-0006, milestone 3), which supersedes Tonal plates. Until the kit lands, the templates are the running code, and this page describes where they are headed. (One visible difference: milestone 1's templates also draw a fork's Upstream target in rust. Spec 0003 drops that.)
+> **Current state.** `main` still draws milestone 1's *Tonal plates* with `.crepus` templates. The design below is the decided target: ratatui widgets through `src/ui/kit/` (ADR-0006, milestone 3), which supersedes Tonal plates. Until the kit lands, the templates are the running code, and this page describes where they are headed.
 
 ## 1. Atmosphere
 
-A dark, quiet workbench for one Repo at a time. It is closer to an instrument panel than a dashboard: charcoal ground, slate structure, and colour spent only where it means something. Teal marks what you can act on, and rust marks the one action and where you are (and, on a launch sheet, an Upstream target). Reference renders: `docs/specs/0003-assets/workbench-160x45.png`, `workbench-200x56.png` and `repos-160x45.png`.
+A dark, quiet workbench for one Repo at a time. It is closer to an instrument panel than a dashboard: charcoal ground, slate structure, and colour spent only where it means something. Teal marks what you can act on, and rust marks the one action and where you are. Reference renders: `docs/specs/0003-assets/workbench-160x45.png`, `workbench-200x56.png` and `repos-160x45.png`.
 
-- **One action per screen.** At most one rust Button. The limit is on action Buttons: the cursor tick and an Upstream target are rust too, but they aren't actions.
+- **One action per screen.** At most one rust Button. The limit is on action Buttons: the cursor tick is rust too, but it isn't an action. The bear's lettering is rust as brand, not as signal (§5).
 - **Every meaning is carried by a glyph or words.** Colour adds to them and never replaces them. This must hold in every colour profile and in ASCII (spec 0003, story 37).
 - **Honest about what den didn't read.** Partial data is always marked (`⚠ partial`, coverage lines) and never drawn as if complete.
 
@@ -31,7 +31,7 @@ Colour is assigned by **job**, not by component:
 | Role | Token | Hex | Means | Never |
 |---|---|---|---|---|
 | **Teal**: actionable | `accent` | `#3CA0A0` | Waiting On you, focus, a live Job, the active tab, gauges | decoration |
-| **Rust**: the one action / you are here | `action` | `#D0602B` | the rust `▌` cursor tick, the single action Button, and an Upstream target's value on a launch sheet beside its "upstream →" label (spec 0001, story 89); nothing else (spec 0003, "The workbench") | a second action Button on a screen; warnings; errors |
+| **Rust**: the one action / you are here | `action` | `#D0602B` | the rust `▌` cursor tick and the single action Button; nothing else (spec 0003, "The workbench"). One brand exception: the bear's lettering (§5) | a second action Button on a screen; an Upstream target, which is strong text with its "upstream →" words (#157); warnings; errors |
 | **Amber**: caution | `warning` | `#E2A33B` | partial reads, refusals, a moved head, rate limits | the same ANSI colour as rust |
 | **Slate**: structure | `structure` / `border-strong` | `#5F7E8F` | panel borders at rest, rules, structure text (`structure-text` `#8EA6B3`) | content |
 
@@ -45,7 +45,7 @@ Colour is assigned by **job**, not by component:
 | `mark-bg` | `#101715` | the mark plate |
 | `border` | `#2A3940` | quiet rules |
 | `text` | `#D9E1E4` | body |
-| `text-strong` | `#F3F6F7` | titles, the Repo's name, the selected item |
+| `text-strong` | `#F3F6F7` | titles, the Repo's name, the selected item, a fork's Upstream target beside its "upstream →" words |
 | `text-muted` | `#9EB1BA` | secondary facts, reasons |
 | `text-faint` | `#86999F` | metadata, hints, "not swept yet" |
 | `success` | `#5CB38B` | checked and fine (`✓ complete`) |
@@ -113,7 +113,7 @@ ratatui widgets wrapped in `src/ui/kit/`. Each takes its style from the theme (`
 | **Sheet** | `Clear` + Panel | overlays: launch sheet, detail sheet |
 | **Bear** | `ui::bear` | the lettered SVEINBJORN bear (`assets/brand/bear-mark.svg`), drawn with kitty graphics where the terminal answers to it, half-blocks in truecolor otherwise, and left out in every other colour profile (`Graphics::choose`; `DEN_GRAPHICS` overrides) |
 
-**Bear rule:** the full bear where there is room, otherwise no bear. Never an emblem or a shrunken bear (spec 0003, story 36). On the Repo screen it needs at least `REPO_LIST_MIN_ROWS` (10) table rows beside it. In the rail it must fit together with the identity block and every section without scrolling.
+**Bear rule:** the full bear where there is room, otherwise no bear. Never an emblem or a shrunken bear (spec 0003, story 36). Its rust and teal lettering is brand, not signal: it keeps its rust in the workbench rail as well as on the Repo screen, and it never means "act here" (#157). On the Repo screen it needs at least `REPO_LIST_MIN_ROWS` (10) table rows beside it. In the rail it must fit together with the identity block and every section without scrolling.
 
 ## 6. Layout (`src/layout.rs`)
 
@@ -133,7 +133,7 @@ ratatui widgets wrapped in `src/ui/kit/`. Each takes its style from the theme (`
 - **Do** give every new meaning a role, and a glyph or words, before it gets a colour.
 - **Do** take colours from the theme's roles. Never write hex or ANSI colours in UI code.
 - **Do** mark partial data in amber with `⚠`, and say what wasn't read.
-- **Don't** use rust for anything but the one action Button, the cursor tick and an Upstream target.
+- **Don't** use rust for anything but the one action Button and the cursor tick. The bear's lettering is brand, not a use of the role.
 - **Don't** let amber and rust share an ANSI colour, or the selected fill match the page.
 - **Don't** shrink or crop the bear. Omit it.
 - **Don't** bring back Tonal plates (regions told apart by tone alone, slate sutures, the `◢` chamfer). ADR-0006 retired them; regions are bordered Panels now.

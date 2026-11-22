@@ -225,7 +225,7 @@ fn field_lines(
     let mut lines = Vec::new();
     for field in fields {
         let (glyph, style) = tone(field.tone, glyphs);
-        // An Upstream target's value is rust too; other values are plain.
+        // An Upstream target's value is strong too; other values are plain.
         let value_style = if style == LineStyle::Upstream {
             style
         } else {

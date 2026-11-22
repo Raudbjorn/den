@@ -109,7 +109,8 @@ pub enum LineStyle {
     Input,
     /// An input field that has the keyboard.
     InputActive,
-    /// A fork's Upstream as the target (rust); the text says "upstream →" too.
+    /// A fork's Upstream as the target: strong text, never rust (#157); the
+    /// text says "upstream →".
     Upstream,
 }
 
