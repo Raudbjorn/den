@@ -1,4 +1,4 @@
-//! The launch sheet's prompt field: one line of text edited in place, with a
+//! The launch sheet's prompt field: text edited in place, with a
 //! cursor (a character index). The sheet wraps it over several rows.
 
 use super::Key;
@@ -22,11 +22,10 @@ pub enum Edit {
 impl PromptEditor {
     /// A field holding `text`, the cursor at its end.
     pub fn new(text: &str) -> Self {
-        // Retain generated instructions so the length check can refuse launch.
         let chars: Vec<char> = text
             .chars()
-            // One line: line breaks in a template become spaces.
-            .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+            // Preserve publication blocks; check_prompt rejects overlong input.
+            .map(|c| if c == '\r' { ' ' } else { c })
             .collect();
         let cursor = chars.len();
         Self { chars, cursor }

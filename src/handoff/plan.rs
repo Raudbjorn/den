@@ -13,7 +13,7 @@ use super::{
     kinds::{self, Facts},
     landing, names,
     prompts::{PromptFields, PromptKind, Prompts, PromptsError, ReviewNote, ReviewNotes},
-    reviewers, trust, worktree_path,
+    resolutions, reviewers, trust, worktree_path,
 };
 use crate::{
     config::Config,
@@ -23,7 +23,7 @@ use crate::{
     },
     domain::{
         LinearWorkflowPolicy, MergeMethods, NextStep, Observation, RepoId, WorkItemId,
-        facts::Reviewer,
+        facts::{PullRequestRef, Reviewer},
     },
 };
 use std::{collections::BTreeMap, path::PathBuf};
@@ -94,12 +94,14 @@ pub struct PlanInput<'a> {
     /// Each Repo's merge method (#72), for Merge's and Land's
     /// `{merge_method}`. Unused for other kinds.
     pub merge_methods: &'a MergeMethods,
+    /// The configured `legacy_marker_prefixes` (#75), shared with the decision
+    /// and the detail view: the Review Points an Address review Job is told
+    /// about (#76) and the resolutions Merge and Land publish (#78) are the
+    /// ones `decide` counts.
+    pub legacy_marker_prefixes: &'a [String],
     /// The environment variables the Job runs without (#70,
     /// [`crate::config::Config::job_removed_env`]).
     pub removed_env: &'a [String],
-    /// The configured `legacy_marker_prefixes` (#75): the Review Points an
-    /// Address review Job is told about are the ones `decide` counts.
-    pub legacy_marker_prefixes: &'a [String],
 }
 
 /// The facts for a launch, or every reason it can't happen. PRs here; a Land
@@ -396,6 +398,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         announces: prompts.uses(NextStep::RequestReview, "announcement"),
     });
     let fields = PromptFields {
+        resolutions: resolution_blocks(&facts, input)?,
         repo: facts.target.repo.to_string(),
         number: facts.number,
         url: decision.item.url.clone(),
@@ -592,6 +595,37 @@ fn clash_branch(facts: &Facts) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn resolution_blocks(facts: &Facts, input: &PlanInput<'_>) -> Result<String, Refusal> {
+    let members = match (facts.step, &facts.landing, &input.decision.item.id) {
+        (NextStep::Land, Some(group), _) => group
+            .members
+            .iter()
+            .map(|member| member.pr.clone())
+            .collect(),
+        (NextStep::Merge, _, WorkItemId::PullRequest { repo, number }) => {
+            vec![PullRequestRef::new(repo.clone(), *number)]
+        }
+        _ => return Ok(String::new()),
+    };
+    members
+        .iter()
+        .map(|member| {
+            let pr = input
+                .observation
+                .pull_requests
+                .iter()
+                .find(|pr| member.is(&pr.repo, pr.number))
+                .ok_or_else(|| Refusal::one(RefusalReason::WorkItemGone))?;
+            Ok(resolutions::render(
+                pr,
+                &input.observation.viewer.login,
+                input.legacy_marker_prefixes,
+            ))
+        })
+        .collect::<Result<Vec<_>, Refusal>>()
+        .map(|blocks| blocks.join("\n\n"))
 }
 
 /// A fresh start's local branch (`feature-7-2`) tracks a branch of another
