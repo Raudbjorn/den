@@ -128,7 +128,7 @@ GitHub stays read-only for den (ADR-0002). Linear writes stay as ADR-0004 allows
 
 ### Linear
 
-64. As the user, I want a Linear Issue in one of the Workflow's `parked_states` to have no Next Step and be Waiting On nobody, with the Explanation "parked in <state>", so that paused work doesn't look like work.
+64. As the user, I want a Linear Issue in one of the Workflow's `parked_states` to have no Next Step and be Waiting On nobody, with the Explanation "parked in <state>", so that paused work doesn't look like work. The exception is its Landing Group: a parked issue whose group could land still shows Land, and one whose member merged still shows Mark for release (confirmed in #100).
 65. As the user, I want `parked_states` names checked against Linear when den loads, like the other state names, so that a typo is an error naming the file and line.
 66. As the user, I want the Implement and Start prompt to tell the Job to stop if it can't read the Linear Issue, so that a Job without Linear access fails loudly instead of guessing from the identifier.
 
@@ -232,7 +232,7 @@ GitHub stays read-only for den (ADR-0002). Linear writes stay as ADR-0004 allows
   - On the viewer's own PR in a Repo with `screenshots = true`, Merge also needs the Screenshots state not to be missing. Another author's PR is never held for screenshots, as nothing would offer it Add screenshots.
 - **Review:** with `pending_requests_hold_merge` off, a pending request leaves a PR at Review only while it isn't approved.
 - **Approval:** with `exact_head_approval` off, it is GitHub's review decision.
-- **Linear Issues:** a Linear Issue in a parked state has no Next Step, is Waiting On nobody, and its no-step reason is "parked in <state>". This is checked before Implement and Start, and after the Landing Group rules: a parked issue whose group could land still shows Land.
+- **Linear Issues:** a Linear Issue in a parked state has no Next Step, is Waiting On nobody, and its no-step reason is "parked in <state>". This is checked before Implement and Start, and after the Landing Group rules: a parked issue whose group could land still shows Land, and one whose member merged still shows Mark for release (#100; `tests/decide_parked.rs`).
 - **`skip`:** Add screenshots joins the skippable kinds. A skipped Add screenshots falls through, but Merge on the viewer's own PR still requires the Screenshots state not to be missing, as every rule keeps its preconditions.
 
 ### Live Jobs
@@ -355,19 +355,19 @@ Tests go through milestone 3's seams: `decide`, the App with fake ports, and ren
 - **Decided after this spec, from the gap review's residuals (#100):**
   - a held Landing Group member blocks Land only when queued, not surveyed or reported open again (ADR-0011, #101);
   - a complete, empty check rollup doesn't block Merge, and the Explanation says "no checks reported" (ADR-0012, #103);
-  - Jobs launch from the facts den shows; the only confirmation-time re-reads are every launch's base commit, Linear writes' issue and Land's fresh survey round (ADR-0013, #104).
-- **Decided while writing this spec and not yet reviewed:**
-  - the exact Ground Rules wording, including den filling in the pull requests a Job may change rather than a template;
-  - which kinds get the coding rule (Triage and Prune or revive included);
-  - Review Points applying to every Owner, not only Linear Workflows;
-  - the "resolved" state for a resolved thread;
-  - `legacy_marker_prefixes` being top-level, with its character rule;
-  - `{review_notes}`, `{head}` and `{resolutions}` being required placeholders;
-  - only marker lines being kept from comments, plus the summary line after each of the viewer's own `den:point` markers;
-  - per-PR bounds making Points coverage partial;
-  - a parked issue still showing Land;
-  - Add screenshots requiring the PR to be the viewer's own;
-  - variables removed in sorted order.
+  - Jobs launch from the facts den shows; the only confirmation-time re-reads are every launch's base commit, Linear writes' issue and Land's fresh survey round (ADR-0013, #104);
+  - a parked Linear Issue still shows Land, or Mark for release, when its Landing Group decides (story 64; built in #82, tested in #95);
+  - Triage and Prune or revive Jobs keep the coding Ground Rule (built in #87).
+- **Decided while writing this spec and not yet reviewed** (each annotated with the PR that built it):
+  - the exact Ground Rules wording, including den filling in the pull requests a Job may change rather than a template (#87);
+  - Review Points applying to every Owner, not only Linear Workflows (#97);
+  - the "resolved" state for a resolved thread (#97);
+  - `legacy_marker_prefixes` being top-level, with its character rule (#97);
+  - `{review_notes}`, `{head}` and `{resolutions}` being required placeholders (`{head}` in #88; `{review_notes}` and `{resolutions}` not built yet: #106 for #76, #110 / #111 for #78);
+  - only marker lines being kept from comments, plus the summary line after each of the viewer's own `den:point` markers (#97);
+  - per-PR bounds making Points coverage partial (#97);
+  - Add screenshots requiring the PR to be the viewer's own (#94);
+  - variables removed in sorted order (#85).
 - **Not verified:**
   - whether Claude Code keeps an appended system prompt across `--resume` (den passes it again either way);
   - the GraphQL cost of reviews, threads and comments in the Sweep;

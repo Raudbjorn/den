@@ -35,7 +35,7 @@ An Owner's opt-in binding to a Linear workspace. With it, that Owner's Linear Is
 _Avoid_: Plugin, integration, org mode
 
 **Held Repo**:
-A Repo in a Linear Workflow whose Pull Requests are held for release instead of landing with their Landing Group.
+A Repo in a Linear Workflow whose Pull Requests are held for release instead of landing with their Landing Group. A held member doesn't hold its group's Land for its own state; it blocks only when queued, not surveyed or reported open again (ADR-0011).
 _Avoid_: Exempt repo, app repo
 
 **Parked**:
