@@ -162,7 +162,13 @@ PR list coverage (`PullRequests`) and follow-up coverage (`PullRequestDetails`)
 are separate. Missing checks or reviews still mark the item incomplete, but a
 fully read open-PR list can remove closed PRs from the cache. Successful Branch
 and Run reads record complete per-Repo entries even when the Owner list is
-partial. Cache format 12 (milestone 2's merged shape: the Linear part with
+partial. Cache format 14 records, per Repo source, when the read behind its
+coverage started (`CachedObservation.reads`, `cache::SourceRead`, #134), and
+`merge_github` applies the read-time guard (`Guarded`): an answer that started
+before a held read of a Repo source (strictly before; equal start times merge)
+changes nothing of it, not its facts, coverage, age or read time, whether the
+answer is complete or partial, nor for a Repo an Owner survey never reached.
+Format 13 added #75's Review Point facts. Format 12 (milestone 2's merged shape: the Linear part with
 Linear viewers, Linear Issues with their listing source and attachments, team
 states and its own survey time; reviews with their commit and author kind, PR
 details with the head they were read at; Linear errors alongside data with a

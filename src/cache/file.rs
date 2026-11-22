@@ -53,9 +53,11 @@ pub const CACHE_SUBDIR: &str = "cache";
 /// 12: an Observation records the members den asked about and got no state
 /// for, with when it last asked (#37), so a bounded read rotates past them.
 /// 13: a PR's details carry its reviews, review threads and marker comments
-/// for Review Points (#75). Milestone 3's Plan 2 also wants a new number:
-/// whichever lands second takes the next one.
-pub const CACHE_FORMAT: u32 = 13;
+/// for Review Points (#75).
+/// 14: the cache records when the read behind each Repo source started
+/// (spec 0003, ADR-0005; milestone 3's Plan 2, #134), for the read-time guard:
+/// an answer that started before the read den holds never replaces it.
+pub const CACHE_FORMAT: u32 = 14;
 /// The largest cache file den will read, in bytes.
 pub const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// Names the viewer whose cache startup shows.
