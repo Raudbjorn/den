@@ -13,18 +13,18 @@ use super::{
     kinds::{self, Facts},
     landing, names,
     prompts::{PromptFields, PromptKind, Prompts, PromptsError, ReviewNote, ReviewNotes},
-    resolutions::Resolution,
+    resolutions::{self, Resolution},
     reviewers, trust, worktree_path,
 };
 use crate::{
     config::Config,
     decide::{
         Decision,
-        points::{self, PointRef, PointState, review_points},
+        points::{self, PointRef, PointState},
     },
     domain::{
         LinearWorkflowPolicy, MergeMethods, NextStep, Observation, RepoId, WorkItemId,
-        facts::Reviewer,
+        facts::{PullRequestRef, Reviewer},
     },
 };
 use std::{collections::BTreeMap, path::PathBuf};
@@ -95,13 +95,14 @@ pub struct PlanInput<'a> {
     /// Each Repo's merge method (#72), for Merge's and Land's
     /// `{merge_method}`. Unused for other kinds.
     pub merge_methods: &'a MergeMethods,
+    /// The configured `legacy_marker_prefixes` (#75), shared with the decision
+    /// and the detail view: the Review Points an Address review Job is told
+    /// about (#76) and the resolutions Merge and Land publish (#78) are the
+    /// ones `decide` counts.
+    pub legacy_marker_prefixes: &'a [String],
     /// The environment variables the Job runs without (#70,
     /// [`crate::config::Config::job_removed_env`]).
     pub removed_env: &'a [String],
-    /// The configured `legacy_marker_prefixes` (#75): the Review Points an
-    /// Address review Job is told about (#76) and a Merge or Land Job's
-    /// resolution comments (#78) are the ones `decide` counts.
-    pub legacy_marker_prefixes: &'a [String],
 }
 
 /// The facts for a launch, or every reason it can't happen. PRs here; a Land
@@ -397,7 +398,13 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         slack_channel: input.slack_channel.map(str::to_owned),
         announces: prompts.uses(NextStep::RequestReview, "announcement"),
     });
+    let resolutions = resolutions(&facts, input)?;
     let fields = PromptFields {
+        resolutions: resolutions
+            .iter()
+            .map(|r| r.body.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
         repo: facts.target.repo.to_string(),
         number: facts.number,
         url: decision.item.url.clone(),
@@ -440,7 +447,6 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             .flat_map(|group| &group.held)
             .map(|m| m.url.clone())
             .collect(),
-        resolutions: resolutions(&facts, input),
         // Merge is pinned to the commit the plan starts on, which `execute`
         // re-verifies on GitHub before anything changes (#72).
         head: if facts.step == NextStep::Merge {
@@ -460,12 +466,6 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     let permission_mode = job_permission_mode(facts.step, input.policy);
     let coordination = super::coordinates(facts.step, input.policy);
     let prompt = with_push_line(prompt, &facts, &branch_name, &remote, coordination);
-    // The sheet's editor would cut a longer prompt, and with it a
-    // resolution comment the Job posts verbatim (#78): refuse instead.
-    let chars = prompt.chars().count();
-    if chars > super::MAX_PROMPT_CHARS {
-        return Err(Refusal::one(RefusalReason::PromptTooLong { chars }));
-    }
     // One suffix rule for the Job's names: the session carries the suffix the
     // worktree got, whether for a fresh start or a name another Job has.
     let session_name = match &facts.identifier {
@@ -507,7 +507,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         renamed,
         session,
         prompt,
-        resolutions: fields.resolutions,
+        resolutions,
         permission_mode,
         project_settings: trust::project_settings(
             facts.step,
@@ -605,39 +605,35 @@ fn clash_branch(facts: &Facts) -> Option<String> {
 }
 
 /// The resolution comment of each Pull Request a Merge or Land Job merges
-/// (#78), in the order it merges them, from the Review Points as the
-/// decision read them (the viewer's markers, the configured legacy
-/// prefixes); empty for every other kind. A member den no longer observes
-/// gets a comment saying its Points couldn't be read.
-fn resolutions(facts: &Facts, input: &PlanInput<'_>) -> Vec<Resolution> {
-    let observation = input.observation;
-    // `head`: the commit the Job merges (a Land member's pinned head), else
-    // the head den observed.
-    let of = |repo: &RepoId, number: u64, url: &str, head: Option<&str>| {
-        let pr = observation
-            .pull_requests
-            .iter()
-            .find(|p| p.repo.same(repo) && p.number == number);
-        let points = review_points(
-            pr.and_then(|p| p.details.as_ref()),
-            pr.and_then(|p| p.author.as_deref()),
-            &observation.viewer.login,
-            input.legacy_marker_prefixes,
-        );
-        let head = head.or(pr.map(|p| p.head_commit.as_str()));
-        Resolution::of(url, head.unwrap_or_default(), &points)
-    };
-    match (facts.step, &facts.landing, &input.decision.item.id) {
+/// (#78), in the order it merges them; empty for every other kind.
+fn resolutions(facts: &Facts, input: &PlanInput<'_>) -> Result<Vec<Resolution>, Refusal> {
+    let members = match (facts.step, &facts.landing, &input.decision.item.id) {
         (NextStep::Land, Some(group), _) => group
             .members
             .iter()
-            .map(|m| of(&m.pr.repo, m.pr.number, &m.url, Some(&m.head_commit)))
+            .map(|member| member.pr.clone())
             .collect(),
         (NextStep::Merge, _, WorkItemId::PullRequest { repo, number }) => {
-            vec![of(repo, *number, &input.decision.item.url, None)]
+            vec![PullRequestRef::new(repo.clone(), *number)]
         }
-        _ => Vec::new(),
-    }
+        _ => return Ok(Vec::new()),
+    };
+    members
+        .iter()
+        .map(|member| {
+            let pr = input
+                .observation
+                .pull_requests
+                .iter()
+                .find(|pr| member.is(&pr.repo, pr.number))
+                .ok_or_else(|| Refusal::one(RefusalReason::WorkItemGone))?;
+            Ok(resolutions::of(
+                pr,
+                &input.observation.viewer.login,
+                input.legacy_marker_prefixes,
+            ))
+        })
+        .collect()
 }
 
 /// A fresh start's local branch (`feature-7-2`) tracks a branch of another
@@ -660,7 +656,8 @@ fn with_push_line(
     }
     match &facts.base {
         BaseRef::HeadBranch(branch) if !facts.new_branch && local != branch => {
-            // After a fenced resolution comment (#78), on a line of its own.
+            // After a multi-line prompt (a resolution comment, #78), on a
+            // line of its own.
             let gap = if prompt.contains('\n') { "\n\n" } else { " " };
             format!(
                 "{prompt}{gap}{PUSH_LINE_PREFIX} {} {}",

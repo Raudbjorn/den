@@ -1,7 +1,5 @@
-//! The launch sheet's prompt field: text edited in place, with a cursor (a
-//! character index). The sheet wraps it over several rows. Line breaks den
-//! put in it are kept (a resolution comment is Markdown, posted verbatim,
-//! #78); typing never adds one, since Enter launches.
+//! The launch sheet's prompt field: text edited in place, with a
+//! cursor (a character index). The sheet wraps it over several rows.
 
 use super::Key;
 use crate::handoff::MAX_PROMPT_CHARS;
@@ -26,10 +24,8 @@ impl PromptEditor {
     pub fn new(text: &str) -> Self {
         let chars: Vec<char> = text
             .chars()
-            // Line breaks stay; a carriage return is dropped, so a CRLF
-            // template reads as LF.
-            .filter(|c| *c != '\r')
-            .take(MAX_PROMPT_CHARS)
+            // Preserve publication blocks; check_prompt rejects overlong input.
+            .map(|c| if c == '\r' { ' ' } else { c })
             .collect();
         let cursor = chars.len();
         Self { chars, cursor }
@@ -77,11 +73,14 @@ mod tests {
     use super::PromptEditor;
 
     /// den's line breaks survive the field (a resolution comment is posted
-    /// verbatim, #78); a carriage return doesn't, so CRLF reads as LF.
+    /// verbatim, #78); a carriage return becomes a space.
     #[test]
-    fn line_breaks_are_kept_and_carriage_returns_dropped() {
-        let editor = PromptEditor::new("one\r\ntwo\n~~~");
-        assert_eq!(editor.text(), "one\ntwo\n~~~");
-        assert_eq!(editor.cursor(), "one\ntwo\n~~~".chars().count());
+    fn line_breaks_are_kept_and_carriage_returns_become_spaces() {
+        // #111 dropped a carriage return; main (#110) makes it a space, and
+        // main's editor wins the merge. Line breaks stay either way: a
+        // resolution comment is multi-line Markdown posted verbatim (#78).
+        let editor = PromptEditor::new("one\r\ntwo\nthree");
+        assert_eq!(editor.text(), "one \ntwo\nthree");
+        assert_eq!(editor.cursor(), "one \ntwo\nthree".chars().count());
     }
 }

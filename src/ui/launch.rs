@@ -270,8 +270,6 @@ fn input_lines(
     let mut row = String::new();
     let mut cursor_row = 0;
     for (i, character) in chars.iter().enumerate() {
-        // A line break in the prompt (a fenced resolution comment, #78)
-        // starts a row; it takes no cell itself.
         if character == "\n" {
             rows.push(std::mem::take(&mut row));
             continue;
@@ -357,6 +355,34 @@ fn tone(tone: Tone, glyphs: glyphs::Glyphs) -> (Option<&'static str>, LineStyle)
 mod tests {
     use super::*;
     use raudbjorn_tui::profile::GlyphProfile;
+
+    #[test]
+    fn publication_lines_and_blank_lines_survive_prompt_display() {
+        let text = "## Review resolutions\n\n- first: fixed\n- second: answered";
+        let field = PromptField {
+            text: text.to_owned(),
+            cursor: text.chars().count(),
+            editing: false,
+        };
+        let rows = input_lines(
+            "PROMPT",
+            &field,
+            80,
+            6,
+            glyphs::for_profile(GlyphProfile::Ascii),
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|(_, text, _)| text.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "## Review resolutions",
+                "",
+                "- first: fixed",
+                "- second: answered"
+            ]
+        );
+    }
 
     /// #38: each Linear write is one teal line (the Next Step's style),
     /// labelled LINEAR, directly above the Job's command, however long it is.
@@ -455,23 +481,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    /// A line break in the prompt (a fenced resolution comment, #78) starts a
-    /// row and takes no cell: each comment line shows as it will be posted.
-    #[test]
-    fn a_line_break_in_the_prompt_starts_a_row() {
-        let glyphs = glyphs::for_profile(GlyphProfile::Unicode);
-        let prompt = PromptField {
-            text: "Merge it.\n\n~~~markdown\n- fixed\n~~~".to_owned(),
-            cursor: 0,
-            editing: false,
-        };
-        let rows: Vec<String> = input_lines("PROMPT", &prompt, 58, 10, glyphs)
-            .into_iter()
-            .map(|(_, row, _)| row)
-            .collect();
-        assert_eq!(rows, ["Merge it.", "", "~~~markdown", "- fixed", "~~~"]);
     }
 
     /// A section cut to its row cap ends with the profile's ellipsis (`...` in

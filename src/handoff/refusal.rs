@@ -107,11 +107,6 @@ pub enum RefusalReason {
     PromptsUnusable {
         error: String,
     },
-    /// den's own prompt is longer than Claude Code takes. den never cuts it:
-    /// a Merge or Land Job posts part of it verbatim (#78).
-    PromptTooLong {
-        chars: usize,
-    },
     /// The prompts file's template for this Next Step kind can't be used; the
     /// file's other templates can.
     TemplateUnusable {
@@ -358,11 +353,6 @@ impl fmt::Display for RefusalReason {
                 "the Branch {branch} is in {repo}, not in {target}: den fetches a Branch only from the Repo it is in; press u to target {repo} for this Job"
             ),
             Self::PromptsUnusable { error } => write!(f, "the prompts file is unusable: {error}"),
-            Self::PromptTooLong { chars } => write!(
-                f,
-                "den's prompt for this Job is {chars} characters, over the {} Claude Code takes; den won't cut it, since a Merge or Land Job posts its resolution comments from it verbatim",
-                super::MAX_PROMPT_CHARS
-            ),
             Self::TemplateUnusable { error } => write!(
                 f,
                 "the prompts file's template for this kind is unusable: {error}"

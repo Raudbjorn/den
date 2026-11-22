@@ -1459,12 +1459,6 @@ fn what_changed(
         }
         _ => {}
     }
-    // Merge and Land (#78): the resolution comments are published as the
-    // sheet showed them, so a Point that changed asks again. After the
-    // Landing Group, whose changes change them too and say more.
-    if shown.resolutions != now.resolutions {
-        return Some("the resolution comment changed".to_owned());
-    }
     shown_default
         .is_some_and(|default| default != now.prompt)
         .then(|| "the prompt den builds changed".to_owned())

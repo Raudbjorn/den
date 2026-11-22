@@ -121,6 +121,17 @@ the head den observed (`--match-head-commit`). If the head moved before launch,
 den refuses and asks you to refresh. A custom `merge` template must use
 `{head}` (that head commit) and may use `{merge_method}`, as `land` may.
 
+Both `merge` and `land` templates must use `{resolutions}`. It contains one
+Markdown line per observed Review Point: reference and link, author, state,
+fixed commit when present, and your Job's summary. Reviewers' body text never
+enters it. The launch sheet shows the comment text; the default Jobs post it
+verbatim immediately before each pinned merge (one comment per Land member,
+in landing order), and stop if posting fails. Its COMMENT field (COMMENT 1,
+COMMENT 2, … for a Land Job) tallies each comment's Points by state, and
+turns to a caution when an edited prompt no longer carries the comment word
+for word. A custom template missing the placeholder disables only that Job
+kind and names the file and line to fix.
+
 Every Pull Request's feedback is a list of **Review Points**: each review
 thread, and each review body that says more than a stock approval ("LGTM",
 "ship it", 👍), from someone other than the author and not a bot. A body is
@@ -141,17 +152,6 @@ prefixes so those reviews don't reappear:
 ```toml
 legacy_marker_prefixes = ["example-tool"]
 ```
-
-Every merge records what happened to the feedback. A Merge Job's prompt
-carries a **resolution comment** den writes from the Points it observed: one
-line per Point, with its state, the commit when fixed, a link, the reviewer's
-login (without `@`, so it notifies no one) and the summary your marker kept.
-The Job posts it verbatim on the Pull Request immediately before merging, and
-doesn't merge if posting fails. A Land Job gets one per member and posts each
-immediately before that member's merge. The launch sheet shows each comment's
-tally (COMMENT) and its text in the prompt; a comment that changes before you
-press Enter makes den ask again. Custom `merge` and `land` templates must use
-`{resolutions}`, which only they have.
 
 ## Check local setup
 
