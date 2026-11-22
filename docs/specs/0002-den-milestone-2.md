@@ -337,4 +337,4 @@ No organization-specific slash commands are defaults. A user can point a kind at
   - `gh pr merge --match-head-commit` behaviour with a merge queue on the organization's Repos;
   - whether the organization's start-team states map to the unstarted state type.
 
-  These need live checks against real accounts, so they stay open as knowledge gaps, not missing features. Live verification belongs with #81 (a Job verified end to end on a real fork).
+  These need live checks against real accounts, so they stay open as knowledge gaps, not missing features. #81 verified a Job launch end to end on a real fork (#113), but none of these four.
