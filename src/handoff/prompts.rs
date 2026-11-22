@@ -7,7 +7,7 @@
 //! and line, and every other kind launches as before.
 //!
 //! ```toml
-//! address_review = "/gh-resolve {url}"
+//! address_review = "/gh-resolve {url}{review_notes}"
 //! fix_ci = "/diagnosing-bugs CI fails on {url}; you are on {branch}. Find out why and fix it."
 //! ```
 //!
