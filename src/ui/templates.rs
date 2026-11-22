@@ -89,6 +89,8 @@ pub const LAYOUT_SECTIONS: [TemplateRef; 3] = [MARK_PLATE, SPLASH, NOTICE];
 // The launch sheet (#11).
 /// The launch sheet's plate.
 pub const LAUNCH_SHEET: TemplateRef = section(LAUNCH_FILE, "LaunchSheet");
+/// The blank page-tone backdrop while a launch sheet is open.
+pub const LAUNCH_BACKDROP: TemplateRef = section(FRAME, "LaunchBackdrop");
 
 /// The sections the launch sheet adds (also checked by the template tests).
-pub const LAUNCH_SECTIONS: [TemplateRef; 1] = [LAUNCH_SHEET];
+pub const LAUNCH_SECTIONS: [TemplateRef; 2] = [LAUNCH_SHEET, LAUNCH_BACKDROP];
