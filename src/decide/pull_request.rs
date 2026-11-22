@@ -802,13 +802,25 @@ fn review_unless_approved(
     }
 }
 
-/// `review` is the review half of the rule ("approved").
+/// `review` is the review half of the rule ("approved"). A complete rollup
+/// with no checks in it doesn't block Merge (ADR-0012: den asks no more of CI
+/// than the Repo does, and GitHub's merge state holds a Pull Request whose
+/// required checks haven't reported); the rule then says so.
 fn merge(pr: &PullRequest, review: &str, blockers: &[String]) -> Finding {
     if !blockers.is_empty() {
         return Finding::No;
     }
+    let no_checks = pr
+        .details
+        .as_ref()
+        .is_some_and(|d| d.checks.complete && d.checks.items.is_empty());
+    let checks = if no_checks {
+        "no checks reported"
+    } else {
+        "checks passing"
+    };
     Finding::Holds(format!(
-        "{review}, checks passing and mergeable into {}",
+        "{review}, {checks} and mergeable into {}",
         pr.base_ref
     ))
 }

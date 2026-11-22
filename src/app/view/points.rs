@@ -6,7 +6,7 @@
 use super::State;
 use crate::{
     app::view_model::{PointLine, PointTone, ReviewPointsDetail, SEPARATOR},
-    decide::points::{Point, PointRef, PointState, ReviewPoints, review_points},
+    decide::points::{self, Point, PointRef, PointState, ReviewPoints},
     domain::{Observation, WorkItemId},
     ordering::same_work_item,
 };
@@ -15,24 +15,14 @@ const LABEL: &str = "REVIEW POINTS";
 /// Characters of a fixed Point's commit shown.
 const SHORT_COMMIT_CHARS: usize = 7;
 
-/// The Review Points of `id`, when it is a Pull Request in `observation`:
-/// for the GitHub viewer, applying the configured legacy `prefixes`.
+/// The Review Points of `id`, when it is a Pull Request in `observation`
+/// ([`points::of`], which the Address review Job's `{review_notes}` uses too).
 pub fn of(
     observation: Option<&Observation>,
     prefixes: &[String],
     id: &WorkItemId,
 ) -> Option<ReviewPoints> {
-    let observation = observation?;
-    let pr = observation
-        .pull_requests
-        .iter()
-        .find(|pr| same_work_item(&pr.id(), id))?;
-    Some(review_points(
-        pr.details.as_ref(),
-        pr.author.as_deref(),
-        &observation.viewer.login,
-        prefixes,
-    ))
+    points::of(observation?, prefixes, id)
 }
 
 /// The selected Work Item's Review Points, when it is a Pull Request.

@@ -719,8 +719,12 @@ fn a_member_reported_open_again_blocks_mark_for_release_and_land() {
         &["blocking: acme/app#2: GitHub reported it open again"],
     );
 
-    // Held: reported open again in a Held Repo, it never blocks Land, but it
-    // is open, so it still keeps the issue from Mark for release.
+    // Held: reported open again in a Held Repo. This used to give Land (#37:
+    // "a held member never blocks"). #101 / ADR-0011 reversed it on purpose:
+    // the survey didn't list it, so den hasn't read whether it is in a merge
+    // queue, and a held member that may be merging now blocks, as a queued
+    // one does. It is open, so it also keeps the issue from Mark for release.
+    // (Land's own confirmation re-surveys, which lists it and clears this.)
     let held_reopened = acme_owner()
         .pull_request(ready("acme/api", 1))
         .member_state("acme/web", 3, PullRequestState::Open)
@@ -731,7 +735,12 @@ fn a_member_reported_open_again_blocks_mark_for_release_and_land() {
         )
         .build();
     let decisions = decide_all(&held_reopened, &acme());
-    assert_eq!(linear(&decisions, "TEAM-1").next_step, Some(NextStep::Land));
+    let issue = linear(&decisions, "TEAM-1");
+    assert_eq!(issue.next_step, None, "{issue:#?}");
+    assert_says(
+        issue,
+        &["blocking: acme/web#3: GitHub reported it open again"],
+    );
 }
 
 /// A held member never blocks Land, ambiguous or not: TEAM-1's Land would
@@ -982,4 +991,88 @@ fn an_issue_not_offered_to_start_still_decides_for_its_group() {
             .any(|d| d.item.identifier.as_deref() == Some("TEAM-3")),
         "an unoffered issue without members stays hidden"
     );
+}
+
+/// #101 (ADR-0011): a held member blocks Land only when den can't tell it
+/// isn't merging right now: in a merge queue, not surveyed, or reported open
+/// again (not in the survey, so its queue state is unread). Its own repair
+/// state never blocks: failing checks, conflicts, ambiguity, or its own facts
+/// read only in part. A blocking held member is named once, as blocking,
+/// never also as "held; not blocking".
+#[test]
+fn a_held_member_blocks_land_only_when_den_cant_tell_it_isnt_merging() {
+    let truncated = SourceState::Partial(Incompleteness::FollowUpTruncated {
+        what: "#3 (checks)".to_owned(),
+    });
+    let unlisted = SourceState::Partial(Incompleteness::PaginationStopped {
+        pages_read: 1,
+        reason: "page bound".to_owned(),
+    });
+    // (case, the held member's part of the Observation, blocks, said).
+    let cases: Vec<(&str, ObservationBuilder, bool, &str)> = vec![
+        (
+            "failing checks",
+            acme_owner().pull_request(ready("acme/web", 3).failing_required("ci")),
+            false,
+            "held; not blocking: acme/web#3 (Held Repo acme/web; its own Next Step Fix CI)",
+        ),
+        (
+            "conflicting",
+            acme_owner().pull_request(ready("acme/web", 3).conflicting()),
+            false,
+            "held; not blocking: acme/web#3 (Held Repo acme/web; its own Next Step Resolve conflicts)",
+        ),
+        (
+            "its own facts read in part",
+            acme_owner()
+                .pull_request(ready("acme/web", 3))
+                .repo_coverage("acme/web", SourceKind::PullRequestDetails, truncated),
+            false,
+            "held; not blocking: acme/web#3",
+        ),
+        (
+            "queued",
+            acme_owner().pull_request(ready("acme/web", 3).queued()),
+            true,
+            "blocking: acme/web#3: queued: in the merge queue, not merged yet",
+        ),
+        (
+            "not surveyed",
+            acme_owner().repo_coverage("acme/web", SourceKind::PullRequests, unlisted),
+            true,
+            "blocking: acme/web#3: member not surveyed (den didn't read its Repo's open Pull Requests completely)",
+        ),
+        (
+            "open again",
+            acme_owner().member_state("acme/web", 3, PullRequestState::Open),
+            true,
+            "blocking: acme/web#3: GitHub reported it open again",
+        ),
+    ];
+    for (case, held, blocks, says) in cases {
+        let observation = held
+            .pull_request(ready("acme/api", 1))
+            .linear_issue(
+                linear_issue("acme", "id-1", "TEAM-1")
+                    .attached("acme/api", 1)
+                    .attached("acme/web", 3),
+            )
+            .build();
+        let decisions = decide_all(&observation, &acme());
+        let issue = linear(&decisions, "TEAM-1");
+        let expected = (!blocks).then_some(NextStep::Land);
+        assert_eq!(issue.next_step, expected, "{case}: {}", said(issue));
+        assert!(
+            said(issue).contains(says),
+            "{case}: {says:?} not in {}",
+            said(issue)
+        );
+        if blocks {
+            assert!(
+                !said(issue).contains("held; not blocking: acme/web#3"),
+                "{case}: a blocking held member is not also 'not blocking': {}",
+                said(issue)
+            );
+        }
+    }
 }

@@ -110,9 +110,13 @@ fn survey_owners(
             .map(|(handle, owner)| joined(handle.join(), owner))
             .collect()
     });
-    for owner in per_owner {
+    for (owner, login) in per_owner.into_iter().zip(owners) {
         let owner = owner?;
         record(&mut observation, owner.coverage);
+        // Each listed Repo's sources become its own (spec 0003, "Coverage
+        // per Repo"); the Owner's entries stay for per-Owner kinds.
+        let listed: Vec<RepoId> = owner.repos.iter().map(|r| r.id.clone()).collect();
+        observation.coverage.split_by_repo(login, &listed);
         observation.repos.extend(owner.repos);
         observation.pull_requests.extend(owner.pull_requests);
         observation.issues.extend(owner.issues);

@@ -270,6 +270,10 @@ fn input_lines(
     let mut row = String::new();
     let mut cursor_row = 0;
     for (i, character) in chars.iter().enumerate() {
+        if character == "\n" {
+            rows.push(std::mem::take(&mut row));
+            continue;
+        }
         let previous_len = row.len();
         row.push_str(character);
         if previous_len > 0 && row.width() > width.max(1) {
@@ -351,6 +355,34 @@ fn tone(tone: Tone, glyphs: glyphs::Glyphs) -> (Option<&'static str>, LineStyle)
 mod tests {
     use super::*;
     use raudbjorn_tui::profile::GlyphProfile;
+
+    #[test]
+    fn publication_lines_and_blank_lines_survive_prompt_display() {
+        let text = "## Review resolutions\n\n- first: fixed\n- second: answered";
+        let field = PromptField {
+            text: text.to_owned(),
+            cursor: text.chars().count(),
+            editing: false,
+        };
+        let rows = input_lines(
+            "PROMPT",
+            &field,
+            80,
+            6,
+            glyphs::for_profile(GlyphProfile::Ascii),
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|(_, text, _)| text.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "## Review resolutions",
+                "",
+                "- first: fixed",
+                "- second: answered"
+            ]
+        );
+    }
 
     /// #38: each Linear write is one teal line (the Next Step's style),
     /// labelled LINEAR, directly above the Job's command, however long it is.
