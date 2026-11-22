@@ -67,6 +67,7 @@ fn harness_with(extra: Vec<LinearIssue>) -> Harness {
         skips: den::domain::Skips::default(),
         screenshot_repos: Vec::new(),
         merge_methods: den::domain::MergeMethods::default(),
+        refresh_interval_secs: None,
         legacy_marker_prefixes: Vec::new(),
     };
     let mut harness = Harness::new(Ok(config));
@@ -434,6 +435,7 @@ fn a_held_member_reads_as_held_for_release_in_the_landing_group() {
         skips: den::domain::Skips::default(),
         screenshot_repos: Vec::new(),
         merge_methods: den::domain::MergeMethods::default(),
+        refresh_interval_secs: None,
         legacy_marker_prefixes: Vec::new(),
     };
     let mut harness = Harness::new(Ok(config));

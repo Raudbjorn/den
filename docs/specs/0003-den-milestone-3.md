@@ -427,7 +427,7 @@ Tests go through the two seams, plus thin adapter checks, as in milestones 1 and
 
 ## Out of Scope
 
-- Periodic surveys while den is open (#57). The Sweep runs at startup and on demand only.
+- Periodic surveys are not part of this milestone's plans. #57 adds them on its own, as an opt-in (`refresh_interval_secs`, off by default, at least 60 seconds), decided on that issue on 2026-11-22. A timed refresh surveys what `r` surveys, the Sweep included (decision 1), with Linear on the same timer (decision 2). It waits while a launch or Mark for release sheet is open (decision 3), so the sheet never asks again unprompted. When Plan 3 splits `r` into the Repo Survey and the Sweep, the timed refresh must keep running both.
 - A Board screen (#59). A Board spans Repos; the [read-only Projects v2 research](../research/projects-v2-feasibility.md) proposes a separate screen after this milestone, subject to a product decision. It does not reintroduce Owner or Board Scopes.
 - Searching Work Items across Repos. The planned list filter (`/`) and Repo screen filter absorb #58 for one Repo and for Repo names. **List panel** and **Seam 2** above carry its behavior and acceptance cases; implementation and executable tests belong to [milestone 3 Plan 4](../superpowers/plans/2026-11-21-m3-roadmap.md). This specification does not deliver working search.
 - Upstreaming the kit into `design-system`'s `raudbjorn-tui` (ADR-0006 defers it).

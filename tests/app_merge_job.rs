@@ -48,6 +48,7 @@ fn config(merge_methods: MergeMethods) -> Config {
         skips: den::domain::Skips::default(),
         merge_methods,
         screenshot_repos: Vec::new(),
+        refresh_interval_secs: None,
         legacy_marker_prefixes: Vec::new(),
     }
 }

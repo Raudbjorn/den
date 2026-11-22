@@ -333,7 +333,7 @@ Tests go through milestone 3's seams: `decide`, the App with fake ports, and ren
 - den splitting review bodies into Points itself.
 - Configuring or checking Slack access. A Job posts with whatever Slack access the user's Claude Code has.
 - macOS support.
-- Periodic surveys (#57).
+- Periodic surveys. #57 delivers them on their own, outside this milestone, as an opt-in `refresh_interval_secs` (see spec 0003's note).
 
 ## Further Notes
 

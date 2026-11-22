@@ -142,6 +142,22 @@ prefixes so those reviews don't reappear:
 legacy_marker_prefixes = ["example-tool"]
 ```
 
+den surveys at startup and when you press `r`. To have it survey again on its
+own while it is open, set an interval in seconds (60 at least, a day at most):
+
+```toml
+refresh_interval_secs = 300
+```
+
+A timed refresh surveys GitHub and Linear, as `r` does, once that long has
+passed since the last survey answered. den checks on its 30-second tick, so a
+refresh can start up to 30 seconds late. It never starts while a survey is
+still running, never catches up on missed intervals, and waits for GitHub's
+rate limit to reset. It also waits while a launch or Mark for release sheet is
+open, so the sheet never changes under you; it runs once you close the sheet.
+After a failure, the last good survey stays on screen and the header says the
+refresh failed.
+
 ## Check local setup
 
 ```sh
@@ -260,5 +276,5 @@ prove a real GitHub survey, interactive rendering, or a Kitty/Claude launch.
 See [architecture](docs/architecture.md), [domain terminology](CONTEXT.md), and
 [GitHub issues](https://github.com/Raudbjorn/den/issues). Linear Workflows and
 Landing Groups are pending [milestone 2](https://github.com/Raudbjorn/den/issues/30)
-work, not capabilities of this GitHub-only baseline. Periodic refresh, text search
+work, not capabilities of this GitHub-only baseline. Text search
 and a [Board screen](docs/research/projects-v2-feasibility.md) are proposals, not implemented features.
