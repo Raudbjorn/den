@@ -869,8 +869,15 @@ fn main_clone(
             },
             Some(folders),
         ) => {
-            // Name the near misses too, so the user sees why none qualified.
-            to_clone(&facts.target, folders).map_err(|why| vec![no_clone, why])
+            to_clone(&facts.target, folders).map_err(|why| {
+                // A missing root contains no clones; report that cause rather than its symptom.
+                if folders.root_state == PathState::Missing {
+                    vec![why]
+                } else {
+                    // Name the near misses too, so the user sees why none qualified.
+                    vec![no_clone, why]
+                }
+            })
         }
         _ => Err(vec![no_clone]),
     })

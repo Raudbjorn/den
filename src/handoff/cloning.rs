@@ -57,7 +57,11 @@ pub fn choose(view: &NewCloneView, repo: &RepoId) -> Result<CloneSpot, RefusalRe
             writable: Writability::NotWritable,
         } => return Err(unusable("den can't write in it".to_owned())),
         PathState::Exists { writable } => writable.clone(),
-        PathState::Missing => return Err(unusable("it doesn't exist".to_owned())),
+        PathState::Missing => {
+            return Err(unusable(
+                "it doesn't exist; create it or set main_clone_root in config.toml".to_owned(),
+            ));
+        }
         PathState::Unknown(error) => {
             return Err(unusable(format!("den can't inspect it: {error}")));
         }

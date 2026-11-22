@@ -229,12 +229,24 @@ fn check_one(name: &str, dirs: &WorkflowDirs) -> WorkflowCheck {
         looked_in: Vec::new(),
         unread: Vec::new(),
     };
-    for (whose, dir) in [("your", &dirs.user), ("the Repo's", &dirs.repo)] {
+    let shared_user_error = matches!(
+        (&dirs.user, &dirs.plugins),
+        (Err(user), PluginsRead::NotChecked(plugins)) if user == plugins
+    );
+    let user_location = if shared_user_error {
+        "your Claude directory or its plugins"
+    } else {
+        "your Claude directory"
+    };
+    for (location, dir) in [
+        (user_location, &dirs.user),
+        ("the Repo's Claude directory", &dirs.repo),
+    ] {
         match dir {
             Ok(dir) => look_in(name, dir, &mut check),
-            Err(why) => check.unread.push(format!(
-                "den didn't look in {whose} Claude directory: {why}"
-            )),
+            Err(why) => check
+                .unread
+                .push(format!("den didn't look in {location}: {why}")),
         }
     }
     match &dirs.plugins {
@@ -246,6 +258,7 @@ fn check_one(name: &str, dirs: &WorkflowDirs) -> WorkflowCheck {
                 .looked_in
                 .push(format!("the plugins listed in {}", file.display()));
         }
+        PluginsRead::NotChecked(_) if shared_user_error => {}
         PluginsRead::NotChecked(why) => check.unread.push(format!("plugins not checked: {why}")),
     }
     check

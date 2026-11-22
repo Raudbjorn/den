@@ -9,7 +9,7 @@ mod support;
 
 use den::{
     app::{
-        Effect, Key,
+        Effect, Event, Key,
         view_model::{LaunchSheet, LaunchStatus, Overlay},
     },
     config::Config,
@@ -23,7 +23,7 @@ use den::{
 };
 use std::{collections::BTreeMap, path::PathBuf};
 use support::{
-    build::{ME, ObservationBuilder, now, pr},
+    build::{ME, ObservationBuilder, issue, now, pr},
     fakes::WorkspaceCall,
     ground_rules::{coding_rules, common_rules, quoted},
     harness::Harness,
@@ -121,6 +121,83 @@ fn field<'a>(sheet: &'a LaunchSheet, label: &str) -> (&'a str, Option<&'a str>) 
         .find(|f| f.label == label)
         .unwrap_or_else(|| panic!("no {label} field: {:?}", sheet.fields));
     (field.value.as_str(), field.note.as_deref())
+}
+
+/// #152: the user directory and plugins share one missing-home cause.
+#[test]
+fn an_unknown_home_directory_is_reported_once_for_workflows_and_plugins() {
+    let mut harness = started(launch_config(&[]), observation().build());
+    with_upstream_clone(&harness);
+
+    press(&mut harness, Key::Char('c'));
+    let ready = sheet(&harness);
+    assert_eq!(ready.status, LaunchStatus::Ready);
+    let (value, note) = field(ready, "WORKFLOW");
+    assert_eq!(value, "/gh-resolve not found");
+    assert_eq!(
+        note,
+        Some(format!(
+            "not found in {CLONE}/.claude/skills, {CLONE}/.claude/commands; \
+             den didn't look in your Claude directory or its plugins: den doesn't know your home directory; {}",
+            den::handoff::workflows::NOT_CHECKED
+        ).as_str())
+    );
+}
+
+/// #152: fix the missing root before looking for a clone beneath it.
+#[test]
+fn a_missing_clone_root_is_reported_once_with_its_fix() {
+    for real_workspace in [false, true] {
+        let temp = tempfile::tempdir().expect("temporary workspace");
+        let root = temp.path().join("missing");
+        let mut config = launch_config(&[]);
+        config.main_clone_root = Some(root.clone());
+        let observation = ObservationBuilder::new()
+            .owner("octo")
+            .fork("octo/app", Some("up/app"))
+            .issue(issue("octo/app", 9).assignee(ME))
+            .build();
+        let mut harness = started(config, observation);
+        press(&mut harness, Key::Char('c'));
+        if real_workspace {
+            // The real search returns an I/O error for a missing root; the fake returns no clones.
+            let (id, request) = harness
+                .key(Key::Char('u'))
+                .into_iter()
+                .find_map(|effect| match effect {
+                    Effect::InspectLaunch { id, request } => Some((id, request)),
+                    _ => None,
+                })
+                .expect("inspect the Upstream target");
+            let view = den::handoff::inspect(
+                &request,
+                &den::workspace::GitWorkspace::new(),
+                harness.launcher.as_ref(),
+                harness.jobs.as_ref(),
+            );
+            harness.settle(Event::LaunchInspected {
+                id,
+                view: Box::new(view),
+            });
+        } else {
+            press(&mut harness, Key::Char('u'));
+        }
+        let refused = sheet(&harness);
+        assert_eq!(refused.status, LaunchStatus::Refused);
+        assert_eq!(field(refused, "TARGET").0, "upstream → up/app");
+        assert_eq!(
+            messages(refused),
+            format!(
+                "den can't clone into {}: it doesn't exist; create it or set main_clone_root in config.toml",
+                root.display()
+            )
+        );
+        press(&mut harness, Key::Enter);
+        assert!(launch_plans(&harness).is_empty());
+        assert!(harness.workspace.calls().is_empty());
+        assert!(harness.launcher.windows().is_empty());
+        assert!(!root.exists());
+    }
 }
 
 #[test]

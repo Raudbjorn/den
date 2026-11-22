@@ -489,13 +489,14 @@ fn a_directory_den_could_not_read_or_did_not_look_at_is_said() {
     let fields = workflow_fields(&ready);
     assert_eq!(fields.len(), 1, "{fields:#?}");
     assert_eq!(fields[0].value, "/code-review not found");
+    // #152: name the shared missing-home cause once, retaining the independent Repo error.
     assert_eq!(
         fields[0].note.as_deref().unwrap(),
         format!(
             "not found in {API_CLAUDE}/skills, {API_CLAUDE}/commands; \
-             den didn't look in your Claude directory: den doesn't know your home directory; \
+             den didn't look in your Claude directory or its plugins: den doesn't know your home directory; \
              couldn't read {API_CLAUDE}/skills: permission denied; \
-             plugins not checked: den doesn't know your home directory; {NOT_CHECKED}"
+             {NOT_CHECKED}"
         )
     );
 }

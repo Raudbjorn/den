@@ -317,6 +317,8 @@ fn search(request: &InspectRequest, workspace: &dyn Workspace) -> CloneSearch {
     let root = request.search_root.clone();
     let paths = match workspace.find_clones(&root) {
         Ok(paths) => paths,
+        // A missing root contains no clones; planning reports how to fix the root.
+        Err(_) if workspace.path_state(&root) == PathState::Missing => Vec::new(),
         Err(e) => {
             return CloneSearch::SearchFailed {
                 root,
