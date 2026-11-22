@@ -53,6 +53,14 @@ pub fn build(state: &State<'_>) -> Footer {
     }
     if state.scope.focus == Focus::List && state.selected.is_some() {
         hints.push(hint("c", "launch"));
+        // A Point needs the user's decision (#77): `m` copies its marker line.
+        if super::points::selected(state)
+            .as_ref()
+            .and_then(super::points::decision_markers)
+            .is_some()
+        {
+            hints.push(hint("m", "copy marker"));
+        }
     }
     hints.push(hint("q", "quit"));
     Footer { hints }

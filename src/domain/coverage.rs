@@ -499,7 +499,8 @@ impl Coverage {
     }
 
     /// The sources whose completeness bears on one Work Item: the viewer (for
-    /// Waiting On), its kind across its Owner, and its kind for its own Repo.
+    /// Waiting On), and its kind for its Repo as [`Coverage::applicable_to_repo`]
+    /// gives it: the Repo's own entry when it has one, else its Owner's.
     /// Matched case-insensitively, as GitHub names are: a fact kept from an
     /// earlier survey may spell its Owner as the config did then.
     ///
@@ -544,14 +545,37 @@ impl Coverage {
                         | (SourceKind::Issues, SourceKind::IssueDetails)
                 )
         };
+        let viewer = self.entries.iter().filter(|e| e.source == Source::Viewer);
+        let of_repo = self
+            .applicable_to_repo(repo)
+            .into_iter()
+            .filter(|e| match &e.source {
+                Source::Owner { kind: k, .. } | Source::Repo { kind: k, .. } => relevant(*k),
+                Source::Viewer => false,
+            });
+        viewer.chain(of_repo).cloned().collect()
+    }
+
+    /// The sources behind one Repo's facts (spec 0003, "Coverage per Repo"):
+    /// the Repo's own entries, and its Owner's entries of every kind the
+    /// Repo has no entry of its own for (the Owner's Linear sources and
+    /// member states, and kinds an Owner survey didn't split per Repo). A
+    /// Repo with a source of its own is judged by that source alone, as
+    /// [`Coverage::read_completely`] judges it, so an Owner listing's
+    /// trouble never makes a Repo read completely on its own incomplete.
+    pub fn applicable_to_repo(&self, repo: &RepoId) -> Vec<&CoverageEntry> {
+        let own = |kind: SourceKind| {
+            self.entries.iter().any(|e| {
+                matches!(&e.source, Source::Repo { repo: r, kind: k } if *k == kind && r.same(repo))
+            })
+        };
         self.entries
             .iter()
             .filter(|e| match &e.source {
-                Source::Viewer => true,
-                Source::Owner { owner, kind: k } => relevant(*k) && same_login(owner, &repo.owner),
-                Source::Repo { repo: r, kind: k } => relevant(*k) && r.same(repo),
+                Source::Viewer => false,
+                Source::Owner { owner, kind } => same_login(owner, &repo.owner) && !own(*kind),
+                Source::Repo { repo: r, .. } => r.same(repo),
             })
-            .cloned()
             .collect()
     }
 }

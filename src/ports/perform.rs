@@ -93,6 +93,13 @@ pub fn perform(effect: &Effect, ports: &Ports) -> Vec<Event> {
         Effect::StoreUpstreams { upstreams } => vec![Event::UpstreamsStored {
             outcome: ports.upstreams.store(upstreams),
         }],
+        Effect::CopyToClipboard { item, text } => vec![Event::Copied {
+            item: item.clone(),
+            outcome: ports
+                .launcher
+                .copy_to_clipboard(text)
+                .map_err(|e| e.to_string()),
+        }],
         Effect::Quit | Effect::Log(_) => Vec::new(),
     }
 }

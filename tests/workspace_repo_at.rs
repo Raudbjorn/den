@@ -101,6 +101,28 @@ fn a_clone_and_a_folder_in_it_read_as_the_clone_with_its_remotes() {
     }
 }
 
+#[test]
+fn a_partial_clone_keeps_its_fetch_remote() {
+    let temp = tempfile::tempdir().unwrap();
+    let clone = clone_with(
+        temp.path(),
+        &[("origin", "https://github.com/acme/app.git")],
+    );
+    git(&clone, &["config", "remote.origin.promisor", "true"]);
+    git(
+        &clone,
+        &["config", "remote.origin.partialclonefilter", "blob:none"],
+    );
+
+    let (main_clone, remotes) = work_tree(&clone);
+    assert!(same_dir(&main_clone, &clone));
+    // Git 2.56 annotates this fetch URL; Repo detection must still recognize it (#112).
+    assert_eq!(
+        names(&remotes),
+        [("origin", "https://github.com/acme/app.git")]
+    );
+}
+
 /// A Job worktree (under the Main Clone's `.claude/worktrees/`) reads as its
 /// Main Clone.
 #[test]

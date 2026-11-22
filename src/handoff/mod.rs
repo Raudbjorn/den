@@ -121,7 +121,8 @@ pub const SHORT_COMMIT_CHARS: usize = 7;
 
 /// The permission mode a Job for `step` runs in, given its Owner's Linear
 /// Workflow `policy` (the empty policy for an Owner without one):
-/// approval-required for a coordination Job (Request review, Land) and for a
+/// approval-required for a coordination Job (Request review, Land, and Merge
+/// since #72) and for a
 /// Review Job in a Linear Workflow, which returns a verdict only (#41,
 /// [`LinearWorkflowPolicy::reviews_verdict_only`]); none (milestone 1's
 /// command) for every other Job. The match is exhaustive, so a new kind
@@ -131,14 +132,15 @@ pub fn job_permission_mode(
     policy: &LinearWorkflowPolicy,
 ) -> Option<PermissionMode> {
     match step {
-        NextStep::RequestReview | NextStep::Land => Some(PermissionMode::ApprovalRequired),
+        NextStep::RequestReview | NextStep::Land | NextStep::Merge => {
+            Some(PermissionMode::ApprovalRequired)
+        }
         NextStep::Review if policy.reviews_verdict_only() => Some(PermissionMode::ApprovalRequired),
         NextStep::Review
         | NextStep::FinishDraft
         | NextStep::ResolveConflicts
         | NextStep::FixCi
         | NextStep::AddressReview
-        | NextStep::Merge
         | NextStep::Triage
         | NextStep::Implement
         | NextStep::OpenPr
