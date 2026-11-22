@@ -23,5 +23,7 @@ git -C <IRONMAW> show <commit>:assets/brand/bear-mark.svg > assets/brand/bear-ma
 
 `src/ui/bear.rs` embeds the file (`include_bytes!`), rasterises it once with resvg, and
 hands each placement (header, splash, empty state) its own ratatui-image protocol state.
-In kitty it is drawn with the kitty graphics protocol; elsewhere with half-blocks.
+Where the terminal answers to the kitty graphics protocol it is drawn with that; otherwise
+with half-blocks in a truecolor profile, and not at all in any other colour profile
+(`Graphics::choose`; `DEN_GRAPHICS` overrides).
 Nothing reads IRONMAW's checkout at build or run time.

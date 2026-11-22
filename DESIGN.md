@@ -90,6 +90,7 @@ Every colour-coded meaning is also carried by a glyph or words (story 37). These
 |---|---|---|
 | a Main Clone is found (the Repo screen's CLONE column; the rail's identity block) | `◆` | undecided |
 | a fork (the reference render's legend) | undecided | undecided |
+| search (the filter Field in the reference renders) | `⌕` | undecided |
 | Job state unknown | spec 0003's JOB column writes `? unknown`; `glyphs.rs` has `◌` | `~` in `glyphs.rs`; the spec's `?` would collide with "unattributed" |
 
 In the kit's ASCII profile, borders are `+-|`, chips are `[text]`, and the cursor is `>` (spec 0003).
@@ -123,7 +124,7 @@ ratatui widgets wrapped in `src/ui/kit/`. Each takes its style from the theme (`
 | Rail | 22% clamped to 30–40 columns |
 
 - **Repo screen:** the top bar (`den ┊ Open a Repo`, the viewer and `gh` sign-in), the bear and lockup, one filter Field, the Linear pointer line, one REPOS DataTable (owner tabs; RECENT, then BY LAST PUSH), the Sweep Gauge, and the KeyBar. Content is centred and capped at `REPO_SCREEN_MAX_COLS` (140; a spec 0003 constant, not yet in `src/layout.rs`).
-- **Workbench:** the top bar (`den ┊ owner/name`, and on the right the *elsewhere* line: `N requested of you`, `◇ N Linear Issues`, `g Repos`), the rail (bear, identity block, WORK and NOT TRACKED HERE sections), the NEXT STEPS DataTable grouped by Waiting On, and the DETAIL Panel (NEXT STEP, WAITING ON, WHY, ALSO, JOB, …; `PgUp`/`PgDn` pages it), with the one rust action at its foot.
+- **Workbench:** the top bar (`den ┊ owner/name`, and on the right the *elsewhere* line: `N requested of you`, `◇ N Linear Issues`, `g Repos`), the rail (bear, identity block, WORK and NOT TRACKED HERE sections), the NEXT STEPS DataTable grouped by Waiting On, and the DETAIL Panel (NEXT STEP, WAITING ON, WHY, ALSO, JOB, …; `PgUp`/`PgDn` pages it) with the one rust action at its foot, and the KeyBar.
 - Panel borders cost two rows and two columns each, so the 80×24 minimum must be re-verified once the kit lands (ADR-0006).
 
 ## 7. Do and don't
@@ -140,4 +141,4 @@ ratatui widgets wrapped in `src/ui/kit/`. Each takes its style from the theme (`
 ## 8. Testing the look
 
 - `TestBackend` buffer snapshots at fixed sizes and profiles are milestone 3's rendering seam (ADR-0006; spec 0003 "Testing Decisions"). Until the kit lands, `tests/frame.rs` smoke-renders the current frame.
-- `tests/palette_generation.rs` checks the compiled palette against the token file. `tests/palette_profiles.rs` checks that rust differs from amber and teal in 16 colours, that the four extra roles stay distinct in 256 and 16 colours, and the mono cues. Nothing tests the 8-colour profile, and the 16-colour column of `SLOTS` is not pinned role by role.
+- `tests/palette_generation.rs` checks the compiled palette against the token file. `tests/palette_profiles.rs` checks that rust differs from amber and teal in 16 colours, that the four extra roles stay distinct and the selected fill differs from the page in 256 and 16 colours, and the mono cues. Nothing tests the 8-colour profile, and the 16-colour column of `SLOTS` is not pinned role by role.
