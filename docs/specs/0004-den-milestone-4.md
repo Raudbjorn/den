@@ -363,7 +363,7 @@ Tests go through milestone 3's seams: `decide`, the App with fake ports, and ren
   - Review Points applying to every Owner, not only Linear Workflows (#97);
   - the "resolved" state for a resolved thread (#97);
   - `legacy_marker_prefixes` being top-level, with its character rule (#97);
-  - `{review_notes}`, `{head}` and `{resolutions}` being required placeholders (`{head}` in #88; `{review_notes}` and `{resolutions}` not built yet: #106 for #76, #110 / #111 for #78);
+  - `{review_notes}`, `{head}` and `{resolutions}` being required placeholders (`{head}` in #88, `{review_notes}` in #106, `{resolutions}` in #110);
   - only marker lines being kept from comments, plus the summary line after each of the viewer's own `den:point` markers (#97);
   - per-PR bounds making Points coverage partial (#97);
   - Add screenshots requiring the PR to be the viewer's own (#94);

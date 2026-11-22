@@ -115,3 +115,38 @@ fn bad_token_files_are_errors_naming_the_token() {
     ));
     assert!(matches!(palette_gen::resolve("{"), Err(GenError::Json(_))));
 }
+
+/// #128: every 8-colour choice is one of the eight colours such a terminal has,
+/// and every 256-colour pin is an xterm colour, not one of the 16 the user's
+/// theme may redefine.
+#[test]
+fn every_slot_has_an_8_colour_and_a_valid_256_colour_pin() {
+    const FIRST_XTERM_COLOUR: u8 = 16;
+    for slot in palette_gen::SLOTS {
+        assert!(
+            palette_gen::ANSI8_COLOURS.contains(&slot.ansi8),
+            "{}: {:?} is not an 8-colour colour",
+            slot.field,
+            slot.ansi8
+        );
+        if let Some(index) = slot.xterm256 {
+            assert!(
+                index >= FIRST_XTERM_COLOUR,
+                "{}: pinned to {index}",
+                slot.field
+            );
+        }
+    }
+    let source = palette_gen::generate(COMMITTED_TOKENS).unwrap();
+    for palette in [
+        "OXIDE_TRUECOLOR",
+        "OXIDE_ANSI256",
+        "OXIDE_ANSI16",
+        "OXIDE_ANSI8",
+    ] {
+        assert!(
+            source.contains(&format!("pub const {palette}:")),
+            "{palette}"
+        );
+    }
+}

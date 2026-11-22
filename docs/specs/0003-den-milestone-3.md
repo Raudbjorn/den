@@ -402,7 +402,7 @@ Tests go through the two seams, plus thin adapter checks, as in milestones 1 and
   - the same when that Sweep's answer is partial (interrupted or paused at the rate-limit floor): it neither replaces the Repo Survey's facts nor changes their coverage;
   - partial reads keep ages;
   - a per-Repo coverage split from an Owner listing;
-  - format 13 rejected and rebuilt.
+  - formats 12 and 13 rejected and rebuilt.
 - Out-of-Repo Landing Group members:
   - read by number after both surveys;
   - Land decided with them;

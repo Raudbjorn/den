@@ -169,3 +169,176 @@ fn rust_and_amber_stay_apart_in_16_colours() {
     assert_ne!(ansi16.accent_rust, ansi16.warning);
     assert_ne!(ansi16.accent_rust, ansi16.accent);
 }
+
+// #128: every palette role, one cell each, drawn as the foreground on the
+// selected fill, so a test reads each role as the terminal gets it (after the
+// sentinel pass and the profile's quantisation) and what sits on the fill.
+const ALL_ROLES: TemplateRef = TemplateRef {
+    file: PROBE,
+    section: "AllRoles",
+};
+/// The engine's palette slots, in sentinel order (`TerminalPalette`).
+const ROLE_NAMES: [&str; 27] = [
+    "bg",
+    "surface_1",
+    "surface_2",
+    "surface_3",
+    "border",
+    "text",
+    "text_strong",
+    "text_muted",
+    "text_faint",
+    "accent",
+    "accent_2",
+    "accent_rust",
+    "mix_target",
+    "success",
+    "error",
+    "warning",
+    "syn_keyword",
+    "syn_string",
+    "syn_var",
+    "syn_func",
+    "syn_comment",
+    "syn_number",
+    "info",
+    "selected",
+    "mark_bg",
+    "border_strong",
+    "action_hover",
+];
+/// The roles den's templates draw on the selected fill (the list's current
+/// row and the sidebar's cursor row).
+const ON_SELECTED: [&str; 9] = [
+    "text",
+    "text_strong",
+    "text_muted",
+    "text_faint",
+    "accent",
+    "accent_2",
+    "accent_rust",
+    "warning",
+    "info",
+];
+/// The fills that must stay apart: the page, the mark plate, the three
+/// surfaces and the selected row.
+const FILLS: [&str; 6] = [
+    "bg",
+    "mark_bg",
+    "surface_1",
+    "surface_2",
+    "surface_3",
+    "selected",
+];
+
+struct AllRoles {
+    /// Each role's colour as drawn, by name.
+    roles: Vec<(&'static str, Color)>,
+    /// The selected fill behind them.
+    selected_fill: Color,
+}
+
+impl AllRoles {
+    fn of(&self, name: &str) -> Color {
+        self.roles
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, c)| *c)
+            .unwrap_or_else(|| panic!("no role {name}"))
+    }
+}
+
+fn render_all_roles(color: ColorProfile) -> AllRoles {
+    let probe: String = std::iter::once("--- AllRoles\ndiv w-full h-full flex-row\n".to_owned())
+        .chain(
+            (0..ROLE_NAMES.len())
+                .map(|i| format!("  span w-[1] bg-[#aa0017] text-[#aa00{i:02x}] \"x\"\n")),
+        )
+        .collect();
+    let buffer: Buffer = support::render(
+        vec![TemplateSource {
+            file: PROBE,
+            content: Box::leak(probe.into_boxed_str()),
+        }],
+        ALL_ROLES,
+        &TemplateContext::default(),
+        support::profile(color),
+        u16::try_from(ROLE_NAMES.len()).unwrap(),
+        PROBE_HEIGHT,
+    );
+    AllRoles {
+        roles: ROLE_NAMES
+            .iter()
+            .enumerate()
+            .map(|(x, name)| (*name, buffer[(u16::try_from(x).unwrap(), 0)].fg))
+            .collect(),
+        selected_fill: buffer[(0, 0)].bg,
+    }
+}
+
+/// The eight colours an 8-colour terminal has.
+fn is_ansi8(color: Color) -> bool {
+    matches!(
+        color,
+        Color::Black
+            | Color::Red
+            | Color::Green
+            | Color::Yellow
+            | Color::Blue
+            | Color::Magenta
+            | Color::Cyan
+            | Color::Gray
+    )
+}
+
+#[test]
+fn in_8_colours_errors_and_structure_keep_their_roles() {
+    let r = render_all_roles(ColorProfile::Ansi8);
+    for (name, colour) in &r.roles {
+        assert!(is_ansi8(*colour), "{name} = {colour:?} is not one of the 8");
+    }
+    // ADR-0001: rust is the one action; an error never draws in it.
+    assert_ne!(r.of("error"), r.of("accent_rust"), "error drawn in rust");
+    assert_ne!(r.of("syn_number"), r.of("accent_rust"));
+    // Rust and amber stay apart, as in 16 colours.
+    assert_ne!(r.of("accent_rust"), r.of("warning"));
+    assert_ne!(r.of("accent_rust"), r.of("accent"));
+    // Slate structure lines aren't body text.
+    for line in ["border", "border_strong"] {
+        assert_ne!(r.of(line), r.of("text"), "{line} looks like body text");
+    }
+    assert_ne!(r.selected_fill, r.of("bg"), "the selected fill is the page");
+}
+
+#[test]
+fn in_256_colours_every_fill_and_error_stay_distinct() {
+    let r = render_all_roles(ColorProfile::Ansi256);
+    let fills: Vec<(&str, Color)> = FILLS.iter().map(|f| (*f, r.of(f))).collect();
+    for (i, (a_name, a)) in fills.iter().enumerate() {
+        assert!(matches!(a, Color::Indexed(_)), "{a_name} = {a:?}");
+        for (b_name, b) in &fills[i + 1..] {
+            assert_ne!(a, b, "{a_name} and {b_name} merged into {a:?}");
+        }
+    }
+    assert_ne!(r.of("error"), r.of("action_hover"));
+    assert_ne!(r.of("error"), r.of("accent_rust"));
+}
+
+#[test]
+fn nothing_drawn_on_the_selected_fill_disappears_into_it() {
+    for color in [
+        ColorProfile::TrueColor,
+        ColorProfile::Ansi256,
+        ColorProfile::Ansi16,
+        ColorProfile::Ansi8,
+    ] {
+        let r = render_all_roles(color);
+        for name in ON_SELECTED {
+            assert_ne!(
+                r.of(name),
+                r.selected_fill,
+                "{color:?}: {name} is invisible on the selected fill"
+            );
+        }
+    }
+}
