@@ -9,7 +9,8 @@ The look of den on one page. It gathers decisions recorded elsewhere and points 
 | ADR-0001 | the colour roles |
 | ADR-0006, spec 0003 "Look: the den kit" | widgets, panels, the kit |
 | `src/layout.rs` | sizes and breakpoints |
-| `src/ui/glyphs.rs` | glyphs, per glyph profile |
+| `src/app/view_model.rs` | the semantic separator, ellipsis and Enter (`SEPARATOR`, `ELLIPSIS`, `ENTER_KEY`) |
+| `src/ui/glyphs.rs` | glyphs, per glyph profile, including how each profile draws those three |
 | `CONTEXT.md` | the words on screen |
 
 > **Current state.** `main` still draws milestone 1's *Tonal plates* with `.crepus` templates. The design below is the decided target: ratatui widgets through `src/ui/kit/` (ADR-0006, milestone 3), which supersedes Tonal plates. Until the kit lands, the templates are the running code, and this page describes where they are headed. (One visible difference: milestone 1's templates also draw a fork's Upstream target in rust. Spec 0003 drops that.)
@@ -67,7 +68,7 @@ Values are as of the token file's recorded IRONMAW commit (`2bf753e`). Never edi
 - **Emphasis by weight and tone, not size.** Panel titles and section labels are uppercase (`NEXT STEPS`, `WAITING ON`). Titles and the Repo name are `text-strong`; reasons are muted.
 - **The lockup:** `D  E  N`, letter-spaced, with its tagline, on the Repo screen (spec 0003). The reference render's tagline is "Next Steps for GitHub work, one Repo at a time".
 - **Words** come from `CONTEXT.md` (Next Step, Waiting On, Live Job, Landing Group, …). Its `_Avoid_` lists apply on screen too.
-- **Separators and truncation** go through the ViewModel's `SEPARATOR` (`·`), `ELLIPSIS` (`…`) and `ENTER_KEY` (`⏎`). Each glyph profile renders them, and text is cut between graphemes (`Glyphs::fit`).
+- **Separators, truncation and Enter have two layers.** The ViewModel (`src/app/view_model.rs`) writes the semantic characters `SEPARATOR` (`·`), `ELLIPSIS` (`…`) and `ENTER_KEY` (`⏎`), and never picks a profile. The renderer (`src/ui`) draws every piece of ViewModel text through `Glyphs::text`, or through `Glyphs::fit`, which also cuts between graphemes. These swap in the active profile's form: Unicode `·` `…` `⏎`, ASCII `-` `...` `RET` (the table below). Outside a per-profile glyph table (`glyphs.rs`, or a screen's own, such as `sidebar.rs`'s `repo_glyphs`), UI code never writes these characters or their ASCII forms as literals. Text drawn without `Glyphs` shows `?` in ASCII (the engine's `ascii_fallback`), which already means "unattributed" (#151 is one such case).
 
 ## 4. Glyphs (`src/ui/glyphs.rs`)
 
@@ -94,7 +95,7 @@ Every colour-coded meaning is also carried by a glyph or words (story 37). These
 | search (the filter Field in the reference renders) | `⌕` | undecided |
 | Job state unknown | spec 0003's JOB column writes `? unknown`; `glyphs.rs` has `◌` | `~` in `glyphs.rs`; the spec's `?` would collide with "unattributed" |
 
-In the kit's ASCII profile, borders are `+-|`, chips are `[text]`, and the cursor is `>` (spec 0003).
+In the kit's ASCII profile, borders are `+-|`, chips are `[text]`, the cursor is `>` (spec 0003), and the separator, ellipsis and Enter are `-`, `...` and `RET`.
 
 ## 5. Components: the den kit (ADR-0006; spec 0003)
 
@@ -102,14 +103,14 @@ ratatui widgets wrapped in `src/ui/kit/`. Each takes its style from the theme (`
 
 | Component | Built from | Look |
 |---|---|---|
-| **Panel** | `Block`, rounded, `merge_borders(Fuzzy)` | uppercase title top-left, status title top-right (`✓ 14 · complete`); slate border at rest, teal when focused, as is the focused panel's title in the reference renders |
+| **Panel** | `Block`, rounded, `merge_borders(Fuzzy)` | uppercase title top-left, status title top-right (`✓ 14 · complete`, ASCII `+ 14 - complete`); slate border at rest, teal when focused, as is the focused panel's title in the reference renders |
 | **DataTable** | `Table` + `Scrollbar` | header row, group rows (`WAITING ON YOU`, `RECENT`), rust `▌` cursor on the focused table, `selected` tone on the row, empty and coverage states |
 | **Chip** | styled span | the Next Step label on a `surface` fill: teal when Waiting On you, structure text otherwise |
 | **TabBar** | `Tabs` | active tab teal on charcoal |
 | **Field** | `app/editor.rs` | the filter fields |
 | **Gauge** | `LineGauge` | teal fill, with its words beside it (`119 of 163 Repos swept`) |
 | **KeyBar** | kbd chips | key hints at the bottom left, the glyph legend at the bottom right |
-| **Button** | rust span | **the one action** (`c  Reopen the Live Job…`) |
+| **Button** | rust span | **the one action** (`c  Reopen the Live Job…`, ASCII `c  Reopen the Live Job...`) |
 | **Sheet** | `Clear` + Panel | overlays: launch sheet, detail sheet |
 | **Bear** | `ui::bear` | the lettered SVEINBJORN bear (`assets/brand/bear-mark.svg`), drawn with kitty graphics where the terminal answers to it, half-blocks in truecolor otherwise, and left out in every other colour profile (`Graphics::choose`; `DEN_GRAPHICS` overrides) |
 
@@ -121,7 +122,7 @@ ratatui widgets wrapped in `src/ui/kit/`. Each takes its style from the theme (`
 |---|---|
 | Designed for | 160×45 (`DESIGN_COLS` × `DESIGN_ROWS`); to be verified at 200×56 too (spec 0003) |
 | Minimum | 80×24 (`MIN_COLS` × `MIN_ROWS`); smaller still draws, and says so |
-| Detail pane | at ≥ 110 columns (`WIDE_LAYOUT_MIN_COLS`), 25% clamped to 32–48; below that, `⏎` opens the detail as a Sheet |
+| Detail pane | at ≥ 110 columns (`WIDE_LAYOUT_MIN_COLS`), 25% clamped to 32–48; below that, `⏎` (ASCII `RET`) opens the detail as a Sheet |
 | Rail | 22% clamped to 30–40 columns |
 
 - **Repo screen:** the top bar (`den ┊ Open a Repo`, the viewer and `gh` sign-in), the bear and lockup, one filter Field, the Linear pointer line, one REPOS DataTable (owner tabs; RECENT, then BY LAST PUSH), the Sweep Gauge, and the KeyBar. Content is centred and capped at `REPO_SCREEN_MAX_COLS` (140; a spec 0003 constant, not yet in `src/layout.rs`).
