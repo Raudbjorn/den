@@ -4,11 +4,12 @@ The look of den on one page. It gathers decisions recorded elsewhere and points 
 
 | Source | Owns |
 |---|---|
-| `assets/tokens/oxide.tokens.json` (IRONMAW Oxide, copied byte for byte; see `assets/tokens/SOURCE.md`) | every colour value |
-| `build/palette_gen.rs` (`SLOTS`) | every colour a profile can show: which token fills each palette slot, the 16- and 8-colour ANSI colours by role, and the 256-colour pins. The only place a fallback colour is chosen. |
+| `assets/tokens/oxide.tokens.json` (IRONMAW Oxide, copied byte for byte; see `assets/tokens/SOURCE.md`) | the UI palette's RGB values |
+| `assets/brand/bear-mark.svg` | the bear artwork's colours, independent of the UI palette |
+| `build/palette_gen.rs` (`SLOTS`) | palette generation; see [colour ownership](#who-owns-a-colour-values-selection-resolution) |
 | `src/palette.rs` (`oxide_for`) | which generated palette each colour profile gets; holds no colour values |
-| `vendor/raudbjorn-tui` (`component.rs`, `profile.rs`, `theme/mod.rs`) | resolving roles at draw time, today: sentinel colour → role, the mono attribute cues, per-cell quantisation |
-| `src/ui/kit/theme.rs` (planned, ADR-0006; not on `main` yet) | resolving roles at draw time once the kit lands: each role → a ratatui `Style`, from `oxide_for`'s palette |
+| `vendor/raudbjorn-tui/src/component.rs`, `vendor/raudbjorn-tui/src/theme/mod.rs` | the current template renderer's sentinel-to-role mapping and mono attribute cues |
+| `vendor/raudbjorn-tui/src/profile.rs` | environment-based profile selection and colour/glyph conversion, retained when the kit lands |
 | ADR-0001 | the colour roles |
 | ADR-0006, spec 0003 "Look: the den kit" | widgets, panels, the kit |
 | `src/layout.rs` | sizes and breakpoints |
@@ -58,23 +59,32 @@ Values are as of the token file's recorded IRONMAW commit (`2bf753e`). Never edi
 
 ### Who owns a colour: values, selection, resolution
 
-A colour reaches the screen in three steps. Only the first one chooses colours.
+A UI colour passes through generation, selection and resolution. Authored role mappings and runtime colour conversion have separate owners.
 
-1. **Values, at build time:** `build/palette_gen.rs`. `build.rs` reads `assets/tokens/oxide.tokens.json` through the `SLOTS` table and generates `OXIDE_TRUECOLOR`, `OXIDE_ANSI256` (token colours, with the 256-colour pins), `OXIDE_ANSI16` and `OXIDE_ANSI8` (role-based ANSI colours). Every 16-colour, 8-colour and pinned 256-colour value is a `SLOTS` entry. Change a fallback colour there, nowhere else.
-2. **Selection, at startup:** `src/palette.rs`. `oxide_for(ColorProfile)` returns one of the generated palettes for the detected profile: truecolor, mono and no-colour get `OXIDE_TRUECOLOR`, and 256, 16 and 8 colours get their own. `ui::Theme` keeps it. It picks a palette and never edits one.
-3. **Resolution, at draw time:** today the vendored engine (`vendor/raudbjorn-tui/src/component.rs`), for each cell a template drew:
-   - in mono and no-colour, adds the attribute cue its role carries (`mono_cue`, `theme/mod.rs`);
-   - replaces the sentinel colour with the role's colour from the selected palette (`get_semantic_color`);
-   - quantises the cell for the profile (`profile.rs`, `apply_profile_area`). An RGB colour in 256 colours goes to the nearest xterm colour. A pinned `Indexed` colour and a named ANSI colour are kept. Mono and no-colour reset every colour.
+1. **Values, at build time:** `build/palette_gen.rs`. `build.rs` reads `assets/tokens/oxide.tokens.json` through the `SLOTS` table and generates `OXIDE_TRUECOLOR`, `OXIDE_ANSI256` (token colours, with the 256-colour pins), `OXIDE_ANSI16` and `OXIDE_ANSI8` (role-based ANSI colours). The token assigned to each slot, every 16- and 8-colour role mapping, and each explicit 256-colour pin belong in `SLOTS`. Unpinned 256-colour slots remain RGB until the profile code converts them at runtime.
+2. **Selection, at startup:** `TerminalProfile::from_env` in `vendor/raudbjorn-tui/src/profile.rs` uses a nonempty `RAUDBJORN_TUI_COLOR` (invalid values are errors), otherwise selects no-colour for a nonempty `NO_COLOR`, otherwise defaults to truecolor. It does not detect terminal colour capabilities. `src/palette.rs`'s `oxide_for(ColorProfile)` selects a generated palette: truecolor, mono and no-colour get `OXIDE_TRUECOLOR`, and 256, 16 and 8 colours get their own. `ui::Theme` keeps it without editing its values.
+3. **Resolution, at draw time:** the current `ComponentRenderer` in `vendor/raudbjorn-tui/src/component.rs` processes every cell in the section's area, including cells the template did not write. It adds the mono/no-colour attribute cues (`mono_cue`), replaces sentinel colours with palette roles (`get_semantic_color`), then calls `apply_profile_area` from `vendor/raudbjorn-tui/src/profile.rs`. That function converts the area's colours with `quantize_color` and applies the glyph profile.
 
-   Once the kit lands (ADR-0006), `src/ui/kit/theme.rs` takes over resolution. It maps each role to a ratatui `Style` from the same `oxide_for` palette, and it chooses no colours of its own.
+The colour conversion is profile-specific; `Reset` remains `Reset` in every profile:
 
-UI code names roles and never colours (§7). The one exception today is the bear. `ui/frame.rs` gives it `OXIDE_TRUECOLOR`'s page and mark-plate colours directly as its background, because the bear is an image: drawn with kitty graphics, or with truecolor half-blocks (`ui/bear.rs`, `Graphics::choose`), outside the palette pipeline.
+| Profile | Colours kept | Colours converted |
+|---|---|---|
+| Truecolor | all | none |
+| 256-colour | named ANSI and `Indexed` | RGB to the nearest xterm index (`nearest_xterm_index`) |
+| 16-colour | all sixteen named ANSI colours | RGB and `Indexed` to the nearest of the sixteen |
+| 8-colour | `Black`, `Red`, `Green`, `Yellow`, `Blue`, `Magenta`, `Cyan`, `Gray` | RGB, `Indexed` and brighter ANSI names to the nearest of those eight |
+| Mono / no colour | no explicit colours | all to `Reset` |
+
+**Planned kit:** [spec 0003, "Look: the den kit"](docs/specs/0003-den-milestone-3.md#look-the-den-kit-adr-0006) assigns role-to-`Style` mapping to `src/ui/kit/theme.rs`, which does not exist yet. It replaces template sentinel resolution, while the vendored palette and profile code remain (ADR-0006). Mapping roles from `oxide_for` alone is insufficient: the kit must retain profile conversion for unpinned RGB in 256 colours and for mono/no-colour, as well as glyph conversion and equivalent non-colour cues. It must reuse the authored palette mappings rather than introduce a second set of fallback values.
+
+**Bear exception:** UI code names roles (§7), but `assets/brand/bear-mark.svg` owns the bear's artwork colours; updating UI tokens does not recolour it. In `src/ui/frame.rs`, `bear.draw` runs after the underlying `theme.draw` calls and writes directly to the frame, so those pixels/cells bypass the section's profile conversion. `src/ui/bear.rs` composites half-block images on the supplied `OXIDE_TRUECOLOR` page or mark-plate background. Kitty uses the transparent raster instead; the supplied background is only part of its protocol-state cache key.
+
+`Graphics::choose` honours `DEN_GRAPHICS` before the colour profile. Without an override it uses kitty when detected, otherwise half-blocks only in truecolor, otherwise no bear. Kitty can therefore remain full-colour in mono/no-colour, and explicitly forcing `DEN_GRAPHICS=halfblocks` bypasses colour reduction too: RGB cells and a truecolor background may sit beside a quantised plate. These are current rendering limitations, not a guarantee that the whole screen obeys the profile.
 
 ### Colour profiles
 
 - **Truecolor:** token colours as given.
-- **256-colour:** token colours quantised to the nearest xterm colour (`nearest_xterm_index`), except the roles that would merge, which `SLOTS` pins (#128): page 233, mark plate 232, surfaces 234 / 235 / 237, the selected row 236, `border` 238, `error` 167 and `action-hover` 173. Every fill stays its own tone, and an error never takes rust hover's colour.
+- **256-colour:** the explicit pins (#128) are page 233, mark plate 232, surfaces 234 / 235 / 237, the selected row 236, `border` 238, `error` 167 and `action-hover` 173; conversion is described above. Every fill stays its own tone, and an error never takes rust hover's colour.
 - **16-colour:** a role-based ANSI palette, *not* nearest-colour, because nearest-colour would merge rust with amber and the selected fill with the page. The mapping is teal → cyan, rust → red, amber → yellow, slate → dark grey, selected → blue.
 - **8-colour:** its own role-based palette (#128), because folding the 16-colour one into eight would draw errors in rust and slate in body-text grey. `error` is magenta, never rust's red. Slate lines (`border`, `border-strong`) are blue, apart from text. `info` stays grey, because it is drawn on the selected row, which is blue. `text-faint` and `text-strong` are grey like body text, so words and weight carry those.
 - **Mono / no colour:** meaning survives through glyphs, words and position, plus the engine's attribute cues (`mono_cue` in the vendored engine): the selected row in reverse video, the mark plate dim, `border-strong` bold, and rust hover bold and underlined (`tests/palette_profiles.rs`). The cues hang on the engine's colour sentinels, so the kit has to keep them or replace them.
@@ -116,7 +126,7 @@ In the kit's ASCII profile, borders are `+-|`, chips are `[text]`, and the curso
 
 ## 5. Components: the den kit (ADR-0006; spec 0003)
 
-ratatui widgets wrapped in `src/ui/kit/`. Each takes its style from the theme (`src/ui/kit/theme.rs`), which resolves IRONMAW roles for the active profile from `oxide_for`'s palette (§2, "Who owns a colour").
+Planned ratatui widgets wrapped in `src/ui/kit/`, styled by `src/ui/kit/theme.rs`; see [colour ownership](#who-owns-a-colour-values-selection-resolution) for the theme and profile responsibilities.
 
 | Component | Built from | Look |
 |---|---|---|
