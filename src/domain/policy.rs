@@ -288,6 +288,8 @@ pub struct Policies {
     by_owner: Vec<(String, LinearWorkflowPolicy)>,
     /// The Next Step kinds each Repo doesn't track (spec 0003).
     skips: Skips,
+    /// The Repos with `screenshots = true` (#79).
+    screenshot_repos: Vec<RepoId>,
     /// `legacy_marker_prefixes` (#75, ADR-0010): whose `review-notes`
     /// markers set Review Points, besides den's own.
     legacy_marker_prefixes: Vec<String>,
@@ -339,6 +341,19 @@ impl Policies {
     /// The Next Step kinds each Repo doesn't track.
     pub fn skips(&self) -> &Skips {
         &self.skips
+    }
+
+    /// The Repos with `screenshots = true` (#79).
+    #[must_use]
+    pub fn with_screenshot_repos(mut self, repos: Vec<RepoId>) -> Self {
+        self.screenshot_repos = repos;
+        self
+    }
+
+    /// Whether `repo` requires screenshots on its Pull Requests (compared as
+    /// GitHub compares names).
+    pub fn requires_screenshots(&self, repo: &RepoId) -> bool {
+        self.screenshot_repos.iter().any(|listed| listed.same(repo))
     }
 
     /// The legacy marker prefixes whose markers set Review Points (#75).

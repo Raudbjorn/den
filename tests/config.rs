@@ -597,6 +597,47 @@ fn no_repos_table_skips_nothing() {
     );
 }
 
+/// #79: `screenshots = true` marks a Repo whose PRs need screenshots; off
+/// unless written. "Add screenshots" is a kind a Repo may skip.
+#[test]
+fn repos_can_require_screenshots_and_skip_add_screenshots() {
+    let config = parse(
+        "owners = [\"acme\"]\n\n[repos.\"acme/web\"]\nscreenshots = true\nmerge_method = \"squash\"\nskip = [\"Add screenshots\"]\n\n[repos.\"acme/api\"]\nscreenshots = false\n\n[repos.\"acme/cli\"]\nskip = []\n",
+    )
+    .expect("valid");
+    let web = RepoId::new("acme", "web");
+    assert_eq!(config.screenshot_repos, std::slice::from_ref(&web));
+    // Both settings share a Repo table after integrating #72 and #79.
+    assert_eq!(
+        config.merge_methods.for_repo(&web),
+        Some(den::domain::MergeMethod::Squash)
+    );
+    let policies = config.policies();
+    assert!(policies.requires_screenshots(&RepoId::new("ACME", "Web")));
+    assert!(!policies.requires_screenshots(&RepoId::new("acme", "api")));
+    assert!(!policies.requires_screenshots(&RepoId::new("acme", "cli")));
+    assert!(
+        config
+            .skips
+            .for_repo(&web)
+            .contains(&NextStep::AddScreenshots)
+    );
+    assert!(
+        parse("owners = [\"acme\"]\n")
+            .expect("valid")
+            .screenshot_repos
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_screenshots_setting_that_isnt_true_or_false_names_the_line() {
+    let error =
+        parse("owners = [\"a\"]\n[repos.\"a/b\"]\nscreenshots = \"yes\"\n").expect_err("a string");
+    assert_eq!(location(&error).map(|l| l.line), Some(3), "{error}");
+    assert!(error.to_string().contains("expected a boolean"), "{error}");
+}
+
 #[test]
 fn bad_skips_name_the_line() {
     let cases = [

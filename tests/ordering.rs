@@ -98,6 +98,12 @@ fn within_a_waiting_on_group_the_kind_order_holds_across_all_four_kinds() {
             UPDATED,
         ),
         decision(
+            item("pr", "o/r", 17),
+            Some(NextStep::AddScreenshots),
+            WaitingOn::Me,
+            UPDATED,
+        ),
+        decision(
             item("pr", "o/r", 13),
             Some(NextStep::Land),
             WaitingOn::Me,

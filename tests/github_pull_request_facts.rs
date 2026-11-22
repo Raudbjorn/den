@@ -18,13 +18,15 @@ use den::{
         Incompleteness, Observation, Source, SourceKind, SourceState, TeamRef,
         facts::{
             ActorKind, Check, CheckOutcome, MarkedState, Marker, MergeState, Mergeability,
-            PullRequest, Review, ReviewDecision, ReviewVerdict, Reviewer, ThreadRecord,
+            PullRequest, Review, ReviewDecision, ReviewVerdict, Reviewer, Screenshots,
+            ThreadRecord,
         },
     },
     github::{
         graphql::{GraphQlError, GraphQlRequest, GraphQlResponse, TransportError},
-        survey,
+        survey, survey_request,
     },
+    ports::SurveyRequest,
 };
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
@@ -700,6 +702,74 @@ fn unread_details_do_not_keep_closed_prs_but_an_incomplete_list_does() {
             "unread list pages still retain cached PRs"
         );
     }
+}
+
+/// #79: PR bodies are asked for only for an Owner with a Repo that requires
+/// screenshots, decoded only for that Repo's PRs, and kept only as the
+/// Screenshots state: the body's text is nowhere in the Observation.
+#[test]
+fn bodies_are_read_only_where_screenshots_are_required_and_kept_only_as_the_state() {
+    const MARKER: &str = "den-body-marker-7f3a";
+    let with_body = |number: u64, body: &str| {
+        let mut node = pr_node(number, "MERGEABLE", json!("APPROVED"), false);
+        node["body"] = json!(format!("{body}\n{MARKER}"));
+        node
+    };
+    let nodes = || {
+        vec![
+            with_body(1, "## Screenshots\n![after](https://x/a.png)"),
+            with_body(2, "No visual change"),
+            with_body(3, "## Screenshots\n<!-- ![e](https://x/e.png) -->"),
+        ]
+    };
+    let survey_for = |screenshot_repos: Vec<den::domain::RepoId>| {
+        let gql = octo(nodes(), each(no_details()));
+        let request = SurveyRequest {
+            owners: vec!["octo".to_owned()],
+            upstreams: den::domain::UpstreamTargets::default(),
+            screenshot_repos,
+        };
+        let observation = survey_request(&gql, &request, now()).expect("survey");
+        let bodies: Vec<Value> = gql
+            .requests()
+            .iter()
+            .filter(|r| operation(r) == "OwnerPullRequests")
+            .map(|r| r.variables["bodies"].clone())
+            .collect();
+        (observation, bodies)
+    };
+    let states = |observation: &Observation| -> Vec<Screenshots> {
+        (1..=3)
+            .map(|n| the_pr(observation, n).screenshots)
+            .collect()
+    };
+
+    let (required, bodies) = survey_for(vec![repo_id("octo/app")]);
+    assert_eq!(bodies, [json!(true)]);
+    assert_eq!(
+        states(&required),
+        [
+            Screenshots::Present,
+            Screenshots::NoVisualChange,
+            Screenshots::Missing
+        ]
+    );
+    let stored = serde_json::to_string(&required).expect("serialises");
+    assert!(
+        !stored.contains(MARKER),
+        "a PR body reached the Observation"
+    );
+
+    // Another of the Owner's Repos requires them: bodies are asked for, but
+    // this Repo's PRs are not decoded.
+    let (sibling, bodies) = survey_for(vec![repo_id("octo/web")]);
+    assert_eq!(bodies, [json!(true)]);
+    assert_eq!(states(&sibling), [Screenshots::NotRead; 3]);
+
+    // No Repo of this Owner requires them: bodies are not asked for.
+    let (elsewhere, bodies) = survey_for(vec![repo_id("acme/web")]);
+    assert_eq!(bodies, [json!(false)]);
+    assert_eq!(states(&elsewhere), [Screenshots::NotRead; 3]);
 }
 
 /// #75: the Review Point facts. Reviews keep whether the body says more than

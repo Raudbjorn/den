@@ -47,6 +47,7 @@ fn config(merge_methods: MergeMethods) -> Config {
         linear: Vec::new(),
         skips: den::domain::Skips::default(),
         merge_methods,
+        screenshot_repos: Vec::new(),
         legacy_marker_prefixes: Vec::new(),
     }
 }
