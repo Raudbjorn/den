@@ -318,25 +318,23 @@ No organization-specific slash commands are defaults. A user can point a kind at
 
 - **Tracker:** published as Raudbjorn/den#30, labelled `ready-for-agent`, broken down into #31–#41. Tickets branch from `main` once milestone 1's stack has merged.
 - **Confirmed by the user:** Mark for release waits for held PRs. It requires **no** open member PRs, held ones included.
-- **Policy taken from the organization's existing tooling, not yet confirmed by the user** (each is config or a switch, so changing it is cheap):
+- **Policy taken from the organization's existing tooling, settled at the milestone's close-out (#30, 2026-11-22)** (each is config or a switch, so changing it is cheap):
   - exact-head approval (*superseded by ADR-0009, #73: that tooling counts an approval given before a later push and doesn't wait for pending requests, matching the organization's own branch rules, so den's defaults now follow GitHub*);
-  - plain COMMENTED reviews need re-review;
+  - plain COMMENTED reviews need re-review: **confirmed**, and `comment_reviews_need_rereview` stays on by default (#36);
   - a Held Repo doesn't block Land even when its PR is broken (*decided by ADR-0011, #101: confirmed for a held PR's own state, but a held member that is queued, not surveyed or reported open again still blocks*);
-  - the landing order.
-- **This spec's own choices, flagged:** Request review's place in the order; changes requested on an older head falling through to Request review (story 43, which may also be wanted for Owners without a Linear Workflow); Start Waiting On nobody; Land and Request review Jobs getting worktrees for consistency, though they need no code.
-- **Milestone 1 decisions still awaiting the user** affect this spec: the "Merge without approval when a Repo requires no review" rule doesn't apply inside a Linear Workflow when exact-head approval is on.
-- **Glossary terms to add** with the first ticket:
-  - the Next Steps **Start**, **Request review**, **Land** and **Mark for release**;
-  - **Linear viewer**;
-  - **attached** versus **hint** membership;
-  - **coordination Job**.
-
-  Also widen **Implement** to cover a Linear Issue.
-- **ADR-0004 and the Linear terms in `CONTEXT.md`** are written but not committed. They should land with or before this spec. ADR-0004's reasoning is the assistant's wording and still needs the user's confirmation.
+  - the landing order: config only (`landing_order`), with no organization value as a default.
+- **This spec's own choices, confirmed as built (#30):**
+  - Request review's place: in the PR rules it comes after Review and before Merge, and in the list's kind order it ranks after Merge and Review (… › Merge › Review › Request review › …). It is Waiting On the PR author;
+  - changes requested on an older head, with no unresolved threads, falls through to Request review (story 43). This applies inside a Linear Workflow only. Owners without one keep milestone 1's rule, by decision, not as backlog;
+  - Start is Waiting On nobody;
+  - Land and Request review Jobs get a worktree on the PR head for consistency, though they change no code.
+- **Milestone 1's "Merge without approval when the base branch requires no review"**, confirmed as built (#30): it applies inside a Linear Workflow too, except where the Workflow sets `exact_head_approval = true`, which then requires an approval at the current head. Since ADR-0009 that switch is off by default.
+- **Glossary terms**: added with the first ticket (#32, PR #45). `CONTEXT.md` defines **Start**, **Request review**, **Land**, **Mark for release**, **Linear viewer**, **Hint** (versus attached membership) and **Coordination Job**, and widens **Implement** to cover a Linear Issue.
+- **ADR-0004 and the Linear terms in `CONTEXT.md`** are committed (`7bcb1e4`), and the user confirmed ADR-0004's reasoning (#30).
 - **Not verified:**
   - Claude Code 2.1.325's flag for an approval-required permission mode, and whether it overrides the user's settings;
   - Linear's API key scopes for read versus write, and whether the GitHub integration's attachment URLs parse as expected;
   - `gh pr merge --match-head-commit` behaviour with a merge queue on the organization's Repos;
   - whether the organization's start-team states map to the unstarted state type.
 
-  The first ticket should include the read-only survey against the real workspace.
+  These need live checks against real accounts, so they stay open as knowledge gaps, not missing features. #81 verified a Job launch end to end on a real fork (#113), but none of these four.
