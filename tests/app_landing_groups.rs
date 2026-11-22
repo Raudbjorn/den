@@ -65,6 +65,7 @@ fn harness_with(extra: Vec<LinearIssue>) -> Harness {
         main_clones: std::collections::BTreeMap::new(),
         linear: vec![linear_workflow("octo", "acme")],
         skips: den::domain::Skips::default(),
+        screenshot_repos: Vec::new(),
         merge_methods: den::domain::MergeMethods::default(),
         legacy_marker_prefixes: Vec::new(),
     };
@@ -431,6 +432,7 @@ fn a_held_member_reads_as_held_for_release_in_the_landing_group() {
         main_clones: std::collections::BTreeMap::new(),
         linear: vec![workflow],
         skips: den::domain::Skips::default(),
+        screenshot_repos: Vec::new(),
         merge_methods: den::domain::MergeMethods::default(),
         legacy_marker_prefixes: Vec::new(),
     };

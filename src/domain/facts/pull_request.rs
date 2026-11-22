@@ -39,6 +39,11 @@ pub struct PullRequest {
     pub in_merge_queue: bool,
     /// Checks and reviews; `None` when den could not read them.
     pub details: Option<PrDetails>,
+    /// The body's Screenshots state (#79), read only for PRs in Repos with
+    /// `screenshots = true`; [`Screenshots::NotRead`] elsewhere, and in facts
+    /// cached before it existed.
+    #[serde(default)]
+    pub screenshots: super::Screenshots,
 }
 
 impl PullRequest {

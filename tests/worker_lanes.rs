@@ -107,6 +107,7 @@ fn github_and_local_writes_answer_while_a_linear_survey_hangs() {
             request: SurveyRequest {
                 owners: vec!["acme".to_owned()],
                 upstreams: Default::default(),
+                screenshot_repos: Vec::new(),
             },
         },
         Effect::StoreUpstreams {

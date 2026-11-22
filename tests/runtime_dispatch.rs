@@ -97,6 +97,7 @@ fn survey() -> Effect {
         request: SurveyRequest {
             owners: vec!["octo".to_owned()],
             upstreams: UpstreamTargets::default(),
+            screenshot_repos: Vec::new(),
         },
     }
 }

@@ -195,10 +195,17 @@ impl PromptKind {
     }
 }
 
+/// Add screenshots' default (#79; spec 0004, story 62): decide, capture
+/// matching pairs, add a Before | After table, edit only that section.
+pub const DEFAULT_ADD_SCREENSHOTS: &str = "Pull Request {repo}#{number} ({url}) is in a Repo that needs screenshots, and its body has none. You are on its head branch {branch}. First decide whether this Pull Request changes anything visible. If it doesn't, add a line saying exactly \"No visual change\" to the Pull Request body. If it does, capture matching before and after screenshots of each view it changes, and add a `## Screenshots` section with a Before | After table holding them. Edit only that section of the Pull Request body and change nothing else on the Pull Request.";
+
 /// The default template for each kind (spec, "Launch handoff").
 pub fn default_template(step: NextStep) -> &'static str {
     match step {
         NextStep::AddressReview => "/gh-resolve {url}",
+        // Generic on purpose (#79): how to capture and upload belongs in the
+        // user's own `add_screenshots` template. den ships no uploader.
+        NextStep::AddScreenshots => DEFAULT_ADD_SCREENSHOTS,
         NextStep::Review => "/code-review {url}",
         NextStep::FixCi => {
             "/diagnosing-bugs CI is failing for {url}. You are on branch {branch}. Find out why and fix it."
