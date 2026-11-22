@@ -12,20 +12,19 @@ use super::{
     job_permission_mode,
     kinds::{self, Facts},
     landing, names,
-    prompts::{PromptFields, PromptKind, Prompts, PromptsError},
+    prompts::{PromptFields, PromptKind, Prompts, PromptsError, ReviewNote, ReviewNotes},
     reviewers, trust, worktree_path,
 };
 use crate::{
     config::Config,
     decide::{
         Decision,
-        points::{PointRef, review_points},
+        points::{self, PointRef, PointState},
     },
     domain::{
         LinearWorkflowPolicy, MergeMethods, NextStep, Observation, RepoId, WorkItemId,
         facts::Reviewer,
     },
-    ordering::same_work_item,
 };
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -425,7 +424,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
         review_notes: if kind == PromptKind::Step(NextStep::AddressReview) {
             review_notes(decision, input.observation, input.legacy_marker_prefixes)
         } else {
-            Vec::new()
+            ReviewNotes::default()
         },
         landing_members: facts
             .landing
@@ -515,43 +514,53 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     Ok(plan)
 }
 
-/// The Linear Issues `decision`'s Pull Request is attached to (its Landing
-/// Groups, #35), as (identifier, URL) from the Observation; identifiers and
-/// URLs only, never a title or description.
-/// What `{review_notes}` lists (#76): each review of `decision`'s Pull Request
-/// whose body still holds a blocking Review Point (open, not yet split or
-/// needing a decision), once, as (URL, review id). The Points are worked out
-/// as `decide` works them out, so the Job is told about exactly the reviews
-/// that hold the PR at Address review. Empty for anything else.
+/// What `{review_notes}` names (#76): each review of `decision`'s Pull Request
+/// with a body Point for the Job to address, once, with the numbers of its
+/// split Points to work on (none while its body isn't split). The Points are
+/// the ones `decide` and the detail see ([`points::of`]). An open or
+/// not-yet-split Point is the Job's; one that needs my decision is mine, so a
+/// review held only by such Points is never named (review on #106). `partial`
+/// says den didn't read every review or comment, so a review that reads as
+/// not yet split may already be split. Empty for anything else.
 fn review_notes(
     decision: &Decision,
     observation: &Observation,
     prefixes: &[String],
-) -> Vec<(String, u64)> {
-    let Some(pr) = observation
-        .pull_requests
-        .iter()
-        .find(|pr| same_work_item(&pr.id(), &decision.item.id))
-    else {
-        return Vec::new();
+) -> ReviewNotes {
+    let Some(found) = points::of(observation, prefixes, &decision.item.id) else {
+        return ReviewNotes::default();
     };
-    let points = review_points(
-        pr.details.as_ref(),
-        pr.author.as_deref(),
-        &observation.viewer.login,
-        prefixes,
-    );
-    let mut reviews: Vec<(String, u64)> = Vec::new();
-    for point in points.blocking_bodies() {
-        if let (PointRef::Review { review, .. }, Some(url)) = (&point.reference, &point.url)
-            && !reviews.iter().any(|(_, id)| id == review)
-        {
-            reviews.push((url.clone(), *review));
-        }
+    let mut reviews: Vec<ReviewNote> = Vec::new();
+    for point in found
+        .blocking_bodies()
+        .filter(|p| p.state != PointState::NeedsDecision)
+    {
+        let (PointRef::Review { review, n }, Some(url)) = (&point.reference, &point.url) else {
+            continue;
+        };
+        let note = match reviews.iter().position(|r| r.review == *review) {
+            Some(at) => &mut reviews[at],
+            None => {
+                reviews.push(ReviewNote {
+                    url: url.clone(),
+                    review: *review,
+                    points: Vec::new(),
+                });
+                let last = reviews.len() - 1;
+                &mut reviews[last]
+            }
+        };
+        note.points.extend(*n);
     }
-    reviews
+    ReviewNotes {
+        reviews,
+        partial: !found.complete(),
+    }
 }
 
+/// The Linear Issues `decision`'s Pull Request is attached to (its Landing
+/// Groups, #35), as (identifier, URL) from the Observation; identifiers and
+/// URLs only, never a title or description.
 fn linear_issues(decision: &Decision, observation: &Observation) -> Vec<(String, String)> {
     decision
         .landing

@@ -135,10 +135,12 @@ fn the_prompt_names_the_reviews_left_to_split_by_url_and_id_only() {
     let mut harness = started(Ok(prompts::Prompts::default()), observed(pr));
 
     let prompt = prompt_of(&mut harness);
+    // An unsplit review names no points, so its whole body is the Job's to
+    // split; a split one names the Points to work on (review on #106).
     assert!(
         prompt.starts_with(&format!(
             "/gh-resolve {PR_URL} These reviews still have points to address: \
-{PR_URL}#pullrequestreview-100 (review 100). Split each review's body into separate points"
+{PR_URL}#pullrequestreview-100 (review 100). Split each review that names no points into separate points"
         )),
         "{prompt}"
     );

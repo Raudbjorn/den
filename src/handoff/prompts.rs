@@ -48,12 +48,14 @@
 //! approving, requesting changes or posting), and it must use both.
 //!
 //! `address_review` alone has `{review_notes}` (#76, spec 0004 stories 37, 47
-//! and 53), which it must use. With no review-body Review Points left to
-//! address it is empty. Otherwise it lists each such review as `<url> (review
-//! <id>)`, never its text, and tells the Job to split each body into Points,
-//! settle each one, push with a plain push, then post one comment per review
-//! with a `den:point` marker and a one-line summary in its own words per
-//! Point, which den reads back (`decide::points`).
+//! and 53), which it must use. With no review-body Review Points left for the
+//! Job it is empty. Otherwise it lists each such review as `<url> (review
+//! <id>)`, or `<url> (review <id>: points <id>.<n>, …)` once it is split,
+//! never its text, and tells the Job to split each unsplit body into Points,
+//! settle each Point it works on, push (never with force), then post one
+//! comment per review with a `den:point` marker and a one-line summary in its
+//! own words per Point, which den reads back (`decide::points`). A Point that
+//! needs my decision is never named: it is mine to settle.
 //!
 //! `implement_linear` (#38) is a Linear Issue's Start or Implement template.
 //! It alone has `{identifier}`; defaults carry no issue title or description.
@@ -314,28 +316,79 @@ const REVIEW_LINEAR_TEMPLATE: &str = "/code-review {url}{linear_context}{verdict
 /// What `{verdict_only}` is (spec 0002, story 70).
 const VERDICT_ONLY: &str = " Return your verdict to me only. Don't edit files, commit, push, approve, request changes, comment or post anywhere: I decide what gets published.";
 
-/// What `{review_notes}` is (#76): the reviews whose bodies still hold Review
-/// Points, by URL and id only, and how to split them and record each Point
-/// where den reads it back. den reads markers from the pull request's
-/// conversation comments only, one marker per line, with the summary on the
-/// next line (`domain::facts::parse_markers`). Nothing when there are none.
-fn review_notes(reviews: &[(String, u64)]) -> String {
-    if reviews.is_empty() {
+/// One review `{review_notes}` names (#76): its URL and id, and the numbers of
+/// its split Points the Job is to address. Empty `points` means its body isn't
+/// split yet, so the whole body is the Job's to split. Never its text.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReviewNote {
+    pub url: String,
+    pub review: u64,
+    pub points: Vec<u32>,
+}
+
+/// What `{review_notes}` names (#76): the reviews with body Points for the Job
+/// to address (open or not yet split; a Point that needs my decision is mine,
+/// so it is never named), and whether den read every review and comment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReviewNotes {
+    pub reviews: Vec<ReviewNote>,
+    /// den didn't read every review or comment, so a review that reads as not
+    /// yet split may already have been split by an earlier Job.
+    pub partial: bool,
+}
+
+/// What `{review_notes}` is (#76): the reviews still to address by URL and
+/// id, with a split review's Points to work on, and how to split, settle and
+/// record each Point where den reads it back. den reads markers from the pull
+/// request's conversation comments only, one marker per line, with the
+/// summary on the next line (`domain::facts::parse_markers`). Both marker
+/// forms are spelled out: a bracketed `[<commit>]` copied as written is a
+/// marker den drops. "Never with force" is the spec's plain push: den's push
+/// line (`plan::with_push_line`) may still name the remote branch. Nothing
+/// when no review is named.
+fn review_notes(notes: &ReviewNotes) -> String {
+    if notes.reviews.is_empty() {
         return String::new();
     }
-    let listed: Vec<String> = reviews
+    let listed: Vec<String> = notes
+        .reviews
         .iter()
-        .map(|(url, id)| format!("{url} (review {id})"))
+        .map(|note| {
+            if note.points.is_empty() {
+                format!("{} (review {})", note.url, note.review)
+            } else {
+                let points: Vec<String> = note
+                    .points
+                    .iter()
+                    .map(|n| format!("{}.{n}", note.review))
+                    .collect();
+                format!(
+                    "{} (review {}: points {})",
+                    note.url,
+                    note.review,
+                    points.join(", ")
+                )
+            }
+        })
         .collect();
+    let partial = if notes.partial {
+        "den couldn't read every review or comment on this pull request, so a review may already be split: \
+before you split one, read the den:point markers already posted for it on the conversation, \
+keep their numbers, and leave the points they settle or flag for my decision as they are. "
+    } else {
+        ""
+    };
     format!(
-        " These reviews still have points to address: {}. \
-Split each review's body into separate points, numbered from 1 within that review. \
-Fix, decline, mark as follow-up, or flag for my decision each point. \
-Push your commits with a plain push, never a force-push, before you reply. \
+        " These reviews still have points to address: {}. {partial}\
+Split each review that names no points into separate points, numbered from 1 within that review; \
+in a review that names points, work only on those points and keep their numbers. \
+Fix, decline, mark as follow-up, or flag for my decision each point you work on. \
+Push your commits before you reply, never with force. \
 Then post one comment on the pull request's conversation per review (gh pr comment, not a reply in a review thread). \
-In it, for each point, write a line that is exactly <!-- den:point <review id>.<n> <state> [<commit>] --> \
+In it, for each point you worked on, write a line that is \
+exactly <!-- den:point <review id>.<n> <state> -->, or <!-- den:point <review id>.<n> fixed <commit> --> for a fixed point, \
 and, on the very next line, a one-line summary of what you did in your own words, not the reviewer's. \
-<state> is one of open, fixed, declined, follow-up or needs-decision; after fixed, give the commit.",
+<state> is open, declined, follow-up or needs-decision.",
         listed.join(", ")
     )
 }
@@ -386,9 +439,9 @@ pub struct PromptFields {
     /// A Linear Issue's identifier (`TEAM-123`); empty for GitHub Work Items.
     pub identifier: String,
     /// Address review only: the reviews whose bodies still hold Review
-    /// Points to address, as (URL, review id), in the order den shows them.
-    /// Never their text.
-    pub review_notes: Vec<(String, u64)>,
+    /// Points for the Job to address, in the order den shows them. Never
+    /// their text.
+    pub review_notes: ReviewNotes,
 }
 
 /// The default template of any kind.
