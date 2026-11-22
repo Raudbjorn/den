@@ -12,8 +12,8 @@ use std::path::Path;
 /// The most processes one read looks at; more is an error (unknown), since a
 /// cut list could miss the process naming a session.
 pub const MAX_PROCESSES_READ: usize = 32_768;
-/// The most of one process's command line den reads, in bytes. Longer command
-/// lines are cut; a session flag past the cut is not seen.
+/// The largest complete command line den accepts, in bytes. One extra byte
+/// detects overflow, which makes the process list unknown rather than partial.
 pub const MAX_CMDLINE_BYTES: u64 = 64 * 1024;
 /// Where Linux shows its processes.
 pub const PROC_ROOT: &str = "/proc";
@@ -82,14 +82,20 @@ fn gone(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::NotFound || error.raw_os_error() == Some(ESRCH)
 }
 
-/// A NUL-separated command line, read up to [`MAX_CMDLINE_BYTES`].
+/// A NUL-separated command line, with a bounded read that rejects overflow.
 #[cfg(target_os = "linux")]
 fn cmdline(path: &Path) -> std::io::Result<Vec<String>> {
     use std::io::Read;
     let mut bytes = Vec::new();
     std::fs::File::open(path)?
-        .take(MAX_CMDLINE_BYTES)
+        .take(MAX_CMDLINE_BYTES + 1)
         .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_CMDLINE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("command line exceeds {MAX_CMDLINE_BYTES} bytes, more than den reads"),
+        ));
+    }
     Ok(split_cmdline(&bytes))
 }
 
