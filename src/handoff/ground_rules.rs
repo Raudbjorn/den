@@ -81,7 +81,11 @@ pub fn changes_code(step: NextStep) -> bool {
         | NextStep::Implement
         | NextStep::OpenPr
         | NextStep::PruneOrRevive
-        | NextStep::Start => true,
+        | NextStep::Start
+        // Asks first, but not a coordination Job (#79, CONTEXT.md): it may
+        // commit to its own PR's branch, and must never merge or ask for
+        // review itself.
+        | NextStep::AddScreenshots => true,
     }
 }
 

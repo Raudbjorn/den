@@ -25,10 +25,12 @@
 //!    completely → **Land**, Waiting On the Linear assignee. Otherwise no
 //!    Next Step: its Pull Requests carry the work, and the Explanation names
 //!    each blocking member with its own Next Step or reason, and each held
-//!    member as "held; not blocking". A held member never blocks (its own row
-//!    keeps its repair steps), ambiguous or not, except in a merge queue (no
-//!    member may be queued); but at least one member outside Held Repos must
-//!    be open for there to be anything to land.
+//!    member as "held; not blocking". A held member's own state never blocks
+//!    (its own row keeps its repair steps: failing checks, conflicts,
+//!    ambiguity, facts read in part); it blocks only when den can't tell it
+//!    isn't merging right now: queued, not surveyed, or reported open again
+//!    (ADR-0011). At least one member outside Held Repos must be open for
+//!    there to be anything to land.
 //! 2. No open members:
 //!    - attachments not read completely, a member den can't see, or a link
 //!      that looks like a Pull Request den can't read
@@ -319,11 +321,15 @@ fn land(
             "attached {url} looks like a Pull Request den can't read, so it can't tell every member"
         )
     }));
+    // Members named as blocking: a held one among them is not also listed as
+    // "held; not blocking" (ADR-0011).
+    let mut blocking_members: Vec<WorkItemId> = Vec::new();
     for member in &landing.members {
         let own = own_decision(pull_requests, &member.pr.id());
         let reasons = blocking_reasons(ctx, member, held(member), own, &issue.identifier);
         if !reasons.is_empty() {
             blocking.push(format!("{}: {}", member.reference(), reasons.join("; ")));
+            blocking_members.push(member.pr.id());
         }
         if matches!(member.status, MemberStatus::Open { .. })
             && !held(member)
@@ -346,7 +352,12 @@ fn land(
     }
     let held_members: Vec<String> = open
         .iter()
-        .filter(|m| held(m))
+        .filter(|m| {
+            held(m)
+                && !blocking_members
+                    .iter()
+                    .any(|b| crate::ordering::same_work_item(b, &m.pr.id()))
+        })
         .map(|m| held_line(m, own_decision(pull_requests, &m.pr.id())))
         .collect();
     if blocking.is_empty() {
@@ -399,12 +410,11 @@ fn blocking_reasons(
             return reasons;
         }
         MemberStatus::Open { .. } => {}
-        // Open, but not in the survey: den can't judge it. A held one would
-        // never be landed, so it doesn't block.
+        // Open, but not in the survey: den can't judge it, and can't tell
+        // whether it is in a merge queue either, so it blocks even when held
+        // (ADR-0011: a held member blocks only when it may be merging now).
         MemberStatus::OpenAgain => {
-            if !held {
-                reasons.push(OPEN_AGAIN.to_owned());
-            }
+            reasons.push(OPEN_AGAIN.to_owned());
             return reasons;
         }
         // Not open: it won't be landed, so it doesn't block.
@@ -412,8 +422,9 @@ fn blocking_reasons(
             return reasons;
         }
     }
-    // A held member is never landed, so its ambiguity doesn't block; only
-    // the merge queue holds for every member (rule 1: none is queued).
+    // A held member is never landed, so its ambiguity and its own repair
+    // state don't block; only the merge queue holds for every member (rule 1:
+    // none is queued; ADR-0011).
     if !held && let Some(ambiguity) = member.ambiguity() {
         reasons.push(ambiguity);
     }

@@ -41,7 +41,9 @@ pub fn config(owners: &[&str]) -> Config {
         main_clones: BTreeMap::new(),
         linear: Vec::new(),
         skips: den::domain::Skips::default(),
+        screenshot_repos: Vec::new(),
         merge_methods: den::domain::MergeMethods::default(),
+        refresh_interval_secs: None,
         legacy_marker_prefixes: Vec::new(),
     }
 }

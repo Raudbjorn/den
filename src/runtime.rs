@@ -324,7 +324,9 @@ mod tests {
             main_clones: Default::default(),
             linear: Vec::new(),
             skips: crate::domain::Skips::default(),
+            screenshot_repos: Vec::new(),
             merge_methods: crate::domain::MergeMethods::default(),
+            refresh_interval_secs: None,
             legacy_marker_prefixes: Vec::new(),
         }));
         let (mut view, effects) = app.handle(Event::Started {

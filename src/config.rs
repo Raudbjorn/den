@@ -11,6 +11,7 @@
 //! # "Raudbjorn/den" = "/home/me/dev/den"
 //! # [repos."octo/app"]                Next Steps a Repo doesn't track (spec 0003)
 //! # skip = ["Fix CI", "Triage"]
+//! # screenshots = true                 my PRs here need screenshots (#79)
 //! # merge_method = "squash"           how Merge and Land merge here (#72)
 //! ```
 //!
@@ -51,6 +52,9 @@ pub struct Config {
     /// The Next Step kinds each Repo doesn't track (`[repos."OWNER/REPO"]
     /// skip`, spec 0003). Repos outside the watched Owners may be listed.
     pub skips: Skips,
+    /// The Repos with `screenshots = true` (#79): the viewer's own PRs there
+    /// need a Screenshots section with an image, or a "No visual change" line.
+    pub screenshot_repos: Vec<RepoId>,
     /// Each Repo's merge method (`[repos."OWNER/REPO"] merge_method`, #72),
     /// for Merge and Land Jobs. A Repo without one names none.
     pub merge_methods: MergeMethods,
@@ -58,7 +62,16 @@ pub struct Config {
     /// prefixes whose `<prefix>:review-notes:` markers set Review Points.
     /// Lowercase letters, digits and `-`, never `den`.
     pub legacy_marker_prefixes: Vec<String>,
+    /// `refresh_interval_secs` (#57): survey again this many seconds after
+    /// the last survey answered, while den is open and idle. `None` (the
+    /// default): only startup and `r` survey.
+    pub refresh_interval_secs: Option<u64>,
 }
+
+/// The shortest `refresh_interval_secs` den accepts (#57).
+pub const MIN_REFRESH_INTERVAL_SECS: u64 = 60;
+/// The longest `refresh_interval_secs` den accepts (#57): a day.
+pub const MAX_REFRESH_INTERVAL_SECS: u64 = 86_400;
 
 impl Config {
     /// The Linear Workflow of `owner`, if it has one.
@@ -78,6 +91,7 @@ impl Config {
                 policies.with(w.owner.clone(), w.policy())
             })
             .with_skips(self.skips.clone())
+            .with_screenshot_repos(self.screenshot_repos.clone())
             .with_legacy_marker_prefixes(self.legacy_marker_prefixes.clone())
     }
 
@@ -129,6 +143,7 @@ struct RawConfig {
     repos: BTreeMap<Spanned<String>, RawRepo>,
     #[serde(default)]
     legacy_marker_prefixes: Vec<Spanned<String>>,
+    refresh_interval_secs: Option<Spanned<i64>>,
 }
 
 /// One `[repos."OWNER/REPO"]` table (spec 0003).
@@ -137,6 +152,9 @@ struct RawConfig {
 struct RawRepo {
     #[serde(default)]
     skip: Vec<Spanned<String>>,
+    /// Off unless written (#79).
+    #[serde(default)]
+    screenshots: bool,
     merge_method: Option<Spanned<String>>,
 }
 
@@ -249,9 +267,14 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
     }
     let linear = linear::workflows(raw.linear, &owners, text)
         .map_err(|(span, message)| malformed(Some(span), message))?;
-    let (skips, merge_methods) =
+    let (skips, screenshot_repos, merge_methods) =
         repo_tables(raw.repos).map_err(|(span, message)| malformed(Some(span), message))?;
     let legacy_marker_prefixes = marker_prefixes(raw.legacy_marker_prefixes)
+        .map_err(|(span, message)| malformed(Some(span), message))?;
+    let refresh_interval_secs = raw
+        .refresh_interval_secs
+        .map(refresh_interval)
+        .transpose()
         .map_err(|(span, message)| malformed(Some(span), message))?;
     Ok(Config {
         owners,
@@ -259,9 +282,30 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
         main_clones,
         linear,
         skips,
+        screenshot_repos,
         merge_methods,
         legacy_marker_prefixes,
+        refresh_interval_secs,
     })
+}
+
+/// `refresh_interval_secs` (#57): whole seconds, from
+/// [`MIN_REFRESH_INTERVAL_SECS`] to [`MAX_REFRESH_INTERVAL_SECS`]. Leaving it
+/// out is the only way to turn timed refreshes off.
+fn refresh_interval(raw: Spanned<i64>) -> Result<u64, (Range<usize>, String)> {
+    let span = raw.span();
+    let secs = raw.into_inner();
+    u64::try_from(secs)
+        .ok()
+        .filter(|s| (MIN_REFRESH_INTERVAL_SECS..=MAX_REFRESH_INTERVAL_SECS).contains(s))
+        .ok_or_else(|| {
+            (
+                span,
+                format!(
+                    "`refresh_interval_secs` is {secs}: use {MIN_REFRESH_INTERVAL_SECS} to {MAX_REFRESH_INTERVAL_SECS} seconds, or leave it out to survey only at startup and on r"
+                ),
+            )
+        })
 }
 
 /// `legacy_marker_prefixes` (#75): each lowercase letters, digits and `-`,
@@ -314,14 +358,16 @@ fn absolute(path: Spanned<PathBuf>, what: &str) -> Result<PathBuf, (Range<usize>
     ))
 }
 
+type RepoTables = (Skips, Vec<RepoId>, MergeMethods);
+
 /// The `[repos."OWNER/REPO"]` tables: their `skip` lists (spec 0003, "Not
 /// tracking a flow"), each value a skippable Next Step spelled as
-/// `CONTEXT.md` spells it, and their `merge_method` (#72), spelled as `gh`
-/// spells it.
+/// `CONTEXT.md` spells it, plus screenshot requirements (#79) and merge methods (#72).
 fn repo_tables(
     raw: BTreeMap<Spanned<String>, RawRepo>,
-) -> Result<(Skips, MergeMethods), (Range<usize>, String)> {
+) -> Result<RepoTables, (Range<usize>, String)> {
     let mut skips = Skips::default();
+    let mut screenshot_repos = Vec::new();
     let mut merge_methods = MergeMethods::default();
     for (key, table) in raw {
         let key_span = key.span();
@@ -366,6 +412,9 @@ fn repo_tables(
             }
             steps.push(step);
         }
+        if table.screenshots {
+            screenshot_repos.push(repo.clone());
+        }
         if let Some(entry) = table.merge_method {
             let span = entry.span();
             let name = entry.into_inner();
@@ -381,7 +430,7 @@ fn repo_tables(
         }
         skips = skips.with(repo, steps);
     }
-    Ok((skips, merge_methods))
+    Ok((skips, screenshot_repos, merge_methods))
 }
 
 /// The skippable Next Steps, quoted, in glossary order.

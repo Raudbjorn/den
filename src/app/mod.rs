@@ -124,6 +124,10 @@ pub struct App {
     removed_env: Vec<String>,
     /// The Linear survey in flight, if any (#32).
     linear_running: Option<SurveyId>,
+    /// When the next timed refresh is due (#57): `refresh_interval_secs`
+    /// after the last survey answered, or GitHub's rate-limit reset when that
+    /// is later. `None` without the setting, or while a survey runs.
+    refresh_due: Option<Timestamp>,
     /// A Linear answer that arrived while nothing was shown (before the cache
     /// loaded and before GitHub answered): merged into the first Observation
     /// den shows, then gone. Every other Linear answer is merged into what is
@@ -174,6 +178,7 @@ impl App {
             policies,
             removed_env,
             linear_running: None,
+            refresh_due: None,
             unshown_linear: None,
             member_states_running: None,
             linear_unsaved: false,
@@ -241,7 +246,7 @@ impl App {
             Event::Tick { now } => {
                 self.now = Some(now);
                 self.decide_shown(now);
-                Vec::new()
+                self.timed_refresh(now)
             }
             Event::Key(key) => self.key(key),
             Event::EffectRejected { effect, reason } => self.effect_rejected(*effect, reason),
@@ -308,6 +313,7 @@ impl App {
                 let request = SurveyRequest {
                     owners: config.owners.clone(),
                     upstreams: self.upstreams.clone(),
+                    screenshot_repos: config.screenshot_repos.clone(),
                 };
                 // The cache is read first, so it shows before the survey answers;
                 // then the Jobs (local and bounded), so their markers don't wait
@@ -561,6 +567,7 @@ impl App {
             )];
         }
         self.running = None;
+        self.schedule_refresh(now, outcome.as_ref().err());
         match outcome {
             Ok(observation) => {
                 let mut effects = vec![survey_log(id, &observation)];
@@ -614,6 +621,58 @@ impl App {
         }
     }
 
+    /// Schedules the next timed refresh (#57) from a survey that answered at
+    /// `now`: `refresh_interval_secs` later, or when GitHub's rate limit
+    /// resets if that is later still. Measured from the answer, so a slow
+    /// survey never makes the next one start straight away, and missed ticks
+    /// never pile up.
+    fn schedule_refresh(&mut self, now: Timestamp, failure: Option<&SurveyFailure>) {
+        let interval = self
+            .config
+            .as_ref()
+            .ok()
+            .and_then(|config| config.refresh_interval_secs)
+            .and_then(|secs| i64::try_from(secs).ok())
+            .map(jiff::SignedDuration::from_secs);
+        self.refresh_due = interval
+            .and_then(|interval| now.checked_add(interval).ok())
+            .map(|due| match failure {
+                Some(SurveyFailure::RateLimited {
+                    resets_at: Some(resets_at),
+                }) => due.max(*resets_at),
+                _ => due,
+            });
+    }
+
+    /// A Tick (#57): surveys again as `r` does, GitHub and Linear together,
+    /// once the timed refresh is due, nothing is in flight (GitHub, Linear,
+    /// or an answer held for the startup cache), and no launch or Mark for
+    /// release sheet is open. A sheet pauses it, so the sheet never asks
+    /// again unprompted; it stays due and runs on the first Tick after the
+    /// sheet closes.
+    fn timed_refresh(&mut self, now: Timestamp) -> Vec<Effect> {
+        let Some(due) = self.refresh_due else {
+            return Vec::new();
+        };
+        let busy = self.running.is_some() || self.linear_running.is_some() || self.awaiting_cache;
+        let sheet_open = matches!(
+            self.overlay,
+            Some(OverlayState::Launch(_) | OverlayState::Release(_))
+        );
+        if now < due || busy || sheet_open {
+            return Vec::new();
+        }
+        self.refresh_due = None;
+        let mut effects = vec![Effect::log(
+            LogLevel::Info,
+            format!(
+                "refresh_interval_secs passed since the last survey answered (due {due}); surveying again"
+            ),
+        )];
+        effects.extend(self.refresh());
+        effects
+    }
+
     /// `r`: survey again, unless a survey is already running or there is no config.
     fn refresh(&mut self) -> Vec<Effect> {
         if self.running.is_some() {
@@ -627,6 +686,7 @@ impl App {
                 let request = SurveyRequest {
                     owners: config.owners.clone(),
                     upstreams: self.upstreams.clone(),
+                    screenshot_repos: config.screenshot_repos.clone(),
                 };
                 let mut effects = vec![Effect::CheckJobs];
                 effects.extend(self.begin_survey(request));

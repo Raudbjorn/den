@@ -92,6 +92,7 @@ pub mod names;
 mod plan;
 pub mod prompts;
 mod refusal;
+pub mod resolutions;
 pub mod reviewers;
 pub mod trust;
 pub mod workflows;
@@ -122,7 +123,7 @@ pub const SHORT_COMMIT_CHARS: usize = 7;
 /// The permission mode a Job for `step` runs in, given its Owner's Linear
 /// Workflow `policy` (the empty policy for an Owner without one):
 /// approval-required for a coordination Job (Request review, Land, and Merge
-/// since #72) and for a
+/// since #72), Add screenshots (#79), and for a
 /// Review Job in a Linear Workflow, which returns a verdict only (#41,
 /// [`LinearWorkflowPolicy::reviews_verdict_only`]); none (milestone 1's
 /// command) for every other Job. The match is exhaustive, so a new kind
@@ -132,7 +133,9 @@ pub fn job_permission_mode(
     policy: &LinearWorkflowPolicy,
 ) -> Option<PermissionMode> {
     match step {
-        NextStep::RequestReview | NextStep::Land | NextStep::Merge => {
+        // Add screenshots uploads images and edits the PR body: every step
+        // is seen before it happens (#79).
+        NextStep::RequestReview | NextStep::Land | NextStep::Merge | NextStep::AddScreenshots => {
             Some(PermissionMode::ApprovalRequired)
         }
         NextStep::Review if policy.reviews_verdict_only() => Some(PermissionMode::ApprovalRequired),
@@ -148,6 +151,15 @@ pub fn job_permission_mode(
         | NextStep::Start
         | NextStep::MarkForRelease => None,
     }
+}
+
+/// Whether a Job for `step` coordinates rather than changes code: it runs
+/// in the approval-required mode ([`job_permission_mode`]) and acts on GitHub,
+/// not on its branch, so it gets no push line and never the repo's project
+/// settings. Add screenshots runs in that mode too but is not one (#79,
+/// CONTEXT.md): it may commit to its own PR's branch, which is the viewer's.
+pub fn coordinates(step: NextStep, policy: &LinearWorkflowPolicy) -> bool {
+    step != NextStep::AddScreenshots && job_permission_mode(step, policy).is_some()
 }
 
 /// The worktree path for a Job named `name` in `clone`.
@@ -356,6 +368,10 @@ pub struct LaunchPlan {
     pub renamed: Option<Renamed>,
     pub session: String,
     pub prompt: String,
+    /// Merge and Land only (#78): the resolution comment of each Pull
+    /// Request the Job merges, in order, as the prompt carries them.
+    #[serde(default)]
+    pub resolutions: Vec<resolutions::Resolution>,
     /// The approval-required mode for a coordination Job and for a Review Job
     /// in a Linear Workflow; `None` for any other Job, whose command is
     /// milestone 1's ([`job_permission_mode`]).

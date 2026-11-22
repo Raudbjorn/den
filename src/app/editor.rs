@@ -1,4 +1,4 @@
-//! The launch sheet's prompt field: one line of text edited in place, with a
+//! The launch sheet's prompt field: text edited in place, with a
 //! cursor (a character index). The sheet wraps it over several rows.
 
 use super::Key;
@@ -24,9 +24,8 @@ impl PromptEditor {
     pub fn new(text: &str) -> Self {
         let chars: Vec<char> = text
             .chars()
-            // One line: line breaks in a template become spaces.
-            .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
-            .take(MAX_PROMPT_CHARS)
+            // Preserve publication blocks; check_prompt rejects overlong input.
+            .map(|c| if c == '\r' { ' ' } else { c })
             .collect();
         let cursor = chars.len();
         Self { chars, cursor }
@@ -66,5 +65,22 @@ impl PromptEditor {
             _ => return Edit::NotAnEdit,
         }
         Edit::Changed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PromptEditor;
+
+    /// den's line breaks survive the field (a resolution comment is posted
+    /// verbatim, #78); a carriage return becomes a space.
+    #[test]
+    fn line_breaks_are_kept_and_carriage_returns_become_spaces() {
+        // #111 dropped a carriage return; main (#110) makes it a space, and
+        // main's editor wins the merge. Line breaks stay either way: a
+        // resolution comment is multi-line Markdown posted verbatim (#78).
+        let editor = PromptEditor::new("one\r\ntwo\nthree");
+        assert_eq!(editor.text(), "one \ntwo\nthree");
+        assert_eq!(editor.cursor(), "one \ntwo\nthree".chars().count());
     }
 }

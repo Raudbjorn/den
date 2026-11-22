@@ -881,3 +881,33 @@ fn pr_pages_are_ordered_by_a_key_that_cannot_change_mid_read() {
         );
     }
 }
+
+#[test]
+fn an_owner_survey_records_each_listed_repos_coverage_as_its_own() {
+    let gql = ScriptedGraphQl::new(paginated_octo);
+    let observation = survey(&gql, &["octo".to_owned()], now()).expect("survey");
+    let repo = |name: &str, kind| Source::Repo {
+        repo: repo_id(&format!("octo/{name}")),
+        kind,
+    };
+    for name in ["busy", "fork", "quiet"] {
+        for kind in [
+            SourceKind::Repos,
+            SourceKind::PullRequests,
+            SourceKind::Issues,
+            SourceKind::Branches,
+        ] {
+            assert_eq!(
+                state(&observation, repo(name, kind)),
+                SourceState::Complete,
+                "{name} {kind:?}"
+            );
+        }
+        // Runs are read over REST, which this GraphQL-only script has none of.
+        assert_eq!(
+            state(&observation, repo(name, SourceKind::Runs)),
+            SourceState::NotYetFetched,
+            "{name}"
+        );
+    }
+}

@@ -597,6 +597,47 @@ fn no_repos_table_skips_nothing() {
     );
 }
 
+/// #79: `screenshots = true` marks a Repo whose PRs need screenshots; off
+/// unless written. "Add screenshots" is a kind a Repo may skip.
+#[test]
+fn repos_can_require_screenshots_and_skip_add_screenshots() {
+    let config = parse(
+        "owners = [\"acme\"]\n\n[repos.\"acme/web\"]\nscreenshots = true\nmerge_method = \"squash\"\nskip = [\"Add screenshots\"]\n\n[repos.\"acme/api\"]\nscreenshots = false\n\n[repos.\"acme/cli\"]\nskip = []\n",
+    )
+    .expect("valid");
+    let web = RepoId::new("acme", "web");
+    assert_eq!(config.screenshot_repos, std::slice::from_ref(&web));
+    // Both settings share a Repo table after integrating #72 and #79.
+    assert_eq!(
+        config.merge_methods.for_repo(&web),
+        Some(den::domain::MergeMethod::Squash)
+    );
+    let policies = config.policies();
+    assert!(policies.requires_screenshots(&RepoId::new("ACME", "Web")));
+    assert!(!policies.requires_screenshots(&RepoId::new("acme", "api")));
+    assert!(!policies.requires_screenshots(&RepoId::new("acme", "cli")));
+    assert!(
+        config
+            .skips
+            .for_repo(&web)
+            .contains(&NextStep::AddScreenshots)
+    );
+    assert!(
+        parse("owners = [\"acme\"]\n")
+            .expect("valid")
+            .screenshot_repos
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_screenshots_setting_that_isnt_true_or_false_names_the_line() {
+    let error =
+        parse("owners = [\"a\"]\n[repos.\"a/b\"]\nscreenshots = \"yes\"\n").expect_err("a string");
+    assert_eq!(location(&error).map(|l| l.line), Some(3), "{error}");
+    assert!(error.to_string().contains("expected a boolean"), "{error}");
+}
+
 #[test]
 fn bad_skips_name_the_line() {
     let cases = [
@@ -738,4 +779,39 @@ fn a_bad_legacy_marker_prefix_is_an_error_naming_its_line() {
     let twice = parse("owners = [\"acme\"]\nlegacy_marker_prefixes = [\"a\", \"a\"]\n")
         .expect_err("listed twice");
     assert!(twice.to_string().contains("listed twice"), "{twice}");
+}
+
+/// #57: `refresh_interval_secs` turns timed refreshes on; leaving it out (the
+/// default) keeps them off.
+#[test]
+fn refresh_interval_secs_is_off_unless_written() {
+    let off = parse("owners = [\"acme\"]\n").expect("valid");
+    assert_eq!(off.refresh_interval_secs, None);
+    for secs in [60_u64, 300, 86_400] {
+        let on = parse(&format!(
+            "owners = [\"acme\"]\nrefresh_interval_secs = {secs}\n"
+        ))
+        .expect("valid");
+        assert_eq!(on.refresh_interval_secs, Some(secs));
+    }
+}
+
+/// #57: below 60 seconds (0 included), above a day, or negative is an error
+/// naming the line, never silently clamped or turned off.
+#[test]
+fn a_refresh_interval_out_of_range_is_an_error_naming_its_line() {
+    for secs in ["0", "59", "-60", "86401"] {
+        let text = format!("owners = [\"acme\"]\n\nrefresh_interval_secs = {secs}\n");
+        let error = parse(&text).expect_err(secs).to_string();
+        assert!(error.contains("line 3"), "{secs}: {error}");
+        assert!(
+            error.contains(&format!(
+                "`refresh_interval_secs` is {secs}: use 60 to 86400 seconds, or leave it out"
+            )),
+            "{secs}: {error}"
+        );
+    }
+    let text = "owners = [\"acme\"]\nrefresh_interval_secs = \"60\"\n";
+    let error = parse(text).expect_err("a string").to_string();
+    assert!(error.contains("line 2"), "{error}");
 }

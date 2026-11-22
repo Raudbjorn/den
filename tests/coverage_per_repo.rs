@@ -11,7 +11,9 @@ mod support;
 use den::{
     app::{Effect, Key},
     decide::{Decision, decide},
-    domain::{Incompleteness, Observation, Policies, Source, SourceKind, SourceState, Viewers},
+    domain::{
+        Coverage, Incompleteness, Observation, Policies, Source, SourceKind, SourceState, Viewers,
+    },
 };
 use support::{
     build::{ObservationBuilder, now, pr, repo_id},
@@ -140,4 +142,77 @@ fn a_repo_read_since_is_not_dated_by_its_owners_kept_data() {
     let detail = harness.view.detail.content.clone().expect("selected");
     assert_eq!(detail.reference, "acme/app#1");
     assert_eq!(detail.observed, "12:00 UTC, just now");
+}
+
+#[test]
+fn an_owner_survey_records_each_listed_repos_sources_as_its_own() {
+    let owner = |kind| Source::Owner {
+        owner: "acme".to_owned(),
+        kind,
+    };
+    let repo = |name: &str, kind| Source::Repo {
+        repo: repo_id(name),
+        kind,
+    };
+    let mut coverage = Coverage::default();
+    coverage.record(owner(SourceKind::Repos), SourceState::Complete);
+    coverage.record(owner(SourceKind::PullRequests), pagination_stopped());
+    coverage.record(owner(SourceKind::Issues), SourceState::Complete);
+    coverage.record(owner(SourceKind::Branches), SourceState::Complete);
+    coverage.record(owner(SourceKind::Runs), SourceState::NotYetFetched);
+    // acme/app's PRs all came on the page den read.
+    coverage.record(
+        repo("acme/app", SourceKind::PullRequests),
+        SourceState::Complete,
+    );
+
+    coverage.split_by_repo(
+        "acme",
+        &[
+            repo_id("acme/app"),
+            repo_id("acme/big"),
+            repo_id("octo/elsewhere"),
+        ],
+    );
+
+    let state = |source: Source| coverage.get(&source).cloned();
+    for name in ["acme/app", "acme/big"] {
+        assert_eq!(
+            state(repo(name, SourceKind::Repos)),
+            Some(SourceState::Complete),
+            "{name}"
+        );
+        assert_eq!(
+            state(repo(name, SourceKind::Issues)),
+            Some(SourceState::Complete),
+            "{name}"
+        );
+        assert_eq!(
+            state(repo(name, SourceKind::Branches)),
+            Some(SourceState::Complete),
+            "{name}"
+        );
+        assert_eq!(
+            state(repo(name, SourceKind::Runs)),
+            Some(SourceState::NotYetFetched),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        state(repo("acme/app", SourceKind::PullRequests)),
+        Some(SourceState::Complete),
+        "a Repo's own pages read completely"
+    );
+    assert_eq!(
+        state(repo("acme/big", SourceKind::PullRequests)),
+        Some(pagination_stopped()),
+        "a Repo the listing didn't finish carries the Owner's reason"
+    );
+    assert!(
+        !coverage
+            .entries()
+            .iter()
+            .any(|e| matches!(&e.source, Source::Repo { repo, .. } if repo.owner == "octo")),
+        "another Owner's Repo is not this Owner's to split"
+    );
 }

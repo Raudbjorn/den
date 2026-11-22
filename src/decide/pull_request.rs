@@ -4,8 +4,13 @@
 //! 2. conflicting → Resolve conflicts
 //! 3. any failing check (required or advisory) → Fix CI
 //! 4. changes requested, or unresolved review threads → Address review
-//! 5. review requested → Review
-//! 6. approved (or, where the base branch requires no review, nobody asked
+//! 5. the viewer's own PR, in a Repo with `screenshots = true`, whose body has
+//!    neither a Screenshots section with an image nor a "No visual change"
+//!    line → Add screenshots (#79). Merge needs the same, so neither another
+//!    rule nor a `skip` of Add screenshots lets such a PR merge without it.
+//!    Other people's PRs are never held for screenshots.
+//! 6. review requested → Review
+//! 7. approved (or, where the base branch requires no review, nobody asked
 //!    for changes), no unresolved threads and every review request read, every
 //!    check passing, known mergeable, not queued, and GitHub itself reporting
 //!    the PR ready to merge → Merge
@@ -58,7 +63,7 @@ use crate::domain::{
     Source, SourceKind, SourceState, Viewer,
     facts::{
         AttachmentsRead, Check, CheckOutcome, LinearIssue, MergeState, Mergeability, PrDetails,
-        PullRequest, ReviewDecision, ReviewVerdict, Reviewer,
+        PullRequest, ReviewDecision, ReviewVerdict, Reviewer, Screenshots,
     },
     ids::same_login,
 };
@@ -204,6 +209,13 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         decision.suggested_reviewers_unread = suggested_reviewers_unread;
         decision
     };
+    let screenshots = add_screenshots(ctx, pr);
+    // Merge's own precondition, so a skipped Add screenshots never unblocks it.
+    review_blockers.extend(match &screenshots {
+        Finding::Holds(why) => Some(why.clone()),
+        Finding::Unknown(what) => Some(what.clone()),
+        Finding::No => None,
+    });
     let merge_blockers = merge_blockers(pr, &approval, review_blockers, pending_requests_hold);
     let (review, pending_note) = review_unless_approved(
         review(pr.details.as_ref(), ctx.viewers.github),
@@ -215,6 +227,7 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         (NextStep::ResolveConflicts, conflicts(pr)),
         (NextStep::FixCi, fix_ci(pr.details.as_ref())),
         (NextStep::AddressReview, address_review),
+        (NextStep::AddScreenshots, screenshots),
         (NextStep::Review, review),
     ];
     rules.extend(request_review.map(|finding| (NextStep::RequestReview, finding)));
@@ -746,6 +759,29 @@ fn review(details: Option<&PrDetails>, viewer: &Viewer) -> Finding {
     Finding::Holds(format!("review requested from {}", names.join(", ")))
 }
 
+/// Add screenshots (#79): the viewer's own PR in a Repo that requires
+/// screenshots, its body read and saying neither. A body den didn't read is
+/// unknown: neither this step nor Merge.
+fn add_screenshots(ctx: &Context<'_>, pr: &PullRequest) -> Finding {
+    let mine = pr
+        .author
+        .as_deref()
+        .is_some_and(|author| ctx.viewers.github.is(author));
+    if !mine || !ctx.requires_screenshots(&pr.repo) {
+        return Finding::No;
+    }
+    match pr.screenshots {
+        Screenshots::Present | Screenshots::NoVisualChange => Finding::No,
+        Screenshots::Missing => Finding::Holds(format!(
+            "no Screenshots section with an image and no \"No visual change\" line in the body ({} requires screenshots)",
+            pr.repo
+        )),
+        Screenshots::NotRead => {
+            Finding::Unknown("the Screenshots state: den didn't read the PR body".to_owned())
+        }
+    }
+}
+
 /// A pending review request that doesn't hold the merge (#73, ADR-0009):
 /// with `pending_requests_hold` off and the PR approved (or needing no
 /// review), Review doesn't hold, and an unread request isn't an unknown for
@@ -766,13 +802,25 @@ fn review_unless_approved(
     }
 }
 
-/// `review` is the review half of the rule ("approved").
+/// `review` is the review half of the rule ("approved"). A complete rollup
+/// with no checks in it doesn't block Merge (ADR-0012: den asks no more of CI
+/// than the Repo does, and GitHub's merge state holds a Pull Request whose
+/// required checks haven't reported); the rule then says so.
 fn merge(pr: &PullRequest, review: &str, blockers: &[String]) -> Finding {
     if !blockers.is_empty() {
         return Finding::No;
     }
+    let no_checks = pr
+        .details
+        .as_ref()
+        .is_some_and(|d| d.checks.complete && d.checks.items.is_empty());
+    let checks = if no_checks {
+        "no checks reported"
+    } else {
+        "checks passing"
+    };
     Finding::Holds(format!(
-        "{review}, checks passing and mergeable into {}",
+        "{review}, {checks} and mergeable into {}",
         pr.base_ref
     ))
 }

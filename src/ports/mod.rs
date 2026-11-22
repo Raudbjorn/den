@@ -11,7 +11,7 @@ use crate::{
     cache::{CacheError, CachedObservation},
     config::LinearWorkflow,
     domain::{
-        Coverage, LinearIssueId, LinearPart, Observation, UpstreamTargets,
+        Coverage, LinearIssueId, LinearPart, Observation, RepoId, UpstreamTargets,
         facts::{LinearState, LinearUser, MemberPullRequestState, PullRequestRef},
     },
     handoff::{
@@ -35,6 +35,9 @@ pub struct SurveyRequest {
     /// The forks whose target is their Upstream: their Branches are compared
     /// against the Upstream's default branch (#13).
     pub upstreams: UpstreamTargets,
+    /// The Repos with `screenshots = true` (#79): their open PRs' bodies are
+    /// read for the Screenshots state, and no other Repo's.
+    pub screenshot_repos: Vec<RepoId>,
 }
 
 /// A survey that produced no Observation at all. Per-source trouble (a failed
