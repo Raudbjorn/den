@@ -47,7 +47,10 @@ impl Fixture {
 
     fn command(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_den"));
+        // Started outside any clone, so den doesn't run (the fake) git to
+        // find which Repo it is in.
         command
+            .current_dir(self.root.path())
             .env_clear()
             .env("HOME", self.root.path())
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -70,6 +73,32 @@ impl Fixture {
 
 fn stdout(output: &Output) -> String {
     String::from_utf8(output.stdout.clone()).unwrap()
+}
+
+/// The real git on the test's own PATH.
+fn real_git() -> std::path::PathBuf {
+    den::launcher::LaunchEnvironment::from_env(|name| std::env::var_os(name))
+        .find("git")
+        .unwrap()
+}
+
+/// A Main Clone at `dir` whose `origin` is `url`, made with the real git.
+fn clone_with_origin(dir: &std::path::Path, url: &str) {
+    let git = real_git();
+    for args in [
+        vec!["init", "--quiet", "."],
+        vec!["config", "remote.origin.url", url],
+    ] {
+        fs::create_dir_all(dir).unwrap();
+        assert!(
+            Command::new(&git)
+                .current_dir(dir)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
 }
 
 #[test]
@@ -337,4 +366,74 @@ fn dump_and_launch_report_a_closed_stdout_pipe_without_panicking() {
         assert!(!error.contains("panicked"), "{args:?}: {error}");
     }
     assert!(!fixture.root.path().join("state/den/jobs.json").exists());
+}
+
+/// `--doctor` says what `den` would open in the start directory (spec 0003,
+/// "CLI"); outside any clone it runs no git to find out (the fixture's fake
+/// git records any call, and `doctor()` fails on it).
+#[test]
+fn doctor_says_what_the_start_directory_opens() {
+    let fixture = Fixture::new();
+    let output = fixture.doctor();
+    assert!(output.status.success(), "{output:?}");
+    let text = stdout(&output);
+    assert!(text.contains("\nStart directory:\n"), "{text}");
+    assert!(
+        text.contains(&format!(
+            "OK   start directory {:?} opens the watched Owners\n",
+            fs::canonicalize(fixture.root.path()).unwrap()
+        )),
+        "{text}"
+    );
+}
+
+/// Inside a clone whose `origin` is on GitHub, `--doctor` names that Repo,
+/// as `den` there would open it (startup rule 3), without the URL's
+/// credentials.
+#[test]
+fn doctor_names_the_repo_a_clone_opens() {
+    let fixture = Fixture::new();
+    let clone = fixture.root.path().join("clone");
+    clone_with_origin(
+        &clone,
+        "https://secret-sentinel@github.com/example-owner/app.git",
+    );
+    fs::remove_file(fixture.root.path().join("bin/git")).unwrap();
+    std::os::unix::fs::symlink(real_git(), fixture.root.path().join("bin/git")).unwrap();
+    let output = fixture
+        .command()
+        .current_dir(&clone)
+        .arg("--doctor")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let text = stdout(&output);
+    assert!(
+        text.contains(&format!(
+            "OK   start directory {:?} opens Repo example-owner/app\n",
+            fs::canonicalize(&clone).unwrap()
+        )),
+        "{text}"
+    );
+    assert!(!text.contains("secret-sentinel"), "{text}");
+}
+
+/// Inside a clone, which Repo it is takes git; without git on PATH the
+/// check fails and says so, rather than claiming the watched Owners.
+#[test]
+fn doctor_cannot_tell_a_clones_repo_without_git() {
+    let fixture = Fixture::new();
+    let clone = fixture.root.path().join("clone");
+    clone_with_origin(&clone, "https://github.com/example-owner/app.git");
+    fs::remove_file(fixture.root.path().join("bin/git")).unwrap();
+    let output = fixture
+        .command()
+        .current_dir(&clone)
+        .arg("--doctor")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let text = stdout(&output);
+    assert!(text.contains("without git on PATH"), "{text}");
+    assert!(!text.contains("opens"), "{text}");
 }

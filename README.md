@@ -187,6 +187,10 @@ root, and explicitly configured Main Clones and their remotes. It returns `0` wh
 all local checks pass and `1` when a required check fails. Missing launch tools can
 fail doctor even though surveying is possible.
 
+It also says what `den` would open in the current directory: a Repo, or the
+watched Owners and why. Outside any folder holding a `.git` it runs no git for
+this; inside one, it needs git on `PATH`.
+
 Doctor makes no network calls, creates no state files, and does not invoke `gh`,
 Claude, Kitty or clipboard tools. Configured clone checks use bounded read-only
 Git commands. It does not scan for clones, prove authentication or write access,

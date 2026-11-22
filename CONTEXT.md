@@ -89,8 +89,12 @@ A Next Step kind a Repo has opted out of with `skip` in den's config. Its Work I
 _Avoid_: Disabled, ignored, muted
 
 **Observation**:
-One survey of the watched Owners: the facts den read, who the viewer is, and when it was read.
+One survey, of one Repo (a Repo Survey) or of the watched Owners: the facts den read, who the viewer is, and when it was read.
 _Avoid_: Snapshot, fetch (for the result)
+
+**Repo Survey**:
+A survey of one Repo: the viewer, the Repo, and its open Pull Requests, Issues, Branches and default-branch Runs, every source recorded for that Repo rather than its Owner. It speaks for that Repo only, never for its Owner's other Repos.
+_Avoid_: Repo refresh, single-repo fetch
 
 **Coverage**:
 How completely an Observation was read, per source: complete, partial (with why), failed (with the error), or not yet fetched.
