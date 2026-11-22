@@ -73,11 +73,15 @@ the templates with instructions that work there. For example:
 
 ```toml
 implement = "Read {url}, implement the requested change, and run relevant checks."
-address_review = "Read the review threads on {url}, address valid findings, and verify the changes."
+address_review = "Read the review threads on {url}, address valid findings, and verify the changes.{review_notes}"
 ```
 
-Supported placeholders are `{repo}`, `{number}`, `{url}`, `{title}` and `{branch}`;
-use `{{` and `}}` for literal braces. Malformed configuration or prompts are
+Supported placeholders are `{repo}`, `{number}`, `{url}`, `{title}` and `{branch}`.
+`address_review` must also use `{review_notes}`: the reviews whose bodies still
+hold Review Points, named by URL and id (never their text), with den's
+instructions for splitting them and posting the `den:point` markers den reads
+back. It is empty when there are none. A template without it makes only Address
+review unusable. Use `{{` and `}}` for literal braces. Malformed configuration or prompts are
 reported instead of silently replaced.
 
 Templates set a Job's task; they can't change its **Ground Rules**. Every Job

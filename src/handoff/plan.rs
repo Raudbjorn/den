@@ -12,12 +12,15 @@ use super::{
     job_permission_mode,
     kinds::{self, Facts},
     landing, names,
-    prompts::{PromptFields, PromptKind, Prompts, PromptsError},
+    prompts::{PromptFields, PromptKind, Prompts, PromptsError, ReviewNote, ReviewNotes},
     reviewers, trust, worktree_path,
 };
 use crate::{
     config::Config,
-    decide::Decision,
+    decide::{
+        Decision,
+        points::{self, PointRef, PointState},
+    },
     domain::{
         LinearWorkflowPolicy, MergeMethods, NextStep, Observation, RepoId, WorkItemId,
         facts::Reviewer,
@@ -94,6 +97,9 @@ pub struct PlanInput<'a> {
     /// The environment variables the Job runs without (#70,
     /// [`crate::config::Config::job_removed_env`]).
     pub removed_env: &'a [String],
+    /// The configured `legacy_marker_prefixes` (#75): the Review Points an
+    /// Address review Job is told about are the ones `decide` counts.
+    pub legacy_marker_prefixes: &'a [String],
 }
 
 /// The facts for a launch, or every reason it can't happen. PRs here; a Land
@@ -415,6 +421,11 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             Vec::new()
         },
         identifier: facts.identifier.clone().unwrap_or_default(),
+        review_notes: if kind == PromptKind::Step(NextStep::AddressReview) {
+            review_notes(decision, input.observation, input.legacy_marker_prefixes)
+        } else {
+            ReviewNotes::default()
+        },
         landing_members: facts
             .landing
             .iter()
@@ -501,6 +512,50 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     };
     plan.command = command::display(&plan.window, &plan.window_command());
     Ok(plan)
+}
+
+/// What `{review_notes}` names (#76): each review of `decision`'s Pull Request
+/// with a body Point for the Job to address, once, with the numbers of its
+/// split Points to work on (none while its body isn't split). The Points are
+/// the ones `decide` and the detail see ([`points::of`]). An open or
+/// not-yet-split Point is the Job's; one that needs my decision is mine, so a
+/// review held only by such Points is never named (review on #106). `partial`
+/// says den didn't read every review or comment, so a review that reads as
+/// not yet split may already be split. Empty for anything else.
+fn review_notes(
+    decision: &Decision,
+    observation: &Observation,
+    prefixes: &[String],
+) -> ReviewNotes {
+    let Some(found) = points::of(observation, prefixes, &decision.item.id) else {
+        return ReviewNotes::default();
+    };
+    let mut reviews: Vec<ReviewNote> = Vec::new();
+    for point in found
+        .blocking_bodies()
+        .filter(|p| p.state != PointState::NeedsDecision)
+    {
+        let (PointRef::Review { review, n }, Some(url)) = (&point.reference, &point.url) else {
+            continue;
+        };
+        let note = match reviews.iter().position(|r| r.review == *review) {
+            Some(at) => &mut reviews[at],
+            None => {
+                reviews.push(ReviewNote {
+                    url: url.clone(),
+                    review: *review,
+                    points: Vec::new(),
+                });
+                let last = reviews.len() - 1;
+                &mut reviews[last]
+            }
+        };
+        note.points.extend(*n);
+    }
+    ReviewNotes {
+        reviews,
+        partial: !found.complete(),
+    }
 }
 
 /// The Linear Issues `decision`'s Pull Request is attached to (its Landing

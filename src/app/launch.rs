@@ -1206,6 +1206,7 @@ impl App {
                 .as_ref()
                 .map_or(&NO_MERGE_METHODS, |config| &config.merge_methods),
             removed_env: &self.removed_env,
+            legacy_marker_prefixes: self.policies.legacy_marker_prefixes(),
         })?;
         Ok(match &sheet.accepted_head {
             // Merge never offers to accept a moved head (#72): it is pinned to
