@@ -33,7 +33,9 @@ Colour is assigned by **job**, not by component:
 | **Teal**: actionable | `accent` | `#3CA0A0` | Waiting On you, focus, a live Job, the active tab, gauges | decoration |
 | **Rust**: the one action / you are here | `action` | `#D0602B` | the rust `▌` cursor tick, the single action Button, and an Upstream target's value on a launch sheet beside its "upstream →" label (spec 0001, story 89); nothing else (spec 0003, "The workbench") | a second action Button on a screen; warnings; errors |
 | **Amber**: caution | `warning` | `#E2A33B` | partial reads, refusals, a moved head, rate limits | the same ANSI colour as rust |
-| **Slate**: structure | `structure` / `border-strong` | `#5F7E8F` | panel borders at rest, rules, structure text (`structure-text` `#8EA6B3`) | content |
+| **Slate**: structure | `structure` / `border-strong` | `#5F7E8F` | panel borders at rest, rules | body text |
+
+Slate here names the structural role, not every colour in the slate family. Structural tokens (`structure`, `border`, `border-strong`) frame the content; the separate text roles below own labels, reasons, metadata and other content.
 
 ### Ground and text
 
@@ -46,6 +48,7 @@ Colour is assigned by **job**, not by component:
 | `border` | `#2A3940` | quiet rules |
 | `text` | `#D9E1E4` | body |
 | `text-strong` | `#F3F6F7` | titles, the Repo's name, the selected item |
+| `structure-text` | `#8EA6B3` | structural labels |
 | `text-muted` | `#9EB1BA` | secondary facts, reasons |
 | `text-faint` | `#86999F` | metadata, hints, "not swept yet" |
 | `success` | `#5CB38B` | checked and fine (`✓ complete`) |
