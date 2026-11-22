@@ -826,12 +826,16 @@ fn named_from(
         .collect()
 }
 
-/// `git remote -v` lines: `name<TAB>url (fetch)`; only fetch URLs are kept.
+/// `git remote -v` fetch lines, optionally followed by a partial-clone filter.
 fn parse_remotes(text: &str) -> Vec<Remote> {
     text.lines()
         .filter_map(|line| {
             let (name, rest) = line.split_once('\t')?;
-            let url = rest.strip_suffix(" (fetch)")?;
+            let (url, annotation) = rest.rsplit_once(" (fetch)")?;
+            if !(annotation.is_empty() || annotation.starts_with(" [") && annotation.ends_with(']'))
+            {
+                return None;
+            }
             Some(Remote {
                 name: name.trim().to_owned(),
                 url: url.trim().to_owned(),
@@ -873,5 +877,36 @@ fn writability(metadata: &fs::Metadata) -> Writability {
         Writability::NotWritable
     } else {
         Writability::Writable
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_remotes;
+
+    #[test]
+    fn partial_clone_fetch_annotations_preserve_urls_and_exclude_pushes() {
+        let remotes = parse_remotes(concat!(
+            "origin\thttps://github.com/ggml-org/llama.cpp.git (fetch) [blob:none]\n",
+            "origin\thttps://github.com/ggml-org/llama.cpp.git (push)\n",
+            "tree\tgit@github.com:acme/tree.git (fetch) [tree:0]\n",
+            "plain\thttps://github.com/acme/plain.git (fetch)\n",
+            "local\tfile:///tmp/a (fetch) repo.git (fetch) [blob:none]\n",
+            "push-only\tfile:///tmp/a (fetch) (push)\n",
+            "unknown\thttps://github.com/acme/unknown.git (fetch) unexpected\n",
+        ));
+        // Git's filter annotation must not hide a valid Main Clone (#112).
+        assert_eq!(
+            remotes
+                .iter()
+                .map(|remote| (remote.name.as_str(), remote.url.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("origin", "https://github.com/ggml-org/llama.cpp.git"),
+                ("tree", "git@github.com:acme/tree.git"),
+                ("plain", "https://github.com/acme/plain.git"),
+                ("local", "file:///tmp/a (fetch) repo.git"),
+            ]
+        );
     }
 }

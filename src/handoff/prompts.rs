@@ -40,6 +40,14 @@
 //! on its Pull Request immediately before merging it, and not to merge when
 //! posting fails.
 //!
+//! `merge` (#72) alone has `{head}` (the full head commit den observed),
+//! which it must use, so a Merge Job is always pinned to the head den decided
+//! on. `merge` and `land` have `{merge_method}`: with the Repo's
+//! `merge_method`, its `gh pr merge` flag (`--squash`, `--merge`,
+//! `--rebase`); without one, the instruction to use what the repository
+//! allows and ask when it allows more than one. A Land whose members' Repos
+//! differ gets each Repo's own method.
+//!
 //! `review_linear` (#41) is the Review Job's template in an Owner with a
 //! Linear Workflow, beside `review` for every other Owner. It alone has
 //! `{linear_context}` (for a Pull Request in a Landing Group, its Linear
@@ -52,7 +60,7 @@
 
 use super::resolutions::{self, Resolution};
 use crate::config::{Location, location_of};
-use crate::domain::{LinearWorkflowPolicy, NextStep};
+use crate::domain::{LinearWorkflowPolicy, MergeMethod, NextStep};
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
@@ -68,12 +76,10 @@ pub const MAX_TEMPLATE_CHARS: usize = 4_000;
 const PLACEHOLDERS: [&str; 5] = ["repo", "number", "url", "title", "branch"];
 /// Placeholders only the Request review template has (#39).
 const REQUEST_REVIEW_PLACEHOLDERS: [&str; 2] = ["reviewers", "announcement"];
-/// Placeholders only the Land template has (#40), and the resolution
-/// comments it shares with Merge (#78).
-const LAND_PLACEHOLDERS: [&str; 3] = ["members", "held", "resolutions"];
-/// Placeholders only the Merge template has: the resolution comment (#78),
-/// which it shares with Land.
-const MERGE_PLACEHOLDERS: [&str; 1] = ["resolutions"];
+/// Merge requires the head and resolution comment; Land shares the latter and method.
+const MERGE_PLACEHOLDERS: [&str; 3] = ["head", "merge_method", "resolutions"];
+/// Land also carries its approved members and held PRs.
+const LAND_PLACEHOLDERS: [&str; 4] = ["members", "held", "merge_method", "resolutions"];
 /// Why Merge and Land must use `{resolutions}`.
 const RESOLUTIONS_NEEDED: &str =
     "or the Job never posts what happened to the review feedback before merging";
@@ -143,8 +149,8 @@ impl PromptKind {
     fn own_placeholders(self) -> &'static [&'static str] {
         match self {
             Self::Step(NextStep::RequestReview) => &REQUEST_REVIEW_PLACEHOLDERS,
-            Self::Step(NextStep::Land) => &LAND_PLACEHOLDERS,
             Self::Step(NextStep::Merge) => &MERGE_PLACEHOLDERS,
+            Self::Step(NextStep::Land) => &LAND_PLACEHOLDERS,
             Self::ReviewLinear => &REVIEW_LINEAR_PLACEHOLDERS,
             Self::ImplementLinear => &IMPLEMENT_LINEAR_PLACEHOLDERS,
             Self::Step(_) => &[],
@@ -155,10 +161,15 @@ impl PromptKind {
     /// Job would lose without it: a Request review Job learns whom to ask
     /// only from `{reviewers}`, a verdict-only Review Job its Linear Issue and
     /// its limits only from `{linear_context}` and `{verdict_only}`, and a
-    /// Land Job its approved member heads only from `{members}`, and a Merge
-    /// or Land Job the resolution comments only from `{resolutions}`.
+    /// Land Job its approved member heads only from `{members}`, a Merge Job
+    /// its observed head only from `{head}`, and both their resolution comments
+    /// only from `{resolutions}`.
     fn required_placeholders(self) -> &'static [(&'static str, &'static str)] {
         match self {
+            Self::Step(NextStep::Merge) => &[
+                ("head", "or the Job isn't pinned to the head den observed"),
+                ("resolutions", RESOLUTIONS_NEEDED),
+            ],
             Self::Step(NextStep::RequestReview) => {
                 &[("reviewers", "or the Job never gets what the sheet chose")]
             }
@@ -166,7 +177,6 @@ impl PromptKind {
                 ("members", "or the Job never gets what the sheet chose"),
                 ("resolutions", RESOLUTIONS_NEEDED),
             ],
-            Self::Step(NextStep::Merge) => &[("resolutions", RESOLUTIONS_NEEDED)],
             Self::ReviewLinear => &[
                 (
                     "linear_context",
@@ -205,8 +215,10 @@ pub fn default_template(step: NextStep) -> &'static str {
         NextStep::ResolveConflicts => {
             "Pull Request {repo}#{number} ({url}) conflicts with its base branch. You are on its head branch {branch}. Resolve the conflicts: merge the base branch in; don't rebase."
         }
+        // A Coordination Job since #72: ask-first, pinned to the head den
+        // observed, with the Repo's merge method.
         NextStep::Merge => {
-            "Pull Request {repo}#{number} ({url}) is approved and its checks pass. You are on its head branch {branch}. Check that it is ready. Then post its resolution comment below on it as one comment: the lines between the ~~~ fences, verbatim, without the fences. Only once that comment is posted, merge it; if posting fails, stop and don't merge.\n\n{resolutions}"
+            "Pull Request {repo}#{number} ({url}) is approved and its checks pass. You are on its head branch {branch}. Check that it is ready. Then post its resolution comment below on it as one comment: the lines between the ~~~ fences, verbatim, without the fences. Only once that comment is posted, merge it pinned to the head den observed: gh pr merge {url} --match-head-commit {head}, using {merge_method}. If posting fails, stop and don't merge. If GitHub refuses because the head moved, stop and tell me; never merge another head.\n\n{resolutions}"
         }
         NextStep::OpenPr => {
             "Branch {branch} in {repo} has unmerged commits and no Pull Request. Review its commits and open a Pull Request for it."
@@ -223,7 +235,7 @@ pub fn default_template(step: NextStep) -> &'static str {
             "Pull Request {repo}#{number} ({url}) needs review. Request reviews on GitHub from exactly these reviewers: {reviewers}. Change nothing else on the Pull Request.{announcement}"
         }
         NextStep::Land => {
-            "Land the Landing Group of Linear Issue {url}. Merge exactly these Pull Requests, one at a time and in this order, each pinned to its approved head commit (gh pr merge --match-head-commit <commit>): {members}. Before merging the next one, wait until GitHub shows the previous one as merged: queued in a merge queue or set to auto-merge is not merged. Immediately before merging each one, post its resolution comment below on it as one comment: the lines between its ~~~ fences, verbatim, without the fences. Stop at the first failure or anything unexpected, such as a comment you couldn't post, a head that moved, a failing check or a state you didn't expect, and merge nothing more. Never merge a Pull Request in a Held Repo{held}. Never undo or revert a merge, and never change any other Pull Request. When you stop or finish, report each Pull Request above as merged, queued, failed (with the error) or not attempted.\n\n{resolutions}"
+            "Land the Landing Group of Linear Issue {url}. Merge exactly these Pull Requests, one at a time and in this order, each pinned to its approved head commit (gh pr merge --match-head-commit <commit>): {members}. Merge each using {merge_method}. Before merging the next one, wait until GitHub shows the previous one as merged: queued in a merge queue or set to auto-merge is not merged. Immediately before merging each one, post its resolution comment below on it as one comment: the lines between its ~~~ fences, verbatim, without the fences. Stop at the first failure or anything unexpected, such as a comment you couldn't post, a head that moved, a failing check or a state you didn't expect, and merge nothing more. Never merge a Pull Request in a Held Repo{held}. Never undo or revert a merge, and never change any other Pull Request. When you stop or finish, report each Pull Request above as merged, queued, failed (with the error) or not attempted.\n\n{resolutions}"
         }
         NextStep::MarkForRelease => {
             "Linear Issue {url} can move to its release state. den makes this change itself; do nothing remote."
@@ -251,6 +263,37 @@ fn members_list(members: &[(String, String)]) -> String {
         .map(|(i, (url, head))| format!("{}. {url} at {head}", i + 1))
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+/// What `{merge_method}` says for a Repo without a merge method (#72).
+const ASK_MERGE_METHOD: &str =
+    "the merge method the repository allows; if it allows more than one, ask me which to use";
+
+/// What `{merge_method}` is for the Repos a Job merges in, in order: the one
+/// method (a flag, or [`ASK_MERGE_METHOD`]) when they agree; otherwise each
+/// Repo's own.
+fn merge_method_text(repos: &[(String, Option<MergeMethod>)]) -> String {
+    let flag_or_ask = |method: Option<MergeMethod>| {
+        method.map_or_else(|| ASK_MERGE_METHOD.to_owned(), |m| m.flag().to_owned())
+    };
+    match repos {
+        [] => ASK_MERGE_METHOD.to_owned(),
+        [(_, first), rest @ ..] if rest.iter().all(|(_, method)| method == first) => {
+            flag_or_ask(*first)
+        }
+        many => format!(
+            "its Repo's own method ({})",
+            many.iter()
+                .map(|(repo, method)| match method {
+                    Some(method) => format!("{repo}: {}", method.flag()),
+                    None => format!(
+                        "{repo}: the method it allows, asking me if it allows more than one"
+                    ),
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        ),
+    }
 }
 
 /// What `{announcement}` is without a Slack channel: no announcement step,
@@ -302,6 +345,11 @@ pub struct PromptFields {
     /// Merge and Land only (#78): each merged Pull Request's resolution
     /// comment, in the order the Job merges them.
     pub resolutions: Vec<Resolution>,
+    /// Merge only: the full head commit den observed (#72).
+    pub head: String,
+    /// Merge and Land: each Repo the Job merges in, in order, with its
+    /// merge method if it names one (#72).
+    pub merge_methods: Vec<(String, Option<MergeMethod>)>,
     /// Review (Linear) only: the Linear Issues the Pull Request is attached
     /// to, as (identifier, URL).
     pub linear_issues: Vec<(String, String)>,
@@ -465,19 +513,19 @@ fn check(template: &str, kind: PromptKind) -> Result<Vec<String>, String> {
             '{' => {
                 let name: String = chars.by_ref().take_while(|&c| c != '}').collect();
                 if !usable.contains(&name.as_str()) {
-                    let owners: Vec<String> = PromptKind::owners_of(&name)
-                        .into_iter()
-                        .map(PromptKind::key)
-                        .collect();
-                    let what = match owners.as_slice() {
-                        [] => "unknown".to_owned(),
-                        [one] => format!("the {one}-only"),
-                        many => format!("the {}-only", many.join("- and ")),
+                    let what = match PromptKind::owners_of(&name).as_slice() {
+                        [] => "unknown placeholder".to_owned(),
+                        [owner] => format!("the {}-only placeholder", owner.key()),
+                        owners => format!(
+                            "a placeholder only {} have:",
+                            owners
+                                .iter()
+                                .map(|owner| owner.key())
+                                .collect::<Vec<_>>()
+                                .join(" and ")
+                        ),
                     };
-                    return Err(format!(
-                        "{what} placeholder {{{name}}}; use {}",
-                        spelled(&usable)
-                    ));
+                    return Err(format!("{what} {{{name}}}; use {}", spelled(&usable)));
                 }
                 used.push(name);
             }
@@ -542,6 +590,8 @@ fn fill(template: &str, fields: &PromptFields) -> String {
                         out.push_str(&fields.held_members.join(", "));
                     }
                     "resolutions" => out.push_str(&resolutions::placeholder(&fields.resolutions)),
+                    "head" => out.push_str(&fields.head),
+                    "merge_method" => out.push_str(&merge_method_text(&fields.merge_methods)),
                     "linear_context" => out.push_str(&linear_context(&fields.linear_issues)),
                     "verdict_only" => out.push_str(VERDICT_ONLY),
                     _ => {}

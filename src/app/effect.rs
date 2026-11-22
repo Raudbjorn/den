@@ -3,8 +3,8 @@
 use super::event::{LaunchId, SurveyId};
 use crate::{
     cache::CachedObservation,
-    domain::UpstreamTargets,
     domain::facts::LinearState,
+    domain::{UpstreamTargets, WorkItemId},
     handoff::{InspectRequest, LaunchPlan, ReopenPlan},
     ports::{LinearIssueRequest, LinearSurveyRequest, MemberStatesRequest, SurveyRequest},
 };
@@ -64,6 +64,9 @@ pub enum Effect {
     /// Open a Live Job's window again, resuming its session (#14); answered by
     /// `Event::LaunchFinished`.
     Reopen { id: LaunchId, plan: Box<ReopenPlan> },
+    /// Put `text` (a needs-decision Point's answering marker line, #77) on the
+    /// clipboard for `item`; answered by `Event::Copied`. den posts nothing.
+    CopyToClipboard { item: WorkItemId, text: String },
     /// Read a Linear Issue again just before writing to it (#38), for the
     /// sheet `id`; answered by `Event::LinearIssueRead`. Emitted only after
     /// `Enter` on a sheet that will write to Linear, and after a write whose

@@ -19,7 +19,10 @@ use super::{
 use crate::{
     config::Config,
     decide::{Decision, points::review_points},
-    domain::{LinearWorkflowPolicy, NextStep, Observation, RepoId, WorkItemId, facts::Reviewer},
+    domain::{
+        LinearWorkflowPolicy, MergeMethods, NextStep, Observation, RepoId, WorkItemId,
+        facts::Reviewer,
+    },
 };
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -86,6 +89,9 @@ pub struct PlanInput<'a> {
     /// [`PromptKind::for_job`]).
     /// Land also reads its landing order and Held Repos.
     pub policy: &'a LinearWorkflowPolicy,
+    /// Each Repo's merge method (#72), for Merge's and Land's
+    /// `{merge_method}`. Unused for other kinds.
+    pub merge_methods: &'a MergeMethods,
     /// The environment variables the Job runs without (#70,
     /// [`crate::config::Config::job_removed_env`]).
     pub removed_env: &'a [String],
@@ -426,6 +432,20 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
             .map(|m| m.url.clone())
             .collect(),
         resolutions: resolutions(&facts, input),
+        // Merge is pinned to the commit the plan starts on, which `execute`
+        // re-verifies on GitHub before anything changes (#72).
+        head: if facts.step == NextStep::Merge {
+            commit.clone()
+        } else {
+            String::new()
+        },
+        merge_methods: merged_repos(&facts, decision)
+            .into_iter()
+            .map(|repo| {
+                let method = input.merge_methods.for_repo(&repo);
+                (repo.to_string(), method)
+            })
+            .collect(),
     };
     let prompt = prompts.render(kind, &fields);
     let permission_mode = job_permission_mode(facts.step, input.policy);
@@ -530,14 +550,6 @@ fn clash_branch(facts: &Facts) -> Option<String> {
     }
 }
 
-/// A fresh start's local branch (`feature-7-2`) tracks a branch of another
-/// name (`origin/feature-7`), so a plain `git push` refuses (push.default
-/// simple). The prompt then ends with the one line that pushes back to it.
-/// Only for a branch of the target (a same-Repo PR head, a Branch): a
-/// cross-Repo PR head lives in another Repo, which the target's remote is not.
-/// Never for a Job in the approval-required mode ([`job_permission_mode`]):
-/// a coordination Job or a verdict-only Review Job changes nothing on the
-/// branch, and its prompt says so.
 /// The resolution comment of each Pull Request a Merge or Land Job merges
 /// (#78), in the order it merges them, from the Review Points as the
 /// decision read them (the viewer's markers, the configured legacy
@@ -574,6 +586,14 @@ fn resolutions(facts: &Facts, input: &PlanInput<'_>) -> Vec<Resolution> {
     }
 }
 
+/// A fresh start's local branch (`feature-7-2`) tracks a branch of another
+/// name (`origin/feature-7`), so a plain `git push` refuses (push.default
+/// simple). The prompt then ends with the one line that pushes back to it.
+/// Only for a branch of the target (a same-Repo PR head, a Branch): a
+/// cross-Repo PR head lives in another Repo, which the target's remote is not.
+/// Never for a Job in the approval-required mode ([`job_permission_mode`]):
+/// a coordination Job or a verdict-only Review Job changes nothing on the
+/// branch, and its prompt says so.
 fn with_push_line(
     prompt: String,
     facts: &Facts,
@@ -903,4 +923,22 @@ fn recorded_job(
         .rev()
         .find(|job| job.subject.covers(item) && job.worktree == worktree)
         .map(|job| (job.session.clone(), job.launched_at))
+}
+
+/// The Repos a Job merges in, in order (#72): a Merge Job's Pull Request's,
+/// or each Land member's, once each; none for any other Job.
+fn merged_repos(facts: &Facts, decision: &Decision) -> Vec<RepoId> {
+    match (facts.step, &facts.landing) {
+        (NextStep::Merge, _) => decision.item.id.repo().cloned().into_iter().collect(),
+        (NextStep::Land, Some(group)) => {
+            let mut repos: Vec<RepoId> = Vec::new();
+            for member in &group.members {
+                if !repos.iter().any(|repo| repo.same(&member.pr.repo)) {
+                    repos.push(member.pr.repo.clone());
+                }
+            }
+            repos
+        }
+        _ => Vec::new(),
+    }
 }

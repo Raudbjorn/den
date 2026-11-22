@@ -50,6 +50,13 @@ pub enum RefusalReason {
     LandingMemberGone {
         pr: PullRequestRef,
     },
+    /// Merge (#72): just before launching, GitHub had the Pull Request's
+    /// head at another commit than the one den decided to Merge.
+    MergeHeadMoved {
+        pr: PullRequestRef,
+        observed: String,
+        now: String,
+    },
     /// Land (#40): just before launching, GitHub had a member's head at
     /// another commit than the one approved on the sheet.
     LandingMemberMoved {
@@ -270,6 +277,14 @@ impl fmt::Display for RefusalReason {
                 f,
                 "{}#{}, a member of the Landing Group, is no longer among the open Pull Requests den surveyed",
                 pr.repo, pr.number
+            ),
+            Self::MergeHeadMoved { pr, observed, now } => write!(
+                f,
+                "{}#{}'s head is now {} on GitHub, not {}, which den decided to Merge; nothing was done. Refresh (r) and look at the new head before merging it",
+                pr.repo,
+                pr.number,
+                short_commit(now),
+                short_commit(observed)
             ),
             Self::LandingMemberMoved { pr, approved, now } => write!(
                 f,

@@ -137,6 +137,8 @@ pub struct App {
     /// same survey was still to come, and saves both (or, if it fails, the
     /// failure does).
     linear_unsaved: bool,
+    /// What the last `m` did (#77), and for which Work Item.
+    copied: Option<(WorkItemId, Result<(), String>)>,
 }
 
 impl App {
@@ -177,6 +179,7 @@ impl App {
             linear_unsaved: false,
             upstreams_unreadable: None,
             upstream_problem: None,
+            copied: None,
             start_note: None,
         }
     }
@@ -230,7 +233,7 @@ impl App {
     }
 
     pub fn handle(&mut self, event: Event) -> (ViewModel, Vec<Effect>) {
-        let effects = match event {
+        let mut effects = match event {
             Event::Started { now } => {
                 self.now = Some(now);
                 self.start()
@@ -265,7 +268,9 @@ impl App {
             }
             Event::JobsChecked { outcome } => self.jobs_checked(outcome),
             Event::UpstreamsStored { outcome } => self.upstreams_stored(outcome),
+            Event::Copied { item, outcome } => self.copy_finished(item, outcome),
         };
+        effects.extend(self.finish_land_check());
         (self.view(), effects)
     }
 
@@ -291,6 +296,8 @@ impl App {
             job_checks: &self.job_checks,
             upstreams: &self.upstreams,
             upstream_note: self.upstream_note(),
+            legacy_marker_prefixes: self.policies.legacy_marker_prefixes(),
+            copied: self.copied.as_ref(),
             start_note: self.start_note.as_deref(),
         })
     }
@@ -380,6 +387,9 @@ impl App {
                     self.member_states_running = None;
                 }
                 "read Landing Group members' states"
+            }
+            Effect::CopyToClipboard { item, .. } => {
+                return self.copy_finished(item, Err(format!("not queued: {reason}")));
             }
             Effect::StoreCache { .. } => "save cache",
             Effect::CheckJobs => "check Jobs",
@@ -508,6 +518,7 @@ impl App {
             Key::Char('r') => self.refresh(),
             Key::Char('c') => self.open_launch_sheet(),
             Key::Char('u') if self.scope.focus == Focus::Sidebar => self.toggle_upstream(),
+            Key::Char('m') => self.copy_markers(),
             Key::Enter
             | Key::Esc
             | Key::Char(_)
@@ -767,6 +778,41 @@ impl App {
             .cloned()
             .collect();
         self.keep_selection();
+    }
+
+    /// `m` (#77): the selected PR's needs-decision Points' marker lines
+    /// (answered) onto the clipboard, for the user to post with their
+    /// decision. den posts nothing (ADR-0002). Nothing when no Point needs a
+    /// decision.
+    fn copy_markers(&mut self) -> Vec<Effect> {
+        let Some(item) = self.selected.clone() else {
+            return Vec::new();
+        };
+        let Some(text) = view::points::of(
+            self.shown.as_ref().map(|s| &s.observation),
+            self.policies.legacy_marker_prefixes(),
+            &item,
+        )
+        .as_ref()
+        .and_then(view::points::decision_markers) else {
+            return Vec::new();
+        };
+        vec![Effect::CopyToClipboard { item, text }]
+    }
+
+    fn copy_finished(&mut self, item: WorkItemId, outcome: Result<(), String>) -> Vec<Effect> {
+        let log = match &outcome {
+            Ok(()) => Effect::log(
+                LogLevel::Info,
+                format!("copied the answering marker line(s) of {item} to the clipboard"),
+            ),
+            Err(why) => Effect::log(
+                LogLevel::Warn,
+                format!("couldn't copy the marker line(s) of {item}: {why}"),
+            ),
+        };
+        self.copied = Some((item, outcome));
+        vec![log]
     }
 
     fn selected_index(&self) -> Option<usize> {

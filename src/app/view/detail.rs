@@ -1,6 +1,6 @@
 //! The detail pane: the selected item's Next Step, Waiting On and Explanation.
 
-use super::{State, coverage, format, jobs, landing};
+use super::{State, coverage, format, jobs, landing, points};
 use crate::{
     app::view_model::{Detail, DetailContent, DetailFacts},
     decide::Decision,
@@ -57,6 +57,7 @@ pub fn build(state: &State<'_>) -> Detail {
                     .map(linear_facts)
                     .or_else(|| workflow_facts(decision)),
                 landing: landing::detail(state, decision),
+                review_points: points::selected_detail(state, &decision.item.id),
             }
         });
     Detail {
