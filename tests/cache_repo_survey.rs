@@ -223,6 +223,23 @@ fn fitting_the_cache_keeps_the_open_repo_of_an_unwatched_owner_and_nothing_else_
     assert_eq!(prs(&unopened), ["acme/app#1"]);
 }
 
+/// An Owner survey cut off (`cut_off_as`) before acme/app, merged over
+/// [`earlier_owner_survey`]: app's facts stay with no Repo coverage of their
+/// own, so their age is acme's.
+fn owner_aged_app(cut_off_as: &SourceState) -> CachedObservation {
+    let cut_off = ObservationBuilder::new()
+        .observed_at("2026-11-19T11:00:00Z")
+        .owner("acme")
+        .owner_coverage("acme", SourceKind::Repos, cut_off_as.clone())
+        .fully_read_owner("octo");
+    let cut_off = read_whole(cut_off, "acme/lib", &SourceState::Complete);
+    let cut_off = read_whole(cut_off, "octo/x", &SourceState::Complete)
+        .pull_request(pr("acme/lib", 2).author(ME))
+        .pull_request(pr("octo/x", 3).author(ME))
+        .build();
+    cache::merge(Some(earlier_owner_survey()), cut_off)
+}
+
 /// Beyond the plan: an Owner survey cut off before acme/app (rate limited)
 /// keeps app's facts with no Repo coverage of their own, so their age is
 /// acme's. A partial Repo Survey of app keeps them still, and they keep that
@@ -231,17 +248,7 @@ fn fitting_the_cache_keeps_the_open_repo_of_an_unwatched_owner_and_nothing_else_
 #[test]
 fn a_partial_repo_survey_keeps_facts_its_owner_aged_with_that_age() {
     let rate_limited = SourceState::Partial(Incompleteness::RateLimited { resets_at: None });
-    let cut_off = ObservationBuilder::new()
-        .observed_at("2026-11-19T11:00:00Z")
-        .owner("acme")
-        .owner_coverage("acme", SourceKind::Repos, rate_limited.clone())
-        .fully_read_owner("octo");
-    let cut_off = read_whole(cut_off, "acme/lib", &SourceState::Complete);
-    let cut_off = read_whole(cut_off, "octo/x", &SourceState::Complete)
-        .pull_request(pr("acme/lib", 2).author(ME))
-        .pull_request(pr("octo/x", 3).author(ME))
-        .build();
-    let held = cache::merge(Some(earlier_owner_survey()), cut_off);
+    let held = owner_aged_app(&rate_limited);
     assert_eq!(prs(&held), ["acme/app#1", "acme/lib#2", "octo/x#3"]);
     assert_eq!(
         held.carried_since(&pull_requests_of("acme/app")),
@@ -260,5 +267,69 @@ fn a_partial_repo_survey_keeps_facts_its_owner_aged_with_that_age() {
         merged.carried_since(&pull_requests_of("acme/app")),
         Some(ts(EARLIER)),
         "kept facts keep their age"
+    );
+}
+
+/// Review of #165: fitting the cache to Owners that no longer include acme,
+/// with acme/app open, drops acme's sources. acme/app's facts are aged only
+/// through them, so the Repo must take that age (and coverage) over first, or
+/// its old facts would read as new, now and after a partial Repo Survey.
+#[test]
+fn fitting_keeps_the_owner_age_of_an_open_repo_whose_owner_is_no_longer_watched() {
+    let rate_limited = SourceState::Partial(Incompleteness::RateLimited { resets_at: None });
+    let held = owner_aged_app(&rate_limited);
+    let app = repo_id("acme/app");
+
+    // An open Repo den holds no facts for takes nothing from its Owner: acme's
+    // coverage would make it read as surveyed and empty.
+    let unheld = repo_id("acme/new");
+    let fitted_unheld = held
+        .clone()
+        .restricted_to(&["octo".to_owned()], Some(&unheld));
+    assert!(
+        fitted_unheld
+            .observation
+            .coverage
+            .entries()
+            .iter()
+            .all(|e| !matches!(&e.source, Source::Repo { repo, .. } if repo.same(&unheld))),
+        "no coverage for a Repo den never read"
+    );
+
+    let fitted = held.restricted_to(&["octo".to_owned()], Some(&app));
+    assert_eq!(prs(&fitted), ["acme/app#1", "octo/x#3"]);
+    assert_eq!(
+        fitted.carried_since(&pull_requests_of("acme/app")),
+        Some(ts(EARLIER)),
+        "app's facts keep acme's age"
+    );
+    assert!(
+        fitted
+            .observation
+            .coverage
+            .get(&pull_requests_of("acme/app"))
+            .is_some(),
+        "and acme's coverage, as app's own"
+    );
+    assert!(
+        fitted
+            .observation
+            .coverage
+            .entries()
+            .iter()
+            .all(|e| !matches!(&e.source, Source::Owner { owner, .. } if owner == "acme")),
+        "acme itself is gone"
+    );
+
+    let merged = cache::merge_repo(
+        Some(fitted),
+        repo_survey("2026-11-19T12:00:00Z", &rate_limited, &[]),
+        &app,
+    );
+    assert_eq!(prs(&merged), ["acme/app#1", "octo/x#3"]);
+    assert_eq!(
+        merged.carried_since(&pull_requests_of("acme/app")),
+        Some(ts(EARLIER)),
+        "a partial Repo Survey after the fit keeps that age"
     );
 }

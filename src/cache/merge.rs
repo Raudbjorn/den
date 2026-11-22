@@ -249,9 +249,10 @@ impl Elsewhere {
 /// of their own: an Owner survey cut off before the Repo, say) a copy of that
 /// Owner source's coverage and age, as [`CachedObservation::carried_since`]
 /// reads them. The Owner's sources stay behind when a Repo Survey splits
-/// `previous`, so without this the Repo's kept facts would lose their age and
-/// read as new.
-fn owner_aged_as_repo(previous: &mut CachedObservation, repo: &RepoId) {
+/// `previous`, and fitting the cache drops them when the Owner is no longer
+/// watched but the Repo is open, so without this the Repo's kept facts would
+/// lose their age and read as new.
+pub(super) fn owner_aged_as_repo(previous: &mut CachedObservation, repo: &RepoId) {
     let own = |kind: SourceKind| Source::Repo {
         repo: repo.clone(),
         kind,

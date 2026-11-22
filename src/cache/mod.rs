@@ -128,8 +128,17 @@ impl CachedObservation {
     /// so their absence never reads as a complete, empty survey. The `open`
     /// Repo's facts and Repo sources stay even when its Owner isn't watched:
     /// den opens Repos outside the watched Owners too (spec 0003, "Startup").
+    /// Facts aged only through that Owner's sources take the Owner's coverage
+    /// and age as the Repo's own first, so they don't read as new once the
+    /// Owner's sources go.
     pub fn restricted_to(mut self, owners: &[String], open: Option<&RepoId>) -> Self {
         let watched = |owner: &str| owners.iter().any(|o| o.eq_ignore_ascii_case(owner));
+        if let Some(repo) = open
+            && !watched(&repo.owner)
+            && self.observation.repos.iter().any(|r| r.id.same(repo))
+        {
+            merge::owner_aged_as_repo(&mut self, repo);
+        }
         let kept = |repo: &RepoId| watched(&repo.owner) || open.is_some_and(|o| o.same(repo));
         let source_kept = |source: &Source| match source {
             Source::Repo { repo, .. } => kept(repo),
