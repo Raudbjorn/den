@@ -297,6 +297,12 @@ skip = ["Fix CI", "Triage", "Prune or revive"]
   - Colours come from the generated Oxide palette (`build.rs`), quantised for ansi256/ansi16/mono by the vendored profile code.
   - The ASCII glyph profile gives every glyph and border a one-cell ASCII form: borders `+-|`, chips `[text]`, cursor `>`.
 
+**Partial-data glyphs (#156).** The `▲` used for partial-read and rate-limit cautions in the reference renders is superseded by `Glyphs::incomplete` in [src/ui/glyphs.rs](../../src/ui/glyphs.rs). The code wins for this glyph, matching [DESIGN.md §4 and §7](../../DESIGN.md):
+
+| Meaning | Unicode | ASCII |
+|---|---|---|
+| incomplete / partial data | `⚠` | `!` |
+
 **Widgets**
 
 | Widget | Built from | Job |
@@ -474,4 +480,4 @@ Tests go through the two seams, plus thin adapter checks, as in milestones 1 and
   - retire **Scope**, or narrow it to "the Repo the workbench covers";
   - update **Observation** to say it is one survey of one Repo or of the watched Owners.
 - **Housekeeping:** the milestone 1 spec issue (#1), the milestone 2 spec (#30) and tickets #33–#41 are open, though their code is on `main`. Verify and close them before publishing this spec.
-- **Renders:** `docs/specs/0003-assets/` holds the approved renders. They were drawn with ratatui 0.30.2 widgets and the Oxide palette into a `TestBackend` and exported as SVG, then PNG, with mock data. The throwaway source lived outside the repo.
+- **Renders:** `docs/specs/0003-assets/` holds the approved renders. They were drawn with ratatui 0.30.2 widgets and the Oxide palette into a `TestBackend` and exported as SVG, then PNG, with mock data. The throwaway source lived outside the repo. Their partial-data triangle is superseded by the [glyphs specified above](#look-the-den-kit-adr-0006).
