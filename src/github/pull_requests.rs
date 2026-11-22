@@ -12,7 +12,8 @@ use super::{
 use crate::{
     domain::{
         CoverageEntry, RepoId, Source, SourceKind, SourceState,
-        facts::{MergeState, Mergeability, PullRequest, ReviewDecision},
+        facts::{MergeState, Mergeability, PullRequest, ReviewDecision, Screenshots},
+        ids::same_login,
     },
     ports::SurveyFailure,
 };
@@ -81,6 +82,9 @@ struct PrNode {
     merge_state_status: String,
     review_decision: Option<String>,
     is_in_merge_queue: bool,
+    /// Present only when the query asked for bodies (`$bodies`, #79).
+    #[serde(default)]
+    body: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -92,8 +96,20 @@ struct HeadRepo {
 impl PrNode {
     /// The PR's node ID and its facts (details not read yet). `page_complete`
     /// is false when the page came with errors alongside data, which can null
-    /// a nullable field such as the review decision.
-    fn into_fact(self, repo: &RepoId, page_complete: bool) -> (String, PullRequest) {
+    /// a nullable field such as the review decision. The body becomes the
+    /// Screenshots state for the Repos in `screenshot_repos`, and is dropped.
+    fn into_fact(
+        self,
+        repo: &RepoId,
+        page_complete: bool,
+        screenshot_repos: &[RepoId],
+    ) -> (String, PullRequest) {
+        let screenshots = match &self.body {
+            Some(body) if screenshot_repos.iter().any(|r| r.same(repo)) => {
+                Screenshots::from_body(body)
+            }
+            _ => Screenshots::NotRead,
+        };
         let fact = PullRequest {
             repo: repo.clone(),
             number: self.number,
@@ -114,6 +130,7 @@ impl PrNode {
             review_decision: review_decision(self.review_decision.as_deref(), page_complete),
             in_merge_queue: self.is_in_merge_queue,
             details: None,
+            screenshots,
         };
         (self.id, fact)
     }
@@ -180,12 +197,19 @@ fn with_facts(query: &str) -> String {
     format!("{query}\n{FACTS}")
 }
 
+/// `viewer` is the GitHub viewer's login, for the Review Point facts (#75).
+/// `screenshot_repos` are the Repos with `screenshots = true` (#79): PR bodies
+/// are asked for only when this Owner has one, and decoded only for them.
 pub fn fetch(
     session: &Session<'_>,
     owner: &str,
     viewer: &str,
+    screenshot_repos: &[RepoId],
 ) -> Result<KindFetch<PullRequest>, SurveyFailure> {
     let owner_query = with_facts(OWNER_QUERY);
+    let bodies = screenshot_repos
+        .iter()
+        .any(|repo| same_login(&repo.owner, owner));
     let mut out = KindFetch::default();
     let mut found_prs: Vec<(String, PullRequest)> = Vec::new();
     let mut pager = Pager::new(None);
@@ -193,7 +217,7 @@ pub fn fetch(
     while pager.may_continue() {
         let (page, page_state) = match session.run::<OwnerData>(
             &owner_query,
-            json!({ "owner": owner, "after": pager.cursor, "repos": batch }),
+            json!({ "owner": owner, "after": pager.cursor, "repos": batch, "bodies": bodies }),
         )? {
             Fetched::Data { data, state } => {
                 pager.page_read(state.clone());
@@ -228,14 +252,18 @@ pub fn fetch(
                 prs.nodes
                     .into_iter()
                     .flatten()
-                    .map(|pr| pr.into_fact(&repo, page_state.is_complete())),
+                    .map(|pr| pr.into_fact(&repo, page_state.is_complete(), screenshot_repos)),
             );
             if prs.page_info.has_next_page {
                 fetch_rest_of_repo(
                     session,
                     &repo,
-                    page_state.clone(),
-                    prs.page_info.end_cursor,
+                    RestOfRepo {
+                        first_page: page_state.clone(),
+                        cursor: prs.page_info.end_cursor,
+                        screenshot_repos,
+                        bodies,
+                    },
                     &mut found_prs,
                     &mut out.coverage,
                 )?;
@@ -271,15 +299,29 @@ fn smaller_batch(batch: u32, lost: &SourceState) -> Option<u32> {
     Some((batch / 2).max(MIN_OWNER_REPOS_PER_PAGE))
 }
 
+/// Where a Repo's further PR pages start, and how to read them.
+struct RestOfRepo<'a> {
+    /// The state of the Owner page its first PRs came on.
+    first_page: SourceState,
+    cursor: Option<String>,
+    screenshot_repos: &'a [RepoId],
+    bodies: bool,
+}
+
 /// Reads one Repo's remaining PR pages; records that Repo's own coverage.
 fn fetch_rest_of_repo(
     session: &Session<'_>,
     repo: &RepoId,
-    first_page: crate::domain::SourceState,
-    cursor: Option<String>,
+    rest: RestOfRepo<'_>,
     found_prs: &mut Vec<(String, PullRequest)>,
     coverage: &mut Vec<CoverageEntry>,
 ) -> Result<(), SurveyFailure> {
+    let RestOfRepo {
+        first_page,
+        cursor,
+        screenshot_repos,
+        bodies,
+    } = rest;
     let query = with_facts(REPO_QUERY);
     let mut pager = Pager::new(None);
     // The first page came with the Owner query, so it carries that page's
@@ -290,7 +332,7 @@ fn fetch_rest_of_repo(
         return Ok(());
     }
     while pager.may_continue() {
-        let variables = json!({ "owner": repo.owner, "name": repo.name, "after": pager.cursor });
+        let variables = json!({ "owner": repo.owner, "name": repo.name, "after": pager.cursor, "bodies": bodies });
         let (page, page_complete) = match session.run::<RepoData>(&query, variables)? {
             Fetched::Data { data, state } => {
                 let complete = state.is_complete();
@@ -313,7 +355,7 @@ fn fetch_rest_of_repo(
             prs.nodes
                 .into_iter()
                 .flatten()
-                .map(|pr| pr.into_fact(repo, page_complete)),
+                .map(|pr| pr.into_fact(repo, page_complete, screenshot_repos)),
         );
         if !pager.advance(prs.page_info.has_next_page, prs.page_info.end_cursor) {
             break;

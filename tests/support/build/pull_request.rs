@@ -5,8 +5,8 @@ use den::domain::{
     TeamRef,
     facts::{
         ActorKind, Check, CheckOutcome, MarkerComment, MergeState, Mergeability, PrDetails,
-        PullRequest, Review, ReviewDecision, ReviewRecord, ReviewVerdict, Reviewer, ThreadRecord,
-        feedback::parse_markers,
+        PullRequest, Review, ReviewDecision, ReviewRecord, ReviewVerdict, Reviewer, Screenshots,
+        ThreadRecord, feedback::parse_markers,
     },
 };
 
@@ -42,6 +42,7 @@ pub fn pr(repo: &str, number: u64) -> PrBuilder {
             merge_state: MergeState::Clean,
             review_decision: ReviewDecision::ReviewRequired,
             in_merge_queue: false,
+            screenshots: Screenshots::NotRead,
         },
     }
 }
@@ -385,6 +386,12 @@ impl PrBuilder {
             head_commit: Some(head),
             ..PrDetails::default()
         })
+    }
+
+    /// The body's Screenshots state (#79); not read by default.
+    pub fn screenshots(mut self, state: Screenshots) -> Self {
+        self.pr.screenshots = state;
+        self
     }
 
     pub fn build(self) -> PullRequest {

@@ -1,6 +1,6 @@
 # The next page of one Repo's open PRs, in the Owner query's order (creation
 # time, which never changes mid-read).
-query RepoPullRequests($owner: String!, $name: String!, $after: String) {
+query RepoPullRequests($owner: String!, $name: String!, $after: String, $bodies: Boolean!) {
   rateLimit { remaining resetAt }
   repository(owner: $owner, name: $name) {
     pullRequests(states: [OPEN], first: 100, after: $after, orderBy: {field: CREATED_AT, direction: DESC}) {

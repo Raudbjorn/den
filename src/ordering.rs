@@ -150,23 +150,25 @@ pub fn kind_rank(next_step: Option<NextStep>, kind: WorkItemKind) -> u8 {
         (NextStep::FixCi, WorkItemKind::Run) => 0,
         (NextStep::ResolveConflicts, _) => 1,
         (NextStep::AddressReview, _) => 2,
-        (NextStep::Land, _) => 3,
-        (NextStep::Merge, _) => 4,
-        (NextStep::Review, _) => 5,
-        (NextStep::RequestReview, _) => 6,
-        (NextStep::FixCi, _) => 7,
-        (NextStep::FinishDraft, _) => 8,
-        (NextStep::MarkForRelease, _) => 9,
-        (NextStep::Implement, _) => 10,
-        (NextStep::Start, _) => 11,
-        (NextStep::Triage, _) => 12,
-        (NextStep::OpenPr, _) => 13,
-        (NextStep::PruneOrRevive, _) => 14,
+        // After Address review, as in the Pull Request rules (#79).
+        (NextStep::AddScreenshots, _) => 3,
+        (NextStep::Land, _) => 4,
+        (NextStep::Merge, _) => 5,
+        (NextStep::Review, _) => 6,
+        (NextStep::RequestReview, _) => 7,
+        (NextStep::FixCi, _) => 8,
+        (NextStep::FinishDraft, _) => 9,
+        (NextStep::MarkForRelease, _) => 10,
+        (NextStep::Implement, _) => 11,
+        (NextStep::Start, _) => 12,
+        (NextStep::Triage, _) => 13,
+        (NextStep::OpenPr, _) => 14,
+        (NextStep::PruneOrRevive, _) => 15,
     }
 }
 
 /// The rank of a Work Item with no Next Step: after every kind.
-const NO_STEP_RANK: u8 = 15;
+const NO_STEP_RANK: u8 = 16;
 
 /// Sorts Decisions for display (see the module docs).
 pub fn order(mut decisions: Vec<Decision>) -> Vec<Decision> {

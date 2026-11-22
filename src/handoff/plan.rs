@@ -456,7 +456,8 @@ pub fn plan(input: &PlanInput<'_>) -> Result<LaunchPlan, Refusal> {
     };
     let prompt = prompts.render(kind, &fields);
     let permission_mode = job_permission_mode(facts.step, input.policy);
-    let prompt = with_push_line(prompt, &facts, &branch_name, &remote, permission_mode);
+    let coordination = super::coordinates(facts.step, input.policy);
+    let prompt = with_push_line(prompt, &facts, &branch_name, &remote, coordination);
     // One suffix rule for the Job's names: the session carries the suffix the
     // worktree got, whether for a fresh start or a name another Job has.
     let session_name = match &facts.identifier {
@@ -589,17 +590,17 @@ fn clash_branch(facts: &Facts) -> Option<String> {
 /// simple). The prompt then ends with the one line that pushes back to it.
 /// Only for a branch of the target (a same-Repo PR head, a Branch): a
 /// cross-Repo PR head lives in another Repo, which the target's remote is not.
-/// Never for a Job in the approval-required mode ([`job_permission_mode`]):
-/// a coordination Job or a verdict-only Review Job changes nothing on the
-/// branch, and its prompt says so.
+/// Never for a Job that coordinates ([`super::coordinates`]): a coordination
+/// Job or a verdict-only Review Job changes nothing on the branch, and its
+/// prompt says so. Add screenshots, ask-first but not one, may commit there.
 fn with_push_line(
     prompt: String,
     facts: &Facts,
     local: &str,
     remote: &Remote,
-    mode: Option<super::PermissionMode>,
+    coordination: bool,
 ) -> String {
-    if mode.is_some() {
+    if coordination {
         return prompt;
     }
     match &facts.base {

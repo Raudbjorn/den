@@ -6,7 +6,7 @@
 //! hook in a PR runs as the user the moment the Job starts. den therefore
 //! passes `--setting-sources user` ([`SettingSources::UserOnly`]) when:
 //!
-//! - the Job is a coordination Job ([`job_permission_mode`]), or a Review of a
+//! - the Job is a coordination Job ([`coordinates`]), or a Review of a
 //!   PR whose Owner has a Linear Workflow: it acts on GitHub, never needs the
 //!   repo's settings, and works on a head someone else may have written;
 //! - the Job checks out a PR head the GitHub viewer didn't write: a fork's, a
@@ -19,7 +19,7 @@
 //! Nothing here is stored: reopening a Job decides again from the survey it
 //! sees then ([`for_reopen`]), and fails closed when the PR is gone from it.
 
-use super::{command::SettingSources, job_permission_mode};
+use super::{command::SettingSources, coordinates};
 use crate::{
     domain::{LinearWorkflowPolicy, NextStep, Observation, Viewer, WorkItemId},
     jobs::{JobRecord, JobSubject},
@@ -116,7 +116,7 @@ pub fn project_settings(
     policy: &LinearWorkflowPolicy,
     checkout: Checkout<'_>,
 ) -> ProjectSettings {
-    if job_permission_mode(step, policy).is_some() {
+    if coordinates(step, policy) {
         return ProjectSettings::Off(OffReason::Coordination { step });
     }
     match checkout {
@@ -269,6 +269,15 @@ mod tests {
                 );
             }
         }
+        // Add screenshots asks first but is not one (#79): its PR is the viewer's.
+        assert_eq!(
+            project_settings(
+                NextStep::AddScreenshots,
+                &LinearWorkflowPolicy::default(),
+                pr_head(PrAuthor::Viewer)
+            ),
+            ProjectSettings::Loaded
+        );
         // A Review is one only where the Owner has a Linear Workflow.
         assert_eq!(
             project_settings(

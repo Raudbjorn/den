@@ -797,7 +797,8 @@ fn deciding_is_deterministic_and_reads_no_clock() {
 #[test]
 fn the_domain_names_every_next_step_with_its_glossary_label() {
     // Milestone 2 added Start, Request review, Land and Mark for release
-    // (spec 0002); the list grows with the glossary, it doesn't change.
+    // (spec 0002), milestone 4 Add screenshots (#79), in the glossary's
+    // place; the list grows with the glossary, it doesn't change.
     let labels: Vec<&str> = NextStep::ALL.iter().map(|s| s.label()).collect();
     assert_eq!(
         labels,
@@ -806,6 +807,7 @@ fn the_domain_names_every_next_step_with_its_glossary_label() {
             "Resolve conflicts",
             "Fix CI",
             "Address review",
+            "Add screenshots",
             "Review",
             "Merge",
             "Triage",
