@@ -1,0 +1,20 @@
+# Run one operation for the selected Owner kind; paginate its connection only.
+query UserBoards($owner: String!, $cursor: String) {
+  user(login: $owner) {
+    projectsV2(first: 25, after: $cursor, orderBy: {field: NUMBER, direction: ASC}) {
+      nodes { id number title url closed public }
+      pageInfo { endCursor hasNextPage }
+    }
+  }
+  rateLimit { cost remaining resetAt }
+}
+
+query OrganizationBoards($owner: String!, $cursor: String) {
+  organization(login: $owner) {
+    projectsV2(first: 25, after: $cursor, orderBy: {field: NUMBER, direction: ASC}) {
+      nodes { id number title url closed public }
+      pageInfo { endCursor hasNextPage }
+    }
+  }
+  rateLimit { cost remaining resetAt }
+}

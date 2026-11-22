@@ -133,8 +133,12 @@ one Point, "not yet split", until an Address review Job replies with one
 (`open`, `fixed`, `declined`, `follow-up`, `needs-decision` or `answered`).
 A later approval by the same reviewer answers their earlier Points. Open, not
 yet split and needs-decision Points keep the PR at Address review, never Merge
-or Land; with only decisions left, it waits on you. Only markers posted by
-your own GitHub login count. If earlier tooling left markers of the form
+or Land; with only decisions left, it waits on you. The Pull Request's detail
+lists its REVIEW POINTS: each one's state, reviewer, link and, when fixed, the
+commit. When a Point needs your decision, `m` copies its marker line (as
+`answered`) to the clipboard, for you to paste into your reply on GitHub; den
+posts nothing itself. Only markers posted by your own GitHub login count;
+anyone else's show under the Point as not counted. If earlier tooling left markers of the form
 `<!-- <prefix>:review-notes:<review id>:addressed|needs-decision -->`, name its
 prefixes so those reviews don't reappear:
 
@@ -261,4 +265,4 @@ See [architecture](docs/architecture.md), [domain terminology](CONTEXT.md), and
 [GitHub issues](https://github.com/Raudbjorn/den/issues). Linear Workflows and
 Landing Groups are pending [milestone 2](https://github.com/Raudbjorn/den/issues/30)
 work, not capabilities of this GitHub-only baseline. Periodic refresh, text search
-and Board Scope are proposals, not implemented features.
+and a [Board screen](docs/research/projects-v2-feasibility.md) are proposals, not implemented features.

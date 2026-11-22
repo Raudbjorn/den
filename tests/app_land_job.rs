@@ -274,6 +274,7 @@ fn launched() -> Harness {
     let mut harness = started();
     let ready = open_sheet(&mut harness, "TEAM-1");
     assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
+    queue_round(&harness, members(), &ALL);
     press(&mut harness, Key::Enter);
     assert_eq!(
         sheet(&harness).status,
@@ -306,7 +307,7 @@ fn land_shows_one_resolution_comment_per_member_in_landing_order() {
             ),
         pr("acme/web", 3).author(ME).conflicting(),
     ];
-    queue_round(&harness, prs, &ALL);
+    queue_round(&harness, prs.clone(), &ALL);
     press(&mut harness, Key::Char('r'));
     let ready = open_sheet(&mut harness, "TEAM-1");
     assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
@@ -314,6 +315,8 @@ fn land_shows_one_resolution_comment_per_member_in_landing_order() {
     let prompt = &ready.prompt.as_ref().expect("prompt").text;
     assert!(prompt.ends_with(expected), "{prompt}");
     assert!(!prompt.contains("## Review resolutions for [acme/web#3]"));
+    // Enter now rereads both services before authorizing Land (#109).
+    queue_round(&harness, prs, &ALL);
     press(&mut harness, Key::Enter);
     assert_eq!(&harness.launcher.windows()[0].prompt, prompt);
 }
@@ -384,6 +387,7 @@ fn c_then_enter_on_land_launches_one_coordination_job_with_the_approved_members_
         ready.command
     );
 
+    queue_round(&harness, members(), &ALL);
     press(&mut harness, Key::Enter);
     let plans = launch_plans(&harness);
     assert_eq!(plans.len(), 1, "one Job");
@@ -523,14 +527,218 @@ fn the_job_record_covers_every_member_and_c_on_a_member_names_the_land_job() {
     );
 }
 
+/// Both lanes must answer this confirmation, whichever finishes first.
+#[test]
+fn land_waits_for_both_fresh_sources_in_either_order() {
+    for github_first in [false, true] {
+        let mut harness = started();
+        open_sheet(&mut harness, "TEAM-1");
+        queue_round(&harness, members(), &ALL);
+        let effects = harness.key(Key::Enter);
+        assert_eq!(sheet(&harness).status, LaunchStatus::Inspecting);
+        assert!(
+            harness.key(Key::Enter).is_empty(),
+            "no duplicate reads or launch"
+        );
+        let mut reads: Vec<_> = effects
+            .iter()
+            .filter(|e| matches!(e, Effect::Survey { .. } | Effect::SurveyLinear { .. }))
+            .collect();
+        assert_eq!(reads.len(), 2);
+        if github_first {
+            reads.reverse();
+        }
+        harness.perform(reads[0]);
+        assert_eq!(sheet(&harness).status, LaunchStatus::Inspecting);
+        assert!(launch_plans(&harness).is_empty());
+        harness.perform(reads[1]);
+        assert_eq!(launch_plans(&harness).len(), 1);
+    }
+}
+
+#[test]
+fn cancelling_land_does_not_authorize_a_reopened_sheet_when_reads_arrive() {
+    let mut harness = started();
+    open_sheet(&mut harness, "TEAM-1");
+    queue_round(&harness, members(), &ALL);
+    let effects = harness.key(Key::Enter);
+    press(&mut harness, Key::Esc);
+    assert!(harness.view.overlay.is_none());
+    open_sheet(&mut harness, "TEAM-1");
+    for effect in &effects {
+        harness.perform(effect);
+    }
+    assert!(launch_plans(&harness).is_empty());
+    assert_eq!(sheet(&harness).status, LaunchStatus::Ready);
+}
+
+#[test]
+fn a_survey_started_before_enter_cannot_authorize_land() {
+    let mut harness = started();
+    queue_round(&harness, members(), &ALL);
+    let effects = harness.key(Key::Char('r'));
+    open_sheet(&mut harness, "TEAM-1");
+    assert!(harness.key(Key::Enter).is_empty());
+    assert!(messages(sheet(&harness)).contains("survey is still running"));
+    for effect in &effects {
+        harness.perform(effect);
+    }
+    assert!(launch_plans(&harness).is_empty());
+    queue_round(&harness, members(), &ALL);
+    press(&mut harness, Key::Enter);
+    assert_eq!(sheet(&harness).status, LaunchStatus::Launched);
+}
+
+#[test]
+fn rejected_fresh_survey_requests_do_not_authorize_land() {
+    for reject_github in [false, true] {
+        let mut harness = started();
+        open_sheet(&mut harness, "TEAM-1");
+        queue_round(&harness, members(), &ALL);
+        let effects = harness.key(Key::Enter);
+        for effect in effects {
+            if matches!(&effect, Effect::Survey { .. }) && reject_github
+                || matches!(&effect, Effect::SurveyLinear { .. }) && !reject_github
+            {
+                harness.send(Event::EffectRejected {
+                    effect: Box::new(effect),
+                    reason: "worker busy".into(),
+                });
+            } else {
+                harness.perform(&effect);
+            }
+        }
+        assert!(launch_plans(&harness).is_empty());
+        assert_eq!(sheet(&harness).status, LaunchStatus::Ready);
+        assert!(messages(sheet(&harness)).contains("fresh Land check could not read"));
+    }
+}
+
+#[test]
+fn land_waits_for_missing_member_state_and_refuses_a_rejected_read() {
+    for reject in [false, true] {
+        let mut harness = started();
+        open_sheet(&mut harness, "TEAM-1");
+        queue_round(
+            &harness,
+            vec![
+                ready("acme/app", 2, HEAD_2),
+                pr("acme/web", 3).author(ME).conflicting(),
+            ],
+            &ALL,
+        );
+        let effects = harness.key(Key::Enter);
+        let mut follow_ups = Vec::new();
+        for effect in &effects {
+            follow_ups.extend(harness.perform(effect));
+        }
+        let read = follow_ups
+            .into_iter()
+            .find(|e| matches!(e, Effect::ReadMemberStates { .. }))
+            .expect("api #1 needs a state read");
+        assert_eq!(sheet(&harness).status, LaunchStatus::Inspecting);
+        assert!(launch_plans(&harness).is_empty());
+        if reject {
+            harness.send(Event::EffectRejected {
+                effect: Box::new(read),
+                reason: "worker busy".into(),
+            });
+        } else {
+            let mut coverage = Coverage::default();
+            coverage.record(
+                Source::Owner {
+                    owner: "acme".into(),
+                    kind: SourceKind::MemberStates,
+                },
+                SourceState::Complete,
+            );
+            harness.github.push_member_states(MemberStatesRead {
+                states: vec![MemberPullRequestState {
+                    pr: member("acme/api", 1),
+                    state: PullRequestState::Merged { merged_at: None },
+                }],
+                asked: Vec::new(),
+                coverage,
+            });
+            harness.perform(&read);
+            assert!(messages(sheet(&harness)).contains("acme/api#1 left"));
+        }
+        assert!(launch_plans(&harness).is_empty());
+        assert_ne!(sheet(&harness).status, LaunchStatus::Inspecting);
+    }
+}
+
+/// Failed reads must not authorize using facts retained for display.
+#[test]
+fn failed_confirmation_sources_keep_the_sheet_retryable_without_launching() {
+    for source in ["github", "pull requests", "linear"] {
+        let mut harness = started();
+        open_sheet(&mut harness, "TEAM-1");
+        let mut github = observation(members());
+        let mut linear = linear_answer(team_1(&ALL));
+        if source == "pull requests" {
+            github.coverage.record(
+                Source::Owner {
+                    owner: "acme".into(),
+                    kind: SourceKind::PullRequests,
+                },
+                SourceState::Failed {
+                    error: "offline".into(),
+                },
+            );
+        }
+        if source == "linear" {
+            linear.part.issues.clear();
+            linear.coverage.record(
+                Source::Owner {
+                    owner: "acme".into(),
+                    kind: SourceKind::Linear(LinearSourceKind::AssignedIssues),
+                },
+                SourceState::Failed {
+                    error: "offline".into(),
+                },
+            );
+        }
+        harness.answer(if source == "github" {
+            Err(den::ports::SurveyFailure::Interrupted {
+                detail: "offline".into(),
+            })
+        } else {
+            Ok(github)
+        });
+        harness.linear.push_answer(linear);
+        press(&mut harness, Key::Enter);
+        assert!(launch_plans(&harness).is_empty(), "{source}");
+        assert_eq!(sheet(&harness).status, LaunchStatus::Ready, "{source}");
+        assert!(
+            messages(sheet(&harness)).contains("fresh Land check could not read"),
+            "{source}"
+        );
+        queue_round(&harness, members(), &ALL);
+        press(&mut harness, Key::Enter);
+        assert_eq!(sheet(&harness).status, LaunchStatus::Launched, "{source}");
+    }
+}
+
+#[test]
+fn fresh_failing_checks_refuse_land_even_when_heads_and_membership_match() {
+    let mut harness = started();
+    open_sheet(&mut harness, "TEAM-1");
+    let mut prs = members();
+    prs[0] = ready("acme/api", 1, HEAD_1).failing_required("ci");
+    queue_round(&harness, prs, &ALL);
+    press(&mut harness, Key::Enter);
+    assert!(launch_plans(&harness).is_empty());
+    assert_eq!(sheet(&harness).status, LaunchStatus::Refused);
+}
+
 /// A member's head that moved between the sheet and `Enter` (a survey that
-/// landed while the sheet was open) launches nothing: the sheet shows the
+/// remote answer only read on Enter) launches nothing: the sheet shows the
 /// new head, says what changed, and `Enter` again launches on it.
 #[test]
 fn a_head_changed_between_sheet_and_enter_asks_again() {
     let mut harness = started();
     select(&mut harness, "TEAM-1");
-    let survey = harness.key(Key::Char('r'));
     queue_round(
         &harness,
         vec![
@@ -545,9 +753,6 @@ fn a_head_changed_between_sheet_and_enter_asks_again() {
         field(&ready_sheet, "LAND 2").map(|f| f.0),
         Some("acme/api#1 @ 1111111")
     );
-    for effect in &survey {
-        harness.perform(effect);
-    }
     press(&mut harness, Key::Enter);
     assert!(launch_plans(&harness).is_empty(), "nothing launched");
     let asked = sheet(&harness).clone();
@@ -569,11 +774,36 @@ fn a_head_changed_between_sheet_and_enter_asks_again() {
     );
 
     harness.workspace.host_pull_head(API_URL, 1, MOVED_1);
+    let mut unchanged = members();
+    unchanged[0] = ready("acme/api", 1, MOVED_1);
+    queue_round(&harness, unchanged, &ALL);
     press(&mut harness, Key::Enter);
     let plans = launch_plans(&harness);
     assert_eq!(plans.len(), 1);
     assert_eq!(plans[0].prompt, land_prompt(MOVED_1));
     assert_eq!(sheet(&harness).status, LaunchStatus::Launched);
+}
+
+/// No observation is delivered between opening and confirming: Enter must read it.
+#[test]
+fn a_remote_membership_change_with_unchanged_heads_is_read_before_launch() {
+    let mut harness = started();
+    open_sheet(&mut harness, "TEAM-1");
+    let mut prs = members();
+    prs.push(ready("acme/app", 4, &"4".repeat(40)));
+    queue_round(
+        &harness,
+        prs,
+        &[("acme/app", 2), ("acme/app", 4), ("acme/web", 3)],
+    );
+    press(&mut harness, Key::Enter);
+    assert!(
+        launch_plans(&harness).is_empty(),
+        "changed membership needs confirmation"
+    );
+    assert!(messages(sheet(&harness)).contains("acme/app#4 joined; acme/api#1 left"));
+    assert_eq!(harness.github.requests().len(), 2);
+    assert_eq!(harness.linear.requests().len(), 2);
 }
 
 /// A member joining or leaving the group between the sheet and `Enter`
@@ -588,7 +818,7 @@ fn a_membership_change_asks_again() {
     prs.push(ready("acme/app", 4, "4".repeat(40).as_str()));
     queue_round(
         &harness,
-        prs,
+        prs.clone(),
         &[("acme/app", 2), ("acme/app", 4), ("acme/web", 3)],
     );
     let ready_sheet = open_sheet(&mut harness, "TEAM-1");
@@ -596,6 +826,11 @@ fn a_membership_change_asks_again() {
     for effect in &survey {
         harness.perform(effect);
     }
+    queue_round(
+        &harness,
+        prs,
+        &[("acme/app", 2), ("acme/app", 4), ("acme/web", 3)],
+    );
     press(&mut harness, Key::Enter);
     assert!(launch_plans(&harness).is_empty(), "nothing launched");
     let asked = sheet(&harness).clone();
@@ -651,15 +886,11 @@ fn a_changed_first_repository_is_inspected_and_confirmed_before_landing() {
         queue_round(&harness, members(), before);
         harness.start();
         select(&mut harness, "TEAM-1");
-        let survey = harness.key(Key::Char('r'));
         queue_round(&harness, members(), after);
         assert_eq!(
             open_sheet(&mut harness, "TEAM-1").status,
             LaunchStatus::Ready
         );
-        for effect in &survey {
-            harness.perform(effect);
-        }
 
         press(&mut harness, Key::Enter);
         let asked = sheet(&harness);
@@ -685,6 +916,7 @@ fn a_changed_first_repository_is_inspected_and_confirmed_before_landing() {
                     && request.configured_clone.as_deref() == Some(std::path::Path::new(clone))
         )));
 
+        queue_round(&harness, members(), after);
         press(&mut harness, Key::Enter);
         assert_eq!(
             sheet(&harness).status,
@@ -706,6 +938,7 @@ fn a_changed_first_repository_is_inspected_and_confirmed_before_landing() {
 fn a_member_head_moved_on_github_refuses_before_anything_is_done() {
     let mut harness = started();
     harness.workspace.host_pull_head(API_URL, 1, MOVED_1);
+    queue_round(&harness, members(), &ALL);
     open_sheet(&mut harness, "TEAM-1");
     press(&mut harness, Key::Enter);
     let refused = sheet(&harness).clone();
@@ -895,27 +1128,21 @@ fn land_uses_each_members_repo_merge_method() {
 #[test]
 fn changed_resolutions_require_confirmation_again_even_when_heads_are_unchanged() {
     let mut harness = started();
-    select(&mut harness, "TEAM-1");
-    let survey = harness.key(Key::Char('r'));
-    queue_round(
-        &harness,
-        vec![
-            ready("acme/api", 1, HEAD_1).thread("NEW_THREAD", "alice", true),
-            ready("acme/app", 2, HEAD_2),
-            pr("acme/web", 3).author(ME).conflicting(),
-        ],
-        &ALL,
-    );
     open_sheet(&mut harness, "TEAM-1");
-    for effect in &survey {
-        harness.perform(effect);
-    }
+    let prs = vec![
+        ready("acme/api", 1, HEAD_1).thread("NEW_THREAD", "alice", true),
+        ready("acme/app", 2, HEAD_2),
+        pr("acme/web", 3).author(ME).conflicting(),
+    ];
+    // #109 discovers changed publication text during Enter's fresh survey.
+    queue_round(&harness, prs.clone(), &ALL);
     press(&mut harness, Key::Enter);
     assert!(harness.launcher.windows().is_empty());
     let asked = sheet(&harness);
     assert_eq!(asked.status, LaunchStatus::Ready, "{}", messages(asked));
     assert!(asked.prompt.as_ref().unwrap().text.contains("NEW\\_THREAD"));
     assert!(messages(asked).contains("prompt"), "{}", messages(asked));
+    queue_round(&harness, prs, &ALL);
     press(&mut harness, Key::Enter);
     assert_eq!(harness.launcher.windows().len(), 1);
 }

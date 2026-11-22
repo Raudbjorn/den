@@ -2,7 +2,7 @@
 
 use crate::{
     cache::{CacheError, CachedObservation},
-    domain::Observation,
+    domain::{Observation, WorkItemId},
     handoff::{JobsCheck, LaunchReport, WorkspaceView},
     ports::{
         LinearIssueRead, LinearSurvey, LinearWriteKind, LinearWriteOutcome, MemberStatesRead,
@@ -118,5 +118,10 @@ pub enum Event {
     /// The Upstream choices were saved, or why not.
     UpstreamsStored {
         outcome: Result<(), UpstreamStoreError>,
+    },
+    /// `item`'s marker line went onto the clipboard (#77), or why not.
+    Copied {
+        item: WorkItemId,
+        outcome: Result<(), String>,
     },
 }

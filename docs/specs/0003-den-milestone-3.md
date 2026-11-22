@@ -428,7 +428,7 @@ Tests go through the two seams, plus thin adapter checks, as in milestones 1 and
 ## Out of Scope
 
 - Periodic surveys while den is open (#57). The Sweep runs at startup and on demand only.
-- Board Scope (#59). A Board spans Repos; it could become its own screen later.
+- A Board screen (#59). A Board spans Repos; the [read-only Projects v2 research](../research/projects-v2-feasibility.md) proposes a separate screen after this milestone, subject to a product decision. It does not reintroduce Owner or Board Scopes.
 - Searching Work Items across Repos. The planned list filter (`/`) and Repo screen filter absorb #58 for one Repo and for Repo names. **List panel** and **Seam 2** above carry its behavior and acceptance cases; implementation and executable tests belong to [milestone 3 Plan 4](../superpowers/plans/2026-11-21-m3-roadmap.md). This specification does not deliver working search.
 - Upstreaming the kit into `design-system`'s `raudbjorn-tui` (ADR-0006 defers it).
 - Light mode or other editions.
