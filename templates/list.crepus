@@ -1,5 +1,6 @@
 den's Next Step list (spec, "Look and layout"): two lines per Work Item, a rust
-tick and the selected fill on the current row, Waiting On someone else dimmed.
+tick and the selected fill on the current row. Waiting On sets the ink:
+you strong, someone else muted, nobody faint, including the selected row.
 Rust windows the rows to the plate's height and draws each one on its own
 (`ListRow`): a `for` over the rows would clone the whole row list once per
 element, so a tall plate cost the square of its row count.
@@ -36,9 +37,19 @@ div w-full h-full flex-col bg-[#aa0000]
     div h-[2] flex-col bg-[#aa0017]
       div h-[1] flex-row
         span w-[2] text-[#aa000b] "{tick}"
-        span w-[20] font-bold text-[#aa0009] "{step}"
+        if {waiting_you}
+          span w-[20] font-bold text-[#aa0009] "{step}"
+        else if {dimmed}
+          span w-[20] font-bold text-[#aa0007] "{step}"
+        else
+          span w-[20] font-bold text-[#aa0008] "{step}"
         span w-[2] text-[#aa000f] "{flag}"
-        span flex-1 text-[#aa000a] "{place}"
+        if {waiting_you}
+          span flex-1 text-[#aa000a] "{place}"
+        else if {dimmed}
+          span flex-1 text-[#aa0007] "{place}"
+        else
+          span flex-1 text-[#aa0008] "{place}"
         span w-[1] " "
         span w-[5] text-[#aa0008] "{age}"
       div h-[1] flex-row
@@ -49,15 +60,25 @@ div w-full h-full flex-col bg-[#aa0000]
           span w-[2] text-[#aa000f] "{job}"
         else
           span w-[2] text-[#aa0008] "{job}"
-        span flex-1 text-[#aa0006] "{title}"
+        if {waiting_you}
+          span flex-1 text-[#aa0006] "{title}"
+        else if {dimmed}
+          span flex-1 text-[#aa0007] "{title}"
+        else
+          span flex-1 text-[#aa0008] "{title}"
         span w-[1] " "
-        span w-[14] text-[#aa0007] "{waiting}"
+        if {waiting_you}
+          span w-[14] text-[#aa0009] "{waiting}"
+        else if {dimmed}
+          span w-[14] text-[#aa0007] "{waiting}"
+        else
+          span w-[14] text-[#aa0008] "{waiting}"
   else if {dimmed}
-    div h-[2] flex-col text-[#aa0008]
+    div h-[2] flex-col text-[#aa0007]
       div h-[1] flex-row
         span w-[2] " "
         span w-[20] "{step}"
-        span w-[2] "{flag}"
+        span w-[2] text-[#aa000f] "{flag}"
         span flex-1 "{place}"
         span w-[1] " "
         span w-[5] "{age}"
@@ -72,11 +93,14 @@ div w-full h-full flex-col bg-[#aa0000]
         span flex-1 "{title}"
         span w-[1] " "
         span w-[14] "{waiting}"
-  else if {has_step}
+  else if {waiting_you}
     div h-[2] flex-col
       div h-[1] flex-row
         span w-[2] " "
-        span w-[20] text-[#aa0009] "{step}"
+        if {has_step}
+          span w-[20] text-[#aa0009] "{step}"
+        else
+          span w-[20] text-[#aa0008] "{step}"
         span w-[2] text-[#aa000f] "{flag}"
         span flex-1 text-[#aa000a] "{place}"
         span w-[1] " "
@@ -89,16 +113,16 @@ div w-full h-full flex-col bg-[#aa0000]
           span w-[2] text-[#aa000f] "{job}"
         else
           span w-[2] text-[#aa0008] "{job}"
-        span flex-1 text-[#aa0005] "{title}"
+        span flex-1 text-[#aa0006] "{title}"
         span w-[1] " "
-        span w-[14] text-[#aa0007] "{waiting}"
+        span w-[14] text-[#aa0009] "{waiting}"
   else
-    div h-[2] flex-col
+    div h-[2] flex-col text-[#aa0008]
       div h-[1] flex-row
         span w-[2] " "
         span w-[20] text-[#aa0008] "{step}"
         span w-[2] text-[#aa000f] "{flag}"
-        span flex-1 text-[#aa000a] "{place}"
+        span flex-1 "{place}"
         span w-[1] " "
         span w-[5] text-[#aa0008] "{age}"
       div h-[1] flex-row
@@ -109,6 +133,6 @@ div w-full h-full flex-col bg-[#aa0000]
           span w-[2] text-[#aa000f] "{job}"
         else
           span w-[2] text-[#aa0008] "{job}"
-        span flex-1 text-[#aa0005] "{title}"
+        span flex-1 "{title}"
         span w-[1] " "
-        span w-[14] text-[#aa0007] "{waiting}"
+        span w-[14] "{waiting}"
