@@ -11,7 +11,7 @@ den surveys the Repo you are working in, not every watched Owner, whenever it sh
 ## Consequences
 
 - Every Work Item source is recorded per Repo. The Sweep splits an Owner's PR and Issue listings per Repo, so coverage means the same thing whichever survey wrote it.
-- The cache format changes and earlier caches are rebuilt. Format 13 has since shipped for Review Points (#75), so Plan 2 takes the next unused number (14 at the #89 checkpoint), preserving the published format history.
+- The cache format changes (13) and earlier caches are rebuilt.
 - Land and Mark for release depend on reading out-of-Repo members by number. Without that read, a Repo-first den would never offer Land for a group spanning Repos.
 - A new runtime lane, and a cancellation flag the GitHub adapter checks between pages.
 - Freshness differs by place. The workbench is as fresh as its last Repo Survey. The Repo screen is as fresh as the Sweep, and says so per Repo.
