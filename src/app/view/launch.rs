@@ -172,6 +172,10 @@ pub fn build(sheet: &Sheet) -> LaunchSheet {
     if let Some(notice) = &sheet.notice {
         view.messages.push(message(notice, Tone::Caution));
     }
+    if sheet.land_check.is_some() {
+        view.status = LaunchStatus::Inspecting;
+        view.headline = "Checking current Land membership and member heads; esc cancels".to_owned();
+    }
     view
 }
 

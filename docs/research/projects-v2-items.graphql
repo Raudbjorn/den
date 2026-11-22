@@ -1,0 +1,35 @@
+# A separate cursor for the selected Board. Include archives explicitly.
+query BoardItems($board: ID!, $cursor: String) {
+  node(id: $board) {
+    __typename
+    ... on ProjectV2 {
+      id
+      updatedAt
+      items(first: 100, after: $cursor, archivedStates: [ARCHIVED, NOT_ARCHIVED]) {
+        nodes {
+          id
+          type
+          isArchived
+          updatedAt
+          content {
+            __typename
+            ... on Issue {
+              id number title url
+              # IssueState and PullRequestState need distinct response names.
+              issueState: state
+              repository { id nameWithOwner }
+            }
+            ... on PullRequest {
+              id number title url
+              pullRequestState: state
+              repository { id nameWithOwner }
+            }
+            ... on DraftIssue { id title }
+          }
+        }
+        pageInfo { endCursor hasNextPage }
+      }
+    }
+  }
+  rateLimit { cost remaining resetAt }
+}
