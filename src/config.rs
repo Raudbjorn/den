@@ -62,7 +62,16 @@ pub struct Config {
     /// prefixes whose `<prefix>:review-notes:` markers set Review Points.
     /// Lowercase letters, digits and `-`, never `den`.
     pub legacy_marker_prefixes: Vec<String>,
+    /// `refresh_interval_secs` (#57): survey again this many seconds after
+    /// the last survey answered, while den is open and idle. `None` (the
+    /// default): only startup and `r` survey.
+    pub refresh_interval_secs: Option<u64>,
 }
+
+/// The shortest `refresh_interval_secs` den accepts (#57).
+pub const MIN_REFRESH_INTERVAL_SECS: u64 = 60;
+/// The longest `refresh_interval_secs` den accepts (#57): a day.
+pub const MAX_REFRESH_INTERVAL_SECS: u64 = 86_400;
 
 impl Config {
     /// The Linear Workflow of `owner`, if it has one.
@@ -134,6 +143,7 @@ struct RawConfig {
     repos: BTreeMap<Spanned<String>, RawRepo>,
     #[serde(default)]
     legacy_marker_prefixes: Vec<Spanned<String>>,
+    refresh_interval_secs: Option<Spanned<i64>>,
 }
 
 /// One `[repos."OWNER/REPO"]` table (spec 0003).
@@ -261,6 +271,11 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
         repo_tables(raw.repos).map_err(|(span, message)| malformed(Some(span), message))?;
     let legacy_marker_prefixes = marker_prefixes(raw.legacy_marker_prefixes)
         .map_err(|(span, message)| malformed(Some(span), message))?;
+    let refresh_interval_secs = raw
+        .refresh_interval_secs
+        .map(refresh_interval)
+        .transpose()
+        .map_err(|(span, message)| malformed(Some(span), message))?;
     Ok(Config {
         owners,
         main_clone_root,
@@ -270,7 +285,27 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
         screenshot_repos,
         merge_methods,
         legacy_marker_prefixes,
+        refresh_interval_secs,
     })
+}
+
+/// `refresh_interval_secs` (#57): whole seconds, from
+/// [`MIN_REFRESH_INTERVAL_SECS`] to [`MAX_REFRESH_INTERVAL_SECS`]. Leaving it
+/// out is the only way to turn timed refreshes off.
+fn refresh_interval(raw: Spanned<i64>) -> Result<u64, (Range<usize>, String)> {
+    let span = raw.span();
+    let secs = raw.into_inner();
+    u64::try_from(secs)
+        .ok()
+        .filter(|s| (MIN_REFRESH_INTERVAL_SECS..=MAX_REFRESH_INTERVAL_SECS).contains(s))
+        .ok_or_else(|| {
+            (
+                span,
+                format!(
+                    "`refresh_interval_secs` is {secs}: use {MIN_REFRESH_INTERVAL_SECS} to {MAX_REFRESH_INTERVAL_SECS} seconds, or leave it out to survey only at startup and on r"
+                ),
+            )
+        })
 }
 
 /// `legacy_marker_prefixes` (#75): each lowercase letters, digits and `-`,

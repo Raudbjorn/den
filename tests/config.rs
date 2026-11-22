@@ -780,3 +780,38 @@ fn a_bad_legacy_marker_prefix_is_an_error_naming_its_line() {
         .expect_err("listed twice");
     assert!(twice.to_string().contains("listed twice"), "{twice}");
 }
+
+/// #57: `refresh_interval_secs` turns timed refreshes on; leaving it out (the
+/// default) keeps them off.
+#[test]
+fn refresh_interval_secs_is_off_unless_written() {
+    let off = parse("owners = [\"acme\"]\n").expect("valid");
+    assert_eq!(off.refresh_interval_secs, None);
+    for secs in [60_u64, 300, 86_400] {
+        let on = parse(&format!(
+            "owners = [\"acme\"]\nrefresh_interval_secs = {secs}\n"
+        ))
+        .expect("valid");
+        assert_eq!(on.refresh_interval_secs, Some(secs));
+    }
+}
+
+/// #57: below 60 seconds (0 included), above a day, or negative is an error
+/// naming the line, never silently clamped or turned off.
+#[test]
+fn a_refresh_interval_out_of_range_is_an_error_naming_its_line() {
+    for secs in ["0", "59", "-60", "86401"] {
+        let text = format!("owners = [\"acme\"]\n\nrefresh_interval_secs = {secs}\n");
+        let error = parse(&text).expect_err(secs).to_string();
+        assert!(error.contains("line 3"), "{secs}: {error}");
+        assert!(
+            error.contains(&format!(
+                "`refresh_interval_secs` is {secs}: use 60 to 86400 seconds, or leave it out"
+            )),
+            "{secs}: {error}"
+        );
+    }
+    let text = "owners = [\"acme\"]\nrefresh_interval_secs = \"60\"\n";
+    let error = parse(text).expect_err("a string").to_string();
+    assert!(error.contains("line 2"), "{error}");
+}
