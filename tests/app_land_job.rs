@@ -25,7 +25,8 @@ use den::{
         Coverage, LinearIssueId, LinearPart, LinearSourceKind, NextStep, Observation, RepoId,
         Source, SourceKind, SourceState, WorkItemId,
         facts::{
-            LinearIssue, MemberPullRequestState, PullRequestRef, PullRequestState, ReviewVerdict,
+            LinearIssue, LinearStateKind, MemberPullRequestState, PullRequestRef, PullRequestState,
+            ReviewVerdict,
         },
     },
     handoff::{LaunchPlan, PermissionMode, SessionStart},
@@ -1150,4 +1151,100 @@ fn changed_resolutions_require_confirmation_again_even_when_heads_are_unchanged(
     queue_round(&harness, prs, &ALL);
     press(&mut harness, Key::Enter);
     assert_eq!(harness.launcher.windows().len(), 1);
+}
+
+#[test]
+fn an_implement_sheet_becoming_land_reinspects_and_confirms_the_member_head() {
+    for moved_base in [false, true] {
+        const MAIN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const MOVED_MAIN: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let mut config = config();
+        config.linear[0].new_work_repos = vec![RepoId::new("acme", "app")];
+        config.linear[0].in_progress_state = Some("In Progress".to_owned());
+        let issue = |attached: &[(&str, u64)]| {
+            let mut issue = team_1(attached);
+            if !moved_base {
+                issue.state.name = "Todo".to_owned();
+                issue.state.kind = LinearStateKind::Unstarted;
+            }
+            issue
+        };
+        let mut harness = Harness::new(Ok(config));
+        harness
+            .workspace
+            .add_clone(CLONE, &[("origin", "git@github.com:acme/app.git")]);
+        harness
+            .workspace
+            .set_remote_head(CLONE, "origin", "main", MAIN);
+        harness
+            .workspace
+            .set_remote_head(CLONE, "origin", "feature-2", HEAD_2);
+        harness.workspace.host_pull_head(API_URL, 1, HEAD_1);
+        harness.workspace.host_pull_head(APP_URL, 2, HEAD_2);
+        harness.answer(Ok(observation(Vec::new())));
+        harness.linear.push_answer(linear_answer(issue(&[])));
+        harness.start();
+
+        // Deliver the new members only after opening Implement, optionally with a moved base.
+        let survey = harness.key(Key::Char('r'));
+        harness.answer(Ok(observation(members())));
+        harness.linear.push_answer(linear_answer(issue(&ALL)));
+        let opened = open_sheet(&mut harness, "TEAM-1");
+        assert_eq!(opened.next_step, "Implement");
+        if moved_base {
+            harness
+                .workspace
+                .set_remote_head(CLONE, "origin", "main", MOVED_MAIN);
+            press(&mut harness, Key::Enter);
+            assert_eq!(sheet(&harness).status, LaunchStatus::HeadMoved);
+        }
+        assert!(harness.launcher.windows().is_empty());
+        assert!(harness.workspace.calls().is_empty());
+
+        for effect in survey {
+            harness.perform(&effect);
+        }
+        press(&mut harness, Key::Enter);
+        let updated = sheet(&harness);
+        assert_eq!(
+            updated.next_step,
+            "Land",
+            "status {:?}: {}",
+            updated.status,
+            messages(updated)
+        );
+        // Land's fixed membership authorizes HEAD_2, never Implement's accepted base.
+        assert_eq!(
+            field(updated, "BASE").unwrap().0,
+            "PR head feature-2 of acme/app#2, the first to land @ 2222222"
+        );
+        assert_eq!(
+            launch_plans(&harness).len(),
+            usize::from(moved_base),
+            "the changed kind asks again"
+        );
+        assert!(harness.launcher.windows().is_empty());
+        assert!(harness.workspace.calls().is_empty());
+
+        harness.answer(Ok(observation(members())));
+        harness.linear.push_answer(linear_answer(issue(&ALL)));
+        press(&mut harness, Key::Enter);
+        assert_eq!(
+            sheet(&harness).status,
+            LaunchStatus::Launched,
+            "{}",
+            messages(sheet(&harness))
+        );
+        let plans = launch_plans(&harness);
+        let land = plans.last().unwrap();
+        assert_eq!(land.next_step, NextStep::Land);
+        assert_eq!(land.base.commit, HEAD_2);
+        assert_eq!(
+            land.landing.as_ref().unwrap().members[0].head_commit,
+            HEAD_2
+        );
+        assert_eq!(harness.launcher.windows().len(), 1);
+        // Land must discard Implement's offered state move, not carry out coding writes.
+        assert!(harness.linear_writer.calls().is_empty());
+    }
 }
