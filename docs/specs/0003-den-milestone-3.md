@@ -277,14 +277,14 @@ skip = ["Fix CI", "Triage", "Prune or revive"]
 - After a Repo Survey and the Linear survey have answered, the open PR members of this Repo's Landing Groups that sit in other Repos of the same Owner are read by number: their facts and state. This is #37's member read, widened from state to facts (`pull_request_facts.graphql` and the details query), still bounded by `MAX_MEMBER_STATES` and recorded under `SourceKind::MemberStates`.
 - Without this read, Land and Mark for release would see those members as not surveyed. Members in other Owners' Repos stay not surveyed, as today.
 
-**Cache** (format 13)
+**Cache** (format 14; #75 took 13)
 - Still one file per viewer, now keyed by Repo:
   - each Repo's facts (Repo, PRs, Issues, Branches, Runs), its coverage per source with read times, and the ages of carried data;
   - the index (Repo lists and requests, with read time);
   - the Linear part as today.
 - **Coverage per Repo:** every Work Item source is recorded per Repo in both surveys. The Sweep splits an Owner's PR and Issue listing per Repo: a Repo's PRs are complete when the Owner listing was complete or the Repo's own pages were read completely. Otherwise they are partial with the Owner's reason. The cross-kind rule (no kind more complete than the Repo list) applies per Owner as today.
 - **Merge:**
-  - For each Repo and source, a read is merged only if it **started later** than the one den holds, whether it is complete or partial. An answer that started earlier changes nothing for that Repo and source: not its facts, not its coverage, not its ages. This read-time guard stops a Sweep that began before a Repo Survey from overwriting it, including when the Sweep was interrupted or paused and answers partial.
+  - For each Repo and source, a read is merged unless the one den holds **started later** (a read that started at the same moment merges), whether it is complete or partial. An answer that started earlier changes nothing for that Repo and source: not its facts, not its coverage, not its ages. This read-time guard stops a Sweep that began before a Repo Survey from overwriting it, including when the Sweep was interrupted or paused and answers partial.
   - Merging stays in the App's event handling, one answer at a time, as `cache::merge` runs today. Survey lanes only read. The store lane writes the App's merged result whole, one write at a time in the order the App emitted them. So the guard's comparison and the replacement are one step, and no survey can interleave with it.
   - A complete read that passes the guard replaces the earlier facts. An incomplete one keeps earlier facts it didn't read with their own ages, as `cache::merge` does today.
 - Older formats are rejected and rebuilt, as before.
@@ -346,7 +346,7 @@ skip = ["Fix CI", "Triage", "Prune or revive"]
 | `config.rs` | `[repos."OWNER/REPO"] skip` |
 | `ports/` | `SurveyTarget`, `index`, `Workspace::repo_at`, member facts |
 | `github/` | `repo.graphql`, `repos.graphql` fields, search, per-Repo fetch, cancellation and rate-limit floor |
-| `cache/` | per-Repo keying, read-time guard, format 13 |
+| `cache/` | per-Repo keying, read-time guard, format 14 |
 | `runtime.rs` | `LaneKind::Sweep` |
 | `recent.rs` | new |
 | `ui/` | the kit and screens |
@@ -402,7 +402,7 @@ Tests go through the two seams, plus thin adapter checks, as in milestones 1 and
   - the same when that Sweep's answer is partial (interrupted or paused at the rate-limit floor): it neither replaces the Repo Survey's facts nor changes their coverage;
   - partial reads keep ages;
   - a per-Repo coverage split from an Owner listing;
-  - format 12 rejected and rebuilt.
+  - format 13 rejected and rebuilt.
 - Out-of-Repo Landing Group members:
   - read by number after both surveys;
   - Land decided with them;

@@ -25,7 +25,7 @@ pub use file::{CACHE_FORMAT, CACHE_SUBDIR, FileCache, MAX_CACHE_BYTES};
 pub use merge::{LinearMerge, merge, merge_linear, merge_member_states, settle_member_states};
 
 use crate::domain::{
-    LinearSourceKind, Observation, Source, SourceKind, SourceState, ids::same_login,
+    LinearSourceKind, Observation, RepoId, Source, SourceKind, SourceState, ids::same_login,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -40,6 +40,14 @@ pub struct Carried {
     pub observed_at: Timestamp,
 }
 
+/// When the read behind one Repo source's coverage started (cache format 13,
+/// ADR-0005): what the read-time guard compares a later answer with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceRead {
+    pub source: Source,
+    pub started_at: Timestamp,
+}
+
 /// The Observation den shows: the latest survey, with earlier data kept for the
 /// sources it could not read. Its coverage is always the latest survey's, so a
 /// kept source still reads as failed or partial.
@@ -50,26 +58,61 @@ pub struct CachedObservation {
     /// survey (`observation.observed_at`, or `observation.linear.observed_at`
     /// for a Linear source).
     pub carried: Vec<Carried>,
+    /// One entry per Repo source in the coverage: when the read whose
+    /// coverage den holds for it started (spec 0003, "Cache").
+    #[serde(default)]
+    pub reads: Vec<SourceRead>,
 }
 
 impl CachedObservation {
-    /// A survey with nothing carried over.
+    /// A survey with nothing carried over: each Repo source it recorded was
+    /// read when it started.
     pub fn fresh(observation: Observation) -> Self {
+        let reads = observation
+            .coverage
+            .entries()
+            .iter()
+            .filter(|e| matches!(e.source, Source::Repo { .. }))
+            .map(|e| SourceRead {
+                source: e.source.clone(),
+                started_at: observation.observed_at,
+            })
+            .collect();
         Self {
             observation,
             carried: Vec::new(),
+            reads,
         }
     }
 
+    /// When the read whose coverage den holds for `repo`'s `kind` started, if
+    /// den holds one. Repo names compare as GitHub compares them.
+    pub fn read_started(&self, repo: &RepoId, kind: SourceKind) -> Option<Timestamp> {
+        self.reads
+            .iter()
+            .filter(|r| matches!(&r.source, Source::Repo { repo: held, kind: k } if *k == kind && held.same(repo)))
+            .map(|r| r.started_at)
+            .max()
+    }
+
     /// When the data shown for `source` was observed, if it is older than the
-    /// Observation itself. A Repo's source falls back to its Owner's.
+    /// Observation itself. A Repo's source without a coverage entry of its
+    /// own falls back to its Owner's (spec 0003, "Coverage per Repo").
     pub fn carried_since(&self, source: &Source) -> Option<Timestamp> {
         let own = self
             .carried
             .iter()
             .find(|c| c.source.same(source))
             .map(|c| c.observed_at);
+        let recorded = |source: &Source| {
+            self.observation
+                .coverage
+                .entries()
+                .iter()
+                .any(|e| e.source.same(source))
+        };
         own.or_else(|| match source {
+            Source::Repo { .. } if recorded(source) => None,
             Source::Repo { repo, kind } => self.carried_since(&Source::Owner {
                 owner: repo.owner.clone(),
                 kind: *kind,
@@ -123,6 +166,8 @@ impl CachedObservation {
         observation.owners = owners.to_vec();
         self.carried
             .retain(|c| source_owner(&c.source).is_none_or(watched));
+        self.reads
+            .retain(|r| source_owner(&r.source).is_none_or(watched));
         self
     }
 }

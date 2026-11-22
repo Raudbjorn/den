@@ -19,7 +19,7 @@ use den::{
     ports::ObservationCache,
 };
 use std::{fs, time::Duration};
-use support::build::{ObservationBuilder, issue, linear_issue, pr, ts};
+use support::build::{ME, ObservationBuilder, issue, linear_issue, pr, ts};
 
 fn cached(viewer: &str, number: u64) -> CachedObservation {
     let mut cached = CachedObservation::fresh(
@@ -164,10 +164,13 @@ fn the_linear_part_and_its_ages_load_back_unchanged() {
 #[test]
 fn milestone_2_s_merged_shape_loads_back_unchanged() {
     // 12: #37's member attempts joined the Observation (round 4).
-    // 13: #75's Review Point facts joined a PR's details.
+    // 13: #75's Review Point facts joined a PR's details. 14: the cache
+    // records when each Repo source's read started (spec 0003, #134); this
+    // test's milestone-2 facts still load back unchanged in it, which is what
+    // it checks.
     assert_eq!(
-        CACHE_FORMAT, 13,
-        "the merged milestone-2 shape with member states and attempts"
+        CACHE_FORMAT, 14,
+        "milestone 2's shape inside the cache that records read times"
     );
     let team_states = LinearTeamStates {
         owner: "acme".to_owned(),
@@ -732,4 +735,48 @@ fn a_login_that_could_escape_the_directory_is_refused() {
         );
     }
     assert!(!dir.path().join("evil.json").exists());
+}
+
+/// Format 14 (spec 0003, #134): the cache records when the read behind each
+/// Repo source started, and loads it back. Format-12 and format-13 caches are
+/// refused by their version and rebuilt by the next survey, never decoded as
+/// format 14.
+#[test]
+fn a_repo_keyed_cache_loads_back_and_formats_12_and_13_are_rebuilt() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCache::in_state_dir(dir.path());
+    let observation = ObservationBuilder::new()
+        .owner("acme")
+        .repo_coverage(
+            "acme/app",
+            den::domain::SourceKind::PullRequests,
+            den::domain::SourceState::Complete,
+        )
+        .pull_request(pr("acme/app", 1).author(ME))
+        .build();
+    let stored = CachedObservation::fresh(observation);
+    assert_eq!(stored.reads.len(), 1, "one Repo source, one read");
+    for older in [12, 13] {
+        cache.store(&stored).unwrap();
+        assert_eq!(cache.load(), Ok(Some(stored.clone())));
+
+        let file = cache.file_for("me").unwrap();
+        let mut body: serde_json::Value =
+            serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        body["format"] = serde_json::json!(older);
+        fs::write(&file, serde_json::to_vec(&body).unwrap()).unwrap();
+        assert!(
+            matches!(
+                cache.load(),
+                Err(CacheError::Format { found, expected: 14, .. }) if found == older
+            ),
+            "format {older}"
+        );
+        cache.store(&stored).unwrap();
+        assert_eq!(
+            cache.load(),
+            Ok(Some(stored.clone())),
+            "rebuilt after {older}"
+        );
+    }
 }

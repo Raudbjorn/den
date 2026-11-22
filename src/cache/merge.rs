@@ -40,7 +40,7 @@
 //! identity: a config that changes only an Owner's casing still replaces the
 //! earlier survey's facts instead of keeping or doubling them.
 
-use super::{CachedObservation, Carried, LinearReads, source_owner};
+use super::{CachedObservation, Carried, LinearReads, SourceRead, source_owner};
 use crate::{
     domain::{
         Coverage, CoverageEntry, LinearPart, LinearSourceKind, Observation, RepoId, Source,
@@ -134,11 +134,21 @@ impl LinearKept {
 
 /// Merges `fresh` into `previous` of the same GitHub viewer; neither holds
 /// Linear data.
-fn merge_github(previous: CachedObservation, fresh: Observation) -> CachedObservation {
+///
+/// The read-time guard (spec 0003, "Merge"): for each Repo and source, a
+/// read is merged only if it didn't start before the one den holds. One that
+/// started earlier changes nothing for that Repo and source, complete or
+/// partial: not its facts, its coverage, its age or its read time.
+fn merge_github(previous: CachedObservation, mut fresh: Observation) -> CachedObservation {
+    let guarded = Guarded::of(&previous, &fresh);
+    guarded.withdraw(&mut fresh, &previous);
+    let fresh_at = fresh.observed_at;
     let mut merged = fresh;
     // Borrows the refresh's coverage; the merge below only moves other fields.
-    let reading = Reading::of(merged.owners.clone(), &merged.coverage);
+    let reading = Reading::of(merged.owners.clone(), &merged.coverage).guarding(&guarded);
     let carried = carried_sources(&previous, &merged, &reading);
+    let reads = merged_reads(&previous.reads, &merged.coverage, &guarded, fresh_at);
+    let held_at = previous.observation.observed_at;
     let previous_observation = previous.observation;
 
     let mut repos = std::mem::take(&mut merged.repos);
@@ -211,10 +221,163 @@ fn merge_github(previous: CachedObservation, fresh: Observation) -> CachedObserv
                 .record(entry.source.clone(), entry.state.clone());
         }
     }
-    CachedObservation {
+    let mut cached = CachedObservation {
         observation: merged,
         carried,
+        reads,
+    };
+    if !guarded.is_empty() && held_at > fresh_at {
+        as_new_as_held(&mut cached, held_at, fresh_at, &guarded);
     }
+    cached
+}
+
+/// The Repo sources a refresh may not replace (the read-time guard): den
+/// holds a read of them that started after the refresh did. Keyed by folded
+/// Repo and the kind that lists the facts; details go with their list.
+#[derive(Debug, Default)]
+struct Guarded(Vec<(RepoId, SourceKind)>);
+
+/// Guards nothing: for merges with no Repo reads to compare (Linear's).
+static GUARDS_NOTHING: Guarded = Guarded(Vec::new());
+
+impl Guarded {
+    /// Every held Repo read the refresh speaks for: the sources it recorded,
+    /// and the held reads of its Owners' Repos it never reached. An Owner
+    /// survey cut off before a Repo (interrupted, or paused at the rate-limit
+    /// floor) records nothing for it, yet still replaces the Owner's coverage,
+    /// so without the second list that Repo's held coverage and read time
+    /// would go while its facts stayed.
+    fn of(previous: &CachedObservation, fresh: &Observation) -> Self {
+        let recorded = fresh.coverage.entries().iter().map(|e| &e.source);
+        let unreached = previous.reads.iter().map(|r| &r.source).filter(|s| {
+            matches!(s, Source::Repo { repo, .. }
+                if fresh.owners.iter().any(|o| same_login(o, &repo.owner)))
+        });
+        let mut held: Vec<(RepoId, SourceKind)> = Vec::new();
+        for source in recorded.chain(unreached) {
+            let Source::Repo { repo, kind } = source else {
+                continue;
+            };
+            let key = (repo.folded(), listing(*kind));
+            let newer = previous
+                .read_started(repo, key.1)
+                .is_some_and(|started| started > fresh.observed_at);
+            if newer && !held.contains(&key) {
+                held.push(key);
+            }
+        }
+        Self(held)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Whether `repo`'s `kind` facts (or their details) stay as den held them.
+    fn holds(&self, repo: &RepoId, kind: SourceKind) -> bool {
+        self.0.contains(&(repo.folded(), listing(kind)))
+    }
+
+    fn holds_source(&self, source: &Source) -> bool {
+        matches!(source, Source::Repo { repo, kind } if self.holds(repo, *kind))
+    }
+
+    /// Takes what den holds back out of `fresh`: its facts of a guarded Repo
+    /// and source go, and its coverage of them becomes the held coverage.
+    fn withdraw(&self, fresh: &mut Observation, previous: &CachedObservation) {
+        if self.is_empty() {
+            return;
+        }
+        fresh
+            .repos
+            .retain(|r| !self.holds(&r.id, SourceKind::Repos));
+        fresh
+            .pull_requests
+            .retain(|i| !self.holds(&i.repo, SourceKind::PullRequests));
+        fresh
+            .issues
+            .retain(|i| !self.holds(&i.repo, SourceKind::Issues));
+        fresh
+            .branches
+            .retain(|i| !self.holds(&i.repo, SourceKind::Branches));
+        fresh
+            .runs
+            .retain(|i| !self.holds(&i.repo, SourceKind::Runs));
+        fresh.coverage.retain(|e| !self.holds_source(&e.source));
+        for entry in previous.observation.coverage.entries() {
+            if self.holds_source(&entry.source) {
+                fresh
+                    .coverage
+                    .record(entry.source.clone(), entry.state.clone());
+            }
+        }
+    }
+}
+
+/// The source that lists a kind's facts: a PR's or an Issue's details are
+/// read with its list, so they are guarded with it.
+fn listing(kind: SourceKind) -> SourceKind {
+    match kind {
+        SourceKind::PullRequestDetails => SourceKind::PullRequests,
+        SourceKind::IssueDetails => SourceKind::Issues,
+        other => other,
+    }
+}
+
+/// When the read behind each merged Repo source started: the held read for a
+/// guarded source, the refresh's start for every other one it recorded.
+fn merged_reads(
+    held: &[SourceRead],
+    merged: &Coverage,
+    guarded: &Guarded,
+    fresh_at: Timestamp,
+) -> Vec<SourceRead> {
+    let mut reads: Vec<SourceRead> = held
+        .iter()
+        .filter(|r| guarded.holds_source(&r.source))
+        .cloned()
+        .collect();
+    reads.extend(
+        merged
+            .entries()
+            .iter()
+            .filter(|e| matches!(e.source, Source::Repo { .. }) && !guarded.holds_source(&e.source))
+            .map(|e| SourceRead {
+                source: e.source.clone(),
+                started_at: fresh_at,
+            }),
+    );
+    reads
+}
+
+/// A guarded read keeps the Observation as new as the one den held, so a
+/// merge never reads older than what it shows (and the cache file, which
+/// refuses an older survey, still takes it). The refresh's own sources then
+/// carry the refresh's age.
+fn as_new_as_held(
+    cached: &mut CachedObservation,
+    held_at: Timestamp,
+    fresh_at: Timestamp,
+    guarded: &Guarded,
+) {
+    cached.observation.observed_at = held_at;
+    let older: Vec<Source> = cached
+        .observation
+        .coverage
+        .entries()
+        .iter()
+        .map(|e| &e.source)
+        .filter(|s| **s != Source::Viewer && !s.is_member_states() && !guarded.holds_source(s))
+        .filter(|s| !cached.carried.iter().any(|c| c.source.same(s)))
+        .cloned()
+        .collect();
+    cached
+        .carried
+        .extend(older.into_iter().map(|source| Carried {
+            source,
+            observed_at: fresh_at,
+        }));
 }
 
 /// Merges a read of Landing Group members' states (#37) into `previous`: each
@@ -353,6 +516,7 @@ pub fn merge_linear(
     let CachedObservation {
         mut observation,
         carried,
+        reads,
     } = previous;
     let mut earlier = std::mem::take(&mut observation.linear);
     earlier.viewers.retain(|v| !reread(&v.owner));
@@ -407,6 +571,7 @@ pub fn merge_linear(
         cached: CachedObservation {
             observation,
             carried,
+            reads,
         },
         viewer_changed,
     }
@@ -463,6 +628,8 @@ struct Reading<'f> {
     /// The refresh's coverage.
     coverage: &'f Coverage,
     viewer_read: bool,
+    /// The Repo sources den holds a newer read of: their earlier facts stay.
+    guarded: &'f Guarded,
 }
 
 impl<'f> Reading<'f> {
@@ -472,7 +639,14 @@ impl<'f> Reading<'f> {
             owners,
             coverage,
             viewer_read: coverage.get(&Source::Viewer) == Some(&SourceState::Complete),
+            guarded: &GUARDS_NOTHING,
         }
+    }
+
+    /// The same, keeping the earlier facts of `guarded` Repo sources.
+    fn guarding(mut self, guarded: &'f Guarded) -> Self {
+        self.guarded = guarded;
+        self
     }
 
     /// The refresh's spelling of `owner`, when it still watches that Owner.
@@ -491,6 +665,9 @@ impl<'f> Reading<'f> {
     /// recorded a source for is judged by that source alone, any other by its
     /// Owner's. The Landing Groups' "merged or closed" uses the same rule.
     fn keeps_repo_fact(&self, repo: &RepoId, kind: SourceKind) -> bool {
+        if self.guarded.holds(repo, kind) {
+            return true;
+        }
         if !self.owners.iter().any(|o| same_login(o, &repo.owner)) {
             return false;
         }
