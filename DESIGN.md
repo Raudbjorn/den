@@ -49,7 +49,7 @@ Colour is assigned by **job**, not by component:
 | `text-muted` | `#9EB1BA` | secondary facts, reasons |
 | `text-faint` | `#86999F` | metadata, hints, "not swept yet" |
 | `success` | `#5CB38B` | checked and fine (`✓ complete`) |
-| `error` | `#E86052` | failures |
+| `error` | `#E86052` | **Means:** den's own failures only, a survey or launch den couldn't complete. **Never:** a Pull Request's or CI's state. Those are told through Next Steps, words and glyphs: a failing check is the **Fix CI** Next Step, not a red cell, and no row is red for failing or green for passing (#154) |
 
 Values are as of the token file's recorded IRONMAW commit (`2bf753e`). Never edit a colour in code: copy a newer token file (`SOURCE.md`) and rebuild, then update this page's tables from it. Nothing checks these hex values against the token file.
 
@@ -134,6 +134,7 @@ ratatui widgets wrapped in `src/ui/kit/`. Each takes its style from the theme (`
 - **Do** take colours from the theme's roles. Never write hex or ANSI colours in UI code.
 - **Do** mark partial data in amber with `⚠`, and say what wasn't read.
 - **Don't** use rust for anything but the one action Button, the cursor tick and an Upstream target.
+- **Don't** add a status colour for a GitHub or CI state. Red is den's own failure; a check, a conflict or a review is told by its Next Step, words and glyphs.
 - **Don't** let amber and rust share an ANSI colour, or the selected fill match the page.
 - **Don't** shrink or crop the bear. Omit it.
 - **Don't** bring back Tonal plates (regions told apart by tone alone, slate sutures, the `◢` chamfer). ADR-0006 retired them; regions are bordered Panels now.
