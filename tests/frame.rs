@@ -13,7 +13,7 @@ use den::{
         view_model::{ELLIPSIS, ENTER_KEY, EmptyState, SEPARATOR, SidebarEntry},
     },
     palette::OXIDE_TRUECOLOR,
-    ui::{Theme, frame},
+    ui::{DrawWork, Theme, frame, measure},
 };
 use ratatui::{buffer::Buffer, layout::Rect};
 use raudbjorn_tui::profile::{ColorProfile, GlyphProfile, TerminalProfile};
@@ -554,23 +554,35 @@ fn the_sidebar_stays_beside_the_list_at_the_minimum_size() {
 
 /// A terminal far taller than any design size, with many Work Items and Repos.
 const TALL_SIZE: (u16, u16) = (160, 400);
-/// A tall frame must draw well within this, even in a debug build. Before the
-/// list, sidebar and sutures stopped handing the template engine one element
-/// per row, a frame like this took over a second in a release build (and a
-/// 160x2200 `--dump` ran for minutes).
+/// Half as tall: the work must grow at most in proportion to the rows.
+const HALF_TALL_ROWS: u16 = 200;
 const TALL_REPOS: u64 = 120;
+/// More Work Items than the 198 two-line rows a 400-row list plate holds.
 const TALL_WORK_ITEMS: u64 = 240;
-const TALL_FRAME_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+/// Twice as many: none of them on screen, so the frame's work is unchanged.
+const MORE_WORK_ITEMS: u64 = 480;
+/// Cells painted per cell of the frame, at most: the plates, then each row's
+/// own section over its plate. Drawing a plate again per row would multiply
+/// it by the rows.
+const CELLS_PAINTED_PER_FRAME_CELL: usize = 2;
+/// A backstop, not the measure (#140): only a regression of several times
+/// fails it, even on a slow shared CI runner in a debug build. The work counts
+/// below are what the test asserts. Before the list, sidebar and sutures
+/// stopped handing the template engine one element per row, a frame like this
+/// took over a second in a release build (and a 160x2200 `--dump` ran for
+/// minutes).
+const TALL_FRAME_BACKSTOP: std::time::Duration = std::time::Duration::from_secs(5);
 
-#[test]
-fn a_tall_terminal_draws_its_visible_rows_in_bounded_time() {
-    let (cols, rows) = TALL_SIZE;
+/// The view of `items` draft PRs across [`TALL_REPOS`] Repos at 160 x `rows`,
+/// with the last row selected, so the list window must scroll (set on the
+/// view: hundreds of key presses would only slow the test down).
+fn tall_view(rows: u16, items: u64) -> ViewModel {
+    let (cols, _) = TALL_SIZE;
     let mut builder = ObservationBuilder::new().owner("octo");
     for n in 0..TALL_REPOS {
         builder = builder.repo(&format!("octo/repo-{n:03}"));
     }
-    // More Work Items than the 198 two-line rows a 400-row list plate holds.
-    for n in 0..TALL_WORK_ITEMS {
+    for n in 0..items {
         builder =
             builder.pull_request(pr(&format!("octo/repo-{:03}", n % TALL_REPOS), n + 1).draft());
     }
@@ -578,22 +590,77 @@ fn a_tall_terminal_draws_its_visible_rows_in_bounded_time() {
     harness.send(Event::Resized { cols, rows });
     harness.answer(Ok(builder.build()));
     harness.start();
-    // The last row selected, so the list window must scroll (set on the view:
-    // 600 key presses would only slow the test down).
     let mut view = harness.view.clone();
     view.list.selected = Some(view.list.rows.len() - 1);
+    view
+}
+
+/// What drawing `view` at 160 x `rows` asks of the template engine.
+fn work(theme: &Theme, view: &ViewModel, rows: u16) -> DrawWork {
+    let (cols, _) = TALL_SIZE;
+    let (buffer, work) = measure(|| frame::render(theme, view, cols, rows));
+    buffer.expect("renders");
+    work
+}
+
+/// A tall frame draws only the rows it shows, each in its own small section
+/// (#140): its work is counted, not timed, so a slow CI runner can't fail it.
+/// The template engine clones a section's context per element, so a section
+/// handed every row would cost the square of the rows; a plate drawn again
+/// per row would multiply the cells painted.
+#[test]
+fn a_tall_terminal_draws_its_visible_rows_in_bounded_time() {
+    let (cols, rows) = TALL_SIZE;
     let theme = truecolor();
+    let view = tall_view(rows, TALL_WORK_ITEMS);
+
     // The first frame at a size, when no layout is cached yet: the worst case.
     let started = std::time::Instant::now();
-    let buffer = frame::render(&theme, &view, cols, rows).expect("renders");
+    let (buffer, tall) = measure(|| frame::render(&theme, &view, cols, rows));
+    let buffer = buffer.expect("renders");
     let took = started.elapsed();
-    assert!(took < TALL_FRAME_BUDGET, "a 160x400 frame took {took:?}");
-    // And every frame after it: the layouts it needs must all stay cached.
-    let started = std::time::Instant::now();
-    frame::render(&theme, &view, cols, rows).expect("renders");
-    let took = started.elapsed();
+    assert!(took < TALL_FRAME_BACKSTOP, "a 160x400 frame took {took:?}");
+
+    // Only the visible rows are drawn: twice the Work Items, same work.
+    assert_eq!(
+        work(&theme, &tall_view(rows, MORE_WORK_ITEMS), rows),
+        tall,
+        "Work Items off screen cost nothing"
+    );
+    // No section's context grows with the rows on screen, and none carries
+    // every row.
+    let half = work(
+        &theme,
+        &tall_view(HALF_TALL_ROWS, TALL_WORK_ITEMS),
+        HALF_TALL_ROWS,
+    );
+    assert_eq!(
+        tall.largest_context, half.largest_context,
+        "the largest section is the same at 200 and 400 rows: {half:?} then {tall:?}"
+    );
     assert!(
-        took < TALL_FRAME_BUDGET,
+        tall.largest_context < usize::try_from(TALL_WORK_ITEMS).expect("fits"),
+        "no section carries every row: {tall:?}"
+    );
+    // Sections grow at most in proportion to the rows.
+    assert!(
+        tall.calls <= 2 * half.calls,
+        "twice the rows, at most twice the sections: {half:?} then {tall:?}"
+    );
+    let frame_cells = usize::from(cols) * usize::from(rows);
+    assert!(
+        tall.cells <= CELLS_PAINTED_PER_FRAME_CELL * frame_cells,
+        "no plate is painted again per row: {tall:?} for {frame_cells} cells"
+    );
+
+    // And every frame after it does the same work, its layouts cached.
+    let started = std::time::Instant::now();
+    let (again, next) = measure(|| frame::render(&theme, &view, cols, rows));
+    again.expect("renders");
+    let took = started.elapsed();
+    assert_eq!(next, tall, "the same view, the same work");
+    assert!(
+        took < TALL_FRAME_BACKSTOP,
         "the next 160x400 frame took {took:?}"
     );
 
