@@ -5,7 +5,7 @@ The look of den on one page. It gathers decisions recorded elsewhere and points 
 | Source | Owns |
 |---|---|
 | `assets/tokens/oxide.tokens.json` (IRONMAW Oxide, copied byte for byte; see `assets/tokens/SOURCE.md`) | every colour value |
-| `build/palette_gen.rs` (`SLOTS`) | which token fills each palette slot, and the 16-colour fallbacks |
+| `build/palette_gen.rs` (`SLOTS`) | which token fills each palette slot, the 16- and 8-colour colours by role, and the 256-colour pins |
 | ADR-0001 | the colour roles |
 | ADR-0006, spec 0003 "Look: the den kit" | widgets, panels, the kit |
 | `src/layout.rs` | sizes and breakpoints |
@@ -56,8 +56,9 @@ Values are as of the token file's recorded IRONMAW commit (`2bf753e`). Never edi
 ### Colour profiles (`src/palette.rs`)
 
 - **Truecolor:** token colours as given.
-- **256-colour:** token colours quantised to the nearest xterm colour (`nearest_xterm_index`). That merges some tokens: `surface-1` and `surface-2` (both 234), `surface-3` and `selected` (235), `mark-bg` and `bg` (233), and `error` and `action-hover` (167). So in 256 colours the selected row has the tone of a raised field, the mark plate has the page's, and the three surface layers are two. No test checks this.
-- **16- and 8-colour:** a role-based ANSI palette, *not* nearest-colour, because nearest-colour would merge rust with amber and the selected fill with the page. In 16 colours the mapping is teal → cyan, rust → red, amber → yellow, slate → dark grey, selected → blue. 8-colour terminals get the same palette, then the profile folds each bright colour into the nearest of the first eight (`quantize_color`): dark grey (slate: `border`, `border-strong`, `info`, `text-faint`) and white (`text-strong`) become grey, the colour of body `text`, and light red (`error`, `action-hover`) becomes red, the colour of rust. **So in 8 colours errors draw in the action colour.** That breaks the rust rule and is a palette bug, not a design choice. No test covers the 8-colour profile.
+- **256-colour:** token colours quantised to the nearest xterm colour (`nearest_xterm_index`), except the roles that would merge, which `SLOTS` pins (#128): page 233, mark plate 232, surfaces 234 / 235 / 237, the selected row 236, `border` 238, `error` 167 and `action-hover` 173. Every fill stays its own tone, and an error never takes rust hover's colour.
+- **16-colour:** a role-based ANSI palette, *not* nearest-colour, because nearest-colour would merge rust with amber and the selected fill with the page. The mapping is teal → cyan, rust → red, amber → yellow, slate → dark grey, selected → blue.
+- **8-colour:** its own role-based palette (#128), because folding the 16-colour one into eight would draw errors in rust and slate in body-text grey. `error` is magenta, never rust's red. Slate lines (`border`, `border-strong`) are blue, apart from text. `info` stays grey, because it is drawn on the selected row, which is blue. `text-faint` and `text-strong` are grey like body text, so words and weight carry those.
 - **Mono / no colour:** meaning survives through glyphs, words and position, plus the engine's attribute cues (`mono_cue` in the vendored engine): the selected row in reverse video, the mark plate dim, `border-strong` bold, and rust hover bold and underlined (`tests/palette_profiles.rs`). The cues hang on the engine's colour sentinels, so the kit has to keep them or replace them.
 
 ## 3. Type and text
@@ -141,4 +142,4 @@ ratatui widgets wrapped in `src/ui/kit/`. Each takes its style from the theme (`
 ## 8. Testing the look
 
 - `TestBackend` buffer snapshots at fixed sizes and profiles are milestone 3's rendering seam (ADR-0006; spec 0003 "Testing Decisions"). Until the kit lands, `tests/frame.rs` smoke-renders the current frame.
-- `tests/palette_generation.rs` checks the compiled palette against the token file. `tests/palette_profiles.rs` checks that rust differs from amber and teal in 16 colours, that the four extra roles stay distinct and the selected fill differs from the page in 256 and 16 colours, and the mono cues. Nothing tests the 8-colour profile, and the 16-colour column of `SLOTS` is not pinned role by role.
+- `tests/palette_generation.rs` checks the compiled palette against the token file, and that every 8-colour choice is one of the eight and every 256 pin an xterm colour. `tests/palette_profiles.rs` checks: rust apart from amber and teal in 16 colours; the four extra roles distinct, and the selected fill apart from the page, in 256 and 16 colours; in 8 colours, error apart from rust and slate lines apart from text; in 256 colours, every fill and error apart; in every colour profile, nothing drawn on the selected row disappearing into it; and the mono cues.
