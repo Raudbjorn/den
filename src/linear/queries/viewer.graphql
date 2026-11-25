@@ -4,6 +4,7 @@ query LinearViewer {
     name
   }
   organization {
+    id
     urlKey
   }
 }

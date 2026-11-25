@@ -49,9 +49,21 @@ const MAX_TEAM_KEY_CHARS: usize = 32;
 /// den's bound on a state name or Slack channel, in characters.
 const MAX_SETTING_CHARS: usize = 100;
 
+/// Validated, nonsecret scope of one selected Repo's connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinearBinding {
+    pub repo: RepoId,
+    pub workspace_id: String,
+    pub project_id: String,
+    pub viewer_id: String,
+    pub credential_ref: String,
+    pub workflow_policy: bool,
+}
+
 /// One Owner's Linear Workflow, validated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinearWorkflow {
+    pub binding: Option<LinearBinding>,
     /// The Owner, spelled as in `owners`.
     pub owner: String,
     /// The Linear workspace's URL key, lowercased.
@@ -96,6 +108,9 @@ impl LinearWorkflow {
     /// Held Repos (#36), its release state (#37), its landing order (#40)
     /// and its parked states (#74).
     pub fn policy(&self) -> LinearWorkflowPolicy {
+        if self.binding.as_ref().is_some_and(|b| !b.workflow_policy) {
+            return LinearWorkflowPolicy::default();
+        }
         LinearWorkflowPolicy {
             start: StartPolicy {
                 teams: self.start_teams.clone(),
@@ -241,6 +256,7 @@ fn workflow(owner: &str, raw: RawLinearWorkflow, text: &str) -> Result<LinearWor
     let start_teams = unique(raw.start_teams, "start_teams", team_key)?;
     let repos = |list, field| unique(list, field, |entry| repo(owner, field, entry));
     Ok(LinearWorkflow {
+        binding: None,
         owner: owner.to_owned(),
         workspace,
         api_key_env,

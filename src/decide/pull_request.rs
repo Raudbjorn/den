@@ -176,7 +176,7 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
         url: pr.url.clone(),
         updated_at: pr.updated_at,
     };
-    let policy = ctx.policy(&pr.repo.owner);
+    let policy = ctx.policies.for_repo(&pr.repo);
     let ReviewFindings {
         approval,
         address_review,
@@ -343,7 +343,15 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
             not_ruled_out.join(", ")
         )
     };
-    let groups = ctx.correlation.for_pull_request(&pr.repo, pr.number).groups;
+    let linear_active = ctx
+        .policies
+        .linear_repo()
+        .is_none_or(|repo| repo.same(&pr.repo));
+    let groups = if linear_active {
+        ctx.correlation.for_pull_request(&pr.repo, pr.number).groups
+    } else {
+        Vec::new()
+    };
     if step == NextStep::Merge
         && let Some((held, why_held)) = held_back(policy, pr, &groups)
     {
@@ -367,7 +375,7 @@ fn decide(ctx: &Context<'_>, pr: &PullRequest) -> Decision {
     }
     // Read before a skipped Merge is withheld: a PR that might be an unread
     // Landing Group's member says so either way.
-    let membership = (step == NextStep::Merge).then(|| membership_unread(ctx, pr));
+    let membership = (step == NextStep::Merge && linear_active).then(|| membership_unread(ctx, pr));
     if let Some((_, Some(unread))) = &membership {
         unknowns.push(unread.clone());
     }

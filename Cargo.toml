@@ -41,6 +41,11 @@ ratatui-image = { version = "=12.0.0-rc.3", default-features = false, features =
 image = { version = "0.25.6", default-features = false }
 resvg = { version = "0.50", default-features = false }
 
+# OAuth PKCE and nonces; these versions already exist in the dependency graph.
+base64 = "=0.22.1"
+sha2 = "=0.10.9"
+getrandom = "=0.3.4"
+
 [build-dependencies]
 # build.rs generates the Oxide palette from assets/tokens/oxide.tokens.json.
 serde_json = "1"

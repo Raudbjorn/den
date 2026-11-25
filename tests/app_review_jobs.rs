@@ -84,8 +84,9 @@ fn started_with(claude_dir: Option<&str>, prepare: impl FnOnce(&Harness)) -> Har
 
 /// [`started_with`], with `app` (its prompts, its Claude directory).
 fn started_with_app(app: App, prepare: impl FnOnce(&Harness)) -> Harness {
-    let mut harness = Harness::new(Ok(config()));
+    let mut harness = Harness::new(Ok(config())).with_linear_pairing("acme/api", "acme");
     harness.app = app;
+    harness = harness.with_linear_pairing("acme/api", "acme");
     harness
         .workspace
         .add_clone(API, &[("origin", "git@github.com:acme/api.git")]);
@@ -128,6 +129,7 @@ fn started_with_app(app: App, prepare: impl FnOnce(&Harness)) -> Harness {
         );
     }
     harness.linear.push_answer(LinearSurvey {
+        authentication_failed: false,
         part: LinearPart {
             viewers: vec![linear_viewer("acme", "acme")],
             issues: vec![
@@ -160,6 +162,7 @@ fn type_text(harness: &mut Harness, text: &str) {
 
 /// Selects `repo` `reference` and presses `c`.
 fn open_sheet(harness: &mut Harness, repo: &str, reference: &str) -> LaunchSheet {
+    harness.select_repo(repo);
     let index = harness
         .view
         .list

@@ -142,6 +142,8 @@ pub struct LinearSurveyRequest {
 /// survey always answers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LinearSurvey {
+    /// A revoked credential or changed immutable identity invalidates pairing.
+    pub authentication_failed: bool,
     pub part: LinearPart,
     pub coverage: Coverage,
 }
@@ -184,6 +186,7 @@ pub struct LinearIssueNow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinearIssueRead {
     Read(LinearIssueNow),
+    Unauthenticated { error: String },
     Failed { error: String },
 }
 
@@ -209,6 +212,9 @@ pub enum LinearWriteKind {
 /// How a Linear write ended (spec 0002, "Linear writer").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinearWriteOutcome {
+    Unauthenticated {
+        error: String,
+    },
     /// Linear made the change and returned the issue's assignee and state,
     /// which den shows as Linear returned them (another claim may have
     /// landed in between: there is no compare-and-set).
@@ -217,11 +223,15 @@ pub enum LinearWriteOutcome {
         state: LinearState,
     },
     /// Linear answered and didn't make the change.
-    Failed { error: String },
+    Failed {
+        error: String,
+    },
     /// den can't tell whether Linear made the change: the request may have
     /// reached Linear but its answer was lost or timed out. den re-reads the
     /// issue before anything else and never retries blind.
-    Unknown { why: String },
+    Unknown {
+        why: String,
+    },
 }
 
 /// den's own on-disk cache of the last Observation, per viewer. Read-only

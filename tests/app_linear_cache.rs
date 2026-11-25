@@ -21,7 +21,7 @@ use den::{
 use support::{
     build::{ObservationBuilder, linear_issue, linear_viewer, now, pr, ts},
     fakes::FakeCache,
-    harness::{Harness, config, config_with_linear, linear_workflow},
+    harness::{Harness, config, config_with_linear, linear_workflow, paired_cache},
 };
 
 /// When the earlier surveys were made (two hours before `now()`).
@@ -108,6 +108,7 @@ impl Answer {
             coverage.record(acme_linear(kind), state);
         }
         LinearSurvey {
+            authentication_failed: false,
             part: LinearPart {
                 viewers: self.viewer.into_iter().collect(),
                 issues: self.issues,
@@ -152,7 +153,10 @@ fn cached_with_linear(viewer: LinearViewer, issues: Vec<LinearIssue>) -> FakeCac
             .coverage
             .record(acme_linear(kind), SourceState::Complete);
     }
-    FakeCache::holding(CachedObservation::fresh(observation))
+    FakeCache::holding(paired_cache(
+        CachedObservation::fresh(observation),
+        "acme/api",
+    ))
 }
 
 /// The identifiers of the Linear rows, in list order.
@@ -231,7 +235,8 @@ fn startup_shows_the_cached_linear_part_with_its_age_and_a_refresh_replaces_it()
         linear_viewer("acme", "acme"),
         vec![linear_issue("acme", "id-7", "TEAM-7").build()],
     );
-    let mut harness = Harness::with_cache(Ok(workflow_config()), cache);
+    let mut harness =
+        Harness::with_cache(Ok(workflow_config()), cache).with_linear_pairing("acme/api", "acme");
     harness.linear.push_answer(
         Answer::complete(vec![linear_issue("acme", "id-8", "TEAM-8").build()]).survey(),
     );
@@ -274,7 +279,7 @@ fn startup_shows_the_cached_linear_part_with_its_age_and_a_refresh_replaces_it()
 
 #[test]
 fn a_failed_linear_refresh_keeps_the_last_good_linear_data_with_its_age() {
-    let mut harness = Harness::new(Ok(workflow_config()));
+    let mut harness = Harness::new(Ok(workflow_config())).with_linear_pairing("acme/api", "acme");
     harness.linear.push_answer(
         Answer::complete(vec![linear_issue("acme", "id-7", "TEAM-7").build()])
             .at(EARLIER)
@@ -339,7 +344,7 @@ fn a_failed_linear_refresh_keeps_the_last_good_linear_data_with_its_age() {
 
 #[test]
 fn data_kept_by_two_failed_linear_refreshes_keeps_its_original_age() {
-    let mut harness = Harness::new(Ok(workflow_config()));
+    let mut harness = Harness::new(Ok(workflow_config())).with_linear_pairing("acme/api", "acme");
     harness.linear.push_answer(
         Answer::complete(vec![linear_issue("acme", "id-7", "TEAM-7").build()])
             .at(EARLIER)
@@ -367,7 +372,7 @@ fn data_kept_by_two_failed_linear_refreshes_keeps_its_original_age() {
 
 #[test]
 fn a_failed_linear_refresh_blocks_nothing_needs_you() {
-    let mut harness = Harness::new(Ok(workflow_config()));
+    let mut harness = Harness::new(Ok(workflow_config())).with_linear_pairing("acme/api", "acme");
     harness
         .linear
         .push_answer(Answer::complete(Vec::new()).at(EARLIER).survey());
@@ -377,25 +382,31 @@ fn a_failed_linear_refresh_blocks_nothing_needs_you() {
     harness.start();
     assert_eq!(
         harness.view.list.empty.as_ref().expect("empty").title,
-        "Nothing needs you."
+        "Nothing in Repo acme/api."
     );
 
     harness.settle(Event::Key(Key::Char('r')));
     let empty = harness.view.list.empty.clone().expect("still empty");
     assert_ne!(empty.title, "Nothing needs you.");
     assert!(
-        empty
-            .detail
+        harness
+            .view
+            .header
+            .coverage
             .contains("assigned Linear Issues of acme failed")
-            && empty.detail.contains("showing data from 10:00 UTC"),
+            && harness
+                .view
+                .header
+                .coverage
+                .contains("showing data from 10:00 UTC"),
         "{}",
-        empty.detail
+        harness.view.header.coverage
     );
 }
 
 #[test]
 fn a_rate_limited_linear_refresh_keeps_the_issues_it_did_not_reach() {
-    let mut harness = Harness::new(Ok(workflow_config()));
+    let mut harness = Harness::new(Ok(workflow_config())).with_linear_pairing("acme/api", "acme");
     harness.linear.push_answer(
         Answer::complete(vec![
             linear_issue("acme", "id-7", "TEAM-7").build(),
@@ -465,7 +476,7 @@ fn a_linear_source_read_completely_replaces_only_its_own_facts() {
             .listed_by(LinearSourceKind::StartTeamIssues)
             .build()
     };
-    let mut harness = Harness::new(Ok(workflow_config()));
+    let mut harness = Harness::new(Ok(workflow_config())).with_linear_pairing("acme/api", "acme");
     harness.linear.push_answer(
         Answer::complete(vec![
             linear_issue("acme", "id-7", "TEAM-7").build(),
@@ -550,7 +561,7 @@ fn a_failed_start_team_refresh_keeps_the_last_good_start_items_with_their_age() 
             .state(LinearSourceKind::StartTeamIssues, SourceState::Complete)
             .state(LinearSourceKind::TeamStates, SourceState::Complete)
     };
-    let mut harness = Harness::new(Ok(start_team_config()));
+    let mut harness = Harness::new(Ok(start_team_config())).with_linear_pairing("acme/api", "acme");
     harness.linear.push_answer(
         all_complete(Answer::complete(vec![
             linear_issue("acme", "id-9", "TEAM-9")
@@ -629,7 +640,8 @@ fn a_changed_linear_viewer_drops_cached_linear_data() {
         linear_viewer("acme", "acme"),
         vec![linear_issue("acme", "id-7", "TEAM-7").build()],
     );
-    let mut harness = Harness::with_cache(Ok(workflow_config()), cache);
+    let mut harness =
+        Harness::with_cache(Ok(workflow_config()), cache).with_linear_pairing("acme/api", "acme");
     // Another account's key: its viewer reads, its issues don't. Without the
     // viewer check, TEAM-7 would be kept as the last good data.
     let someone_else = LinearViewer {
@@ -658,11 +670,14 @@ fn a_changed_linear_viewer_drops_cached_linear_data() {
         "{:?}",
         harness.rows()
     );
-    assert!(logged(&harness, "Linear viewer of acme"));
+    assert!(
+        harness.app.linear_binding().is_none(),
+        "a changed viewer requires connection setup again"
+    );
     let coverage = &harness.view.header.coverage;
     assert!(
-        coverage.contains("assigned Linear Issues of acme failed") && !coverage.contains("showing"),
-        "no age for data den no longer holds: {coverage}"
+        !coverage.contains("assigned Linear Issues"),
+        "revoked Linear access contributes no coverage: {coverage}"
     );
     // Changed with #45's save-once rule: the same survey's GitHub answer is
     // still to come, so Linear's answer is saved with it, not on its own.
@@ -685,12 +700,13 @@ fn a_changed_linear_viewer_drops_cached_linear_data() {
         .iter()
         .map(|v| v.id.as_str())
         .collect();
-    assert_eq!(viewers, ["user-other"]);
+    // The previous pairing cannot authorize a different viewer.
+    assert!(viewers.is_empty());
 }
 
 #[test]
 fn a_linear_viewer_changing_within_a_session_drops_the_earlier_linear_data() {
-    let mut harness = Harness::new(Ok(workflow_config()));
+    let mut harness = Harness::new(Ok(workflow_config())).with_linear_pairing("acme/api", "acme");
     harness.linear.push_answer(
         Answer::complete(vec![linear_issue("acme", "id-7", "TEAM-7").build()]).survey(),
     );
@@ -749,7 +765,7 @@ fn a_cached_linear_part_is_dropped_when_its_owner_s_linear_workflow_changed_or_w
 
 #[test]
 fn a_linear_failure_never_discards_fresh_github_data() {
-    let mut harness = Harness::new(Ok(workflow_config()));
+    let mut harness = Harness::new(Ok(workflow_config())).with_linear_pairing("acme/api", "acme");
     harness.linear.push_answer(
         Answer::complete(vec![linear_issue("acme", "id-7", "TEAM-7").build()])
             .at(EARLIER)
@@ -778,7 +794,7 @@ fn a_linear_failure_never_discards_fresh_github_data() {
 
 #[test]
 fn a_github_failure_never_discards_fresh_linear_data() {
-    let mut harness = Harness::new(Ok(workflow_config()));
+    let mut harness = Harness::new(Ok(workflow_config())).with_linear_pairing("acme/api", "acme");
     harness.linear.push_answer(
         Answer::complete(vec![linear_issue("acme", "id-7", "TEAM-7").build()])
             .at(EARLIER)
@@ -824,7 +840,7 @@ fn a_github_failure_never_discards_fresh_linear_data() {
 
 #[test]
 fn a_github_survey_that_fails_outright_still_shows_the_linear_refresh() {
-    let mut harness = Harness::new(Ok(workflow_config()));
+    let mut harness = Harness::new(Ok(workflow_config())).with_linear_pairing("acme/api", "acme");
     harness.linear.push_answer(
         Answer::complete(vec![linear_issue("acme", "id-7", "TEAM-7").build()]).survey(),
     );
@@ -852,8 +868,12 @@ fn a_github_survey_of_another_viewer_keeps_this_session_s_linear_answer() {
         .build();
     observation.linear.viewers = vec![linear_viewer("acme", "acme")];
     observation.linear.issues = vec![linear_issue("acme", "id-7", "TEAM-7").build()];
-    let cache = FakeCache::holding(CachedObservation::fresh(observation));
-    let mut harness = Harness::with_cache(Ok(workflow_config()), cache);
+    let cache = FakeCache::holding(paired_cache(
+        CachedObservation::fresh(observation),
+        "acme/api",
+    ));
+    let mut harness =
+        Harness::with_cache(Ok(workflow_config()), cache).with_linear_pairing("acme/api", "acme");
     harness.linear.push_answer(
         Answer::complete(vec![linear_issue("acme", "id-8", "TEAM-8").build()]).survey(),
     );
@@ -881,7 +901,7 @@ fn start_team_issue(id: &str, identifier: &str) -> LinearIssue {
 /// Linear Issues kept forever, so "Nothing needs you" is reachable again.
 #[test]
 fn a_linear_source_no_longer_surveyed_is_dropped_with_its_facts() {
-    let mut harness = Harness::new(Ok(workflow_config()));
+    let mut harness = Harness::new(Ok(workflow_config())).with_linear_pairing("acme/api", "acme");
     harness.linear.push_answer(
         Answer::complete(vec![start_team_issue("id-9", "TEAM-9")])
             .state(LinearSourceKind::StartTeamIssues, SourceState::Complete)
@@ -930,7 +950,7 @@ fn a_linear_source_no_longer_surveyed_is_dropped_with_its_facts() {
     );
     assert_eq!(
         harness.view.list.empty.as_ref().expect("empty").title,
-        "Nothing needs you."
+        "Nothing in Repo acme/api."
     );
 }
 
@@ -959,8 +979,12 @@ fn a_cached_linear_source_this_config_does_not_read_is_dropped_on_load() {
                 SourceState::Complete,
             );
         }
-        let cache = FakeCache::holding(CachedObservation::fresh(observation));
-        let mut harness = Harness::with_cache(Ok(workflow_config()), cache);
+        let cache = FakeCache::holding(paired_cache(
+            CachedObservation::fresh(observation),
+            "acme/api",
+        ));
+        let mut harness = Harness::with_cache(Ok(workflow_config()), cache)
+            .with_linear_pairing("acme/api", "acme");
         harness
             .linear
             .push_answer(Answer::complete(Vec::new()).survey());
@@ -993,7 +1017,7 @@ fn a_cached_linear_source_this_config_does_not_read_is_dropped_on_load() {
         );
         assert_eq!(
             harness.view.list.empty.as_ref().expect("empty").title,
-            "Nothing needs you.",
+            "Nothing in Repo acme/api.",
             "{case}"
         );
     }
@@ -1012,7 +1036,8 @@ fn a_linear_issue_shows_when_linear_read_it() {
         ),
         ("GitHub older", None, EARLIER, "12:00 UTC"),
     ] {
-        let mut harness = Harness::new(Ok(workflow_config()));
+        let mut harness =
+            Harness::new(Ok(workflow_config())).with_linear_pairing("acme/api", "acme");
         let mut answer = Answer::complete(vec![linear_issue("acme", "id-7", "TEAM-7").build()]);
         if let Some(at) = linear_at {
             answer = answer.at(at);
@@ -1041,7 +1066,8 @@ fn a_changed_linear_viewer_found_when_the_cache_loads_is_logged() {
         linear_viewer("acme", "acme"),
         vec![linear_issue("acme", "id-7", "TEAM-7").build()],
     );
-    let mut harness = Harness::with_cache(Ok(workflow_config()), cache);
+    let mut harness =
+        Harness::with_cache(Ok(workflow_config()), cache).with_linear_pairing("acme/api", "acme");
     let someone_else = LinearViewer {
         id: "user-other".to_owned(),
         ..linear_viewer("acme", "acme")
@@ -1065,13 +1091,13 @@ fn a_changed_linear_viewer_found_when_the_cache_loads_is_logged() {
         "{:?}",
         harness.rows()
     );
-    assert!(logged(&harness, "Linear viewer of acme"));
+    assert!(logged(&harness, "Linear authentication changed"));
 }
 
 /// A Linear answer logs the Linear data it kept, not GitHub's again.
 #[test]
 fn a_linear_answer_logs_only_the_linear_data_it_kept() {
-    let mut harness = Harness::new(Ok(workflow_config()));
+    let mut harness = Harness::new(Ok(workflow_config())).with_linear_pairing("acme/api", "acme");
     harness.linear.push_answer(
         Answer::complete(vec![linear_issue("acme", "id-7", "TEAM-7").build()])
             .at(EARLIER)
@@ -1124,7 +1150,7 @@ fn a_linear_answer_logs_only_the_linear_data_it_kept() {
 /// GitHub answer never touches the Linear part.
 #[test]
 fn linear_data_kept_on_the_linear_only_stand_in_survives_github_s_recovery() {
-    let mut harness = Harness::new(Ok(workflow_config()));
+    let mut harness = Harness::new(Ok(workflow_config())).with_linear_pairing("acme/api", "acme");
     harness.linear.push_answer(
         Answer::complete(vec![linear_issue("acme", "id-7", "TEAM-7").build()])
             .at(EARLIER)
@@ -1180,7 +1206,8 @@ fn linear_data_kept_from_the_cache_is_logged_when_linear_answered_first() {
         linear_viewer("acme", "acme"),
         vec![linear_issue("acme", "id-7", "TEAM-7").build()],
     );
-    let mut harness = Harness::with_cache(Ok(workflow_config()), cache);
+    let mut harness =
+        Harness::with_cache(Ok(workflow_config()), cache).with_linear_pairing("acme/api", "acme");
     harness.linear.push_answer(Answer::unreachable().survey());
     let effects = harness.send(Event::Started { now: now() });
     let linear = effects
@@ -1220,8 +1247,12 @@ fn an_undated_linear_answer_leaves_the_cached_linear_date() {
             .coverage
             .record(acme_linear(kind), SourceState::Complete);
     }
-    let cache = FakeCache::holding(CachedObservation::fresh(observation));
-    let mut harness = Harness::with_cache(Ok(workflow_config()), cache);
+    let cache = FakeCache::holding(paired_cache(
+        CachedObservation::fresh(observation),
+        "acme/api",
+    ));
+    let mut harness =
+        Harness::with_cache(Ok(workflow_config()), cache).with_linear_pairing("acme/api", "acme");
     harness.answer(Ok(github(support::build::NOW, &[])));
     // `r` before any event that carries the time.
     let effects = harness.send(Event::Key(Key::Char('r')));

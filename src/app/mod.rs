@@ -7,6 +7,7 @@ mod editor;
 mod effect;
 mod event;
 mod launch;
+mod linear_gate;
 mod linear_writes;
 mod overlay;
 mod release;
@@ -66,6 +67,7 @@ struct HeldAnswer {
 
 pub struct App {
     config: Result<Config, ConfigError>,
+    linear_templates: Vec<crate::config::LinearWorkflow>,
     /// The survey in flight, if any.
     running: Option<SurveyId>,
     next_survey: u64,
@@ -146,14 +148,22 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(config: Result<Config, ConfigError>) -> Self {
-        let policies = config.as_ref().map(Config::policies).unwrap_or_default();
-        let removed_env = config
+    pub fn new(mut config: Result<Config, ConfigError>) -> Self {
+        let mut removed_env = config
             .as_ref()
             .map(Config::job_removed_env)
             .unwrap_or_default();
+        removed_env.extend(["LINEAR_API_KEY".to_owned(), "LINEAR_API_TOKEN".to_owned()]);
+        removed_env.sort();
+        removed_env.dedup();
+        let linear_templates = config
+            .as_mut()
+            .map(|c| std::mem::take(&mut c.linear))
+            .unwrap_or_default();
+        let policies = config.as_ref().map(Config::policies).unwrap_or_default();
         Self {
             config,
+            linear_templates,
             running: None,
             next_survey: 0,
             shown: None,
@@ -196,6 +206,7 @@ impl App {
     /// notice if they gave one.
     #[must_use]
     pub fn with_start(mut self, start: Start) -> Self {
+        self.deactivate_linear();
         match start {
             Start::Repo(repo) => {
                 if self.owners().iter().any(|o| same_login(o, &repo.owner)) {
@@ -238,6 +249,38 @@ impl App {
     }
 
     pub fn handle(&mut self, event: Event) -> (ViewModel, Vec<Effect>) {
+        let current_sheet = |id| match &self.overlay {
+            Some(OverlayState::Launch(sheet)) => sheet.id == id,
+            Some(OverlayState::Release(sheet)) => sheet.id == id,
+            _ => false,
+        };
+        let authentication_failed = match &event {
+            Event::LinearIssueRead { id, read } => {
+                current_sheet(*id)
+                    && matches!(
+                        read.as_ref(),
+                        crate::ports::LinearIssueRead::Unauthenticated { .. }
+                    )
+            }
+            Event::LinearWriteFinished { id, outcome, .. } => {
+                current_sheet(*id)
+                    && matches!(
+                        outcome.as_ref(),
+                        crate::ports::LinearWriteOutcome::Unauthenticated { .. }
+                    )
+            }
+            _ => false,
+        };
+        if authentication_failed {
+            self.deactivate_linear();
+            return (
+                self.view(),
+                vec![Effect::log(
+                    LogLevel::Warn,
+                    "Linear authentication changed; reconnect this Repo",
+                )],
+            );
+        }
         let mut effects = match event {
             Event::Started { now } => {
                 self.now = Some(now);
@@ -281,6 +324,7 @@ impl App {
 
     /// The current ViewModel, without changing anything.
     pub fn view(&self) -> ViewModel {
+        let job_checks = self.eligible_job_checks();
         view::build(&view::State {
             config: &self.config,
             surveying: self.running.is_some(),
@@ -298,7 +342,7 @@ impl App {
             now: self.now,
             layout: Layout::for_size(self.size),
             overlay: self.overlay.as_ref(),
-            job_checks: &self.job_checks,
+            job_checks: &job_checks,
             upstreams: &self.upstreams,
             upstream_note: self.upstream_note(),
             legacy_marker_prefixes: self.policies.legacy_marker_prefixes(),
@@ -498,6 +542,7 @@ impl App {
             scope::Outcome::Changed => {
                 // The start notice was about where den opened.
                 self.start_note = None;
+                self.deactivate_linear();
                 self.apply_scope();
                 return Vec::new();
             }
@@ -743,6 +788,12 @@ impl App {
         let Ok(config) = &self.config else {
             return Vec::new();
         };
+        let cached =
+            if cached.linear_scope.is_some() && cached.linear_scope == self.linear_cache_scope() {
+                *cached
+            } else {
+                cached.restricted_to_linear(&[])
+            };
         let mut cached = cached
             .restricted_to(&config.owners)
             .restricted_to_linear(&linear_reads(config));
@@ -828,7 +879,14 @@ impl App {
     /// in it. Work Items whose only Next Step their Repo doesn't track
     /// (`skip`, spec 0003) are left out; the empty state counts them.
     fn apply_scope(&mut self) {
-        self.decisions = ordering::in_scope(&self.ordered, &self.scope.scope)
+        self.decisions = self
+            .ordered
+            .iter()
+            .filter(|d| {
+                self.scope.scope.contains_decision(d)
+                    || (self.linear_binding().is_some()
+                        && matches!(d.item.id, WorkItemId::LinearIssue { .. }))
+            })
             .filter(|d| d.not_tracked.is_none())
             .cloned()
             .collect();
@@ -952,6 +1010,25 @@ impl App {
             )];
         }
         self.linear_running = None;
+        let identity_changed = self.linear_binding().is_some_and(|binding| {
+            survey.part.viewers.iter().any(|viewer| {
+                viewer.id != binding.viewer_id
+                    || !same_login(&viewer.owner, &binding.repo.owner)
+                    || self
+                        .config
+                        .as_ref()
+                        .ok()
+                        .and_then(|config| config.linear.first())
+                        .is_none_or(|workflow| viewer.workspace != workflow.workspace)
+            })
+        });
+        if survey.authentication_failed || identity_changed {
+            self.deactivate_linear();
+            return vec![Effect::log(
+                LogLevel::Warn,
+                "Linear authentication changed; reconnect this Repo",
+            )];
+        }
         self.linear_answered(id, survey, Some(now))
     }
 
@@ -1040,6 +1117,13 @@ impl App {
         id: SurveyId,
         pull_requests: Vec<PullRequestRef>,
     ) -> Vec<Effect> {
+        let pull_requests: Vec<_> = pull_requests
+            .into_iter()
+            .filter(|pr| {
+                self.linear_binding()
+                    .is_some_and(|binding| binding.repo.same(&pr.repo))
+            })
+            .collect();
         if pull_requests.is_empty() {
             return Vec::new();
         }
@@ -1197,7 +1281,9 @@ impl App {
                 ),
             ));
         }
-        merge.cached
+        let mut cached = merge.cached;
+        cached.linear_scope = self.linear_cache_scope();
+        cached
     }
 }
 

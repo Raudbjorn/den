@@ -359,7 +359,8 @@ fn open_existing_resumes_the_recorded_session_in_the_existing_worktree_with_a_wa
         ready.command.as_deref(),
         Some(
             format!(
-                "kitty --detach --hold --directory /home/me/dev/app/.claude/worktrees/feature-7 claude --append-system-prompt {} --resume app-pr7-address-review",
+                // Standard Linear credentials are removed even from GitHub-only Jobs.
+                "kitty --detach --hold --directory /home/me/dev/app/.claude/worktrees/feature-7 env -u LINEAR_API_KEY -u LINEAR_API_TOKEN claude --append-system-prompt {} --resume app-pr7-address-review",
                 quoted(&coding_rules("octo/app#7"))
             )
             .as_str()
@@ -388,7 +389,8 @@ fn open_existing_resumes_the_recorded_session_in_the_existing_worktree_with_a_wa
             permission_mode: None,
             setting_sources: den::handoff::SettingSources::All,
             // No Linear Workflow configured: nothing to remove (#70).
-            removed_env: Vec::new(),
+            // Reopened/new Jobs cannot inherit auto-detected Linear credentials.
+            removed_env: vec!["LINEAR_API_KEY".into(), "LINEAR_API_TOKEN".into()],
             ground_rules: support::ground_rules::coding_rules("octo/app#7"),
         }]
     );
@@ -466,7 +468,8 @@ fn open_existing_outside_kitty_copies_the_resume_command() {
         harness.launcher.clipboard(),
         // Since #71 the resume line carries the Ground Rules (ADR-0008).
         [format!(
-            "cd /home/me/dev/app/.claude/worktrees/feature-7 && claude --append-system-prompt {} --resume app-pr7-address-review",
+            // Standard Linear credentials are removed even from GitHub-only Jobs.
+            "cd /home/me/dev/app/.claude/worktrees/feature-7 && env -u LINEAR_API_KEY -u LINEAR_API_TOKEN claude --append-system-prompt {} --resume app-pr7-address-review",
             quoted(&coding_rules("octo/app#7"))
         )]
     );
@@ -749,7 +752,8 @@ fn a_live_job_stays_reopenable_while_its_pr_has_no_next_step() {
             permission_mode: None,
             setting_sources: den::handoff::SettingSources::All,
             // No Linear Workflow configured: nothing to remove (#70).
-            removed_env: Vec::new(),
+            // Reopened/new Jobs cannot inherit auto-detected Linear credentials.
+            removed_env: vec!["LINEAR_API_KEY".into(), "LINEAR_API_TOKEN".into()],
             ground_rules: support::ground_rules::coding_rules("octo/app#7"),
         }]
     );

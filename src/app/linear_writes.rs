@@ -213,7 +213,8 @@ impl Writes {
                         self.identifier(),
                         describe(now.assignee.as_ref(), &now.state)
                     )),
-                    LinearIssueRead::Failed { error } => WriteResult::Failed(format!(
+                    LinearIssueRead::Failed { error }
+                    | LinearIssueRead::Unauthenticated { error } => WriteResult::Failed(format!(
                         "den couldn't read {} again either ({error}): check it in Linear",
                         self.identifier()
                     )),
@@ -232,7 +233,7 @@ impl Writes {
     fn compare(&mut self, id: LaunchId, read: LinearIssueRead) -> Next {
         let now = match read {
             LinearIssueRead::Read(now) => now,
-            LinearIssueRead::Failed { error } => {
+            LinearIssueRead::Failed { error } | LinearIssueRead::Unauthenticated { error } => {
                 self.results.push(WriteResult::Failed(format!(
                     "den couldn't read {} again, so it wrote nothing: {error}",
                     self.identifier()
@@ -371,7 +372,8 @@ impl Writes {
                 self.results.push(WriteResult::Done(line));
                 self.next_write(id)
             }
-            LinearWriteOutcome::Failed { error } => {
+            LinearWriteOutcome::Failed { error }
+            | LinearWriteOutcome::Unauthenticated { error } => {
                 self.results
                     .push(WriteResult::Failed(format!("{what} failed: {error}")));
                 self.stopped()

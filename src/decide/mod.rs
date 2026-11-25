@@ -309,7 +309,11 @@ pub fn decide_with(
     // A Pull Request's groups only turn its Merge into "lands with" (#37);
     // its Decision carries them for the list and the detail.
     for decision in &mut decisions {
-        if let WorkItemId::PullRequest { repo, number } = &decision.item.id {
+        if let WorkItemId::PullRequest { repo, number } = &decision.item.id
+            && policies
+                .linear_repo()
+                .is_none_or(|active| active.same(repo))
+        {
             decision.landing = correlation.for_pull_request(repo, *number);
         }
     }

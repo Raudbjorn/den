@@ -31,7 +31,7 @@ The local clone of a Repo that Jobs branch their worktrees from.
 _Avoid_: Checkout, local repo
 
 **Linear Workflow**:
-An Owner's opt-in binding to a Linear workspace. With it, that Owner's Linear Issues become Work Items and its Pull Requests can belong to Landing Groups; Owners without one are surveyed on GitHub alone.
+An explicitly paired Repo's workflow in a Linear project. It is active only while that Repo is selected and its Linear connection is authenticated. Existing Owner configuration supplies defaults but never activates a Repo. Unpaired Repos are GitHub-only (ADR-0014).
 _Avoid_: Plugin, integration, org mode
 
 **Held Repo**:
@@ -45,7 +45,7 @@ _Avoid_: Paused (that is one state name), on hold, snoozed
 ### What needs doing
 
 **Work Item**:
-Something that can need work: an Issue, a Pull Request, an unmerged Branch, a Run, or, for an Owner with a Linear Workflow, a Linear Issue.
+Something that can need work: an Issue, a Pull Request, an unmerged Branch, a Run, or, for an authenticated selected Repo with an explicit Linear pairing, a Linear Issue.
 _Avoid_: Task, ticket, thing
 
 **Run**:
@@ -53,15 +53,15 @@ A GitHub Actions workflow run. Only ever means this.
 _Avoid_: Pending run (for anything that is not a workflow run), job (for workflow runs)
 
 **Linear Issue**:
-An issue in the Linear workspace of an Owner's Linear Workflow. "Issue" alone always means a GitHub Issue. It is identified by its workspace and Linear's permanent ID; its identifier (`TEAM-123`) changes when it moves to another team.
+An issue in the Linear project paired with the selected Repo. "Issue" alone always means a GitHub Issue. It is identified by its workspace and Linear's permanent ID; its identifier (`TEAM-123`) changes when it moves to another team.
 _Avoid_: Ticket, task, Issue (unqualified)
 
 **Linear viewer**:
-The Linear account a Linear Workflow's API key belongs to, in that workspace. A Linear Issue is Waiting On you when its assignee is the Linear viewer; a Linear account is never matched to a GitHub login.
+The Linear account authenticated by the Repo's connection, in its paired workspace; the connection may use OAuth, an entered API key, an environment key or a supported Linear CLI. A Linear Issue is Waiting On you when its assignee is the Linear viewer; a Linear account is never matched to a GitHub login.
 _Avoid_: Linear user (for the viewer), Linear me
 
 **Landing Group**:
-A Linear Issue together with the Pull Requests, in any of its Owner's Repos, that implement it and land together. Each Pull Request keeps its own Next Step; the group decides when they may land.
+A Linear Issue together with the Pull Requests, in any of its Owner's Repos, that implement it and land together. Each Pull Request keeps its own Next Step; the group decides when they may land. den acts only on the selected Repo: a Land requiring another Repo is blocked, never reduced to a subset (ADR-0014).
 _Avoid_: Issue group, PR group, release
 
 **Attached**:

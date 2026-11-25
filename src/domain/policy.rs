@@ -284,6 +284,7 @@ impl Skips {
 /// The Linear Workflow policy of each Owner that has one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Policies {
+    linear_repo: Option<RepoId>,
     /// Owner (as configured) and its policy, in config order.
     by_owner: Vec<(String, LinearWorkflowPolicy)>,
     /// The Next Step kinds each Repo doesn't track (spec 0003).
@@ -329,6 +330,28 @@ impl Policies {
             .iter()
             .find(|(o, _)| same_login(o, owner))
             .map_or(&EMPTY_POLICY, |(_, policy)| policy)
+    }
+
+    /// Restricts an activated workflow to its explicitly paired Repo.
+    #[must_use]
+    pub fn with_linear_repo(mut self, repo: RepoId) -> Self {
+        self.linear_repo = Some(repo);
+        self
+    }
+
+    pub fn linear_repo(&self) -> Option<&RepoId> {
+        self.linear_repo.as_ref()
+    }
+
+    pub fn for_repo(&self, repo: &RepoId) -> &LinearWorkflowPolicy {
+        if self
+            .linear_repo
+            .as_ref()
+            .is_some_and(|active| !active.same(repo))
+        {
+            return &EMPTY_POLICY;
+        }
+        self.for_owner(&repo.owner)
     }
 
     /// Every Repo's `skip` list (spec 0003).

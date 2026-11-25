@@ -48,6 +48,7 @@ fn github_answer(owners: &[&str]) -> den::domain::Observation {
 /// `acme`'s Linear survey: its viewer and `issues`, every source complete.
 fn linear_answer(issues: Vec<den::domain::facts::LinearIssue>) -> LinearSurvey {
     LinearSurvey {
+        authentication_failed: false,
         part: LinearPart {
             viewers: vec![linear_viewer("acme", "acme")],
             issues,
@@ -81,6 +82,7 @@ fn workflow_harness() -> Harness {
         &["acme", "octo"],
         &[("acme", "acme")],
     )))
+    .with_linear_pairing("acme/api", "acme")
 }
 
 #[test]
@@ -188,7 +190,7 @@ fn assigned_linear_issues_appear_with_identifier_glyph_kind_and_implement() {
 }
 
 #[test]
-fn the_sidebar_and_header_mark_an_owner_with_a_linear_workflow() {
+fn the_sidebar_marks_only_the_paired_repo_and_owner_scope_deactivates_it() {
     let mut harness = workflow_harness();
     harness.answer(Ok(github_answer(&["acme", "octo"])));
     harness.linear.push_answer(linear_answer(Vec::new()));
@@ -201,7 +203,10 @@ fn the_sidebar_and_header_mark_an_owner_with_a_linear_workflow() {
             .find(|r| r.scope == Scope::Owner(owner.to_owned()))
             .expect("owner row")
     };
-    assert!(owner_row("acme").linear_workflow);
+    assert!(!owner_row("acme").linear_workflow);
+    assert!(view.sidebar.rows.iter().any(|row| row.scope
+        == Scope::Repo(den::domain::RepoId::new("acme", "api"))
+        && row.linear_workflow));
     assert!(!owner_row("octo").linear_workflow);
     let segment = |label: &str| {
         view.header
@@ -210,10 +215,12 @@ fn the_sidebar_and_header_mark_an_owner_with_a_linear_workflow() {
             .find(|s| s.label == label)
             .expect("segment")
     };
-    assert!(segment("acme").linear_workflow);
+    // Activation marks the selected Repo, never its whole Owner.
+    assert!(!segment("acme").linear_workflow);
+    assert!(segment("api").linear_workflow);
     assert!(!segment("octo").linear_workflow);
 
-    // In acme's Scope the sentence says it in words, too.
+    // Owner Scope has no selected Repo, so it removes Linear eligibility.
     harness.key(Key::Tab);
     let acme = harness
         .view
@@ -222,12 +229,13 @@ fn the_sidebar_and_header_mark_an_owner_with_a_linear_workflow() {
         .iter()
         .position(|r| r.scope == Scope::Owner("acme".to_owned()))
         .unwrap();
-    for _ in 0..acme {
-        harness.key(Key::Down);
+    let current = harness.view.sidebar.cursor.unwrap_or(0);
+    for _ in 0..current.abs_diff(acme) {
+        harness.key(if current > acme { Key::Up } else { Key::Down });
     }
     harness.key(Key::Enter);
     assert!(
-        harness.view.header.scope.contains("Linear Workflow"),
+        !harness.view.header.scope.contains("Linear Workflow"),
         "{}",
         harness.view.header.scope
     );
@@ -249,6 +257,7 @@ fn a_failed_linear_source_leaves_the_owners_repos_incomplete() {
         .repo("acme/api")
         .build()));
     harness.linear.push_answer(LinearSurvey {
+        authentication_failed: false,
         part: LinearPart {
             viewers: vec![linear_viewer("acme", "acme")],
             ..LinearPart::default()
@@ -291,6 +300,7 @@ fn a_failed_linear_source_shows_in_coverage_and_blocks_nothing_needs_you() {
         .fully_read_owner("octo")
         .build()));
     harness.linear.push_answer(LinearSurvey {
+        authentication_failed: false,
         part: LinearPart {
             viewers: vec![linear_viewer("acme", "acme")],
             issues: Vec::new(),
@@ -327,10 +337,10 @@ fn a_failed_linear_source_shows_in_coverage_and_blocks_nothing_needs_you() {
     assert!(!octo_row.incomplete, "octo has no Linear Workflow");
 }
 
-/// A complete survey with a Linear Workflow still says "Nothing needs you"
+/// A complete paired-project survey gives a Repo-specific empty state
 /// when there is nothing.
 #[test]
-fn a_complete_linear_survey_with_nothing_assigned_is_nothing_needs_you() {
+fn a_complete_linear_survey_with_nothing_assigned_shows_the_empty_repo() {
     let mut harness = workflow_harness();
     harness.answer(Ok(ObservationBuilder::new()
         .fully_read_owner("acme")
@@ -338,7 +348,11 @@ fn a_complete_linear_survey_with_nothing_assigned_is_nothing_needs_you() {
         .build()));
     harness.linear.push_answer(linear_answer(Vec::new()));
     let view = harness.start().clone();
-    assert_eq!(view.list.empty.expect("empty").title, "Nothing needs you.");
+    // Eligibility is Repo-specific, so the empty state names that Repo.
+    assert_eq!(
+        view.list.empty.expect("empty").title,
+        "Nothing in Repo acme/api."
+    );
     assert!(view.header.coverage_complete);
 }
 
@@ -403,7 +417,7 @@ fn c_on_a_linear_issue_refuses_without_touching_the_workspace() {
         sheet
             .messages
             .iter()
-            .any(|m| m.text.contains("Linear Issue") && m.text.contains("no Repos for new work")),
+            .any(|m| m.text.contains("no facts about the Repo acme/api")),
         "{:?}",
         sheet.messages
     );
@@ -500,8 +514,12 @@ fn the_cached_linear_part_is_fitted_to_each_owners_workflow() {
     );
     let mut harness = Harness::with_cache(
         Ok(config),
-        support::fakes::FakeCache::holding(den::cache::CachedObservation::fresh(cached)),
-    );
+        support::fakes::FakeCache::holding(support::harness::paired_cache(
+            den::cache::CachedObservation::fresh(cached),
+            "acme/api",
+        )),
+    )
+    .with_linear_pairing("acme/api", "acme");
     let effects = harness.send(Event::Started { now: now() });
     let load = effects
         .iter()
@@ -524,11 +542,8 @@ fn the_cached_linear_part_is_fitted_to_each_owners_workflow() {
         harness.view.list.rows
     );
     let coverage = &harness.view.header.coverage;
-    assert!(!harness.view.header.coverage_complete, "{coverage}");
-    assert!(
-        coverage.contains("not fetched yet"),
-        "ursa's new workspace: {coverage}"
-    );
+    // An unpaired Owner does not contribute Linear coverage requirements.
+    assert!(harness.view.header.coverage_complete, "{coverage}");
 }
 
 /// A Linear Workflow added since a complete GitHub-only cache was saved:
@@ -542,8 +557,12 @@ fn a_new_linear_workflow_is_not_yet_fetched_in_a_github_only_cache() {
         .build();
     let mut harness = Harness::with_cache(
         Ok(config_with_linear(&["acme", "octo"], &[("acme", "acme")])),
-        support::fakes::FakeCache::holding(den::cache::CachedObservation::fresh(cached)),
-    );
+        support::fakes::FakeCache::holding(support::harness::paired_cache(
+            den::cache::CachedObservation::fresh(cached),
+            "acme/api",
+        )),
+    )
+    .with_linear_pairing("acme/api", "acme");
     let effects = harness.send(Event::Started { now: now() });
     let load = effects
         .iter()

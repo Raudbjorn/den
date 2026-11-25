@@ -55,7 +55,7 @@ fn harness_with_issues(issues: Vec<LinearIssue>) -> Harness {
         refresh_interval_secs: None,
         legacy_marker_prefixes: Vec::new(),
     };
-    let harness = Harness::new(Ok(config));
+    let harness = Harness::new(Ok(config)).with_linear_pairing("acme/api", "acme");
     queue_round_with(&harness, issues);
     harness
 }
@@ -102,6 +102,7 @@ fn queue_round_with(harness: &Harness, issues: Vec<LinearIssue>) {
         );
     }
     harness.linear.push_answer(LinearSurvey {
+        authentication_failed: false,
         part: LinearPart {
             viewers: vec![linear_viewer("acme", "acme")],
             issues,
@@ -330,14 +331,19 @@ fn an_unoffered_cached_issue_reads_its_member_before_mark_for_release() {
     }
     let mut harness = Harness::with_cache(
         Ok(config),
-        support::fakes::FakeCache::holding(den::cache::CachedObservation::fresh(cached)),
-    );
+        support::fakes::FakeCache::holding(support::harness::paired_cache(
+            den::cache::CachedObservation::fresh(cached),
+            "acme/api",
+        )),
+    )
+    .with_linear_pairing("acme/api", "acme");
     for _ in 0..4 {
         harness.answer(Ok(ObservationBuilder::new()
             .fully_read_owner("acme")
             .repo("acme/api")
             .build()));
         harness.linear.push_answer(LinearSurvey {
+            authentication_failed: false,
             coverage: failed.clone(),
             ..LinearSurvey::default()
         });
@@ -377,7 +383,8 @@ fn an_unoffered_cached_issue_reads_its_member_before_mark_for_release() {
 /// Linear Issue's detail, and the issue reads Land.
 #[test]
 fn a_ready_member_reads_lands_with_and_its_issue_land() {
-    let mut harness = harness();
+    // The actionable member belongs to the selected paired Repo.
+    let mut harness = harness().with_linear_pairing("acme/app", "acme");
     harness.start();
     assert_eq!(step_label(&harness, "#2"), "lands with TEAM-2");
     assert_eq!(step_label(&harness, "TEAM-2"), "Land");

@@ -470,6 +470,9 @@ fn start_filter(workflow: &LinearWorkflow) -> Value {
         "assignee": { "null": true },
         "state": { "type": { "in": types } },
     });
+    if let Some(binding) = &workflow.binding {
+        filter["project"] = json!({ "id": { "eq": binding.project_id } });
+    }
     if workflow.active_cycle_only {
         filter["cycle"] = json!({ "isActive": { "eq": true } });
     }

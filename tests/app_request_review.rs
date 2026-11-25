@@ -85,6 +85,7 @@ fn started_with_prompts(
 ) -> Harness {
     let mut harness = Harness::new(Ok(config.clone()));
     harness.app = den::app::App::new(Ok(config)).with_launch_settings(prompts, None);
+    harness = harness.with_linear_pairing("acme/api", "acme");
     harness
         .workspace
         .add_clone(CLONE, &[("origin", "git@github.com:acme/api.git")]);
@@ -264,6 +265,7 @@ fn prompt_without_slack(reviewers: &str) -> String {
 }
 
 #[test]
+// Discovered standard credentials are removed alongside configured credentials.
 fn c_then_enter_on_request_review_launches_a_coordination_job_on_the_pr_head_in_the_approval_required_mode()
  {
     let mut harness = started(None);
@@ -297,7 +299,7 @@ fn c_then_enter_on_request_review_launches_a_coordination_job_on_the_pr_head_in_
         Some(
             format!(
                 // The Workflow's key variable is removed (#70, ADR-0007).
-                "kitty --detach --hold --directory {WORKTREE_2} env -u DEN_TEST_LINEAR_KEY claude --permission-mode manual --setting-sources user --append-system-prompt {} -n {SESSION_2} '{}'",
+                "kitty --detach --hold --directory {WORKTREE_2} env -u DEN_TEST_LINEAR_KEY -u LINEAR_API_KEY -u LINEAR_API_TOKEN claude --permission-mode manual --setting-sources user --append-system-prompt {} -n {SESSION_2} '{}'",
                 quoted(&common_rules("acme/api#2")),
                 prompt_without_slack("alice, acme/backend")
             )
@@ -366,7 +368,7 @@ fn the_request_review_sheet_says_when_the_suggestions_are_not_filtered_in_full()
     assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(&ready));
     assert!(!messages(&ready).contains(caveat), "{}", messages(&ready));
 
-    let mut harness = Harness::new(Ok(config(None)));
+    let mut harness = Harness::new(Ok(config(None))).with_linear_pairing("acme/api", "acme");
     harness
         .workspace
         .add_clone(CLONE, &[("origin", "git@github.com:acme/api.git")]);
@@ -727,7 +729,7 @@ fn reopening_a_request_review_job_passes_the_approval_required_mode_again() {
         ready.command.as_deref(),
         Some(
             format!(
-                "kitty --detach --hold --directory {WORKTREE_2} env -u DEN_TEST_LINEAR_KEY claude --permission-mode manual --setting-sources user --append-system-prompt {} --resume {SESSION_2}",
+                "kitty --detach --hold --directory {WORKTREE_2} env -u DEN_TEST_LINEAR_KEY -u LINEAR_API_KEY -u LINEAR_API_TOKEN claude --permission-mode manual --setting-sources user --append-system-prompt {} --resume {SESSION_2}",
                 quoted(&common_rules("acme/api#2"))
             )
             .as_str()

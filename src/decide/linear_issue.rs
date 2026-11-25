@@ -308,6 +308,16 @@ fn land(
     let policy = ctx.policy(&issue.owner);
     let held = |m: &Member| policy.holds(&m.pr.repo);
     let mut blocking: Vec<String> = Vec::new();
+    if let Some(selected) = ctx.policies.linear_repo() {
+        for member in open {
+            if !held(member) && !member.pr.repo.same(selected) {
+                blocking.push(format!(
+                    "{} is outside the selected Repo {}; Land requires every member",
+                    member.pr.repo, selected
+                ));
+            }
+        }
+    }
     let mut unknowns: Vec<String> = Vec::new();
     if let AttachmentsRead::Incomplete { why } = &issue.attachments.read {
         blocking.push(format!(

@@ -190,7 +190,8 @@ fn linear_sources_count_toward_nothing_needs_you_only_when_recorded() {
             error: "Linear did not answer".to_owned(),
         },
     ] {
-        let mut harness = Harness::new(Ok(config_with_linear(&["alpha"], &[("alpha", "acme")])));
+        let mut harness = Harness::new(Ok(config_with_linear(&["alpha"], &[("alpha", "acme")])))
+            .with_linear_pairing("alpha/app", "acme");
         harness.answer(Ok(ObservationBuilder::new()
             .fully_read_owner("alpha")
             .build()));
@@ -212,14 +213,18 @@ fn linear_sources_count_toward_nothing_needs_you_only_when_recorded() {
             );
         }
         harness.linear.push_answer(LinearSurvey {
-            part: LinearPart::default(),
+            authentication_failed: false,
+            part: LinearPart {
+                viewers: vec![support::build::linear_viewer("alpha", "acme")],
+                ..LinearPart::default()
+            },
             coverage,
         });
         let view = harness.start().clone();
         let empty = view.list.empty.expect("empty");
         assert_ne!(empty.title, "Nothing needs you.", "{state:?}");
         assert!(
-            empty.detail.contains("assigned Linear Issues"),
+            view.header.coverage.contains("assigned Linear Issues"),
             "says which Linear source: {empty:?}"
         );
         assert!(!view.header.coverage_complete, "{state:?}");

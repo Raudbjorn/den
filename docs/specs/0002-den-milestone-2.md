@@ -1,5 +1,7 @@
 # Spec: den, milestone 2 — Linear Workflows and Landing Groups
 
+> **Linear activation update:** [ADR-0014](../adr/0014-linear-requires-a-selected-paired-repo.md) supersedes this specification's Owner-wide activation and cross-Repo execution. Linear requires a selected Repo, authenticated connection and explicit project pairing. Historical workflow stories below do not grant automatic activation or permission to act on another Repo.
+
 Status: ready-for-agent
 Builds on: milestone 1 (`docs/specs/0001-den-milestone-1.md`, the PR stack topped by `integrate/m1-wave3`).
 Sources: `CONTEXT.md` (with the Linear Workflow, Held Repo, Linear Issue and Landing Group terms), ADR-0001…0004, `docs/architecture.md` on the stack top, and private research into an organization's existing Linear-plus-GitHub workflow tooling. That research is kept outside this repo because it names people, teams and release practice. All of its recommendations R01–R08 are adopted here, except R02's "no Linear writes in den", which ADR-0004 replaces.

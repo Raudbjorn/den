@@ -159,6 +159,7 @@ fn linear_answer() -> LinearSurvey {
         );
     }
     LinearSurvey {
+        authentication_failed: false,
         part: LinearPart {
             viewers: vec![linear_viewer("acme", "acme")],
             issues: vec![team_8(), team_6(), team_7(), team_3()],
@@ -191,7 +192,7 @@ fn merged_api_1() -> MemberStatesRead {
 /// den started on acme (with its Linear Workflow) and octo (without), both
 /// surveys answered, and a Main Clone of each of acme's Repos at hand.
 fn started(workflow: LinearWorkflow) -> Harness {
-    let mut harness = Harness::new(Ok(config(workflow)));
+    let mut harness = Harness::new(Ok(config(workflow))).with_linear_pairing("acme/api", "acme");
     queue_round(&harness);
     for (clone, url) in [
         (API_CLONE, "git@github.com:acme/api.git"),
@@ -348,7 +349,7 @@ fn browsing_refreshing_selecting_and_opening_every_sheet_write_nothing() {
         .iter()
         .map(|r| r.reference.clone())
         .collect();
-    for reference in ["TEAM-8", "TEAM-6", "TEAM-7", "TEAM-3", "#9"] {
+    for reference in ["TEAM-8", "TEAM-6", "TEAM-7", "TEAM-3"] {
         assert!(references.iter().any(|r| r == reference), "{references:?}");
     }
     for reference in &references {
@@ -797,54 +798,29 @@ fn the_move_toggle_turns_the_move_off_and_start_still_claims() {
 }
 
 #[test]
-fn several_repos_for_new_work_wait_for_one_to_be_chosen() {
+fn configured_new_work_repos_cannot_redirect_a_paired_repo() {
     let mut harness = started(workflow(true));
     open(&mut harness, "TEAM-8");
-    let choosing = sheet(&harness).clone();
-    assert_eq!(choosing.status, LaunchStatus::ChooseRepo);
-    assert_eq!(field(&choosing, "REPO").0, "none chosen");
-    assert!(
-        !harness
-            .effects
-            .iter()
-            .any(|e| matches!(e, Effect::InspectLaunch { .. }))
-    );
-    // Enter doesn't guess.
-    let effects = enter(&mut harness);
-    assert!(acts(&effects).is_empty());
-    assert!(messages(sheet(&harness)).contains("choose the target Repo with t"));
-
-    harness.settle(Event::Key(Key::Char('t')));
+    // ADR-0014: explicit pairing fixes the target to the selected Repo; old
+    // Owner defaults cannot offer a different Repo through the target picker.
+    assert_eq!(sheet(&harness).status, LaunchStatus::Ready);
     assert_eq!(field(sheet(&harness), "TARGET").0, "acme/api");
     harness.settle(Event::Key(Key::Char('t')));
-    let web = sheet(&harness).clone();
-    assert_eq!(web.status, LaunchStatus::Ready, "{}", messages(&web));
-    assert_eq!(field(&web, "TARGET").0, "acme/web");
-    assert!(
-        // Since #71 the stop line follows the Repo (spec 0004, story 66).
-        web.prompt
-            .expect("a prompt")
-            .text
-            .contains(" in acme/web. If you can't read the Linear Issue, stop and say so."),
-        "the prompt names the chosen Repo"
-    );
+    assert_eq!(field(sheet(&harness), "TARGET").0, "acme/api");
+    assert!(harness.linear_writer.calls().is_empty());
 }
 
 #[test]
-fn no_repos_for_new_work_refuses_without_touching_the_workspace() {
+fn pairing_provides_the_target_without_legacy_new_work_repo_defaults() {
     let mut empty = workflow(false);
     empty.new_work_repos.clear();
     let mut harness = started(empty);
     open(&mut harness, "TEAM-8");
-    let refused = sheet(&harness);
-    assert_eq!(refused.status, LaunchStatus::Refused);
-    assert!(messages(refused).contains("offers no Repos for new work"));
-    assert!(
-        !harness
-            .effects
-            .iter()
-            .any(|e| matches!(e, Effect::InspectLaunch { .. }))
-    );
+    // Pairing supplies the selected target explicitly, independent of old
+    // Owner-wide new_work_repos configuration.
+    assert_eq!(sheet(&harness).status, LaunchStatus::Ready);
+    assert_eq!(field(sheet(&harness), "TARGET").0, "acme/api");
+    assert!(harness.linear_writer.calls().is_empty());
 }
 
 #[test]
@@ -873,9 +849,9 @@ fn no_new_work_repos_keeps_an_existing_linear_job_reopenable() {
 
     open(&mut harness, "TEAM-7");
     assert_eq!(sheet(&harness).status, LaunchStatus::LiveJob);
-    assert!(messages(sheet(&harness)).contains("offers no Repos for new work"));
-    harness.settle(Event::Key(Key::Char('f')));
-    assert_eq!(sheet(&harness).status, LaunchStatus::LiveJob);
+    assert!(!messages(sheet(&harness)).contains("offers no Repos for new work"));
+    // Pairing supplies a valid target; the existing Job can still be reopened
+    // even when no legacy new_work_repos defaults were configured.
     harness.settle(Event::Key(Key::Char('o')));
     assert_eq!(sheet(&harness).status, LaunchStatus::ReopenReady);
     assert_eq!(field(sheet(&harness), "WORKTREE").0, worktree);
@@ -894,7 +870,8 @@ fn no_new_work_repos_keeps_an_existing_linear_job_reopenable() {
 
 #[test]
 fn an_unsafe_linear_branch_name_is_replaced_by_dens_own() {
-    let mut harness = Harness::new(Ok(config(workflow(false))));
+    let mut harness =
+        Harness::new(Ok(config(workflow(false)))).with_linear_pairing("acme/api", "acme");
     harness.answer(Ok(ObservationBuilder::new()
         .fully_read_owner("acme")
         .repo("acme/api")
@@ -929,6 +906,7 @@ fn an_unsafe_linear_branch_name_is_replaced_by_dens_own() {
 #[test]
 fn a_github_owners_launch_sheet_shows_no_linear_writes() {
     let mut harness = started(workflow(false));
+    harness.select_repo("octo/app");
     open(&mut harness, "#9");
     let ready = sheet(&harness);
     assert_eq!(ready.status, LaunchStatus::Ready, "{}", messages(ready));
@@ -1137,7 +1115,8 @@ fn release_evidence_cannot_hide_write_failures_or_unknown_outcomes() {
 /// emits any Linear Effect.
 #[test]
 fn an_issue_shown_only_for_its_group_is_never_started() {
-    let mut harness = Harness::new(Ok(config(workflow(false))));
+    let mut harness =
+        Harness::new(Ok(config(workflow(false)))).with_linear_pairing("acme/api", "acme");
     harness.answer(Ok(ObservationBuilder::new()
         .fully_read_owner("acme")
         .repo("acme/api")

@@ -62,6 +62,20 @@ pub fn build(state: &State<'_>) -> Footer {
             hints.push(hint("m", "copy marker"));
         }
     }
+    if matches!(state.scope.scope, Scope::Repo(_)) && state.overlay.is_none() {
+        let active = state
+            .config
+            .as_ref()
+            .is_ok_and(|config| !config.linear.is_empty());
+        hints.push(hint(
+            "L",
+            if active {
+                "Linear connection"
+            } else {
+                "Connect Linear"
+            },
+        ));
+    }
     hints.push(hint("q", "quit"));
     Footer { hints }
 }

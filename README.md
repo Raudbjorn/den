@@ -66,6 +66,56 @@ Main Clone, with a remote for the named Repo. When no Main Clone qualifies, the
 launch sheet can propose cloning one; inspect the destination before confirming.
 Forks target themselves unless you explicitly choose an Upstream.
 
+### Connect a Repo to Linear
+
+Linear is opt-in for the **selected Repo**, not for every Repo of a watched
+Owner. Select a Repo and press **L** to open **Connect Linear**, authenticate,
+then select and confirm a Linear project. Until all three steps are complete, den remains
+GitHub-only and shows only the setup entry for Linear.
+
+| Credential source | Setup |
+|---|---|
+| Browser login | Authorize the den OAuth application as your Linear account |
+| API key | Enter a key in the masked connection field |
+| Environment | Select a detected `LINEAR_API_KEY` or a populated `api_key_env` named by an existing workflow |
+| Linear CLI | Select the installed `linear` CLI; den captures its documented `linear auth token` output without displaying it |
+
+The CLI integration supports [schpet/linear-cli](https://github.com/schpet/linear-cli/blob/main/docs/authentication.md).
+It does not scrape credential files or run `auth login` for you. Its selected
+workspace is checked before pairing; changing its default workspace cannot
+silently move an existing Repo pairing. Detection offers a credential source,
+not permission to enable Linear or pair any Repo automatically.
+
+A pairing remembers the Repo, connection, Linear workspace and project IDs.
+You can change the project, unpair only this Repo, or disconnect the account
+used by all its pairings. Credentials are validated again before a saved pairing
+is used. Project and account changes invalidate pending Linear work. Cached
+Linear data cannot activate a Repo by itself.
+
+Entered keys and OAuth tokens use the operating system credential store; on
+Linux this requires `secret-tool` (Arch package `libsecret`). den does not fall
+back to a plaintext token file. Environment and CLI credentials remain owned by
+their original source. Secrets are excluded from setup labels, logs, cache data
+and Job commands.
+
+Only the paired project's issues participate in the selected Repo's workflow.
+Start and Implement target this Repo. A Land requiring another Repo is blocked;
+den never lands just the visible subset of a cross-Repo group. Linear review
+policies, counts, hints, surveys and writes are disabled for unpaired Repos,
+including sibling Repos under the same Owner.
+
+**Migration:** existing `[linear.OWNER]` blocks supply workflow defaults only;
+they do not create pairings. Missing keys no longer stop GitHub-only startup.
+Pair each Repo explicitly. Old unscoped Linear cache entries do not establish
+eligibility, and GitHub cache data remains usable.
+
+**Browser login:** den includes its registered application's public client ID and
+uses `http://localhost:43827/oauth/callback`, PKCE and a five-minute callback
+timeout. No client secret is embedded in den. Developers can override the client
+ID with `DEN_LINEAR_OAUTH_CLIENT_ID` for their own registered application. The
+implemented flow still needs a real browser consent/callback validation. See
+[ADR-0014](docs/adr/0014-linear-requires-a-selected-paired-repo.md).
+
 `prompts.toml`, beside `config.toml`, is optional. Missing entries use defaults.
 Some defaults invoke Claude workflows such as `/implement`, `/gh-resolve`,
 `/code-review` and `/triage`: install those in your Claude environment or override
@@ -166,7 +216,7 @@ own while it is open, set an interval in seconds (60 at least, a day at most):
 refresh_interval_secs = 300
 ```
 
-A timed refresh surveys GitHub and Linear, as `r` does, once that long has
+A timed refresh surveys GitHub and, for an eligible selected Repo, Linear, as `r` does, once that long has
 passed since the last survey answered. den checks on its 30-second tick, so a
 refresh can start up to 30 seconds late. It never starts while a survey is
 still running, never catches up on missed intervals, and waits for GitHub's
@@ -277,6 +327,7 @@ plain-text frame for troubleshooting; it is not a local-only diagnostic.
 | Observation cache | `~/.local/state/den/cache/` |
 | Job records | `~/.local/state/den/jobs.json` |
 | Upstream choices | `~/.local/state/den/upstreams.json` |
+| Linear connections and Repo pairings (no secrets) | `~/.local/state/den/linear-connections.json` |
 | Structured log | `~/.local/state/den/den.log` |
 | Job worktrees | `<Main Clone>/.claude/worktrees/` |
 
@@ -296,6 +347,6 @@ prove a real GitHub survey, interactive rendering, or a Kitty/Claude launch.
 
 See [architecture](docs/architecture.md), [domain terminology](CONTEXT.md), and
 [GitHub issues](https://github.com/Raudbjorn/den/issues). Linear Workflows and
-Landing Groups are pending [milestone 2](https://github.com/Raudbjorn/den/issues/30)
-work, not capabilities of this GitHub-only baseline. Text search
+Landing Groups require an authenticated, explicitly paired selected Repo
+([ADR-0014](docs/adr/0014-linear-requires-a-selected-paired-repo.md)). Text search
 and a [Board screen](docs/research/projects-v2-feasibility.md) are proposals, not implemented features.

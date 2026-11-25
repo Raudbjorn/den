@@ -1,5 +1,7 @@
 # Spec: den, milestone 3 — Repo-first workbench
 
+> **Linear activation update:** [ADR-0014](../adr/0014-linear-requires-a-selected-paired-repo.md) supersedes this specification's Owner-wide activation and cross-Repo execution. Linear requires a selected Repo, authenticated connection and explicit project pairing. Historical workflow stories below do not grant automatic activation or permission to act on another Repo.
+
 Status: ready-for-agent
 Builds on: milestones 1 and 2 on `main` (`a58116a`).
 Sources: `CONTEXT.md`, ADR-0001…0004, the new ADR-0005 (the Repo is the unit of survey) and ADR-0006 (ratatui widgets), `docs/architecture.md`, a brainstorming session held on 2026-11-21, and its approved renders in `docs/specs/0003-assets/`.

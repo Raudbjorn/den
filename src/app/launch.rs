@@ -453,17 +453,19 @@ impl App {
             )),
             // A fresh launch is refused, but a Live Job stays reopenable: the
             // sheet inspects the Job's own worktree and offers only `o`.
-            Err(refusal) => match live_job_request(&self.job_checks, &sheet.item, observation) {
-                Some(request) => {
-                    let log = format!(
-                        "launch sheet {} {what} for {} to reopen its Live Job; a fresh launch is refused: {refusal}",
-                        sheet.id.0, sheet.item
-                    );
-                    sheet.launch_refused = Some(refusal);
-                    Ok((log, request))
+            Err(refusal) => {
+                match live_job_request(&self.eligible_job_checks(), &sheet.item, observation) {
+                    Some(request) => {
+                        let log = format!(
+                            "launch sheet {} {what} for {} to reopen its Live Job; a fresh launch is refused: {refusal}",
+                            sheet.id.0, sheet.item
+                        );
+                        sheet.launch_refused = Some(refusal);
+                        Ok((log, request))
+                    }
+                    None => Err(refusal),
                 }
-                None => Err(refusal),
-            },
+            }
         };
         match request {
             Ok((log, request)) => {
@@ -540,6 +542,18 @@ impl App {
             return Vec::new();
         }
         sheet.notice = None;
+        let recorded_job = match &sheet.state {
+            SheetState::LiveJob { check, .. } | SheetState::JobUnknown { check, .. } => {
+                Some(&check.job)
+            }
+            SheetState::ReopenReady { plan } => Some(&plan.job),
+            _ => None,
+        };
+        if recorded_job.is_some_and(|job| !self.linear_job_allowed(job)) {
+            sheet.state = SheetState::Refused(Refusal::one(RefusalReason::WorkItemGone));
+            self.overlay = Some(OverlayState::Launch(sheet));
+            return Vec::new();
+        }
         if let Some(field) = sheet.reviewers.as_mut().filter(|f| f.editing) {
             if field.editor.key(key) == Edit::NotAnEdit
                 && matches!(key, Key::Enter | Key::Esc | Key::Tab)
@@ -1230,11 +1244,13 @@ impl App {
     pub(super) fn launch_inspected(
         &mut self,
         id: LaunchId,
-        view: Box<WorkspaceView>,
+        mut view: Box<WorkspaceView>,
     ) -> Vec<Effect> {
         let Some(mut sheet) = self.current_sheet(id) else {
             return vec![stale(id, "inspection")];
         };
+        view.job_checks
+            .retain(|check| self.linear_job_allowed(&check.job));
         self.remember_checks(&sheet.item, &view.job_checks);
         sheet.workflows = Some(view.workflows.clone());
         let existing = live::most_telling(&view.job_checks, &sheet.item)

@@ -22,7 +22,6 @@ use den::{
         facts::{LinearIssue, ReviewVerdict},
     },
     jobs::{JobRecord, JobSubject},
-    ordering::Scope,
     ports::LinearSurvey,
     ui::{Theme, frame},
 };
@@ -52,7 +51,7 @@ fn pr_id(repo: &str, number: u64) -> WorkItemId {
 /// - TEAM-1 has members app #7 (Address review, with a Live Job) and
 ///   api #8 (draft), and a link that isn't a PR;
 /// - TEAM-2 shares app #7 with TEAM-1, so #7 is ambiguous;
-/// - api #9's branch `team-3-cache` only hints at TEAM-3.
+/// - app #9's branch `team-3-cache` only hints at TEAM-3.
 fn harness() -> Harness {
     harness_with(Vec::new())
 }
@@ -70,7 +69,7 @@ fn harness_with(extra: Vec<LinearIssue>) -> Harness {
         refresh_interval_secs: None,
         legacy_marker_prefixes: Vec::new(),
     };
-    let mut harness = Harness::new(Ok(config));
+    let mut harness = Harness::new(Ok(config)).with_linear_pairing("octo/app", "acme");
     let (cols, rows) = SIZE;
     harness.send(Event::Resized { cols, rows });
     harness
@@ -105,7 +104,7 @@ fn harness_with(extra: Vec<LinearIssue>) -> Harness {
                 .review_at_head("reviewer", ReviewVerdict::ChangesRequested),
         )
         .pull_request(pr("octo/api", 8).author(ME).draft())
-        .pull_request(pr("octo/api", 9).author(ME).head_ref("team-3-cache"))
+        .pull_request(pr("octo/app", 9).author(ME).head_ref("team-3-cache"))
         .build()));
     let mut coverage = Coverage::default();
     for kind in [LinearSourceKind::Viewer, LinearSourceKind::AssignedIssues] {
@@ -118,6 +117,7 @@ fn harness_with(extra: Vec<LinearIssue>) -> Harness {
         );
     }
     harness.linear.push_answer(LinearSurvey {
+        authentication_failed: false,
         part: LinearPart {
             viewers: vec![linear_viewer("octo", "acme")],
             issues: vec![
@@ -183,16 +183,16 @@ fn each_pr_row_names_its_landing_groups() {
             possibly_for: Vec::new(),
         }
     );
-    assert_eq!(
-        row_landing(view, &pr_id("octo/api", 8)),
-        RowLanding {
-            groups: vec!["TEAM-1".to_owned()],
-            ambiguous: false,
-            possibly_for: Vec::new(),
-        }
+    // Foreign members stay visible in group context, but only the selected
+    // Repo contributes actionable PR rows (ADR-0014).
+    assert!(
+        view.list
+            .rows
+            .iter()
+            .all(|row| row.id != pr_id("octo/api", 8))
     );
     assert_eq!(
-        row_landing(view, &pr_id("octo/api", 9)),
+        row_landing(view, &pr_id("octo/app", 9)),
         RowLanding {
             groups: Vec::new(),
             ambiguous: false,
@@ -250,8 +250,8 @@ fn a_hinted_linear_issue_detail_says_possibly_for_and_not_a_member() {
         texts,
         [
             "no Pull Request attached in Linear",
-            // Spelled as `WorkItemId`'s `Display` (was `octo/api #9`).
-            "possibly for TEAM-3: octo/api#9 (branch team-3-cache), not a member",
+            // Spelled as `WorkItemId`'s `Display` (was `octo/app #9`).
+            "possibly for TEAM-3: octo/app#9 (branch team-3-cache), not a member",
         ]
     );
 
@@ -348,51 +348,24 @@ fn a_linear_issue_detail_names_a_link_that_looks_like_a_pull_request() {
 /// there (not a hint), and the Decisions shown are the ones the whole
 /// survey gave.
 #[test]
-fn a_repo_scope_shows_the_linear_issues_with_a_member_there() {
+fn a_repo_scope_shows_its_paired_project_and_switching_repo_hides_linear() {
     let mut harness = harness();
-    let whole = harness.view.list.rows.clone();
-    let shown_in = |harness: &mut Harness, repo: &str| -> Vec<String> {
-        harness.key(Key::Tab);
-        let target = Scope::Repo(RepoId::new("octo", repo));
-        let index = harness
-            .view
-            .sidebar
-            .rows
-            .iter()
-            .position(|r| r.scope == target)
-            .unwrap();
-        let current = harness.view.sidebar.cursor.unwrap_or(0);
-        let key = if index >= current { Key::Down } else { Key::Up };
-        for _ in 0..index.abs_diff(current) {
-            harness.key(key);
-        }
-        // Enter scopes to the row and gives the list focus back.
-        harness.key(Key::Enter);
-        assert!(
-            harness.view.header.scope.contains(&format!("octo/{repo}")),
-            "{}",
-            harness.view.header.scope
-        );
-        for row in &harness.view.list.rows {
-            let same = whole.iter().find(|w| w.id == row.id).unwrap();
-            assert_eq!(
-                (row.next_step, &row.step_label, &row.waiting_label),
-                (same.next_step, &same.step_label, &same.waiting_label),
-                "narrowing changed {}",
-                row.reference
-            );
-        }
+    let issues = |harness: &Harness| -> Vec<String> {
         harness
             .view
             .list
             .rows
             .iter()
-            .filter(|r| r.kind == WorkItemKind::LinearIssue)
-            .map(|r| r.reference.clone())
+            .filter(|row| row.kind == WorkItemKind::LinearIssue)
+            .map(|row| row.reference.clone())
             .collect()
     };
-    assert_eq!(shown_in(&mut harness, "app"), ["TEAM-1", "TEAM-2"]);
-    assert_eq!(shown_in(&mut harness, "api"), ["TEAM-1"]);
+    // Project pairing includes assigned issues without an attachment in this
+    // Repo. Switching scopes revokes eligibility until setup validates it.
+    assert_eq!(issues(&harness), ["TEAM-3", "TEAM-1", "TEAM-2"]);
+    harness.select_repo("octo/api");
+    assert!(issues(&harness).is_empty());
+    assert!(harness.app.linear_binding().is_none());
 }
 
 /// Acceptance: the group tag, "possibly for" and the ambiguity marker read
@@ -408,8 +381,7 @@ fn group_tags_read_in_monochrome() {
         let text = frame::buffer_text(&frame::render(&theme, &view, cols, rows).expect("renders"));
         for expected in [
             format!("octo/app #7  {mark} TEAM-1 TEAM-2 ambiguous"),
-            format!("octo/api #8  {mark} TEAM-1"),
-            "octo/api #9  possibly for TEAM-3".to_owned(),
+            "octo/app #9  possibly for TEAM-3".to_owned(),
             format!("{mark} LANDING GROUP"),
             "ambiguous, also attached to TEAM-2".to_owned(),
         ] {
@@ -438,7 +410,7 @@ fn a_held_member_reads_as_held_for_release_in_the_landing_group() {
         refresh_interval_secs: None,
         legacy_marker_prefixes: Vec::new(),
     };
-    let mut harness = Harness::new(Ok(config));
+    let mut harness = Harness::new(Ok(config)).with_linear_pairing("octo/app", "acme");
     let (cols, rows) = SIZE;
     harness.send(Event::Resized { cols, rows });
     harness.answer(Ok(ObservationBuilder::new()
@@ -465,6 +437,7 @@ fn a_held_member_reads_as_held_for_release_in_the_landing_group() {
         );
     }
     harness.linear.push_answer(LinearSurvey {
+        authentication_failed: false,
         part: LinearPart {
             viewers: vec![linear_viewer("octo", "acme")],
             issues: vec![
