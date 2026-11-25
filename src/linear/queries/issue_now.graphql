@@ -4,9 +4,11 @@
 # read too: a key for another workspace never stands in for this one.
 query LinearIssueNow($id: String!, $statesFirst: Int!) {
   organization {
+    id
     urlKey
   }
   issue(id: $id) {
+    project { id }
     id
     assignee {
       id

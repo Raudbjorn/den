@@ -294,10 +294,13 @@ fn a_write_linear_refused_is_failed() {
     for (what, answer) in refused {
         let transport = answering(answer);
         let outcome = writer(&transport).move_state(&request(), &in_progress());
-        assert!(
-            matches!(outcome, LinearWriteOutcome::Failed { .. }),
-            "{what}: {outcome:?}"
-        );
+        // Revoked credentials now disable the Repo connection; other refusals leave it active.
+        let expected = if what == "key refused" {
+            matches!(outcome, LinearWriteOutcome::Unauthenticated { .. })
+        } else {
+            matches!(outcome, LinearWriteOutcome::Failed { .. })
+        };
+        assert!(expected, "{what}: {outcome:?}");
     }
 }
 
@@ -322,7 +325,8 @@ fn without_the_viewer_or_a_key_nothing_is_written() {
         Ok(ok(viewer_body("other")))
     });
     let outcome = writer(&transport).assign_to_viewer(&request());
-    let LinearWriteOutcome::Failed { error } = outcome else {
+    // A different account/workspace now revokes the binding, rather than reporting a transient failure.
+    let LinearWriteOutcome::Unauthenticated { error } = outcome else {
         panic!("{outcome:?}");
     };
     assert!(error.contains("\"other\""), "{error}");
@@ -332,7 +336,8 @@ fn without_the_viewer_or_a_key_nothing_is_written() {
     let transport = scripted(|_| panic!("nothing is sent without a key"));
     let writer = LinearWrites::with(env(None), connect(&transport), Arc::new(FixedClock(now())));
     let outcome = writer.move_state(&request(), &in_progress());
-    let LinearWriteOutcome::Failed { error } = outcome else {
+    // Missing credentials are distinguished from a transient read failure so App can deactivate.
+    let LinearWriteOutcome::Unauthenticated { error } = outcome else {
         panic!("{outcome:?}");
     };
     assert!(error.contains(KEY_ENV) && !error.contains(KEY), "{error}");

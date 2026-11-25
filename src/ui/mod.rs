@@ -10,6 +10,7 @@ pub mod frame;
 mod glyphs;
 mod header;
 pub mod launch;
+pub mod linear_setup;
 pub mod list;
 pub mod sidebar;
 pub mod templates;

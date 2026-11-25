@@ -93,6 +93,7 @@ pub fn merge(previous: Option<CachedObservation>, mut fresh: Observation) -> Cac
 /// The Linear part of what den showed, its Linear coverage and the ages of
 /// its kept Linear data: what a GitHub survey leaves as it was.
 struct LinearKept {
+    scope: Option<Vec<String>>,
     part: LinearPart,
     coverage: Vec<CoverageEntry>,
     carried: Vec<Carried>,
@@ -116,6 +117,7 @@ impl LinearKept {
             .partition(|c| c.source.is_linear());
         from.carried = github;
         Self {
+            scope: from.linear_scope.take(),
             part,
             coverage,
             carried,
@@ -124,6 +126,7 @@ impl LinearKept {
 
     /// Puts them into `into`, which holds no Linear data.
     fn put(self, into: &mut CachedObservation) {
+        into.linear_scope = self.scope;
         into.observation.linear = self.part;
         for entry in self.coverage {
             into.observation.coverage.record(entry.source, entry.state);
@@ -222,6 +225,7 @@ fn merge_github(previous: CachedObservation, mut fresh: Observation) -> CachedOb
         }
     }
     let mut cached = CachedObservation {
+        linear_scope: None,
         observation: merged,
         carried,
         reads,
@@ -496,6 +500,7 @@ pub fn merge_linear(
     let LinearSurvey {
         part: fresh,
         coverage: answered,
+        ..
     } = survey;
     let coverage = read_coverage(answered, reads);
     let workflow_owners = reads.iter().map(|r| r.owner.to_owned()).collect();
@@ -514,6 +519,7 @@ pub fn merge_linear(
         .collect();
 
     let CachedObservation {
+        linear_scope,
         mut observation,
         carried,
         reads,
@@ -569,6 +575,7 @@ pub fn merge_linear(
     carried.extend(linear_carried);
     LinearMerge {
         cached: CachedObservation {
+            linear_scope,
             observation,
             carried,
             reads,

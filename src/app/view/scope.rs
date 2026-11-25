@@ -55,15 +55,18 @@ pub fn describe(state: &State<'_>) -> (String, Vec<ScopeSegment>) {
         _ => sentence,
     };
     let mut segments = vec![segment(ALL_OWNERS, current == &Scope::AllOwners, false)];
-    segments.extend(state.owners.iter().map(|owner| {
-        segment(
-            owner,
-            current.same(&Scope::Owner(owner.clone())),
-            super::has_linear_workflow(state, owner),
-        )
-    }));
+    segments.extend(
+        state
+            .owners
+            .iter()
+            .map(|owner| segment(owner, current.same(&Scope::Owner(owner.clone())), false)),
+    );
     if let Scope::Repo(id) = current {
-        segments.push(segment(&id.name, true, false));
+        segments.push(segment(
+            &id.name,
+            true,
+            super::has_linear_workflow(state, &id.owner),
+        ));
     }
     (sentence, segments)
 }

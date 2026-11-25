@@ -53,6 +53,10 @@ pub struct SourceRead {
 /// kept source still reads as failed or partial.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CachedObservation {
+    /// Exact authenticated Repo/workspace/project/viewer scope. Legacy caches
+    /// have no scope and their Linear data must be discarded by App.
+    #[serde(default)]
+    pub linear_scope: Option<Vec<String>>,
     pub observation: Observation,
     /// One entry per source whose shown data is older than its service's latest
     /// survey (`observation.observed_at`, or `observation.linear.observed_at`
@@ -79,6 +83,7 @@ impl CachedObservation {
             })
             .collect();
         Self {
+            linear_scope: None,
             observation,
             carried: Vec::new(),
             reads,
@@ -188,6 +193,16 @@ impl CachedObservation {
     /// cached data was read in, and of every Linear source the config no
     /// longer reads (a fact goes with the source that listed it).
     pub fn restricted_to_linear(mut self, workflows: &[LinearReads<'_>]) -> Self {
+        if workflows.is_empty() {
+            self.linear_scope = None;
+            self.observation.member_states.clear();
+            self.observation.member_attempts.clear();
+            self.observation
+                .coverage
+                .retain(|entry| !entry.source.is_member_states());
+            self.carried
+                .retain(|entry| !entry.source.is_member_states());
+        }
         let workflow_of = |owner: &str| workflows.iter().find(|w| same_login(w.owner, owner));
         let mut dropped: Vec<String> = Vec::new();
         for (owner, workspace) in self.observation.linear.workspaces() {

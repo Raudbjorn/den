@@ -9,7 +9,8 @@ use crate::{
         Focus,
         view_model::{Sidebar, SidebarEntry, SidebarRow},
     },
-    ordering::{Scope, in_scope, same_repo},
+    domain::WorkItemId,
+    ordering::{Scope, same_repo},
 };
 
 const LABEL: &str = "R E P O S";
@@ -30,7 +31,21 @@ pub fn build(state: &State<'_>) -> Sidebar {
 }
 
 fn row(state: &State<'_>, scope: &Scope) -> SidebarRow {
-    let count = in_scope(state.all_decisions, scope)
+    let binding = state
+        .config
+        .as_ref()
+        .ok()
+        .and_then(|config| config.linear.first())
+        .and_then(|workflow| workflow.binding.as_ref());
+    let count = state
+        .all_decisions
+        .iter()
+        .filter(|decision| match (&decision.item.id, scope) {
+            (WorkItemId::LinearIssue { .. }, Scope::Repo(repo)) => {
+                binding.is_some_and(|binding| binding.repo.same(repo))
+            }
+            _ => scope.contains_decision(decision),
+        })
         .filter(|d| d.next_step.is_some())
         .count();
     let (entry, label, repo) = match scope {
@@ -58,7 +73,7 @@ fn row(state: &State<'_>, scope: &Scope) -> SidebarRow {
             }),
         archived: repo.is_some_and(|r| r.is_archived),
         current: state.scope.scope.same(scope),
-        linear_workflow: matches!(scope, Scope::Owner(owner) if super::has_linear_workflow(state, owner)),
+        linear_workflow: matches!(scope, Scope::Repo(repo) if state.config.as_ref().ok().and_then(|config| config.linear_workflow(&repo.owner)).and_then(|workflow| workflow.binding.as_ref()).is_some_and(|binding| binding.repo.same(repo))),
         // No Observation yet is not "incomplete coverage": nothing was read.
         incomplete: state
             .observation

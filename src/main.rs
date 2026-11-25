@@ -37,7 +37,7 @@ use den::{
     handoff::prompts,
     jobs::FileJobStore,
     launcher::{KittyLauncher, LaunchEnvironment},
-    linear::{LinearApi, write::LinearWrites},
+    linear::{LinearApi, connection::ConnectionManager, setup::Setup, write::LinearWrites},
     logging::{self, LoggingError},
     paths::{Paths, PathsError},
     ports::{Ports, SystemClock, UpstreamStore, WorkspaceError},
@@ -307,12 +307,21 @@ fn run_interactive(
     mut app: App,
     ports: Ports,
     graphics: Option<Graphics>,
+    connections: Arc<ConnectionManager>,
 ) -> Result<(), DenError> {
     let worker = Worker::start(ports);
     let mut session = TerminalSession::start()?;
     // Before any input is read: the terminal answers the query on stdin.
     let mut bear = BearArt::detect(theme.profile(), graphics);
-    let outcome = event_loop(&mut session, theme, &mut app, &worker, &mut bear);
+    let mut setup = Setup::new(connections);
+    let outcome = event_loop(
+        &mut session,
+        theme,
+        &mut app,
+        &worker,
+        &mut bear,
+        &mut setup,
+    );
     let restored = session.finish();
     // After the terminal is back, on quit and on a signal alike: queued writes
     // of den's state get a bounded time to land.
@@ -336,6 +345,7 @@ fn event_loop(
     app: &mut App,
     worker: &Worker,
     bear: &mut BearArt,
+    setup: &mut Setup,
 ) -> Result<(), DenError> {
     let size = session.terminal().size()?;
     app.handle(Event::Resized {
@@ -351,8 +361,16 @@ fn event_loop(
     let mut dirty = true;
     let mut last_tick = Instant::now();
     loop {
+        let (changed, effects) = setup.poll(app);
+        if changed {
+            view = app.view();
+            if let Flow::Quit = worker.dispatch(app, &mut view, effects) {
+                return Ok(());
+            }
+            dirty = true;
+        }
         if dirty {
-            draw(session, theme, &view, bear)?;
+            draw(session, theme, &view, bear, setup)?;
             dirty = false;
         }
         // A termination signal ends the loop so the terminal gets restored.
@@ -380,6 +398,17 @@ fn event_loop(
             }
         }
         for event in incoming {
+            if let Event::Key(key) = &event {
+                let (consumed, effects) = setup.key(*key, app);
+                if consumed {
+                    view = app.view();
+                    if let Flow::Quit = worker.dispatch(app, &mut view, effects) {
+                        return Ok(());
+                    }
+                    dirty = true;
+                    continue;
+                }
+            }
             let (next_view, effects) = app.handle(event);
             view = next_view;
             dirty = true;
@@ -395,11 +424,13 @@ fn draw(
     theme: &Theme,
     view: &ViewModel,
     bear: &mut BearArt,
+    setup: &Setup,
 ) -> Result<(), DenError> {
     let mut drawn = Ok(());
-    session
-        .terminal()
-        .draw(|f| drawn = frame::draw(f, theme, view, bear))?;
+    session.terminal().draw(|f| {
+        drawn = frame::draw(f, theme, view, bear);
+        den::ui::linear_setup::draw(f, theme, setup);
+    })?;
     Ok(drawn?)
 }
 
@@ -445,12 +476,12 @@ fn run(args: &[String]) -> Result<(), DenError> {
     tracing::info!(config = %paths.config_file.display(), "den starting");
     let theme = Theme::new(TerminalProfile::from_env()?)?;
     let graphics = requested_graphics()?;
-    // A Linear Workflow whose key variable isn't set is a config error naming
-    // the variable; the key itself is only read by the Linear source.
-    let config = config::load(&paths.config_file).and_then(|config| {
-        config.check_linear_keys(&paths.config_file, |name| std::env::var_os(name))?;
-        Ok(config)
-    });
+    // Unavailable Linear credentials disable that connection, not GitHub startup.
+    let config = config::load(&paths.config_file);
+    let connections = Arc::new(ConnectionManager::new(
+        paths.state_dir.clone(),
+        std::env::var("DEN_LINEAR_OAUTH_CLIENT_ID").ok(),
+    ));
     if let Err(error) = &config {
         tracing::error!(%error, "config");
     }
@@ -474,8 +505,14 @@ fn run(args: &[String]) -> Result<(), DenError> {
         .with_upstreams(upstreams);
     let ports = Ports {
         github: Arc::new(GhSource::new(GhCli::new())),
-        linear: Arc::new(LinearApi::new(Arc::new(SystemClock))),
-        linear_writer: Arc::new(LinearWrites::new(Arc::new(SystemClock))),
+        linear: Arc::new(
+            LinearApi::new(Arc::new(SystemClock))
+                .with_credentials(connection_credentials(connections.clone())),
+        ),
+        linear_writer: Arc::new(
+            LinearWrites::new(Arc::new(SystemClock))
+                .with_credentials(connection_credentials(connections.clone())),
+        ),
         cache: Arc::new(FileCache::in_state_dir(&paths.state_dir)),
         workspace: Arc::new(GitWorkspace::new()),
         launcher: Arc::new(KittyLauncher::new(LaunchEnvironment::from_env(|name| {
@@ -495,7 +532,7 @@ fn run(args: &[String]) -> Result<(), DenError> {
                 ports.workspace.repo_at(&dir)
             });
             tracing::info!(?arg, ?start, "start");
-            run_interactive(&theme, app.with_start(start), ports, graphics)
+            run_interactive(&theme, app.with_start(start), ports, graphics, connections)
         }
         Mode::Dump { cols, rows } => {
             app.handle(Event::Resized { cols, rows });
@@ -511,17 +548,26 @@ fn run(args: &[String]) -> Result<(), DenError> {
             prompt,
             confirm,
             switch_target,
-        } => run_launch(
-            &theme,
-            app,
-            &ports,
-            &LaunchArgs {
-                item: &item,
-                prompt: prompt.as_deref(),
-                confirm,
-                switch_target,
-            },
-        ),
+        } => {
+            let repo = match &item {
+                LaunchTarget::Numbered { repo, .. }
+                | LaunchTarget::Branch { repo, .. }
+                | LaunchTarget::Workflow { repo, .. } => repo.clone(),
+            };
+            app = app.with_start(start::Start::Repo(repo.clone()));
+            run_launch(
+                &theme,
+                app,
+                &ports,
+                &LaunchArgs {
+                    item: &item,
+                    prompt: prompt.as_deref(),
+                    confirm,
+                    switch_target,
+                },
+                &connections,
+            )
+        }
     }
 }
 
@@ -540,6 +586,7 @@ fn run_launch(
     mut app: App,
     ports: &Ports,
     args: &LaunchArgs<'_>,
+    connections: &ConnectionManager,
 ) -> Result<(), DenError> {
     let LaunchArgs {
         item,
@@ -553,6 +600,20 @@ fn run_launch(
         now: Timestamp::now(),
     };
     let (mut view, _) = runtime::settle(&mut app, started, ports);
+    if let Some(repo) = app.selected_repo().cloned() {
+        match connections.validate(&repo) {
+            Ok(Some(binding)) => {
+                let effects = den::linear::setup::activate(&mut app, binding);
+                for effect in effects {
+                    for event in den::ports::perform(&effect, ports) {
+                        view = runtime::settle(&mut app, event, ports).0;
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(error) => tracing::warn!(%error, "Linear connection unavailable"),
+        }
+    }
     // Select the Work Item the way a user would: ↓ until it is the selected row.
     for _ in 0..view.list.rows.len() {
         let selected = view.list.selected.and_then(|i| view.list.rows.get(i));
@@ -754,6 +815,27 @@ fn exit_code(error: &DenError) -> ExitCode {
         }
         _ => ExitCode::from(EXIT_FAILURE),
     }
+}
+
+/// Only opaque connection references cross the App/adapter boundary.
+fn connection_credentials(manager: Arc<ConnectionManager>) -> Box<den::linear::CredentialResolver> {
+    Box::new(move |workflow| {
+        let unavailable = || den::linear::CredentialError {
+            message: "Linear has not been connected for this Repo".to_owned(),
+            authentication_failed: true,
+        };
+        let binding = workflow.binding.as_ref().ok_or_else(unavailable)?;
+        let id = workflow
+            .api_key_env
+            .strip_prefix("den-connection:")
+            .ok_or_else(unavailable)?;
+        manager
+            .authorization_for(&binding.repo, id, &binding.project_id)
+            .map_err(|error| den::linear::CredentialError {
+                authentication_failed: error.is_authentication_failure(),
+                message: error.to_string(),
+            })
+    })
 }
 
 #[cfg(test)]

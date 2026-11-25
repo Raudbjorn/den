@@ -1049,7 +1049,7 @@ fn a_title_of_wide_emoji_is_cut_by_drawn_width_with_an_ellipsis() {
 }
 
 /// #32: the Linear glyph marks a Linear Issue's row, its detail's facts, and
-/// an Owner with a Linear Workflow in the sidebar and the header, in every
+/// the paired Repo in the sidebar and the header, in every
 /// glyph profile and without colour (monochrome).
 #[test]
 fn linear_markers_are_glyphs_that_read_in_monochrome() {
@@ -1064,7 +1064,8 @@ fn linear_markers_are_glyphs_that_read_in_monochrome() {
     let mut harness = Harness::new(Ok(config_with_linear(
         &["acme", "octo"],
         &[("acme", "acme")],
-    )));
+    )))
+    .with_linear_pairing("acme/api", "acme");
     let (cols, rows) = DESIGN_SIZE;
     harness.send(Event::Resized { cols, rows });
     harness.answer(Ok(ObservationBuilder::new()
@@ -1072,6 +1073,7 @@ fn linear_markers_are_glyphs_that_read_in_monochrome() {
         .fully_read_owner("octo")
         .build()));
     harness.linear.push_answer(LinearSurvey {
+        authentication_failed: false,
         part: LinearPart {
             viewers: vec![linear_viewer("acme", "acme")],
             issues: vec![linear_issue("acme", "id-7", "TEAM-7").build()],
@@ -1085,7 +1087,7 @@ fn linear_markers_are_glyphs_that_read_in_monochrome() {
         let text = frame::buffer_text(&frame::render(&theme, &view, cols, rows).expect("renders"));
         for expected in [
             format!("{mark} acme TEAM-7"),
-            format!("acme {mark}"),
+            format!("api {mark}"),
             format!("{mark} LINEAR ISSUE"),
             "team TEAM".to_owned(),
         ] {

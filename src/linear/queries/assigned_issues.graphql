@@ -1,10 +1,10 @@
-query LinearAssignedIssues($first: Int!, $after: String, $attachmentsPerIssue: Int!) {
+query LinearAssignedIssues($first: Int!, $after: String, $attachmentsPerIssue: Int!, $filter: IssueFilter!) {
   viewer {
     assignedIssues(
       first: $first
       after: $after
       orderBy: updatedAt
-      filter: { state: { type: { nin: ["completed", "canceled"] } } }
+      filter: $filter
     ) {
       nodes {
         ...LinearIssueFields

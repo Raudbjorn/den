@@ -25,7 +25,8 @@ const MAX_ERROR_CHARS: usize = 300;
 /// Linear's error code for a rate limit.
 const RATE_LIMITED_CODE: &str = "RATELIMITED";
 /// Linear's error codes for a key it doesn't accept.
-const AUTH_ERROR_CODES: [&str; 2] = ["AUTHENTICATION_ERROR", "FORBIDDEN"];
+pub(crate) const AUTH_ERROR_CODES: [&str; 3] =
+    ["AUTHENTICATION_ERROR", "UNAUTHENTICATED", "FORBIDDEN"];
 /// HTTP statuses for a key Linear doesn't accept.
 const HTTP_UNAUTHORIZED: u16 = 401;
 const HTTP_FORBIDDEN: u16 = 403;
@@ -76,6 +77,7 @@ impl GraphQlError {
 }
 
 pub struct Session<'a> {
+    authentication_failed: Cell<bool>,
     transport: &'a dyn LinearTransport,
     /// The variable the key came from, to name in errors (never the key).
     key_env: &'a str,
@@ -89,11 +91,20 @@ pub struct Session<'a> {
 impl<'a> Session<'a> {
     pub fn new(transport: &'a dyn LinearTransport, key_env: &'a str, clock: &'a dyn Clock) -> Self {
         Self {
+            authentication_failed: Cell::new(false),
             transport,
             key_env,
             clock,
             limited: Cell::new(None),
         }
+    }
+
+    pub fn authentication_failed(&self) -> bool {
+        self.authentication_failed.get()
+    }
+
+    pub fn reject_identity(&self) {
+        self.authentication_failed.set(true);
     }
 
     fn rate_limited(&self) -> SourceState {
@@ -111,6 +122,11 @@ impl<'a> Session<'a> {
     ) -> Answer<T> {
         if self.limited.get().is_some() {
             return Answer::Lost(self.rate_limited());
+        }
+        if self.authentication_failed() {
+            return Answer::Lost(SourceState::Failed {
+                error: "Linear authorization is no longer valid; reconnect this Repo".to_owned(),
+            });
         }
         let request = LinearRequest {
             operation: operation.to_owned(),
@@ -167,6 +183,7 @@ impl<'a> Session<'a> {
                 .iter()
                 .any(|e| e.code().is_some_and(|c| AUTH_ERROR_CODES.contains(&c)));
         if refused && !rate_limited {
+            self.reject_identity();
             return Answer::Lost(SourceState::Failed {
                 error: format!(
                     "Linear refused the API key in {} (HTTP {}){}",

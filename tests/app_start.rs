@@ -41,7 +41,7 @@ fn start_config() -> Config {
 }
 
 fn harness() -> Harness {
-    let harness = Harness::new(Ok(start_config()));
+    let harness = Harness::new(Ok(start_config())).with_linear_pairing("acme/api", "acme");
     harness.answer(Ok(ObservationBuilder::new()
         .fully_read_owner("acme")
         .fully_read_owner("octo")
@@ -61,6 +61,7 @@ fn answer(issues: Vec<LinearIssue>, states: &[(LinearSourceKind, SourceState)]) 
         );
     }
     LinearSurvey {
+        authentication_failed: false,
         part: LinearPart {
             viewers: vec![linear_viewer("acme", "acme")],
             issues,
@@ -164,7 +165,8 @@ fn cached_start_coverage_is_unconfirmed_until_the_current_query_answers() {
             "unchanged" => {}
             _ => unreachable!(),
         }
-        let mut harness = Harness::with_cache(Ok(config), FakeCache::holding(cached.clone()));
+        let mut harness = Harness::with_cache(Ok(config), FakeCache::holding(cached.clone()))
+            .with_linear_pairing("acme/api", "acme");
         harness.answer(Ok(ObservationBuilder::new()
             .fully_read_owner("acme")
             .fully_read_owner("octo")

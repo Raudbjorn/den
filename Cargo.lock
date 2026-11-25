@@ -458,8 +458,10 @@ checksum = "5729f5117e208430e437df2f4843f5e5952997175992d1414f94c57d61e270b4"
 name = "den"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "crepuscularity-tui",
  "crossterm",
+ "getrandom 0.3.4",
  "image",
  "jiff",
  "ratatui",
@@ -468,6 +470,7 @@ dependencies = [
  "resvg",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "signal-hook",
  "tempfile",
  "thiserror 2.0.21",

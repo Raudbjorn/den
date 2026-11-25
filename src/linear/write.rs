@@ -17,7 +17,7 @@
 //! retries: the App re-reads the issue instead.
 
 use super::{
-    ApiKey, Connect, Env, RawState, RawUser, api_key,
+    Connect, Env, RawState, RawUser, read_issue_now,
     session::Session,
     transport::{LinearRequest, LinearTransport},
     viewer,
@@ -40,6 +40,7 @@ const MAX_ERROR_CHARS: usize = 300;
 /// The two Linear writes, through the transport `connect` makes for each
 /// workflow's key.
 pub struct LinearWrites {
+    credentials: Option<Box<super::CredentialResolver>>,
     env: Box<Env>,
     connect: Box<Connect>,
     clock: Arc<dyn Clock>,
@@ -58,14 +59,27 @@ impl LinearWrites {
     /// Keys from `env`, transports from `connect` (tests script both).
     pub fn with(env: Box<Env>, connect: Box<Connect>, clock: Arc<dyn Clock>) -> Self {
         Self {
+            credentials: None,
             env,
             connect,
             clock,
         }
     }
 
-    fn transport(&self, request: &LinearIssueRequest) -> Result<Box<dyn LinearTransport>, String> {
-        let key: ApiKey = api_key(self.env.as_ref(), &request.workflow)?;
+    pub fn with_credentials(mut self, resolver: Box<super::CredentialResolver>) -> Self {
+        self.credentials = Some(resolver);
+        self
+    }
+
+    fn transport(
+        &self,
+        request: &LinearIssueRequest,
+    ) -> Result<Box<dyn LinearTransport>, super::CredentialError> {
+        let key = super::resolve_credential(
+            self.credentials.as_deref(),
+            self.env.as_ref(),
+            &request.workflow,
+        )?;
         Ok((self.connect)(key))
     }
 }
@@ -74,17 +88,33 @@ impl LinearWriter for LinearWrites {
     fn assign_to_viewer(&self, request: &LinearIssueRequest) -> LinearWriteOutcome {
         let transport = match self.transport(request) {
             Ok(transport) => transport,
-            Err(error) => return not_sent(error),
+            Err(error) => {
+                return if error.authentication_failed {
+                    LinearWriteOutcome::Unauthenticated {
+                        error: error.message,
+                    }
+                } else {
+                    not_sent(error.message)
+                };
+            }
         };
         let session = Session::new(
             transport.as_ref(),
             &request.workflow.api_key_env,
             self.clock.as_ref(),
         );
+        if let Some(outcome) = validate_binding(&session, request) {
+            return outcome;
+        }
         // A read: whatever goes wrong here, nothing was written.
         let me = match viewer(&session, &request.workflow) {
             Ok((me, _)) => me,
             Err(state) => {
+                if session.authentication_failed() {
+                    return LinearWriteOutcome::Unauthenticated {
+                        error: state.describe(),
+                    };
+                }
                 return not_sent(format!(
                     "den couldn't read whose key this is, so it assigned nothing: {}",
                     state.describe()
@@ -102,8 +132,24 @@ impl LinearWriter for LinearWrites {
     fn move_state(&self, request: &LinearIssueRequest, state: &LinearState) -> LinearWriteOutcome {
         let transport = match self.transport(request) {
             Ok(transport) => transport,
-            Err(error) => return not_sent(error),
+            Err(error) => {
+                return if error.authentication_failed {
+                    LinearWriteOutcome::Unauthenticated {
+                        error: error.message,
+                    }
+                } else {
+                    not_sent(error.message)
+                };
+            }
         };
+        let session = Session::new(
+            transport.as_ref(),
+            &request.workflow.api_key_env,
+            self.clock.as_ref(),
+        );
+        if let Some(outcome) = validate_binding(&session, request) {
+            return outcome;
+        }
         mutate(
             transport.as_ref(),
             "LinearMoveState",
@@ -139,7 +185,7 @@ fn mutate(
     };
     let label = match &outcome {
         LinearWriteOutcome::Done { .. } => "done",
-        LinearWriteOutcome::Failed { .. } => "failed",
+        LinearWriteOutcome::Failed { .. } | LinearWriteOutcome::Unauthenticated { .. } => "failed",
         LinearWriteOutcome::Unknown { .. } => "unknown",
     };
     tracing::info!(operation, outcome = label, "linear write");
@@ -176,10 +222,22 @@ struct WrittenIssue {
 struct WriteError {
     #[serde(default)]
     message: String,
+    #[serde(default)]
+    extensions: Option<WriteErrorExtensions>,
+}
+
+#[derive(Deserialize)]
+struct WriteErrorExtensions {
+    code: Option<String>,
 }
 
 /// A write's reply, as an outcome.
 fn decode(status: u16, body: &[u8]) -> LinearWriteOutcome {
+    if matches!(status, 401 | 403) {
+        return LinearWriteOutcome::Unauthenticated {
+            error: "Linear refused authorization; reconnect this Repo".to_owned(),
+        };
+    }
     if HTTP_SERVER_ERRORS.contains(&status) {
         return LinearWriteOutcome::Unknown {
             why: format!(
@@ -192,6 +250,17 @@ fn decode(status: u16, body: &[u8]) -> LinearWriteOutcome {
             why: format!("den couldn't read Linear's answer (HTTP {status})"),
         };
     };
+    if body.errors.iter().any(|error| {
+        error
+            .extensions
+            .as_ref()
+            .and_then(|ext| ext.code.as_deref())
+            .is_some_and(|code| super::session::AUTH_ERROR_CODES.contains(&code))
+    }) {
+        return LinearWriteOutcome::Unauthenticated {
+            error: "Linear refused authorization; reconnect this Repo".to_owned(),
+        };
+    }
     let errors = body
         .errors
         .iter()
@@ -234,4 +303,19 @@ fn bounded(message: &str) -> String {
         .take(MAX_ERROR_CHARS)
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
+}
+
+/// Rechecks the immutable identity and issue project immediately before a write.
+fn validate_binding(
+    session: &Session<'_>,
+    request: &LinearIssueRequest,
+) -> Option<LinearWriteOutcome> {
+    request.workflow.binding.as_ref()?;
+    match read_issue_now(session, request) {
+        crate::ports::LinearIssueRead::Read(_) => None,
+        crate::ports::LinearIssueRead::Unauthenticated { error } => {
+            Some(LinearWriteOutcome::Unauthenticated { error })
+        }
+        crate::ports::LinearIssueRead::Failed { error } => Some(not_sent(error)),
+    }
 }

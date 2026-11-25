@@ -1,5 +1,5 @@
 //! Seam 2: a Job never inherits den's Linear keys (#70, ADR-0007). The command
-//! den builds removes every configured Linear Workflow's key variable with
+//! den builds removes standard credential variables and every configured key with
 //! `env -u`, written into the command the sheet shows and the Launcher runs,
 //! in kitty, on the clipboard and when reopening a Live Job.
 
@@ -117,7 +117,8 @@ fn each_workflows_key_variable_is_removed_once_in_sorted_order_on_the_sheet_and_
     assert_eq!(
         command,
         format!(
-            "kitty --detach --hold --directory {WORKTREE} env -u {ACME_KEY} -u {ZETA_KEY} claude --append-system-prompt {} -n {SESSION} {PROMPT}",
+            // Standard sources accompany configured keys in every launch mode.
+            "kitty --detach --hold --directory {WORKTREE} env -u {ACME_KEY} -u {ZETA_KEY} -u LINEAR_API_KEY -u LINEAR_API_TOKEN claude --append-system-prompt {} -n {SESSION} {PROMPT}",
             rules()
         )
     );
@@ -125,7 +126,7 @@ fn each_workflows_key_variable_is_removed_once_in_sorted_order_on_the_sheet_and_
     press(&mut harness, Key::Enter);
     assert_eq!(
         harness.launcher.windows()[0].removed_env,
-        [ACME_KEY, ZETA_KEY]
+        [ACME_KEY, ZETA_KEY, "LINEAR_API_KEY", "LINEAR_API_TOKEN"]
     );
     let args = kitty_args(&harness);
     let env_at = args
@@ -133,8 +134,19 @@ fn each_workflows_key_variable_is_removed_once_in_sorted_order_on_the_sheet_and_
         .position(|a| a == "env")
         .expect("env runs claude");
     assert_eq!(
-        args[env_at..env_at + 6],
-        ["env", "-u", ACME_KEY, "-u", ZETA_KEY, "claude"]
+        args[env_at..env_at + 10],
+        [
+            "env",
+            "-u",
+            ACME_KEY,
+            "-u",
+            ZETA_KEY,
+            "-u",
+            "LINEAR_API_KEY",
+            "-u",
+            "LINEAR_API_TOKEN",
+            "claude"
+        ]
     );
 }
 
@@ -143,9 +155,12 @@ fn two_workflows_naming_the_same_variable_remove_it_once() {
     let mut harness = started(config(&[ZETA_KEY, ZETA_KEY]), |_| ());
 
     let command = ready_command(&mut harness);
-    assert_eq!(command.matches("-u ").count(), 1, "{command}");
+    // The configured variable is deduplicated; both standard sources remain protected.
+    assert_eq!(command.matches("-u ").count(), 3, "{command}");
     assert!(
-        command.contains(&format!("env -u {ZETA_KEY} claude --append-system-prompt ")),
+        command.contains(&format!(
+            "env -u {ZETA_KEY} -u LINEAR_API_KEY -u LINEAR_API_TOKEN claude --append-system-prompt "
+        )),
         "{command}"
     );
 }
@@ -156,7 +171,8 @@ fn the_clipboard_command_removes_the_same_variables() {
 
     let command = ready_command(&mut harness);
     let expected = format!(
-        "cd {WORKTREE} && env -u {ZETA_KEY} claude --append-system-prompt {} -n {SESSION} {PROMPT}",
+        // Standard sources accompany configured keys in every launch mode.
+        "cd {WORKTREE} && env -u {ZETA_KEY} -u LINEAR_API_KEY -u LINEAR_API_TOKEN claude --append-system-prompt {} -n {SESSION} {PROMPT}",
         rules()
     );
     assert_eq!(command, expected);
@@ -206,7 +222,8 @@ fn reopening_a_live_job_removes_the_same_variables() {
         ready.command.as_deref(),
         Some(
             format!(
-                "kitty --detach --hold --directory {WORKTREE} env -u {ZETA_KEY} claude --append-system-prompt {} --resume {SESSION}",
+                // Standard sources accompany configured keys in every launch mode.
+                "kitty --detach --hold --directory {WORKTREE} env -u {ZETA_KEY} -u LINEAR_API_KEY -u LINEAR_API_TOKEN claude --append-system-prompt {} --resume {SESSION}",
                 rules()
             )
             .as_str()
@@ -214,25 +231,28 @@ fn reopening_a_live_job_removes_the_same_variables() {
     );
 
     press(&mut harness, Key::Enter);
-    assert_eq!(harness.launcher.windows()[0].removed_env, [ZETA_KEY]);
+    assert_eq!(
+        harness.launcher.windows()[0].removed_env,
+        [ZETA_KEY, "LINEAR_API_KEY", "LINEAR_API_TOKEN"]
+    );
 }
 
 #[test]
-fn without_a_linear_workflow_the_command_is_unchanged() {
+fn without_a_linear_workflow_standard_credentials_still_cannot_reach_jobs() {
     let mut harness = started(config(&[]), |_| ());
 
     let command = ready_command(&mut harness);
-    // Unchanged apart from the Ground Rules (#71; spec 0004: "With no
-    // variables to remove there is no `env` word, so the command is
-    // unchanged apart from the rules").
+    // Auto-detected credentials can exist without a configured Workflow or pairing.
+    // Every Job therefore strips both standard names, including GitHub-only Jobs.
     assert_eq!(
         command,
         format!(
-            "kitty --detach --hold --directory {WORKTREE} claude --append-system-prompt {} -n {SESSION} {PROMPT}",
+            // Standard sources accompany configured keys in every launch mode.
+            "kitty --detach --hold --directory {WORKTREE} env -u LINEAR_API_KEY -u LINEAR_API_TOKEN claude --append-system-prompt {} -n {SESSION} {PROMPT}",
             rules()
         )
     );
-    assert!(!command.contains(" env "), "{command}");
+    assert!(command.contains(" env "), "{command}");
 }
 
 #[test]

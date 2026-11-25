@@ -36,8 +36,8 @@ fn config() -> Config {
 
 /// Three ready PRs by me: one in the Held Repo, one approved only at an older
 /// head (Request review under the workflow), and the same under `octo`.
-fn started() -> Harness {
-    let mut harness = Harness::new(Ok(config()));
+fn started(repo: &str) -> Harness {
+    let mut harness = Harness::new(Ok(config())).with_linear_pairing(repo, "acme");
     harness.answer(Ok(ObservationBuilder::new()
         .fully_read_owner("acme")
         .repo("acme/app")
@@ -88,7 +88,7 @@ fn select(harness: &mut Harness, repo: &str, reference: &str) -> ViewModel {
 
 #[test]
 fn a_held_pr_reads_held_for_release_in_the_list_and_the_detail() {
-    let mut harness = started();
+    let mut harness = started("acme/app");
     let view = select(&mut harness, "acme/app", "#1");
     let row = &view.list.rows[view.list.selected.unwrap()];
     assert_eq!(row.next_step, None);
@@ -107,7 +107,7 @@ fn a_held_pr_reads_held_for_release_in_the_list_and_the_detail() {
 
 #[test]
 fn the_detail_shows_the_suggested_reviewers_of_a_workflow_pr_only() {
-    let mut harness = started();
+    let mut harness = started("acme/api");
     let view = select(&mut harness, "acme/api", "#2");
     let detail = view.detail.content.expect("selected");
     assert_eq!(detail.next_step, "Request review");
@@ -118,7 +118,8 @@ fn the_detail_shows_the_suggested_reviewers_of_a_workflow_pr_only() {
         "bob approved an older head: not awaiting re-review, so not suggested"
     );
 
-    // The same facts under octo, which has no Linear Workflow: milestone 1.
+    // Switching Repo drops Linear activation; octo remains GitHub-only.
+    harness.select_repo("octo/api");
     let view = select(&mut harness, "octo/api", "#2");
     let detail = view.detail.content.expect("selected");
     assert_eq!(detail.next_step, "Merge");
@@ -127,7 +128,7 @@ fn the_detail_shows_the_suggested_reviewers_of_a_workflow_pr_only() {
 
 #[test]
 fn the_detail_says_when_the_suggested_reviewers_are_not_filtered_in_full() {
-    let mut harness = Harness::new(Ok(config()));
+    let mut harness = Harness::new(Ok(config())).with_linear_pairing("acme/api", "acme");
     harness.answer(Ok(ObservationBuilder::new()
         .fully_read_owner("acme")
         .repo("acme/api")

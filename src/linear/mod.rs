@@ -24,6 +24,10 @@
 //! [`LinearApi::read_issue`] reads one Linear Issue again just before a write
 //! (#38): its assignee, state and team states.
 
+pub mod setup;
+
+pub mod cli_credentials;
+pub mod connection;
 mod pages;
 pub mod session;
 pub mod transport;
@@ -95,8 +99,19 @@ pub type Env = dyn Fn(&str) -> Option<OsString> + Send + Sync;
 /// Makes a transport that sends `key` (the real one is [`HttpsTransport::new`]).
 pub type Connect = dyn Fn(ApiKey) -> Box<dyn LinearTransport> + Send + Sync;
 
+/// A credential provider distinguishes revoked authorization from temporary
+/// network failures without exposing secrets in either error.
+#[derive(Debug, Clone)]
+pub struct CredentialError {
+    pub message: String,
+    pub authentication_failed: bool,
+}
+pub type CredentialResolver =
+    dyn Fn(&LinearWorkflow) -> Result<ApiKey, CredentialError> + Send + Sync;
+
 /// The Linear source.
 pub struct LinearApi {
+    credentials: Option<Box<CredentialResolver>>,
     env: Box<Env>,
     connect: Box<Connect>,
     clock: Arc<dyn Clock>,
@@ -115,10 +130,16 @@ impl LinearApi {
     /// Keys from `env`, transports from `connect` (tests script both).
     pub fn with(env: Box<Env>, connect: Box<Connect>, clock: Arc<dyn Clock>) -> Self {
         Self {
+            credentials: None,
             env,
             connect,
             clock,
         }
+    }
+
+    pub fn with_credentials(mut self, resolver: Box<CredentialResolver>) -> Self {
+        self.credentials = Some(resolver);
+        self
     }
 }
 
@@ -137,11 +158,20 @@ impl LinearSource for LinearApi {
     }
 
     fn read_issue(&self, request: &LinearIssueRequest) -> LinearIssueRead {
-        let failed = |error: String| LinearIssueRead::Failed { error };
         let workflow = &request.workflow;
-        let key = match api_key(self.env.as_ref(), workflow) {
+        let key = match self.key(workflow) {
             Ok(key) => key,
-            Err(error) => return failed(error),
+            Err(error) => {
+                return if error.authentication_failed {
+                    LinearIssueRead::Unauthenticated {
+                        error: error.message,
+                    }
+                } else {
+                    LinearIssueRead::Failed {
+                        error: error.message,
+                    }
+                };
+            }
         };
         let transport = (self.connect)(key);
         let session = Session::new(
@@ -149,34 +179,65 @@ impl LinearSource for LinearApi {
             &workflow.api_key_env,
             self.clock.as_ref(),
         );
-        let variables = json!({ "id": request.issue.id, "statesFirst": MAX_TEAM_STATES });
-        match session.run::<IssueNowData>("LinearIssueNow", ISSUE_NOW_QUERY, variables) {
-            Answer::Lost(state) => failed(state.describe()),
-            // Errors next to the issue: den won't compare against what may
-            // be half an answer.
-            Answer::Data { state, .. } if !state.is_complete() => failed(state.describe()),
-            Answer::Data { data, .. } => {
-                if !data
+        read_issue_now(&session, request)
+    }
+}
+
+fn read_issue_now(session: &Session<'_>, request: &LinearIssueRequest) -> LinearIssueRead {
+    let workflow = &request.workflow;
+    let failed = |error: String| LinearIssueRead::Failed { error };
+    if workflow.binding.is_some()
+        && let Err(state) = viewer(session, workflow)
+    {
+        return if session.authentication_failed() {
+            LinearIssueRead::Unauthenticated {
+                error: state.describe(),
+            }
+        } else {
+            failed(state.describe())
+        };
+    }
+    let variables = json!({ "id": request.issue.id, "statesFirst": MAX_TEAM_STATES });
+    match session.run::<IssueNowData>("LinearIssueNow", ISSUE_NOW_QUERY, variables) {
+        Answer::Lost(state) if session.authentication_failed() => {
+            LinearIssueRead::Unauthenticated {
+                error: state.describe(),
+            }
+        }
+        Answer::Lost(state) => failed(state.describe()),
+        // Errors next to the issue: den won't compare against what may
+        // be half an answer.
+        Answer::Data { state, .. } if !state.is_complete() => failed(state.describe()),
+        Answer::Data { data, .. } => {
+            if workflow.binding.as_ref().is_some_and(|binding| {
+                data.organization.id.as_deref() != Some(binding.workspace_id.as_str())
+            }) {
+                return LinearIssueRead::Unauthenticated {
+                    error: "Linear workspace changed; reconnect this Repo".to_owned(),
+                };
+            }
+            if workflow.binding.is_none()
+                && !data
                     .organization
                     .url_key
                     .eq_ignore_ascii_case(&workflow.workspace)
-                {
-                    return failed(format!(
-                        "the API key in {} belongs to the Linear workspace {:?}, not {:?} as configured for {}",
-                        workflow.api_key_env,
-                        data.organization.url_key,
-                        workflow.workspace,
-                        workflow.owner
-                    ));
-                }
-                match data.issue {
+            {
+                return failed(format!(
+                    "the API key in {} belongs to the Linear workspace {:?}, not {:?} as configured for {}",
+                    workflow.api_key_env,
+                    data.organization.url_key,
+                    workflow.workspace,
+                    workflow.owner
+                ));
+            }
+            match data.issue {
+                    Some(issue) if workflow.binding.as_ref().is_some_and(|binding| issue.project.as_ref().map(|project| project.id.as_str()) != Some(binding.project_id.as_str())) => failed("the issue no longer belongs to this Repo's paired Linear project; nothing changed".to_owned()),
                     Some(issue) => LinearIssueRead::Read(issue.into_now()),
                     None => failed(format!(
                         "Linear has no issue {} that this key can see (deleted, or moved out of reach)",
                         request.identifier
                     )),
                 }
-            }
         }
     }
 }
@@ -188,7 +249,14 @@ struct IssueNowData {
 }
 
 #[derive(Deserialize)]
+struct RawProject {
+    id: String,
+}
+
+#[derive(Deserialize)]
 struct RawIssueNow {
+    #[serde(default)]
+    project: Option<RawProject>,
     assignee: Option<RawUser>,
     state: RawState,
     team: RawTeamWithStates,
@@ -267,7 +335,13 @@ impl LinearApi {
         let key = match self.key(workflow) {
             Ok(key) => key,
             Err(error) => {
-                record_all(&mut survey.coverage, SourceState::Failed { error });
+                survey.authentication_failed |= error.authentication_failed;
+                record_all(
+                    &mut survey.coverage,
+                    SourceState::Failed {
+                        error: error.message,
+                    },
+                );
                 return;
             }
         };
@@ -285,6 +359,7 @@ impl LinearApi {
             Err(state) => {
                 // Without the viewer den doesn't ask for its issues: the
                 // same trouble (a refused key, no network) would stop them.
+                survey.authentication_failed |= session.authentication_failed();
                 record_all(&mut survey.coverage, state);
                 return;
             }
@@ -317,11 +392,12 @@ impl LinearApi {
             );
             survey.part.issues.extend(issues);
         }
+        survey.authentication_failed |= session.authentication_failed();
     }
 
     /// The workflow's key, or why there is none.
-    fn key(&self, workflow: &LinearWorkflow) -> Result<ApiKey, String> {
-        api_key(self.env.as_ref(), workflow)
+    fn key(&self, workflow: &LinearWorkflow) -> Result<ApiKey, CredentialError> {
+        resolve_credential(self.credentials.as_deref(), self.env.as_ref(), workflow)
     }
 }
 
@@ -333,6 +409,8 @@ struct ViewerData {
 
 #[derive(Deserialize)]
 struct RawOrganization {
+    #[serde(default)]
+    id: Option<String>,
     #[serde(rename = "urlKey")]
     url_key: String,
 }
@@ -361,11 +439,22 @@ pub(crate) fn viewer(
     match session.run::<ViewerData>("LinearViewer", VIEWER_QUERY, json!({})) {
         Answer::Lost(state) => Err(state),
         Answer::Data { data, state } => {
-            if !data
-                .organization
-                .url_key
-                .eq_ignore_ascii_case(&workflow.workspace)
+            if workflow.binding.as_ref().is_some_and(|binding| {
+                data.organization.id.as_deref() != Some(binding.workspace_id.as_str())
+                    || data.viewer.id != binding.viewer_id
+            }) {
+                session.reject_identity();
+                return Err(SourceState::Failed {
+                    error: "Linear identity changed; reconnect and pair this Repo again".to_owned(),
+                });
+            }
+            if workflow.binding.is_none()
+                && !data
+                    .organization
+                    .url_key
+                    .eq_ignore_ascii_case(&workflow.workspace)
             {
+                session.reject_identity();
                 return Err(SourceState::Failed {
                     error: format!(
                         "the API key in {} belongs to the Linear workspace {:?}, not {:?} as configured for {}",
@@ -428,7 +517,15 @@ fn assigned_issues(
     let list = pages::List {
         operation: "LinearAssignedIssues",
         query: ASSIGNED_ISSUES_QUERY,
-        variables: issue_page_variables,
+        variables: |after: Option<&str>| {
+            let mut variables = issue_page_variables(after);
+            let mut filter = json!({ "state": { "type": { "nin": ["completed", "canceled"] } } });
+            if let Some(binding) = &workflow.binding {
+                filter["project"] = json!({ "id": { "eq": binding.project_id } });
+            }
+            variables["filter"] = filter;
+            variables
+        },
         connection: |data: AssignedData| data.viewer.assigned_issues,
     };
     let end = pages::read_list(
@@ -607,4 +704,18 @@ fn whole(value: f64) -> i64 {
     #[allow(clippy::cast_possible_truncation)]
     let whole = value.trunc() as i64;
     whole
+}
+
+fn resolve_credential(
+    resolver: Option<&CredentialResolver>,
+    env: &Env,
+    workflow: &LinearWorkflow,
+) -> Result<ApiKey, CredentialError> {
+    if let Some(resolve) = resolver {
+        return resolve(workflow);
+    }
+    api_key(env, workflow).map_err(|message| CredentialError {
+        message,
+        authentication_failed: true,
+    })
 }

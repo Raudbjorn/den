@@ -119,7 +119,7 @@ fn linear_is_surveyed_on_the_same_timer() {
         refresh_interval_secs: Some(60),
         ..config_with_linear(&["alpha"], &[("alpha", "alpha")])
     };
-    let mut harness = Harness::new(Ok(config));
+    let mut harness = Harness::new(Ok(config)).with_linear_pairing("alpha/app", "alpha");
     harness.answer(Ok(observation()));
     harness.start();
     let effects = tick(&mut harness, INTERVAL_SECS);
@@ -248,7 +248,7 @@ fn a_linear_survey_still_running_holds_the_timer() {
         refresh_interval_secs: Some(60),
         ..config_with_linear(&["alpha"], &[("alpha", "alpha")])
     };
-    let mut harness = Harness::new(Ok(config));
+    let mut harness = Harness::new(Ok(config)).with_linear_pairing("alpha/app", "alpha");
     harness.answer(Ok(observation()));
     harness.start();
     let running = tick(&mut harness, INTERVAL_SECS);

@@ -17,7 +17,11 @@ use crate::{
 };
 use std::{
     collections::VecDeque,
-    sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+        mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -104,19 +108,34 @@ pub fn lane_of(effect: &Effect) -> Option<LaneKind> {
 /// One background thread performing Effects in order, with bounded queues both
 /// ways. Its Event sender drops when the thread ends, so a disconnected
 /// `events` means everything sent to it was performed.
+type QueuedEffect = (Effect, Option<u64>);
+
 struct Lane {
     /// `None` once closed: the thread finishes what is queued, then ends.
-    effects: Option<SyncSender<Effect>>,
+    effects: Option<SyncSender<QueuedEffect>>,
+    generation: Arc<AtomicU64>,
     events: Receiver<Event>,
 }
 
 impl Lane {
-    fn start(ports: Ports, capacity: usize) -> Self {
-        let (effect_tx, effect_rx) = mpsc::sync_channel::<Effect>(capacity);
+    fn start(ports: Ports, capacity: usize, generation: Arc<AtomicU64>) -> Self {
+        let (effect_tx, effect_rx) = mpsc::sync_channel::<QueuedEffect>(capacity);
         let (event_tx, event_rx) = mpsc::sync_channel::<Event>(EVENT_QUEUE_CAPACITY);
+        let worker_generation = generation.clone();
         thread::spawn(move || {
-            for effect in effect_rx {
-                for event in perform(&effect, &ports) {
+            for (effect, epoch) in effect_rx {
+                let events = if epoch
+                    .is_some_and(|epoch| epoch != worker_generation.load(Ordering::SeqCst))
+                {
+                    vec![Event::EffectRejected {
+                        effect: Box::new(effect),
+                        reason: "The selected Repo or Linear connection changed before execution"
+                            .into(),
+                    }]
+                } else {
+                    perform(&effect, &ports)
+                };
+                for event in events {
                     if event_tx.send(event).is_err() {
                         return; // The UI is gone.
                     }
@@ -125,6 +144,7 @@ impl Lane {
         });
         Self {
             effects: Some(effect_tx),
+            generation,
             events: event_rx,
         }
     }
@@ -141,9 +161,10 @@ impl Lane {
         let Some(effects) = &self.effects else {
             return Err(rejected(effect, WorkerError::Stopped));
         };
-        effects.try_send(effect).map_err(|e| match e {
-            TrySendError::Full(effect) => rejected(effect, WorkerError::Busy),
-            TrySendError::Disconnected(effect) => rejected(effect, WorkerError::Stopped),
+        let epoch = fenced(&effect).then(|| self.generation.load(Ordering::SeqCst));
+        effects.try_send((effect, epoch)).map_err(|e| match e {
+            TrySendError::Full((effect, _)) => rejected(effect, WorkerError::Busy),
+            TrySendError::Disconnected((effect, _)) => rejected(effect, WorkerError::Stopped),
         })
     }
 }
@@ -151,6 +172,11 @@ impl Lane {
 /// Performs Effects in the background on three lanes (see the module doc) and
 /// sends back their Events.
 pub struct Worker {
+    generation: Arc<AtomicU64>,
+    identity: Mutex<(
+        Option<crate::domain::RepoId>,
+        Option<crate::config::linear::LinearBinding>,
+    )>,
     store: Lane,
     remote: Lane,
     linear: Lane,
@@ -176,10 +202,13 @@ pub enum FinishError {
 
 impl Worker {
     pub fn start(ports: Ports) -> Self {
+        let generation = Arc::new(AtomicU64::new(0));
         Self {
-            store: Lane::start(ports.clone(), EFFECT_QUEUE_CAPACITY),
-            remote: Lane::start(ports.clone(), EFFECT_QUEUE_CAPACITY),
-            linear: Lane::start(ports, LINEAR_QUEUE_CAPACITY),
+            generation: generation.clone(),
+            identity: Mutex::new((None, None)),
+            store: Lane::start(ports.clone(), EFFECT_QUEUE_CAPACITY, generation.clone()),
+            remote: Lane::start(ports.clone(), EFFECT_QUEUE_CAPACITY, generation.clone()),
+            linear: Lane::start(ports, LINEAR_QUEUE_CAPACITY, generation),
         }
     }
 
@@ -188,6 +217,16 @@ impl Worker {
     /// to `app` as its rejection Event at once, before the caller's next Event,
     /// and the Effects that leads to are dispatched in turn.
     pub fn dispatch(&self, app: &mut App, view: &mut ViewModel, effects: Vec<Effect>) -> Flow {
+        let identity = (app.selected_repo().cloned(), app.linear_binding().cloned());
+        if let Ok(mut current) = self.identity.lock() {
+            if *current != identity {
+                self.generation.fetch_add(1, Ordering::SeqCst);
+                *current = identity;
+            }
+        } else {
+            self.generation.fetch_add(1, Ordering::SeqCst);
+            return Flow::Quit;
+        }
         let mut flow = Flow::Continue;
         let mut pending: VecDeque<_> = effects.into();
         while let Some(effect) = pending.pop_front() {
@@ -257,6 +296,21 @@ impl Worker {
     }
 }
 
+/// Queued operations must still belong to the selected Repo when their lane starts them.
+fn fenced(effect: &Effect) -> bool {
+    matches!(
+        effect,
+        Effect::SurveyLinear { .. }
+            | Effect::ReadMemberStates { .. }
+            | Effect::ReadLinearIssue { .. }
+            | Effect::AssignLinearIssue { .. }
+            | Effect::MoveLinearIssue { .. }
+            | Effect::InspectLaunch { .. }
+            | Effect::Launch { .. }
+            | Effect::Reopen { .. }
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,11 +318,12 @@ mod tests {
     use jiff::Timestamp;
 
     /// A lane whose queue the test holds instead of a thread.
-    fn held_lane() -> (Lane, Receiver<Effect>, SyncSender<Event>) {
+    fn held_lane() -> (Lane, Receiver<QueuedEffect>, SyncSender<Event>) {
         let (effects, queued) = mpsc::sync_channel(EFFECT_QUEUE_CAPACITY);
         let (finished, events) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
         let lane = Lane {
             effects: Some(effects),
+            generation: Arc::new(AtomicU64::new(0)),
             events,
         };
         (lane, queued, finished)
@@ -314,6 +369,8 @@ mod tests {
         let (linear, _linear_queue, _linear_events) = held_lane();
         drop(remote_queue); // The remote lane has stopped.
         let worker = Worker {
+            generation: Arc::new(AtomicU64::new(0)),
+            identity: Mutex::new((None, None)),
             store,
             remote,
             linear,

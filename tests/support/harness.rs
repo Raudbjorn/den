@@ -55,6 +55,7 @@ pub fn config(owners: &[&str]) -> Config {
 /// tested in `tests/config.rs` and `tests/decide_review_rules.rs`.
 pub fn linear_workflow(owner: &str, workspace: &str) -> LinearWorkflow {
     LinearWorkflow {
+        binding: None,
         owner: owner.to_owned(),
         workspace: workspace.to_owned(),
         api_key_env: "DEN_TEST_LINEAR_KEY".to_owned(),
@@ -85,6 +86,24 @@ pub fn config_with_linear(owners: &[&str], linear: &[(&str, &str)]) -> Config {
             .collect(),
         ..config(owners)
     }
+}
+
+/// Cache produced while the explicit test pairing was active. Legacy cache
+/// fixtures deliberately omit this proof and cannot restore Linear access.
+pub fn paired_cache(
+    mut cached: den::cache::CachedObservation,
+    repo: &str,
+) -> den::cache::CachedObservation {
+    let (owner, name) = repo.split_once('/').expect("qualified Repo");
+    cached.linear_scope = Some(vec![
+        owner.to_lowercase(),
+        name.to_lowercase(),
+        "workspace-test".to_owned(),
+        "project-test".to_owned(),
+        super::build::LINEAR_ME_ID.to_owned(),
+        "env:DEN_TEST_LINEAR_KEY".to_owned(),
+    ]);
+    cached
 }
 
 impl Harness {
@@ -153,6 +172,25 @@ impl Harness {
         self
     }
 
+    /// Explicitly model successful connection setup; ordinary harnesses stay
+    /// GitHub-only even when their Owner has workflow defaults (ADR-0014).
+    pub fn with_linear_pairing(mut self, repo: &str, workspace: &str) -> Self {
+        let (owner, name) = repo.split_once('/').expect("qualified Repo");
+        let repo = den::domain::RepoId::new(owner, name);
+        self.app = self.app.with_start(den::start::Start::Repo(repo.clone()));
+        let effects = self.app.activate_linear_pairing(
+            repo,
+            "workspace-test".to_owned(),
+            workspace.to_owned(),
+            "project-test".to_owned(),
+            super::build::LINEAR_ME_ID.to_owned(),
+            "env:DEN_TEST_LINEAR_KEY".to_owned(),
+        );
+        assert!(effects.is_empty(), "pair before startup: {effects:?}");
+        self.view = self.app.view();
+        self
+    }
+
     /// Queues the next survey's answer.
     pub fn answer(&self, outcome: Result<Observation, SurveyFailure>) -> &Self {
         self.github.push_answer(outcome);
@@ -197,6 +235,36 @@ impl Harness {
 
     pub fn key(&mut self, key: Key) -> Vec<Effect> {
         self.send(Event::Key(key))
+    }
+
+    /// Switch through the real Scope navigation. Leaving a paired Repo revokes
+    /// its activation; selecting another Repo does not consent to Linear there.
+    pub fn select_repo(&mut self, repo: &str) {
+        let (owner, name) = repo.split_once('/').expect("qualified Repo");
+        let scope = den::ordering::Scope::Repo(den::domain::RepoId::new(owner, name));
+        if self
+            .app
+            .selected_repo()
+            .is_some_and(|selected| selected.to_string() == repo)
+        {
+            return;
+        }
+        if !self.view.sidebar.focused {
+            self.key(Key::Tab);
+        }
+        let index = self
+            .view
+            .sidebar
+            .rows
+            .iter()
+            .position(|row| row.scope == scope)
+            .expect("Repo in sidebar");
+        let current = self.view.sidebar.cursor.unwrap_or(0);
+        let key = if index >= current { Key::Down } else { Key::Up };
+        for _ in 0..index.abs_diff(current) {
+            self.key(key);
+        }
+        self.key(Key::Enter);
     }
 
     /// The rows' `(repo, reference, step label)`, in list order.
